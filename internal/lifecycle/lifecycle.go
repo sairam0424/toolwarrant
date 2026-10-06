@@ -40,8 +40,9 @@ const (
 	ChangedPendingReapproval State = "changed_pending_reapproval"
 	// Disabled: an operator switched the tool off. Never served.
 	Disabled State = "disabled"
-	// Deprecated: the tool was absent from enough consecutive successful
-	// crawls. Never served.
+	// Deprecated is the state of a tool that was absent from enough
+	// consecutive successful crawls. Never served. (The word is the lifecycle
+	// state, not a Go deprecation notice.)
 	Deprecated State = "deprecated"
 )
 
