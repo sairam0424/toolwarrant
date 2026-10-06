@@ -18,7 +18,8 @@ var (
 // cachedSnapshot pairs a snapshot with the generation that was read BEFORE it
 // was loaded. Keying on the earlier read is deliberate: if the catalog moves
 // while the snapshot is being read, the next hook sees a different generation
-// and reloads, so the cache can be redundant but never stale.
+// and reloads, so the cache can be redundant but never stale. A cachedSnapshot
+// is never modified after it is stored, so hooks read it without a lock.
 type cachedSnapshot struct {
 	generation int64
 	snap       catalog.Snapshot
@@ -29,19 +30,19 @@ type cachedSnapshot struct {
 // or nothing is cached. On any source failure it returns an error and the
 // caller must deny: the previous snapshot is never used as a fallback, because
 // it may still show a tool the owner has since disabled.
-func (s *Server) current(ctx context.Context) (catalog.Snapshot, error) {
+func (s *Server) current(ctx context.Context) (*cachedSnapshot, error) {
 	if s.src == nil || s.server == "" {
-		return catalog.Snapshot{}, errNotConfigured
+		return nil, errNotConfigured
 	}
 	ctx, cancel := context.WithTimeout(ctx, sourceTimeout)
 	defer cancel()
 
 	gen, err := s.src.Generation(ctx)
 	if err != nil {
-		return catalog.Snapshot{}, fmt.Errorf("read catalog generation: %w", err)
+		return nil, fmt.Errorf("read catalog generation: %w", err)
 	}
 	if c := s.cache.Load(); c != nil && c.generation == gen {
-		return c.snap, nil
+		return c, nil
 	}
 	return s.reload(ctx, gen)
 }
@@ -49,29 +50,30 @@ func (s *Server) current(ctx context.Context) (catalog.Snapshot, error) {
 // reload loads and caches the snapshot for generation gen. Reloads are
 // serialised; a goroutine that waited behind another re-checks the cache so
 // a burst of hooks after a change costs one Snapshot call.
-func (s *Server) reload(ctx context.Context, gen int64) (catalog.Snapshot, error) {
+func (s *Server) reload(ctx context.Context, gen int64) (*cachedSnapshot, error) {
 	s.loadMu.Lock()
 	defer s.loadMu.Unlock()
 
 	if c := s.cache.Load(); c != nil && c.generation == gen {
-		return c.snap, nil
+		return c, nil
 	}
 	snap, err := s.src.Snapshot(ctx, s.server)
 	if err != nil {
-		return catalog.Snapshot{}, fmt.Errorf("load catalog snapshot: %w", err)
+		return nil, fmt.Errorf("load catalog snapshot: %w", err)
 	}
 	if err := s.validate(snap, gen); err != nil {
-		return catalog.Snapshot{}, err
+		return nil, err
 	}
 	// Clone so the hooks, which read the map without a lock, cannot race with a
 	// Source that keeps writing to the map it returned.
 	frozen := snap
 	frozen.Tools = maps.Clone(snap.Tools)
 
-	s.cache.Store(&cachedSnapshot{generation: gen, snap: frozen})
+	c := &cachedSnapshot{generation: gen, snap: frozen}
+	s.cache.Store(c)
 	s.pruneObserved(frozen.Tools)
 	s.log.Debug("catalog snapshot loaded", "server", s.server, "generation", gen, "tools", len(frozen.Tools))
-	return frozen, nil
+	return c, nil
 }
 
 // validate rejects a snapshot that cannot be trusted to describe this server

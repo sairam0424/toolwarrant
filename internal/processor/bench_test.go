@@ -24,10 +24,9 @@ func benchTool(i int) []byte {
 			`"annotations":{"readOnlyHint":true,"idempotentHint":true}}`, i, q(desc)))
 }
 
-// BenchmarkCheckResponse100Tools measures one fully approved 100-tool page:
-// 100 digests, 100 catalog lookups and one re-encode.
-func BenchmarkCheckResponse100Tools(b *testing.B) {
-	const n = 100
+// benchCatalog builds n approved tools and the policy that serves them.
+func benchCatalog(b *testing.B, n int) ([][]byte, map[string]catalog.ToolPolicy) {
+	b.Helper()
 	tools := make([][]byte, n)
 	policies := make(map[string]catalog.ToolPolicy, n)
 	for i := 0; i < n; i++ {
@@ -38,8 +37,20 @@ func BenchmarkCheckResponse100Tools(b *testing.B) {
 		}
 		policies[fmt.Sprintf("tool_%03d", i)] = servedPolicy(d)
 	}
-	s := New(newFakeSource(policies), Config{Server: testServer, Logger: slog.New(slog.DiscardHandler)})
-	req := &api.McpResponse{Method: "tools/list", McpResponse: listBody("next", tools...)}
+	return tools, policies
+}
+
+func benchServer(policies map[string]catalog.ToolPolicy) *Server {
+	return New(newFakeSource(policies), Config{Server: testServer, Logger: slog.New(slog.DiscardHandler)})
+}
+
+// BenchmarkCheckResponse100Tools measures one fully approved 100-tool page:
+// two passes over 100 names, 100 digests, 100 catalog lookups and one
+// re-encode.
+func BenchmarkCheckResponse100Tools(b *testing.B) {
+	tools, policies := benchCatalog(b, 100)
+	s := benchServer(policies)
+	req := listMsg(listBody("next", tools...))
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -53,14 +64,63 @@ func BenchmarkCheckResponse100Tools(b *testing.B) {
 	}
 }
 
+// BenchmarkCheckResponse10kUnknownTools measures the two-pass filter on the
+// cheapest hostile page: the per-page cap of tiny tools the catalog does not
+// know, plus one approved tool. Pass one reads names only; pass two hides every
+// unknown tool without hashing it, so the cost is parsing, twice.
+func BenchmarkCheckResponse10kUnknownTools(b *testing.B) {
+	tools := make([][]byte, 0, maxToolsPerPage)
+	for i := 0; i < maxToolsPerPage-1; i++ {
+		tools = append(tools, []byte(fmt.Sprintf(`{"name":"u%d"}`, i)))
+	}
+	tools = append(tools, echoV1)
+	d, err := gate.Digest(echoV1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	s := benchServer(map[string]catalog.ToolPolicy{"echo": servedPolicy(d)})
+	req := listMsg(listBody("", tools...))
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(req.McpResponse)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := s.CheckResponse(ctx, req)
+		if err != nil || res.GetMutated() == nil {
+			b.Fatalf("result %v, err %v", res, err)
+		}
+	}
+}
+
+// BenchmarkCheckResponseDuplicateDenied measures a page refused in pass one:
+// 100 approved tools with the first name repeated at the end, so the page is
+// denied after the name scan and nothing is hashed.
+func BenchmarkCheckResponseDuplicateDenied(b *testing.B) {
+	tools, policies := benchCatalog(b, 100)
+	page := append(append([][]byte{}, tools...), tools[0])
+	s := benchServer(policies)
+	req := listMsg(listBody("", page...))
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(req.McpResponse)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := s.CheckResponse(ctx, req)
+		if err != nil || res.GetError() == nil {
+			b.Fatalf("result %v, err %v", res, err)
+		}
+	}
+}
+
 // BenchmarkCheckRequest is the per-call cost on the hot path.
 func BenchmarkCheckRequest(b *testing.B) {
 	d, err := gate.Digest(echoV1)
 	if err != nil {
 		b.Fatal(err)
 	}
-	s := New(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d)}),
-		Config{Server: testServer, Logger: slog.New(slog.DiscardHandler)})
+	s := benchServer(map[string]catalog.ToolPolicy{"echo": servedPolicy(d)})
 	req := callReq("echo")
 	ctx := context.Background()
 
@@ -72,3 +132,6 @@ func BenchmarkCheckRequest(b *testing.B) {
 		}
 	}
 }
+
+// Compile-time use of the hook message types the benchmarks build.
+var _ *api.McpResponse = listMsg(nil)

@@ -8,28 +8,39 @@ import (
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
 )
 
-// cause is the class of reason a call was denied. Reasons go back to the
-// client, so they name the tool and the class and nothing else: never a
-// digest, a state or any catalog content.
+// cause is the class of reason a hook was denied. Reasons go back to the
+// client, so they name the tool (when it was read) and the class and nothing
+// else: never a digest, a state or any catalog content.
 type cause string
 
 const (
-	causeNotApproved cause = "not approved"
-	causeChanged     cause = "changed since approval"
-	causeUnverified  cause = "not yet verified"
-	causeUnavailable cause = "catalog unavailable"
+	causeNotApproved     cause = "not approved"
+	causeChanged         cause = "changed since approval"
+	causeUnverified      cause = "not yet verified"
+	causeUnavailable     cause = "catalog unavailable"
+	causeUnreadable      cause = "request could not be read"
+	causeWrongBackend    cause = "wrong backend"
+	causeUnauthenticated cause = "wrong or missing processor secret"
+	causeThrottled       cause = "too many concurrent hooks"
 )
 
 const (
 	reasonListUnavailable  = "tools/list denied: catalog unavailable"
 	reasonListUnverifiable = "tools/list denied: tool list could not be verified"
+	reasonListThrottled    = "tools/list denied: too many concurrent hooks"
 	reasonCallUnreadable   = "tools/call denied: request could not be read"
+	reasonCallThrottled    = "tools/call denied: too many concurrent hooks"
+
+	// methodHook names the method in a reason for a hook refused before its
+	// method mattered, so the reason never echoes a method string the caller
+	// chose.
+	methodHook = "hook"
 
 	// maxNameBytes caps a tool name in a log line or reason, so a hostile
 	// multi-megabyte name cannot bloat logs or responses.
 	maxNameBytes   = 256
 	truncationMark = "..."
-	// maxLoggedNames caps the hidden names listed in one log line.
+	// maxLoggedNames caps the names listed in one log line.
 	maxLoggedNames = 10
 	// maxErrBytes caps an error message in a log line.
 	maxErrBytes = 512
@@ -80,9 +91,16 @@ func truncate(s string, max int) string {
 	return s[:cut] + truncationMark
 }
 
-// callReason is the client-facing reason for a denied tools/call.
+// callReason is the client-facing reason for a tools/call denied after its
+// tool name was read.
 func callReason(name string, c cause) string {
 	return "tool " + quoteName(name) + ": " + string(c)
+}
+
+// deniedReason is the client-facing reason for a hook refused before its
+// payload was read: the method and the cause class, nothing else.
+func deniedReason(method string, c cause) string {
+	return method + " denied: " + string(c)
 }
 
 func passRequest() *api.McpRequestResult {

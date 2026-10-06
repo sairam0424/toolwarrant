@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
 	"github.com/sairam0424/toolwarrant/internal/gate"
@@ -162,9 +164,20 @@ func listBody(cursor string, tools ...[]byte) []byte {
 	return []byte(body + `}`)
 }
 
+// listMsg is a tools/list response hook as the gateway sends it for the
+// guarded route: exactly one service name, the server's.
+func listMsg(body []byte) *api.McpResponse {
+	return &api.McpResponse{Method: "tools/list", ServiceNames: []string{testServer}, McpResponse: body}
+}
+
 func list(t *testing.T, s *Server, body []byte) *api.McpResponseResult {
 	t.Helper()
-	res, err := s.CheckResponse(context.Background(), &api.McpResponse{Method: "tools/list", McpResponse: body})
+	return listVia(t, s, listMsg(body))
+}
+
+func listVia(t *testing.T, s *Server, resp *api.McpResponse) *api.McpResponseResult {
+	t.Helper()
+	res, err := s.CheckResponse(context.Background(), resp)
 	if err != nil {
 		t.Fatalf("CheckResponse returned a transport error: %v", err)
 	}
@@ -186,12 +199,24 @@ func call(t *testing.T, s *Server, req *api.McpRequest) *api.McpRequestResult {
 	return res
 }
 
+// callReq is a tools/call request hook for the guarded route.
 func callReq(name string) *api.McpRequest {
-	return &api.McpRequest{Method: "tools/call", McpRequest: []byte(`{"name":` + q(name) + `,"arguments":{"m":"hi"}}`)}
+	return rawCallReq(`{"name":` + q(name) + `,"arguments":{"m":"hi"}}`)
 }
 
 func rawCallReq(params string) *api.McpRequest {
-	return &api.McpRequest{Method: "tools/call", McpRequest: []byte(params)}
+	return &api.McpRequest{Method: "tools/call", ServiceNames: []string{testServer}, McpRequest: []byte(params)}
+}
+
+// secretMeta builds the metadata_context the gateway sends when the processor
+// entry in its configuration carries a toolwarrant_secret value.
+func secretMeta(t *testing.T, value any) *structpb.Struct {
+	t.Helper()
+	md, err := structpb.NewStruct(map[string]any{SecretMetadataKey: value})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	return md
 }
 
 // namesIn returns the tool names in a tools/list result, in order.
@@ -264,6 +289,22 @@ func requireCallDenied(t *testing.T, res *api.McpRequestResult, name string, wan
 	}
 	if !strings.Contains(e.GetReason(), quoteName(name)) {
 		t.Errorf("reason %q does not name the quoted tool %s", e.GetReason(), quoteName(name))
+	}
+	if !strings.Contains(e.GetReason(), string(want)) {
+		t.Errorf("reason %q does not carry the cause %q", e.GetReason(), want)
+	}
+}
+
+// requireRefused asserts a tools/call denial decided before the tool name was
+// read: the given code and a reason that carries only the cause class.
+func requireRefused(t *testing.T, res *api.McpRequestResult, code api.AuthorizationError_Code, want cause) {
+	t.Helper()
+	e := res.GetError()
+	if e == nil {
+		t.Fatalf("call was not denied: %v", res)
+	}
+	if e.GetCode() != code {
+		t.Fatalf("code = %v, want %v (reason %q)", e.GetCode(), code, e.GetReason())
 	}
 	if !strings.Contains(e.GetReason(), string(want)) {
 		t.Errorf("reason %q does not carry the cause %q", e.GetReason(), want)

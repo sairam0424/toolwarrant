@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -25,12 +26,19 @@ const serveStopTimeout = 20 * time.Second
 func startServer(t *testing.T, s *Server) (api.ExtMcpClient, func() error) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
+	return serveAndDial(t, s, lis, lis)
+}
+
+// serveAndDial runs s.Serve on lis and dials it through buf. The two differ
+// only when a test wraps the in-memory listener to report another address.
+func serveAndDial(t *testing.T, s *Server, lis net.Listener, buf *bufconn.Listener) (api.ExtMcpClient, func() error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx, lis) }()
 
 	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return buf.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		cancel()
@@ -58,6 +66,22 @@ func startServer(t *testing.T, s *Server) (api.ExtMcpClient, func() error) {
 	return api.NewExtMcpClient(conn), stop
 }
 
+// addrListener reports another address than the listener it wraps, so a test
+// can see how Serve treats an address without binding it.
+type addrListener struct {
+	net.Listener
+	addr net.Addr
+}
+
+func (l addrListener) Addr() net.Addr { return l.addr }
+
+// fakeAddr is a net.Addr of any network and text, for addresses the standard
+// library never produces.
+type fakeAddr struct{ network, text string }
+
+func (a fakeAddr) Network() string { return a.network }
+func (a fakeAddr) String() string  { return a.text }
+
 func TestServe_EndToEndOverGRPC(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
 	wipe := tool("wipe_database", "Danger.")
@@ -66,7 +90,7 @@ func TestServe_EndToEndOverGRPC(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
 	defer cancel()
 
-	res, err := client.CheckResponse(ctx, &api.McpResponse{Method: "tools/list", McpResponse: listBody("c1", echoV1, wipe)})
+	res, err := client.CheckResponse(ctx, listMsg(listBody("c1", echoV1, wipe)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +119,45 @@ func TestServe_EndToEndOverGRPC(t *testing.T) {
 	}
 }
 
+// D8: the shared secret travels in metadata_context and is checked on the
+// transport path exactly as in the unit tests.
+func TestServe_SharedSecretIsCheckedOverGRPC(t *testing.T) {
+	const secret = "s3cret"
+	d1 := mustDigest(t, echoV1)
+	s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}), func(c *Config) { c.Secret = secret })
+	client, _ := startServer(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
+	defer cancel()
+
+	withSecret := callReq("echo")
+	withSecret.MetadataContext = secretMeta(t, secret)
+	res, err := client.CheckRequest(ctx, withSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireAllowed(t, res)
+
+	res, err = client.CheckRequest(ctx, callReq("echo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireRefused(t, res, api.AuthorizationError_PERMISSION_DENIED, causeUnauthenticated)
+
+	page := listMsg(listBody("", echoV1))
+	page.MetadataContext = secretMeta(t, "wrong")
+	list, err := client.CheckResponse(ctx, page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := requireListDenied(t, list, api.AuthorizationError_PERMISSION_DENIED)
+	if !strings.Contains(e.GetReason(), string(causeUnauthenticated)) {
+		t.Errorf("reason = %q", e.GetReason())
+	}
+	if st := s.Stats(); st.Unauthenticated != 2 || st.CallsAllowed != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+}
+
 func TestServe_ManyConcurrentRPCs(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
 	s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
@@ -102,8 +165,10 @@ func TestServe_ManyConcurrentRPCs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
 	defer cancel()
 
+	// Twice the stream limit: the transport queues the surplus streams, so
+	// every call completes and none is throttled.
 	var wg sync.WaitGroup
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 2*maxConcurrentHooks; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -114,8 +179,8 @@ func TestServe_ManyConcurrentRPCs(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := s.Stats().CallsAllowed; got != 64 {
-		t.Errorf("CallsAllowed = %d, want 64", got)
+	if st := s.Stats(); st.CallsAllowed != 2*maxConcurrentHooks || st.Throttled != 0 {
+		t.Errorf("stats = %+v, want %d allowed and none throttled", st, 2*maxConcurrentHooks)
 	}
 }
 
@@ -126,10 +191,10 @@ func TestServe_AcceptsPagesBeyondGRPCsDefaultLimitButNotBeyondOurs(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
 	defer cancel()
 
-	// 6 MiB: over gRPC's 4 MiB default, under our 32 MiB. The junk tool is not in
+	// 6 MiB: over gRPC's 4 MiB default, under our 8 MiB. The junk tool is not in
 	// the catalog, so it is hidden and the page shrinks to the one approved tool.
 	junk := tool("junk", strings.Repeat("x", 6<<20))
-	res, err := client.CheckResponse(ctx, &api.McpResponse{Method: "tools/list", McpResponse: listBody("", junk, echoV1)})
+	res, err := client.CheckResponse(ctx, listMsg(listBody("", junk, echoV1)))
 	if err != nil {
 		t.Fatalf("a 6 MiB page must be accepted: %v", err)
 	}
@@ -137,9 +202,9 @@ func TestServe_AcceptsPagesBeyondGRPCsDefaultLimitButNotBeyondOurs(t *testing.T)
 		t.Fatalf("served %v", got)
 	}
 
-	// Just over 32 MiB is refused by the transport, which the gateway treats as
-	// a failed hook (fail closed), not as a passed one.
-	_, err = client.CheckResponse(ctx, &api.McpResponse{Method: "tools/list", McpResponse: make([]byte, maxRecvMsgSize+1024)})
+	// Just over the cap is refused by the transport, which the gateway treats
+	// as a failed hook (fail closed), not as a passed one.
+	_, err = client.CheckResponse(ctx, listMsg(make([]byte, maxRecvMsgSize+1024)))
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("oversized message: err = %v, want ResourceExhausted", err)
 	}
@@ -204,6 +269,93 @@ func TestServe_CancelledBeforeStartIsACleanStop(t *testing.T) {
 		}
 	case <-time.After(serveStopTimeout):
 		t.Fatal("Serve did not return")
+	}
+}
+
+// D8: a TCP listener that other hosts can reach is refused unless the operator
+// opted in, and opting in without a shared secret is called out in the log.
+func TestServe_RefusesAListenerReachableFromOtherHosts(t *testing.T) {
+	remote := &net.TCPAddr{IP: net.ParseIP("10.0.0.7"), Port: 9001}
+
+	t.Run("refused by default", func(t *testing.T) {
+		s, _ := newTestServer(newFakeSource(nil))
+		buf := bufconn.Listen(1 << 10)
+		defer func() { _ = buf.Close() }()
+		err := s.Serve(context.Background(), addrListener{Listener: buf, addr: remote})
+		if !errors.Is(err, errRemoteListener) {
+			t.Fatalf("Serve = %v, want errRemoteListener", err)
+		}
+		if !strings.Contains(err.Error(), `"10.0.0.7:9001"`) {
+			t.Errorf("the error should name the address: %v", err)
+		}
+	})
+
+	t.Run("allowed without a secret, with a warning", func(t *testing.T) {
+		s, logs := newTestServer(newFakeSource(nil), func(c *Config) { c.AllowRemoteListener = true })
+		buf := bufconn.Listen(1 << 10)
+		client, stop := serveAndDial(t, s, addrListener{Listener: buf, addr: remote}, buf)
+		ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
+		defer cancel()
+		if _, err := client.CheckRequest(ctx, &api.McpRequest{Method: "initialize"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := stop(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(logs.String(), "without a shared secret") {
+			t.Errorf("no warning about the unauthenticated remote listener:\n%s", logs.String())
+		}
+	})
+
+	t.Run("allowed with a secret, no warning", func(t *testing.T) {
+		s, logs := newTestServer(newFakeSource(nil), func(c *Config) {
+			c.AllowRemoteListener = true
+			c.Secret = "s3cret"
+		})
+		buf := bufconn.Listen(1 << 10)
+		_, stop := serveAndDial(t, s, addrListener{Listener: buf, addr: remote}, buf)
+		if err := stop(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(logs.String(), "without a shared secret") {
+			t.Errorf("warned although a secret is configured:\n%s", logs.String())
+		}
+	})
+}
+
+func TestIsLocalAddr(t *testing.T) {
+	cases := []struct {
+		name    string
+		addr    net.Addr
+		local   bool
+		wantErr bool
+	}{
+		{"ipv4 loopback", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}, true, false},
+		{"ipv6 loopback", &net.TCPAddr{IP: net.IPv6loopback, Port: 1}, true, false},
+		{"private address", &net.TCPAddr{IP: net.IPv4(10, 0, 0, 7), Port: 1}, false, false},
+		{"all ipv4 interfaces", &net.TCPAddr{IP: net.IPv4zero, Port: 1}, false, false},
+		{"all ipv6 interfaces", &net.TCPAddr{IP: net.IPv6unspecified, Port: 1}, false, false},
+		{"tcp address without an ip", &net.TCPAddr{Port: 1}, false, false},
+		{"nil tcp address", (*net.TCPAddr)(nil), false, true},
+		{"unix socket", &net.UnixAddr{Name: "/tmp/p.sock", Net: "unix"}, true, false},
+		{"in-memory listener", bufconn.Listen(1).Addr(), true, false},
+		{"no address", nil, false, true},
+		{"tcp text with a host name", fakeAddr{"tcp", "example.com:9001"}, false, true},
+		{"tcp text that is not host:port", fakeAddr{"tcp", "nonsense"}, false, true},
+		{"tcp4 text loopback", fakeAddr{"tcp4", "127.0.0.1:9001"}, true, false},
+		{"tcp text ipv6 loopback", fakeAddr{"tcp", "[::1]:9001"}, true, false},
+		{"tcp text private", fakeAddr{"tcp", "10.0.0.7:9001"}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			local, err := isLocalAddr(tc.addr)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if local != tc.local {
+				t.Errorf("local = %v, want %v", local, tc.local)
+			}
+		})
 	}
 }
 

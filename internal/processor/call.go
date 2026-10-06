@@ -15,38 +15,71 @@ import (
 // passes every other method through.
 //
 // The hook carries only the tool's name, not its definition, so "current" is
-// judged from live evidence: the digest the gateway last listed for the tool
+// judged from live evidence: what the gateway last listed for the tool
 // (observed) and the digest the latest crawl found upstream (LastSeen). A call
 // is allowed only when the tool is approved and served, at least one piece of
-// evidence exists, and every piece of evidence equals the approved digest.
+// evidence exists, and no piece of evidence contradicts the approved digest;
+// see judgeCall for the exact rule.
 func (s *Server) CheckRequest(ctx context.Context, req *api.McpRequest) (*api.McpRequestResult, error) {
-	if req.GetMethod() != methodToolsCall {
+	hooked := req.GetMethod() == methodToolsCall
+	if d := s.admit(ctx, req.GetMetadataContext(), req.GetServiceNames(), hooked); d != nil {
+		return s.refuseCall(ctx, hooked, d), nil
+	}
+	if !hooked {
 		return passRequest(), nil
 	}
+	release, ok := s.acquire()
+	if !ok {
+		return s.denyCall(ctx, api.AuthorizationError_RESOURCE_EXHAUSTED, "", causeThrottled, errThrottled), nil
+	}
+	defer release()
 	name, err := callName(req.GetMcpRequest())
 	if err != nil {
-		s.stats.callsDenied.Add(1)
-		s.log.InfoContext(ctx, "tools/call denied", "server", s.server,
-			"cause", "unreadable request", "err", quoteErr(err))
-		return denyRequest(api.AuthorizationError_INVALID, reasonCallUnreadable), nil
+		return s.denyCall(ctx, api.AuthorizationError_INVALID, "", causeUnreadable, err), nil
 	}
-	snap, err := s.current(ctx)
+	cur, err := s.current(ctx)
 	if err != nil {
 		s.noteSourceError(ctx, methodToolsCall, err)
-		s.stats.callsDenied.Add(1)
-		return denyRequest(api.AuthorizationError_PERMISSION_DENIED, callReason(name, causeUnavailable)), nil
+		return s.denyCall(ctx, api.AuthorizationError_PERMISSION_DENIED, name, causeUnavailable, nil), nil
 	}
-	if c, ok := s.judgeCall(snap, name); !ok {
-		s.stats.callsDenied.Add(1)
-		s.log.InfoContext(ctx, "tools/call denied", "server", s.server,
-			"tool", quoteName(name), "cause", string(c))
-		return denyRequest(api.AuthorizationError_PERMISSION_DENIED, callReason(name, c)), nil
+	if c, ok := s.judgeCall(cur.snap, name); !ok {
+		return s.denyCall(ctx, api.AuthorizationError_PERMISSION_DENIED, name, c, nil), nil
 	}
 	s.stats.callsAllowed.Add(1)
 	if s.log.Enabled(ctx, slog.LevelDebug) { // the hot path: skip the quoting when nobody listens
 		s.log.DebugContext(ctx, "tools/call allowed", "server", s.server, "tool", quoteName(name))
 	}
 	return passRequest(), nil
+}
+
+// refuseCall turns an admission denial into a result. For tools/call it is a
+// counted denial; for any other method the hook is refused without touching
+// the call counters, because it was never about a call.
+func (s *Server) refuseCall(ctx context.Context, hooked bool, d *denial) *api.McpRequestResult {
+	if hooked {
+		return s.denyCall(ctx, d.code, "", d.cause, nil)
+	}
+	s.log.InfoContext(ctx, "hook denied", "server", s.server, "cause", string(d.cause))
+	return denyRequest(d.code, deniedReason(methodHook, d.cause))
+}
+
+// denyCall counts and logs a refused tools/call and builds its result. name is
+// "" when the request was refused before its tool name could be read; the
+// reason then carries only the cause class.
+func (s *Server) denyCall(ctx context.Context, code api.AuthorizationError_Code, name string, c cause, err error) *api.McpRequestResult {
+	s.stats.callsDenied.Add(1)
+	attrs := []any{"server", s.server, "cause", string(c)}
+	if name != "" {
+		attrs = append(attrs, "tool", quoteName(name))
+	}
+	if err != nil {
+		attrs = append(attrs, "err", quoteErr(err))
+	}
+	s.log.InfoContext(ctx, "tools/call denied", attrs...)
+	if name == "" {
+		return denyRequest(code, deniedReason(methodToolsCall, c))
+	}
+	return denyRequest(code, callReason(name, c))
 }
 
 // callName extracts the tool name from tools/call params. The params are first
@@ -65,8 +98,20 @@ func callName(params []byte) (string, error) {
 	return name, nil
 }
 
-// judgeCall applies the call policy to one tool name and returns the cause
-// class when the call must be denied.
+// judgeCall applies the call rule to one tool name and returns the cause class
+// when the call must be denied. The evidence is what the gateway last listed
+// for the tool (observed) and what the latest crawl saw (LastSeen):
+//
+//   - not in the catalog, or in a state that can never serve: not approved;
+//   - any present evidence other than the approved digest (including the
+//     conflict marker a bad page leaves behind): changed since approval;
+//   - a LastSeen that is not a digest, such as the catalog's "unusable"
+//     marker: the crawl could not verify the live definition;
+//   - no evidence at all: not yet verified.
+//
+// A LastSeen of "" (absent at the last crawl) is not a contradiction once the
+// gateway itself has listed the approved definition, so observed alone allows
+// the call then.
 func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	policy, inCatalog := snap.Tools[name]
 	// snap.Serves is the single definition of "may be served": asking it with
@@ -76,16 +121,37 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	if !inCatalog || !snap.Serves(name, policy.Approved) {
 		return causeNotApproved, false
 	}
-	if seen, listed := s.observedDigest(name); listed && seen != policy.Approved {
+	observed, listed := s.observedDigest(name)
+	if listed && observed != policy.Approved {
 		return causeChanged, false
 	}
 	switch {
+	case policy.LastSeen == policy.Approved:
+		return "", true
 	case policy.LastSeen == "":
-		// Absent at the last crawl, or never crawled: nothing says the upstream
-		// still serves the approved definition.
+		if listed {
+			return "", true
+		}
 		return causeUnverified, false
-	case policy.LastSeen != policy.Approved:
+	case !isDigest(policy.LastSeen):
+		return causeUnverified, false
+	default:
 		return causeChanged, false
 	}
-	return "", true
+}
+
+// isDigest reports whether s has the shape of a gate digest: SHA-256 as 64
+// lowercase hex characters. Anything else stored in LastSeen is a marker the
+// catalog uses to say the live definition could not be verified.
+func isDigest(s string) bool {
+	if len(s) != digestHexLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

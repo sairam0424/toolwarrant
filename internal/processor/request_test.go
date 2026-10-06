@@ -69,23 +69,35 @@ func TestCheckRequest_DeniesWhenTheLatestCrawlDiffersEvenIfNeverListed(t *testin
 	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
 }
 
-func TestCheckRequest_AbsentOrUncrawledToolsAreNotYetVerified(t *testing.T) {
+// D9: absent at the last crawl (LastSeen "") is not a contradiction once the
+// gateway itself has listed the approved definition. Before D9 the second case
+// here was denied as "not yet verified".
+func TestCheckRequest_AbsentOrUncrawledToolsNeedOnePieceOfEvidence(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
 
-	t.Run("cold start: approved but never crawled", func(t *testing.T) {
+	t.Run("cold start: approved but never crawled and never listed", func(t *testing.T) {
 		s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{
 			"echo": policy(lifecycle.Enabled, d1, "")}))
 		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeUnverified)
 	})
 
-	t.Run("absent at the last crawl, even though the gateway once listed it", func(t *testing.T) {
+	t.Run("absent at the last crawl, but the gateway listed the approved definition", func(t *testing.T) {
 		src := newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)})
 		s, _ := newTestServer(src)
 		servedNames(t, list(t, s, listBody("", echoV1)))
 		requireAllowed(t, call(t, s, callReq("echo")))
 
 		src.publish(map[string]catalog.ToolPolicy{"echo": policy(lifecycle.Enabled, d1, "")})
-		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeUnverified)
+		requireAllowed(t, call(t, s, callReq("echo")))
+	})
+
+	t.Run("absent at the last crawl and the gateway listed a changed definition", func(t *testing.T) {
+		s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{
+			"echo": policy(lifecycle.Enabled, d1, "")}))
+		if got := servedNames(t, list(t, s, listBody("", echoV2))); len(got) != 0 {
+			t.Fatalf("drifted tool was served: %v", got)
+		}
+		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
 	})
 }
 
@@ -153,8 +165,9 @@ func TestCheckRequest_MalformedParamsAreDenied(t *testing.T) {
 	}
 
 	s, _ := newTestServer(src)
-	if res := call(t, s, &api.McpRequest{Method: "tools/call"}); res.GetError() == nil {
-		t.Error("a tools/call with no params must be denied")
+	noParams := &api.McpRequest{Method: "tools/call", ServiceNames: []string{testServer}}
+	if res := call(t, s, noParams); res.GetError() == nil || res.GetError().GetReason() != reasonCallUnreadable {
+		t.Errorf("a tools/call with no params must be denied as unreadable: %v", res)
 	}
 	padded := `{"name":"echo","arguments":{"pad":"` + strings.Repeat("x", maxPayloadBytes) + `"}}`
 	if res := call(t, s, rawCallReq(padded)); res.GetError() == nil {

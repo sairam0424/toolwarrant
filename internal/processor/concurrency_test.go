@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
@@ -56,7 +57,7 @@ func TestConcurrency_HooksRaceWithCatalogUpdates(t *testing.T) {
 			ctx := context.Background()
 			live := [][]byte{echoV1, echoV2}
 			for i := 0; i < iterations; i++ {
-				res, err := s.CheckResponse(ctx, &api.McpResponse{Method: "tools/list", McpResponse: listBody("", live[(w+i)%2])})
+				res, err := s.CheckResponse(ctx, listMsg(listBody("", live[(w+i)%2])))
 				if err != nil || res.GetPass() != nil || (res.GetMutated() == nil && res.GetError() == nil) {
 					t.Errorf("list: result %v, err %v", res, err)
 					return
@@ -80,6 +81,9 @@ func TestConcurrency_HooksRaceWithCatalogUpdates(t *testing.T) {
 	if st.CallsAllowed+st.CallsDenied != workers*iterations {
 		t.Errorf("calls accounted for = %d, want %d", st.CallsAllowed+st.CallsDenied, workers*iterations)
 	}
+	if st.WrongBackend != 0 || st.Throttled != 0 {
+		t.Errorf("hooks for the right backend under the slot limit were refused: %+v", st)
+	}
 	if n := s.trackedCount(); n > 4 {
 		t.Errorf("tracked %d digests, over the bound of 4", n)
 	}
@@ -101,7 +105,7 @@ func TestConcurrency_ABurstAfterAChangeReloadsOnce(t *testing.T) {
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	for i := 0; i < 32; i++ {
+	for i := 0; i < maxConcurrentHooks; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -114,6 +118,82 @@ func TestConcurrency_ABurstAfterAChangeReloadsOnce(t *testing.T) {
 	close(start)
 	wg.Wait()
 	if _, loads := src.calls(); loads != 1 {
-		t.Fatalf("32 concurrent cold-start hooks made %d snapshot loads, want 1", loads)
+		t.Fatalf("%d concurrent cold-start hooks made %d snapshot loads, want 1", maxConcurrentHooks, loads)
+	}
+}
+
+// blockingSource holds every Generation call until released, so hooks pile up
+// inside the processor while holding their concurrency slots.
+type blockingSource struct {
+	entered chan struct{}
+	release chan struct{}
+	snap    catalog.Snapshot
+}
+
+func (b *blockingSource) Generation(ctx context.Context) (int64, error) {
+	b.entered <- struct{}{}
+	select {
+	case <-b.release:
+		return 1, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func (b *blockingSource) Snapshot(context.Context, string) (catalog.Snapshot, error) {
+	return b.snap, nil
+}
+
+// D6: once every slot is taken, further hooks are denied at once with
+// RESOURCE_EXHAUSTED instead of queueing; the gateway fails closed on the
+// denial, and nothing piles up in memory. The slots are reusable afterwards.
+func TestConcurrency_HooksBeyondTheSlotLimitAreDeniedNotQueued(t *testing.T) {
+	d1 := mustDigest(t, echoV1)
+	src := &blockingSource{
+		entered: make(chan struct{}, maxConcurrentHooks+1),
+		release: make(chan struct{}),
+		snap:    snapshotOf(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}),
+	}
+	s, _ := newTestServer(src)
+
+	results := make(chan *api.McpRequestResult, maxConcurrentHooks)
+	for i := 0; i < maxConcurrentHooks; i++ {
+		go func() {
+			res, err := s.CheckRequest(context.Background(), callReq("echo"))
+			if err != nil {
+				t.Errorf("CheckRequest: %v", err)
+			}
+			results <- res
+		}()
+	}
+	for i := 0; i < maxConcurrentHooks; i++ {
+		<-src.entered // every slot is now held by a hook waiting on the source
+	}
+
+	start := time.Now()
+	extraCall := call(t, s, callReq("echo"))
+	extraList := list(t, s, listBody("", echoV1))
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("the surplus hooks waited %v; they must be denied, not queued", elapsed)
+	}
+	requireRefused(t, extraCall, api.AuthorizationError_RESOURCE_EXHAUSTED, causeThrottled)
+	if got := extraCall.GetError().GetReason(); got != reasonCallThrottled {
+		t.Errorf("call reason = %q, want %q", got, reasonCallThrottled)
+	}
+	if e := requireListDenied(t, extraList, api.AuthorizationError_RESOURCE_EXHAUSTED); e.GetReason() != reasonListThrottled {
+		t.Errorf("list reason = %q, want %q", e.GetReason(), reasonListThrottled)
+	}
+	if st := s.Stats(); st.Throttled != 2 || st.CallsDenied != 1 || st.ListsDenied != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+
+	close(src.release)
+	for i := 0; i < maxConcurrentHooks; i++ {
+		requireAllowed(t, <-results)
+	}
+	// The slots are free again.
+	requireAllowed(t, call(t, s, callReq("echo")))
+	if st := s.Stats(); st.Throttled != 2 || st.CallsAllowed != maxConcurrentHooks+1 {
+		t.Errorf("stats = %+v", st)
 	}
 }

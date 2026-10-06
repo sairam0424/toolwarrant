@@ -1,32 +1,85 @@
 package processor
 
-import "github.com/sairam0424/toolwarrant/internal/catalog"
+import (
+	"time"
 
-// observe remembers the digest of the definition the upstream served for a
-// catalog tool in a tools/list response. It reports false when the table is
-// full and the name is new; updating a name that is already tracked always
-// succeeds because it does not grow the table.
+	"github.com/sairam0424/toolwarrant/internal/catalog"
+)
+
+// observedConflict is stored instead of a digest when a page shows the
+// upstream serving something under a catalog name that cannot be the approved
+// definition: the name twice, a definition too large to be approved, or one
+// too broken to hash. It is not 64 hex characters, so it never equals an
+// approved digest, and judgeCall denies the tool until a clean page replaces
+// it with the digest the upstream really serves.
+const observedConflict = "conflict"
+
+// observation is what the processor remembers about one catalog tool from
+// the gateway's own tools/list traffic.
+type observation struct {
+	digest string // a digest, or observedConflict
+	seenAt time.Time
+}
+
+// observe remembers what the upstream served for a catalog tool in a
+// tools/list response. gen is the generation of the snapshot that said the
+// name is a catalog tool. It reports false when the table is full and the
+// name is new; updating a tracked name always succeeds because it does not
+// grow the table.
 //
-// Callers must only pass names that are in the current snapshot. That, plus
-// pruneObserved, is what keeps the table bounded by the catalog rather than
-// by what a hostile upstream chooses to send.
-func (s *Server) observe(name, digest string) bool {
+// Only names in the current snapshot are ever written. That, plus
+// pruneObserved, keeps the table bounded by the catalog rather than by what a
+// hostile upstream chooses to send.
+func (s *Server) observe(name, digest string, gen int64) bool {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
+	if !s.stillListed(name, gen) {
+		return true // dropped on purpose: the catalog no longer has the tool
+	}
 	if _, tracked := s.observed[name]; !tracked && len(s.observed) >= s.maxTracked {
 		return false
 	}
-	s.observed[name] = digest
+	s.observed[name] = observation{digest: digest, seenAt: s.now()}
 	return true
 }
 
-// observedDigest returns the digest from the most recent tools/list that
-// included the named tool, if any list did since the processor started.
+// stillListed reports whether name is a tool of the snapshot the processor
+// currently serves from. A hook that read generation gen and then lost a race
+// with a reload may be about to record a name the newer snapshot dropped;
+// pruneObserved has already run for that snapshot, so the entry would outlive
+// it and wrongly deny a tool re-created under the name. When gen is still
+// current the caller established membership against this very snapshot and
+// no lookup is needed. When it moved, the name is re-checked against the
+// newer snapshot rather than dropped outright: the digest describes what the
+// upstream serves now, which is newer evidence than anything in the table.
+// Must be called with obsMu held, so it is ordered against pruneObserved.
+func (s *Server) stillListed(name string, gen int64) bool {
+	c := s.cache.Load()
+	if c == nil {
+		return false
+	}
+	if c.generation == gen {
+		return true
+	}
+	_, ok := c.snap.Tools[name]
+	return ok
+}
+
+// observedDigest returns what the most recent tools/list that included the
+// named tool showed for it: a digest or observedConflict. Evidence older than
+// MaxEvidenceAge is not returned, because a digest the gateway listed long ago
+// says nothing about what the upstream serves now.
 func (s *Server) observedDigest(name string) (string, bool) {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
-	d, ok := s.observed[name]
-	return d, ok
+	o, ok := s.observed[name]
+	if !ok {
+		return "", false
+	}
+	if s.maxAge > 0 && s.now().Sub(o.seenAt) > s.maxAge {
+		return "", false
+	}
+	return o.digest, true
 }
 
 // pruneObserved forgets tools that are no longer in the catalog, so a tool
@@ -42,8 +95,8 @@ func (s *Server) pruneObserved(tools map[string]catalog.ToolPolicy) {
 	}
 }
 
-// trackedCount is the number of remembered digests; tests use it to check the
-// MaxTracked bound.
+// trackedCount is the number of remembered observations; tests use it to
+// check the MaxTracked bound.
 func (s *Server) trackedCount() int {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
