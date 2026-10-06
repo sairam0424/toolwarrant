@@ -214,8 +214,48 @@ func TestListToolsDefaultsAndCustomLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.maxPages != 100 || cfg.maxTools != 10000 || cfg.maxMessage != 8<<20 ||
-		cfg.clientName != "toolwarrant" || cfg.clientVersion == "" {
-		t.Errorf("defaults = %+v", cfg)
+		cfg.maxToolBytes != 256<<10 || cfg.maxTotal != 32<<20 || cfg.timeout != 5*time.Minute {
+		t.Errorf("default limits = %+v", cfg)
+	}
+	if cfg.clientName != defaultClientName || cfg.clientVersion != defaultClientVersion || cfg.clientName == "" || cfg.clientVersion == "" {
+		t.Errorf("default clientInfo = %q %q", cfg.clientName, cfg.clientVersion)
+	}
+	opt := testOptions()
+	opt.MaxPages, opt.MaxTools, opt.MaxMessageBytes, opt.MaxToolBytes, opt.MaxTotalBytes = 1, 2, 3, 4, 5
+	opt.Timeout, opt.ClientName, opt.ClientVersion = 6*time.Second, "n", "v"
+	cfg, err = newConfig("http://127.0.0.1:1/mcp", opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.maxPages != 1 || cfg.maxTools != 2 || cfg.maxMessage != 3 || cfg.maxToolBytes != 4 || cfg.maxTotal != 5 ||
+		cfg.timeout != 6*time.Second || cfg.clientName != "n" || cfg.clientVersion != "v" {
+		t.Errorf("explicit values not honoured: %+v", cfg)
+	}
+}
+
+// TestDefaultClientInfoIsNeutral: the crawler must not announce itself. An
+// upstream that recognises toolwarrant can show it the approved definition and
+// show the gateway another one, so the default clientInfo removes the easiest
+// tell; the package comment lists the tells that remain.
+func TestDefaultClientInfoIsNeutral(t *testing.T) {
+	f := newFake(t, modeJSON, pagesOf(5, nTools(1)))
+	if _, err := ListTools(context.Background(), f.url(), testOptions()); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var msg struct {
+		Params struct {
+			ClientInfo struct{ Name, Version string } `json:"clientInfo"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(f.requests()[0].Body), &msg); err != nil {
+		t.Fatalf("initialize body: %v", err)
+	}
+	info := msg.Params.ClientInfo
+	if info.Name != defaultClientName || info.Version != defaultClientVersion {
+		t.Errorf("clientInfo on the wire = %+v, want the defaults", info)
+	}
+	if lower := strings.ToLower(info.Name + info.Version); strings.Contains(lower, "warrant") || strings.Contains(lower, "crawl") {
+		t.Errorf("default clientInfo %+v announces the crawler", info)
 	}
 }
 

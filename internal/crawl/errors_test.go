@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rpcErrorReply answers every POST whose method matches with a JSON-RPC error.
@@ -153,13 +154,7 @@ func TestTooManyPages(t *testing.T) {
 	if !errors.Is(err, ErrTooManyPages) {
 		t.Fatalf("err = %v, want ErrTooManyPages", err)
 	}
-	lists := 0
-	for _, r := range f.requests() {
-		if r.RPCMethod == methodToolsList {
-			lists++
-		}
-	}
-	if lists != 3 {
+	if lists := countLists(f); lists != 3 {
 		t.Errorf("made %d tools/list requests, want exactly MaxPages=3", lists)
 	}
 }
@@ -194,46 +189,18 @@ func TestMaxToolsBoundary(t *testing.T) {
 	}
 }
 
-func TestDuplicateToolNames(t *testing.T) {
-	cases := map[string]func(int, string) string{
-		"within a page": func(int, string) string {
-			return fmt.Sprintf(`{"tools":[%s,%s]}`, toolJSON(1), toolJSON(1))
-		},
-		"across pages": func(call int, _ string) string {
-			if call == 1 {
-				return fmt.Sprintf(`{"tools":[%s,%s],"nextCursor":"c1"}`, toolJSON(0), toolJSON(1))
-			}
-			return fmt.Sprintf(`{"tools":[%s]}`, toolJSON(1))
-		},
-	}
-	for name, page := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newFake(t, modeJSON, page)
-			_, err := ListTools(context.Background(), f.url(), testOptions())
-			if !errors.Is(err, ErrDuplicateTool) {
-				t.Fatalf("err = %v, want ErrDuplicateTool", err)
-			}
-		})
-	}
-}
-
-func TestMalformedToolsPages(t *testing.T) {
-	longName := strings.Repeat("n", maxToolNameBytes+1)
+// TestMalformedListPages lists what makes a whole tools/list page, and so the
+// crawl, malformed. One broken tool is not on this list any more: it is
+// reported in Result.Unusable and the crawl completes (vet_test.go). Invalid
+// UTF-8 stays here wherever it sits, because JSON is defined over UTF-8 and the
+// message is the unit the grammar defines; see the package comment.
+func TestMalformedListPages(t *testing.T) {
 	longCursor := strings.Repeat("c", maxCursorBytes+1)
 	cases := map[string]string{
-		"tool is a string":           `{"tools":["str"]}`,
-		"tool is a number":           `{"tools":[1]}`,
-		"tool is null":               `{"tools":[null]}`,
-		"tool is an array":           `{"tools":[[]]}`,
-		"tool without name":          `{"tools":[{"description":"x"}]}`,
-		"name is a number":           `{"tools":[{"name":5}]}`,
-		"name is null":               `{"tools":[{"name":null}]}`,
-		"name is empty":              `{"tools":[{"name":""}]}`,
-		"name key in wrong case":     `{"tools":[{"Name":"x"}]}`,
-		"name too long":              `{"tools":[{"name":"` + longName + `"}]}`,
-		"duplicate key in tool":      `{"tools":[{"name":"a","name":"b"}]}`,
 		"duplicate key in result":    `{"tools":[],"tools":[]}`,
-		"invalid UTF-8 in tool":      "{\"tools\":[{\"name\":\"a\",\"description\":\"\xff\"}]}",
+		"invalid UTF-8 in a tool":    "{\"tools\":[{\"name\":\"a\",\"description\":\"\xff\"}]}",
+		"invalid UTF-8 in a key":     "{\"tools\":[{\"name\":\"a\",\"x\xff\":1}]}",
+		"encoded surrogate in a key": "{\"tools\":[{\"name\":\"a\",\"x\xed\xa0\x80\":1}]}",
 		"tools is an object":         `{"tools":{}}`,
 		"tools is null":              `{"tools":null}`,
 		"tools missing":              `{}`,
@@ -241,7 +208,7 @@ func TestMalformedToolsPages(t *testing.T) {
 		"nextCursor too long":        `{"tools":[],"nextCursor":"` + longCursor + `"}`,
 		"result is an array":         `[]`,
 		"result has trailing data":   `{"tools":[]} {}`,
-		"truncated tool":             `{"tools":[{"name":"a"`,
+		"truncated result":           `{"tools":[{"name":"a"`,
 		"non-string key in object":   `{1:2}`,
 		"bare scalar as result":      `42`,
 		"tools array holds garbage":  `{"tools":[{"name":"a"} x]}`,
@@ -250,9 +217,12 @@ func TestMalformedToolsPages(t *testing.T) {
 	for name, result := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t, modeJSON, func(int, string) string { return result })
-			_, err := ListTools(context.Background(), f.url(), testOptions())
+			res, err := ListTools(context.Background(), f.url(), testOptions())
 			if !errors.Is(err, ErrMalformed) {
 				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+			if len(res.Tools) != 0 || len(res.Unusable) != 0 {
+				t.Errorf("a failed crawl returned a result: %+v", res)
 			}
 		})
 	}
@@ -371,25 +341,6 @@ func TestBadResponseFraming(t *testing.T) {
 	}
 }
 
-func TestResponseLargerThanMessageCap(t *testing.T) {
-	big := fmt.Sprintf(`{"name":"big","description":%q}`, strings.Repeat("x", 5000))
-	for name, mode := range map[string]replyMode{"json": modeJSON, "sse": modeSSE} {
-		t.Run(name, func(t *testing.T) {
-			f := newFake(t, mode, func(int, string) string { return `{"tools":[` + big + `]}` })
-			opt := testOptions()
-			opt.MaxMessageBytes = 1024
-			_, err := ListTools(context.Background(), f.url(), opt)
-			if !errors.Is(err, ErrMalformed) {
-				t.Fatalf("err = %v, want ErrMalformed", err)
-			}
-			opt.MaxMessageBytes = 64 << 10
-			if _, err := ListTools(context.Background(), f.url(), opt); err != nil {
-				t.Fatalf("under the cap: %v", err)
-			}
-		})
-	}
-}
-
 func TestInvalidOptions(t *testing.T) {
 	ok := testOptions()
 	neg := func(mut func(*Options)) Options {
@@ -401,15 +352,18 @@ func TestInvalidOptions(t *testing.T) {
 		endpoint string
 		opt      Options
 	}{
-		"no client":         {"http://127.0.0.1:1/", Options{}},
-		"empty endpoint":    {"", ok},
-		"ftp endpoint":      {"ftp://example.com/", ok},
-		"no host":           {"http:///path", ok},
-		"relative endpoint": {"/mcp", ok},
-		"unparsable":        {"http://[::1", ok},
-		"negative pages":    {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxPages = -1 })},
-		"negative tools":    {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxTools = -1 })},
-		"negative message":  {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxMessageBytes = -1 })},
+		"no client":            {"http://127.0.0.1:1/", Options{}},
+		"empty endpoint":       {"", ok},
+		"ftp endpoint":         {"ftp://example.com/", ok},
+		"no host":              {"http:///path", ok},
+		"relative endpoint":    {"/mcp", ok},
+		"unparsable":           {"http://[::1", ok},
+		"negative pages":       {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxPages = -1 })},
+		"negative tools":       {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxTools = -1 })},
+		"negative message":     {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxMessageBytes = -1 })},
+		"negative tool bytes":  {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxToolBytes = -1 })},
+		"negative total bytes": {"http://127.0.0.1:1/", neg(func(o *Options) { o.MaxTotalBytes = -1 })},
+		"negative timeout":     {"http://127.0.0.1:1/", neg(func(o *Options) { o.Timeout = -time.Second })},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -1,32 +1,35 @@
 package crawl
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
-// The crawler must refuse the same ambiguous definitions as the digest and the
-// processor, so the catalog never stores a tool the gateway would judge
-// differently.
-func TestParseToolName_RejectsAmbiguousKeys(t *testing.T) {
+// Top-level key ambiguity is the differential the processor and the gate refuse
+// (Go keeps the last duplicate key and matches "name" case-insensitively; other
+// parsers do not). The crawler must classify such tools as unusable so that the
+// catalog never stores a definition the gateway would read differently. These
+// cases were covered by an earlier test that the D3 rewrite replaced; they are
+// kept explicit here so the protection cannot be lost silently.
+func TestVet_TopLevelAmbiguousKeysAreUnusable(t *testing.T) {
 	cases := map[string]string{
-		"duplicate description": `{"name":"x","description":"evil","description":"safe"}`,
-		"duplicate name":        `{"name":"a","name":"b"}`,
-		"case-variant name":     `{"name":"a","Name":"b"}`,
-		"upper-case name only":  `{"NAME":"a"}`,
+		"duplicate top-level key":    `{"name":"x","description":"evil","description":"safe"}`,
+		"duplicate name":             `{"name":"a","name":"b"}`,
+		"case-variant name":          `{"name":"a","Name":"b"}`,
+		"upper-case name only":       `{"NAME":"a"}`,
+		"escaped duplicate spelling": `{"name":"a","name":"b"}`,
 	}
 	for label, raw := range cases {
 		t.Run(label, func(t *testing.T) {
-			if _, err := parseToolName([]byte(raw)); !errors.Is(err, ErrMalformed) {
-				t.Fatalf("parseToolName(%s) error = %v, want ErrMalformed", raw, err)
+			name, reason, _ := vetTool([]byte(raw), 1<<20)
+			if reason == "" {
+				t.Fatalf("vetTool(%s) accepted an ambiguous definition (name %q)", raw, name)
 			}
 		})
 	}
 }
 
-func TestParseToolName_AcceptsOrdinaryTools(t *testing.T) {
-	name, err := parseToolName([]byte(`{"name":"echo","inputSchema":{"properties":{"name":{},"Name":{}}}}`))
-	if err != nil || name != "echo" {
-		t.Fatalf("parseToolName = %q, %v", name, err)
+// Nested property names that differ only by case are legitimate schema content.
+func TestVet_NestedCaseVariantNamesAreFine(t *testing.T) {
+	name, reason, detail := vetTool([]byte(`{"name":"echo","inputSchema":{"properties":{"name":{},"Name":{}}}}`), 1<<20)
+	if reason != "" || name != "echo" {
+		t.Fatalf("vetTool rejected a valid schema: name=%q reason=%q detail=%q", name, reason, detail)
 	}
 }

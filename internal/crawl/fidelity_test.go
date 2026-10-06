@@ -12,9 +12,12 @@ import (
 )
 
 // fidelityCase is a tool object the fake server sends byte for byte, with the
-// RFC 8785 canonical form (minus the volatile _meta member) written out by
-// hand. The hand-written form is the independent oracle: it does not pass
-// through gate or the JCS library.
+// RFC 8785 canonical form written out by hand. The hand-written form is the
+// independent oracle: it does not pass through gate or the JCS library. The
+// cases carry no _meta member on purpose: whether the digest covers _meta is
+// gate's decision (D1 makes it part of the digest), and this oracle must not
+// depend on it either way. Escaped spellings in the sent form are built with
+// jsonEscape so that the source cannot be normalised into the plain spelling.
 type fidelityCase struct {
 	name      string
 	sent      string
@@ -22,13 +25,16 @@ type fidelityCase struct {
 }
 
 func fidelityCases() []fidelityCase {
+	eAcute, aRing, oDiaeresis := jsonEscape(0xe9), jsonEscape(0xc5), jsonEscape(0xf6)
+	grin := jsonEscape(0xd83d) + jsonEscape(0xde00) // U+1F600 as a surrogate pair
+	lineSep := string(rune(lineSeparator))
 	return []fidelityCase{
 		{
 			name: "unusual key order, unknown field, escaped unicode, 1e2, 1e19, whitespace",
-			sent: `{ "name" : "zeta\u00e9" ,` + "\n\t" +
+			sent: `{ "name" : "zeta` + eAcute + `" ,` + "\n\t" +
 				`"inputSchema":{"type":"object","properties":{"n":{"type":"number","default":1e2,"maximum":10000000000000000000}}} ,` + "\n" +
-				` "x-unknown" : [ 1 , 2.50 , true , null ] , "_meta":{"t":1},` +
-				`"description":"caf\u00e9 \ud83d\ude00 <tag>" , "annotations":{"readOnlyHint":true} }`,
+				` "x-unknown" : [ 1 , 2.50 , true , null ] ,` +
+				`"description":"caf` + eAcute + ` ` + grin + ` <tag>" , "annotations":{"readOnlyHint":true} }`,
 			canonical: `{"annotations":{"readOnlyHint":true},"description":"café 😀 <tag>",` +
 				`"inputSchema":{"properties":{"n":{"default":100,"maximum":10000000000000000000,"type":"number"}},"type":"object"},` +
 				`"name":"zetaé","x-unknown":[1,2.5,true,null]}`,
@@ -37,11 +43,11 @@ func fidelityCases() []fidelityCase {
 			name: "reverse key order, exponent forms, raw U+2028, escaped control character",
 			sent: `{"inputSchema":{"required":["b","a"],"properties":{"b":{"type":"integer","minimum":1E2},` +
 				`"a":{"type":"string","pattern":"^\\d+$"}},"type":"object"},"name":"alpha",` +
-				`"title":"\u00c5ngstr\u00f6m\t","outputSchema":null,"annotations":{"idempotentHint":false},` +
-				`"big":123456789012345678,"ratio":0.000001,"tiny":1e-7,"note":"a` + "\u2028" + `b","_meta":{"progressToken":"zzz"}}`,
-			canonical: `{"annotations":{"idempotentHint":false},"big":123456789012345680,` +
+				`"title":"` + aRing + `ngstr` + oDiaeresis + `m\t","outputSchema":null,"annotations":{"idempotentHint":false},` +
+				`"big":9.007199254740992E15,"ratio":0.000001,"tiny":1e-7,"note":"a` + lineSep + `b"}`,
+			canonical: `{"annotations":{"idempotentHint":false},"big":9007199254740992,` +
 				`"inputSchema":{"properties":{"a":{"pattern":"^\\d+$","type":"string"},"b":{"minimum":100,"type":"integer"}},` +
-				`"required":["b","a"],"type":"object"},"name":"alpha","note":"a` + "\u2028" + `b",` +
+				`"required":["b","a"],"type":"object"},"name":"alpha","note":"a` + lineSep + `b",` +
 				`"outputSchema":null,"ratio":0.000001,"tiny":1e-7,"title":"Ångström\t"}`,
 		},
 	}
@@ -60,8 +66,8 @@ func TestRawBytesAndDigestsSurviveEveryTransport(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListTools: %v", err)
 			}
-			if len(res.Tools) != len(cases) {
-				t.Fatalf("got %d tools, want %d", len(res.Tools), len(cases))
+			if len(res.Tools) != len(cases) || len(res.Unusable) != 0 {
+				t.Fatalf("got %d tools and %d unusable, want %d and 0", len(res.Tools), len(res.Unusable), len(cases))
 			}
 			for i, c := range cases {
 				assertFidelity(t, c, res.Tools[i])
@@ -74,6 +80,9 @@ func assertFidelity(t *testing.T, c fidelityCase, got Tool) {
 	t.Helper()
 	if !bytes.Equal(got.Raw, []byte(c.sent)) {
 		t.Fatalf("%s\nRaw differs from the bytes sent\n got: %q\nwant: %q", c.name, got.Raw, c.sent)
+	}
+	if !bytes.Contains(got.Raw, []byte(jsonEscape(0xe9))) && !bytes.Contains(got.Raw, []byte(jsonEscape(0xc5))) {
+		t.Fatalf("%s: the sent form carries no escaped spelling, so the case proves less than it claims", c.name)
 	}
 	sum := sha256.Sum256([]byte(c.canonical))
 	want := hex.EncodeToString(sum[:])

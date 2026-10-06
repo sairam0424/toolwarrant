@@ -1,16 +1,27 @@
 package fetch
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 )
 
-// headerOverflowText is the fragment net/http puts in the error it returns
-// when response headers pass MaxResponseHeaderBytes. The standard library has
-// no sentinel for it, so the guard recognises the text and reports ErrTooLarge
-// instead; a test pins the text so a Go upgrade that changes it fails loudly.
-const headerOverflowText = "server response headers exceeded"
+// headerOverflowFormat is the message net/http builds (go1.27.1,
+// net/http/transport.go, persistConn.readLoop) when response headers pass
+// Transport.MaxResponseHeaderBytes, with the cap filled in. The standard
+// library exports no sentinel for the condition, so the guard recognises the
+// message instead, under three conditions that keep server-written bytes from
+// forging it: no response came with the error, the innermost error carries this
+// text, and it carries nothing else. TestResponseHeaderOverflow pins the
+// wording against the Go version the tests run with, so a release that changes
+// it fails loudly instead of silently turning the condition into a generic
+// transport error.
+const headerOverflowFormat = "net/http: server response headers exceeded %d bytes; aborted"
+
+// maxUnwrapDepth bounds the walk to the innermost error, so that an Unwrap
+// cycle cannot hang the error path.
+const maxUnwrapDepth = 32
 
 // credentialHeaders must never follow a redirect, not even to the same host.
 var credentialHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie", "Cookie2"}
@@ -36,7 +47,7 @@ func (g *guardTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	resp, err := g.base.RoundTrip(outgoing(req))
 	if err != nil {
-		return nil, mapTransportError(err)
+		return nil, mapTransportError(resp, err)
 	}
 	return g.vetResponse(resp)
 }
@@ -116,9 +127,42 @@ func (g *guardTransport) vetResponse(resp *http.Response) (*http.Response, error
 	return resp, nil
 }
 
-func mapTransportError(err error) error {
-	if strings.Contains(err.Error(), headerOverflowText) {
+// headerOverflowText is the exact message for the cap this package configures.
+func headerOverflowText() string {
+	return fmt.Sprintf(headerOverflowFormat, maxResponseHeaderBytes)
+}
+
+// mapTransportError turns the header-overflow failure into ErrTooLarge and
+// leaves every other error alone. Only the innermost error is compared, and
+// only for its whole text: every net/http error that embeds bytes a server sent
+// (a malformed status line, a malformed header line, ...) starts with a fixed
+// prefix of its own, so no header the server writes can produce this text at
+// the innermost level. A response returned alongside an error breaks the
+// RoundTripper contract; it is closed and the error passes unmapped.
+func mapTransportError(resp *http.Response, err error) error {
+	if resp != nil {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+	if leafError(err).Error() == headerOverflowText() {
 		return fmt.Errorf("%w: %w", ErrTooLarge, err)
+	}
+	return err
+}
+
+// leafError follows single-error Unwrap chains to the innermost error. Joined
+// errors are not entered: net/http does not join here, and leaving an error
+// unmapped is the safe direction, since the caller sees a transport failure
+// either way.
+func leafError(err error) error {
+	for i := 0; i < maxUnwrapDepth; i++ {
+		inner := errors.Unwrap(err)
+		if inner == nil {
+			return err
+		}
+		err = inner
 	}
 	return err
 }

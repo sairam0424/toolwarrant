@@ -43,8 +43,8 @@ func assertNoCanaries(t *testing.T, what string, err error) {
 }
 
 func TestCredentialsNeverAppearInErrors(t *testing.T) {
-	status := func(method string, code int) func(*fake) {
-		return func(f *fake) {
+	status := func(method string, code int) func(*fake, *Options) {
+		return func(f *fake, _ *Options) {
 			f.override = func(w http.ResponseWriter, _ *http.Request, in rpcIn) bool {
 				if in.Method != method {
 					return false
@@ -54,25 +54,40 @@ func TestCredentialsNeverAppearInErrors(t *testing.T) {
 			}
 		}
 	}
-	cases := map[string]func(*fake){
+	cases := map[string]func(*fake, *Options){
 		"401 at initialize": status(methodInitialize, http.StatusUnauthorized),
 		"500 at tools/list": status(methodToolsList, http.StatusInternalServerError),
 		"500 at notify":     status(methodInitialized, http.StatusInternalServerError),
-		"malformed page": func(f *fake) {
-			f.page = func(int, string) string { return `{"tools":[{"name":5}]}` }
+		"malformed page": func(f *fake, _ *Options) {
+			f.page = func(int, string) string { return `{"tools":[{"name":"a"} x]}` }
 		},
-		"duplicate tool": func(f *fake) {
-			f.page = func(int, string) string { return `{"tools":[{"name":"a"},{"name":"a"}]}` }
+		"invalid UTF-8 in a tool": func(f *fake, _ *Options) {
+			f.page = func(int, string) string { return "{\"tools\":[{\"name\":\"a\",\"d\":\"\xff\"}]}" }
 		},
-		"cursor loop": func(f *fake) {
+		"tool byte budget exceeded": func(f *fake, opt *Options) {
+			f.page = func(int, string) string { return `{"tools":[{"name":"a"},{"name":"b"}]}` }
+			opt.MaxTotalBytes = 1
+		},
+		"cursor loop": func(f *fake, _ *Options) {
 			f.page = func(int, string) string { return `{"tools":[],"nextCursor":"x"}` }
+		},
+		"crawl timeout": func(f *fake, opt *Options) {
+			f.override = func(_ http.ResponseWriter, r *http.Request, in rpcIn) bool {
+				if in.Method != methodToolsList {
+					return false
+				}
+				<-r.Context().Done()
+				return true
+			}
+			opt.Timeout = 50 * time.Millisecond
 		},
 	}
 	for name, tweak := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t, modeJSON, pagesOf(5, nTools(1)))
-			tweak(f)
-			_, err := ListTools(context.Background(), canaryURL(f.url()), canaryOptions())
+			opt := canaryOptions()
+			tweak(f, &opt)
+			_, err := ListTools(context.Background(), canaryURL(f.url()), opt)
 			assertNoCanaries(t, name, err)
 		})
 	}

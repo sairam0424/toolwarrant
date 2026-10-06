@@ -10,8 +10,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/sairam0424/toolwarrant/internal/strictjson"
 )
 
 const (
@@ -106,7 +104,7 @@ func matchMessage(data []byte, id int) (result json.RawMessage, matched bool, er
 	hasError = hasError && !isNull(errBody)
 	// A server that cannot even parse our request answers with id null; only
 	// one request is ever in flight, so that error is ours.
-	if !isOurs && !(hasError && idIsNull) {
+	if !isOurs && (!hasError || !idIsNull) {
 		return nil, false, nil
 	}
 	if hasError {
@@ -129,7 +127,9 @@ func parseRPCError(raw json.RawMessage) error {
 }
 
 // parseToolsPage extracts the tools array and the next cursor from a
-// tools/list result. Each returned tool is the exact bytes the server sent.
+// tools/list result. Each returned tool is the exact bytes the server sent;
+// whether a tool is usable is decided per tool by vetTool, not here, so that
+// one bad tool cannot hide the rest of the page.
 func parseToolsPage(result json.RawMessage) (tools []json.RawMessage, next string, err error) {
 	fields, err := decodeObject(result)
 	if err != nil {
@@ -151,27 +151,6 @@ func parseToolsPage(result json.RawMessage) (tools []json.RawMessage, next strin
 		}
 	}
 	return tools, next, nil
-}
-
-// parseToolName checks that raw is a tool object with a usable string name
-// and returns the name. Unknown members are left alone: they are part of the
-// tool's identity.
-func parseToolName(raw []byte) (string, error) {
-	if err := strictjson.Object(raw); err != nil {
-		return "", fmt.Errorf("%w: tool has duplicate or ambiguous keys", ErrMalformed)
-	}
-	fields, err := decodeObject(raw)
-	if err != nil {
-		return "", fmt.Errorf("%w: tool is not a valid JSON object", ErrMalformed)
-	}
-	var name string
-	if err := json.Unmarshal(fields["name"], &name); err != nil || name == "" {
-		return "", fmt.Errorf("%w: tool has no string name", ErrMalformed)
-	}
-	if len(name) > maxToolNameBytes {
-		return "", fmt.Errorf("%w: tool name longer than %d bytes", ErrMalformed, maxToolNameBytes)
-	}
-	return name, nil
 }
 
 // initInfo is what the initialize result tells us.
@@ -211,7 +190,7 @@ func validProtocolVersion(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if r > unicode.MaxASCII || !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '.') {
+		if r > unicode.MaxASCII || (!unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '.') {
 			return false
 		}
 	}

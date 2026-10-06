@@ -8,12 +8,20 @@ import (
 	"strings"
 )
 
+// maxRedirectChain bounds the walk from a redirect-hop request back to the
+// request the caller made. net/http links hops through Request.Response and
+// never builds a chain longer than its redirect limit, so a longer chain is not
+// one net/http built; initialRequest then reports failure and the redirect is
+// refused rather than guessed about.
+const maxRedirectChain = 2 * maxRedirectsCeiling
+
 // refusesRedirect reports whether a 3xx response must be turned into
 // ErrRedirect instead of being handed to the client's redirect machinery.
 //
 // With MaxRedirects 0 that is every 3xx. With a positive limit it is every 3xx
-// the client would not follow anyway (300, 304, a missing Location and so on),
-// so that no 3xx ever reaches the caller as if it were a normal answer.
+// the client would not follow anyway (300, 304, a missing Location, a 307 or
+// 308 whose request body cannot be sent again, and so on), so that no 3xx ever
+// reaches the caller as if it were a normal answer.
 func (g *guardTransport) refusesRedirect(resp *http.Response) bool {
 	if resp.StatusCode < 300 || resp.StatusCode > 399 {
 		return false
@@ -21,14 +29,50 @@ func (g *guardTransport) refusesRedirect(resp *http.Response) bool {
 	return g.maxRedirects == 0 || !followable(resp)
 }
 
-// followable reports whether net/http would follow this response.
+// followable reports whether net/http would follow this response. It mirrors
+// net/http's redirectBehavior: 301, 302 and 303 need only a Location, because
+// the retry is a GET without a body; 307 and 308 keep the method and the body,
+// so they also need a body that can be sent again. When it cannot be, net/http
+// does not fail: it hands the 3xx back to the caller as the final response,
+// which this package promises never to do, so such a response is refused here.
 func followable(resp *http.Response) bool {
+	if resp.Header.Get("Location") == "" {
+		return false
+	}
 	switch resp.StatusCode {
-	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
-		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-		return resp.Header.Get("Location") != ""
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
+		return true
+	case http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		first, ok := initialRequest(resp)
+		return ok && bodyReplayable(first)
 	}
 	return false
+}
+
+// initialRequest returns the request the caller made. On a redirect hop
+// resp.Request is a request net/http created, linked to the response that
+// caused it through Request.Response; net/http decides about 307 and 308 by
+// looking at the caller's request (a POST with a one-shot body that was
+// redirected with 302 and then 307 still counts as unreplayable), so the walk
+// goes all the way back. ok is false when the chain is broken or longer than
+// net/http could have built.
+func initialRequest(resp *http.Response) (*http.Request, bool) {
+	req := resp.Request
+	for hops := 0; req != nil && req.Response != nil; hops++ {
+		if hops >= maxRedirectChain {
+			return nil, false
+		}
+		req = req.Response.Request
+	}
+	return req, req != nil
+}
+
+// bodyReplayable mirrors net/http's rule for 307 and 308: the request can be
+// sent again when it has no body or when GetBody can produce a fresh copy.
+// http.NewRequest sets GetBody for bytes and strings readers only; any other
+// reader is consumed by the first attempt.
+func bodyReplayable(req *http.Request) bool {
+	return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
 }
 
 // redirectRefusal builds the error for a refused redirect. A redirect to a

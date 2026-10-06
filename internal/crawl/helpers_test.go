@@ -197,6 +197,14 @@ func nTools(n int) []string {
 	return out
 }
 
+// jsonEscape is the JSON \uXXXX escape of r (one half of a surrogate pair when
+// r is a surrogate). The backslash is written as \x5c so that this source holds
+// no \u sequence: tooling that normalises such sequences into the character
+// they denote would quietly turn an escaped-spelling test into a plain one.
+func jsonEscape(r rune) string {
+	return fmt.Sprintf("\x5cu%04x", r)
+}
+
 func testOptions() Options {
 	return Options{Client: &http.Client{Timeout: testTimeout}}
 }

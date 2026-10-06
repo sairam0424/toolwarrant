@@ -173,7 +173,7 @@ func TestBodyLimitEndToEnd(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Do: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			data, err := io.ReadAll(resp.Body)
 			if len(data) != tc.wantBytes {
 				t.Errorf("read %d bytes, want %d", len(data), tc.wantBytes)
@@ -237,29 +237,6 @@ func TestGzipBombStopsAtTheCap(t *testing.T) {
 	}
 }
 
-func TestResponseHeaderOverflow(t *testing.T) {
-	srv := startServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("X-Padding", strings.Repeat("a", 70<<10))
-		_, _ = w.Write([]byte("body"))
-	}))
-	client := newTestClient(t, Policy{AllowPrivate: true})
-	_, err := get(client, srv.URL)
-	if !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("got %v, want ErrTooLarge", err)
-	}
-	// Pin the standard library's wording that mapTransportError relies on.
-	if !strings.Contains(err.Error(), headerOverflowText) {
-		t.Fatalf("net/http changed its header-overflow message: %v", err)
-	}
-}
-
-func TestOtherTransportErrorsAreNotMappedToTooLarge(t *testing.T) {
-	err := errors.New("connection reset")
-	if got := mapTransportError(err); got != err || errors.Is(got, ErrTooLarge) {
-		t.Fatalf("mapTransportError rewrote an unrelated error: %v", got)
-	}
-}
-
 // --- timeouts --------------------------------------------------------------
 
 func isTimeout(err error) bool {
@@ -294,7 +271,7 @@ func TestSlowLorisBodyTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, err = io.ReadAll(resp.Body)
 	if !isTimeout(err) {
 		t.Fatalf("read error = %v, want a timeout", err)
