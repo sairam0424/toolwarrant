@@ -91,6 +91,17 @@ func readFile(t testing.TB, p string) string {
 	return string(b)
 }
 
+// writeFile creates p, and its directory, with content.
+func writeFile(t testing.TB, p, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // mustWrite runs Write and fails the test on error.
 func mustWrite(t testing.TB, dir string, tools ...Tool) Report {
 	t.Helper()
@@ -99,6 +110,41 @@ func mustWrite(t testing.TB, dir string, tools ...Tool) Report {
 		t.Fatalf("Write: %v", err)
 	}
 	return rep
+}
+
+// wantReport compares the counts of rep with the expected ones and requires
+// that nothing was skipped. Report holds a slice, so == cannot compare it.
+func wantReport(t testing.TB, rep Report, written, removed, unchanged int) {
+	t.Helper()
+	if rep.Written != written || rep.Removed != removed || rep.Unchanged != unchanged || len(rep.Skipped) != 0 {
+		t.Fatalf("report = %+v, want written=%d removed=%d unchanged=%d and nothing skipped", rep, written, removed, unchanged)
+	}
+}
+
+// readManifest parses MANIFEST.json in dir with the package's own parser.
+func readManifest(t testing.TB, dir string) manifestDoc {
+	t.Helper()
+	doc, ok := parseManifest([]byte(readFile(t, filepath.Join(dir, manifestName))))
+	if !ok {
+		t.Fatalf("MANIFEST.json in %s does not parse", dir)
+	}
+	return doc
+}
+
+// appendGitConfig appends text to dir/.git/config, the way an operator or an
+// attacker with write access to the repository would.
+func appendGitConfig(t testing.TB, dir, text string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(dir, gitDirName, "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // skipIfRoot skips permission-based tests when the process can ignore modes.

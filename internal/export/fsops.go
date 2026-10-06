@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -18,7 +19,8 @@ const (
 	fileMode os.FileMode = 0o644
 
 	// tmpPrefix starts with a dot, which no encoded name can, so a temporary
-	// file never collides with an exported one.
+	// file never collides with an exported one and a leftover one can be
+	// recognised and swept.
 	tmpPrefix = ".tmp-"
 
 	tmpRandomBytes = 8
@@ -51,24 +53,37 @@ func openExportRoot(dir string) (*os.Root, error) {
 	return root, nil
 }
 
-// ensureDir makes sure name is a real directory directly inside root. A
-// symlink or regular file in its place is refused, never followed or replaced.
-func ensureDir(root *os.Root, name string) error {
+// checkDirShape refuses a server path that exists but is a symlink or not a
+// directory; a missing one is fine. It is the check half of ensureDir, run
+// before anything is written.
+func checkDirShape(root *os.Root, name string) error {
 	fi, err := root.Lstat(name)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if err := root.Mkdir(name, dirMode); err != nil {
-			return fmt.Errorf("export: create server directory: %w", err)
-		}
-		// Mkdir is subject to the umask; chmod makes the mode predictable.
-		if err := root.Chmod(name, dirMode); err != nil {
-			return fmt.Errorf("export: set server directory mode: %w", err)
-		}
 		return nil
 	case err != nil:
 		return fmt.Errorf("export: stat server directory: %w", err)
 	case fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir():
 		return errors.New("export: server path is a symlink or not a directory")
+	}
+	return nil
+}
+
+// ensureDir makes sure name is a real directory directly inside root. A
+// symlink or regular file in its place is refused, never followed or replaced.
+func ensureDir(root *os.Root, name string) error {
+	if err := checkDirShape(root, name); err != nil {
+		return err
+	}
+	if _, err := root.Lstat(name); err == nil {
+		return nil
+	}
+	if err := root.Mkdir(name, dirMode); err != nil {
+		return fmt.Errorf("export: create server directory: %w", err)
+	}
+	// Mkdir is subject to the umask; chmod makes the mode predictable.
+	if err := root.Chmod(name, dirMode); err != nil {
+		return fmt.Errorf("export: set server directory mode: %w", err)
 	}
 	return nil
 }
@@ -107,9 +122,10 @@ func randomSuffix() (string, error) {
 
 // writeAtomic replaces rel with data so that a reader sees either the old file
 // or the complete new one. The temporary file lives in the same directory so
-// the rename cannot cross a file system; it is removed on every failure path.
-// Directory metadata is not fsynced: the export is reproducible from the
-// catalog, so a lost rename after power loss costs a re-run, not data.
+// the rename cannot cross a file system; it is removed on every failure path,
+// and one left behind by a crash is swept by the next Write. Directory
+// metadata is not fsynced: the export is reproducible from the catalog, so a
+// lost rename after power loss costs a re-run, not data.
 func writeAtomic(root *os.Root, rel string, data []byte) (err error) {
 	suffix, err := randomSuffix()
 	if err != nil {
@@ -156,52 +172,29 @@ func fillTemp(f *os.File, data []byte) error {
 	return nil
 }
 
-// readPrevManifest returns the files the previous manifest says this package
-// created. A missing, oversized, unreadable-as-JSON or otherwise invalid
-// manifest yields none, which means nothing will be deleted. Only a symlink or
-// directory at the manifest path is an error, because writing the new manifest
-// there would follow it or fail.
-func readPrevManifest(root *os.Root) ([]string, error) {
-	fi, err := root.Lstat(manifestName)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+// isStaleFile reports whether rel is a regular file inside a real directory,
+// which is the only shape removeStale will delete.
+func isStaleFile(root *os.Root, rel string) bool {
+	dirName, _, _ := strings.Cut(rel, "/")
+	dfi, err := root.Lstat(dirName)
+	if err != nil || dfi.Mode()&fs.ModeSymlink != 0 || !dfi.IsDir() {
+		return false
 	}
-	if err != nil {
-		return nil, fmt.Errorf("export: stat manifest: %w", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, errors.New("export: manifest path is a symlink or not a regular file")
-	}
-	if fi.Size() > maxManifestBytes {
-		return nil, nil
-	}
-	raw, err := root.ReadFile(manifestName)
-	if err != nil {
-		return nil, nil //nolint:nilerr // unreadable manifest is treated as invalid: delete nothing
-	}
-	files, ok := parseManifestFiles(raw)
-	if !ok {
-		return nil, nil
-	}
-	return files, nil
+	ffi, err := root.Lstat(filepath.FromSlash(rel))
+	return err == nil && ffi.Mode().IsRegular()
 }
 
 // removeStale deletes the regular file at rel if its server directory is a
 // real directory, then removes that directory if it is now empty. It reports
 // whether a file was deleted; anything unexpected is skipped, not followed.
 func removeStale(root *os.Root, rel string) (bool, error) {
-	dirName, _, _ := strings.Cut(rel, "/")
-	dfi, err := root.Lstat(dirName)
-	if err != nil || dfi.Mode()&fs.ModeSymlink != 0 || !dfi.IsDir() {
-		return false, nil
-	}
-	ffi, err := root.Lstat(filepath.FromSlash(rel))
-	if err != nil || !ffi.Mode().IsRegular() {
+	if !isStaleFile(root, rel) {
 		return false, nil
 	}
 	if err := root.Remove(filepath.FromSlash(rel)); err != nil {
 		return false, fmt.Errorf("export: remove stale file: %w", err)
 	}
+	dirName, _, _ := strings.Cut(rel, "/")
 	if err := removeIfEmpty(root, dirName); err != nil {
 		return true, err
 	}
@@ -227,6 +220,53 @@ func removeIfEmpty(root *os.Root, name string) error {
 	}
 	if err := root.Remove(name); err != nil {
 		return fmt.Errorf("export: remove empty server directory: %w", err)
+	}
+	return nil
+}
+
+// listTemp returns the leftover temporary files directly inside dir, as
+// slash-separated paths. Only regular files with the temp prefix count: a
+// directory or symlink wearing the name is left alone. A missing dir, or one
+// that is not a real directory, has no temp files.
+func listTemp(root *os.Root, dir string) ([]string, error) {
+	fi, err := root.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("export: stat directory: %w", err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return nil, nil
+	}
+	d, err := root.Open(dir)
+	if err != nil {
+		return nil, fmt.Errorf("export: open directory: %w", err)
+	}
+	entries, readErr := d.ReadDir(-1)
+	closeErr := d.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("export: list directory: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("export: close directory: %w", closeErr)
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), tmpPrefix) && e.Type().IsRegular() {
+			out = append(out, path.Join(dir, e.Name()))
+		}
+	}
+	return out, nil
+}
+
+// sweepTemp deletes the listed leftover temporary files. One that vanished in
+// the meantime is not an error.
+func sweepTemp(root *os.Root, temps []string) error {
+	for _, p := range temps {
+		if err := root.Remove(filepath.FromSlash(p)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("export: remove leftover temp file: %w", err)
+		}
 	}
 	return nil
 }

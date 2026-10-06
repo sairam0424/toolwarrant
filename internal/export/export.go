@@ -5,14 +5,24 @@
 // decision. That is deliberate. The catalog is the source of truth; this is a
 // human-facing mirror, so its failure modes are kept narrow. Every name that
 // reaches the file system is hostile input (it came from an upstream server),
-// nothing is deleted except files the previous MANIFEST.json says this package
-// created, and symlinks are never followed.
+// nothing is deleted except files MANIFEST.json says this package created,
+// and symlinks are never followed.
+//
+// MANIFEST.json is written twice by a Write that changes anything: first
+// marked pending, listing every file that may exist while the work is in
+// progress (the previous files plus the new plan), then marked complete with
+// the final list. A Write that dies in between leaves the pending record, and
+// the next Write uses it to finish the clean-up, so no snapshot is ever
+// orphaned on disk and later committed as if it were still approved. A Write
+// that changes nothing touches nothing.
+//
+// Two Writes must not run on one directory at the same time; the catalog
+// serialises them.
 package export
 
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // Report counts what one Write did to the tool files (the manifest is not
@@ -22,6 +32,10 @@ type Report struct {
 	Written   int
 	Removed   int
 	Unchanged int
+	// Skipped lists approved tools that were left out, sorted by server then
+	// name. The caller should surface them to an operator; their names are
+	// raw upstream text and must be escaped before they are printed.
+	Skipped []Skipped
 }
 
 // Write lays the tools out as <dir>/<server>/<tool>.json plus
@@ -30,13 +44,13 @@ type Report struct {
 //
 // It validates the whole batch (digests, JSON, names, collisions) before it
 // touches the disk, so a bad input changes nothing. Running it twice with the
-// same tools leaves the directory byte-identical.
+// same tools leaves the directory byte-identical and untouched.
 func Write(dir string, tools []Tool) (Report, error) {
-	planned, err := planAll(tools)
+	planned, skipped, err := planAll(tools)
 	if err != nil {
 		return Report{}, err
 	}
-	manifest, err := renderManifest(planned)
+	final, err := renderManifest(planEntries(planned), statusComplete)
 	if err != nil {
 		return Report{}, err
 	}
@@ -44,81 +58,83 @@ func Write(dir string, tools []Tool) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	prev, err := readPrevManifest(root)
 	if err != nil {
 		return Report{}, err
 	}
-	var rep Report
-	if err := writeTools(root, planned, &rep); err != nil {
+	act, err := planActions(root, prev, planned)
+	if err != nil {
+		return Report{}, err
+	}
+	rep := Report{Skipped: skipped}
+	if act.empty() {
+		// Only the manifest may differ (metadata, or a pending one whose work
+		// is already done); replacing it is one atomic step.
+		rep.Unchanged = len(planned)
+		return rep, writeIfChanged(root, manifestName, final)
+	}
+	pending, err := renderManifest(unionEntries(prev.Tools, planned), statusPending)
+	if err != nil {
 		return rep, err
 	}
-	if err := removeUnwanted(root, prev, planned, &rep); err != nil {
-		return rep, err
-	}
-	// The manifest goes last: until it is replaced, a retry still sees the old
-	// list of created files and can finish the clean-up.
-	if err := writeIfChanged(root, manifestName, manifest); err != nil {
-		return rep, err
-	}
-	return rep, nil
+	return rep, apply(root, planned, act, pending, final, &rep)
 }
 
-// writeTools writes every planned tool file, counting into rep.
-func writeTools(root *os.Root, planned []plannedTool, rep *Report) error {
+// apply performs the actions in the order that keeps MANIFEST.json a complete
+// record at every instant a crash could happen: the pending manifest first,
+// then the file changes, then the complete manifest.
+func apply(root *os.Root, planned []plannedTool, act actions, pending, final []byte, rep *Report) error {
+	if err := writeAtomic(root, manifestName, pending); err != nil {
+		return err
+	}
+	if err := sweepTemp(root, act.sweep); err != nil {
+		return err
+	}
+	if err := writeTools(root, planned, act.write, rep); err != nil {
+		return err
+	}
+	if err := removeUnwanted(root, act.remove, rep); err != nil {
+		return err
+	}
+	return writeAtomic(root, manifestName, final)
+}
+
+// writeTools writes the planned files that planActions found changed or
+// missing, counting into rep, and creates the server directories as needed.
+func writeTools(root *os.Root, planned []plannedTool, write map[string]struct{}, rep *Report) error {
 	for _, p := range sortPlanned(planned) {
 		if err := ensureDir(root, p.dirName); err != nil {
 			return err
 		}
-		changed, err := writeFileIfChanged(root, p.rel, p.data)
-		if err != nil {
+		if _, ok := write[p.rel]; !ok {
+			rep.Unchanged++
+			continue
+		}
+		if err := writeAtomic(root, p.rel, p.data); err != nil {
 			return err
 		}
-		if changed {
-			rep.Written++
-		} else {
-			rep.Unchanged++
-		}
+		rep.Written++
 	}
 	return nil
 }
 
-// writeFileIfChanged writes data to the slash-separated rel unless the file
-// already holds exactly those bytes. It reports whether it wrote.
-func writeFileIfChanged(root *os.Root, rel string, data []byte) (bool, error) {
-	_, same, err := sameContent(root, filepath.FromSlash(rel), data)
-	if err != nil {
-		return false, err
-	}
-	if same {
-		return false, nil
-	}
-	if err := writeAtomic(root, rel, data); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// writeIfChanged is writeFileIfChanged for callers that ignore the flag.
+// writeIfChanged writes data to the slash-separated rel unless the file
+// already holds exactly those bytes.
 func writeIfChanged(root *os.Root, rel string, data []byte) error {
-	_, err := writeFileIfChanged(root, rel, data)
-	return err
+	_, same, err := sameContent(root, rel, data)
+	if err != nil || same {
+		return err
+	}
+	return writeAtomic(root, rel, data)
 }
 
-// removeUnwanted deletes files listed by the previous manifest that are not in
-// the new plan. Files are compared lower-cased: on a case-insensitive file
-// system "Tool.json" and "tool.json" are one file, and the fresh copy must not
-// be deleted as if it were the stale one.
-func removeUnwanted(root *os.Root, prev []string, planned []plannedTool, rep *Report) error {
-	keep := make(map[string]struct{}, len(planned))
-	for _, p := range planned {
-		keep[lowerASCII(p.rel)] = struct{}{}
-	}
-	for _, rel := range prev {
-		if _, ok := keep[lowerASCII(rel)]; ok {
-			continue
-		}
+// removeUnwanted deletes the stale files planActions found, counting into rep.
+// A failure reports how far it got, because the pending manifest still lists
+// the rest and the next Write will finish.
+func removeUnwanted(root *os.Root, stale []string, rep *Report) error {
+	for _, rel := range stale {
 		removed, err := removeStale(root, rel)
 		if removed {
 			rep.Removed++
@@ -128,15 +144,4 @@ func removeUnwanted(root *os.Root, prev []string, planned []plannedTool, rep *Re
 		}
 	}
 	return nil
-}
-
-// lowerASCII lower-cases an encoded path. Encoded paths are pure ASCII.
-func lowerASCII(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + ('a' - 'A')
-		}
-	}
-	return string(b)
 }

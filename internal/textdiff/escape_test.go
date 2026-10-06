@@ -6,6 +6,8 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sairam0424/toolwarrant/internal/toolname"
 )
 
 func TestEscape_table(t *testing.T) {
@@ -39,6 +41,8 @@ func TestEscape_table(t *testing.T) {
 		{"grapheme joiner", "a\u034fb", `a\u{034F}b`},
 		{"braille blank", "\u2800", `\u{2800}`},
 		{"hangul filler", "a\u3164b", `a\u{3164}b`},
+		{"khitan filler", "a\U00016FE4b", `a\u{16FE4}b`},
+		{"tifinagh consonant joiner", "a\u2d7fb", `a\u{2D7F}b`},
 		{"object replacement", "\ufffc", `\u{FFFC}`},
 		{"real replacement char passes", "\ufffd", "\ufffd"},
 		{"invalid byte", "a\xffb", `a\x{FF}b`},
@@ -143,6 +147,71 @@ func TestEscape_everyRune(t *testing.T) {
 		}
 		if n := len(Findings(s)); (n == 1) != (!raw && !special) || n > 1 {
 			t.Fatalf("U+%04X: raw=%v special=%v but %d findings", r, raw, special, n)
+		}
+	}
+}
+
+// Every rune the shared tool-name rule forbids (controls, format characters,
+// unusual spaces, the default-ignorable code points that Unicode files as
+// letters or marks) must also be invisible to no one here: Escape writes it
+// as an escape. Tab and newline are the two exceptions by design.
+func TestEscape_coversEveryRuneTheToolNameRuleForbids(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if (r >= surrogateStart && r <= surrogateEnd) || r == '\n' || r == '\t' {
+			continue
+		}
+		if !toolname.Forbidden(r) {
+			continue
+		}
+		if s := string(r); Escape(s) == s {
+			t.Fatalf("U+%04X is forbidden in a tool name but Escape writes it raw", r)
+		}
+	}
+}
+
+// defaultIgnorableRanges is the Default_Ignorable_Code_Point property from
+// DerivedCoreProperties.txt (Unicode 15 and later). None of these draws
+// anything, so none may ever be written raw; the review found U+16FE4, the
+// one entry whose general category is Mn, slipping through.
+func defaultIgnorableRanges() [][2]rune {
+	return [][2]rune{
+		{0x00AD, 0x00AD}, {0x034F, 0x034F}, {0x061C, 0x061C}, {0x115F, 0x1160},
+		{0x17B4, 0x17B5}, {0x180B, 0x180F}, {0x200B, 0x200F}, {0x202A, 0x202E},
+		{0x2060, 0x206F}, {0x3164, 0x3164}, {0xFE00, 0xFE0F}, {0xFEFF, 0xFEFF},
+		{0xFFA0, 0xFFA0}, {0xFFF0, 0xFFF8}, {0x16FE4, 0x16FE4}, {0x1BCA0, 0x1BCA3},
+		{0x1D173, 0x1D17A}, {0xE0000, 0xE0FFF},
+	}
+}
+
+func TestEscape_defaultIgnorableCodePointsAreNeverRaw(t *testing.T) {
+	for _, rg := range defaultIgnorableRanges() {
+		for r := rg[0]; r <= rg[1]; r++ {
+			if s := string(r); Escape(s) == s || len(Findings(s)) != 1 {
+				t.Errorf("default-ignorable U+%04X is written raw or not reported", r)
+			}
+		}
+	}
+}
+
+// The invisible fillers and joiners that Unicode files as marks or letters
+// are escaped, reported and named like every other hidden character.
+func TestEscape_invisibleJoinersAndFillersAreNamed(t *testing.T) {
+	cases := map[rune][2]string{
+		0x16FE4: {"KHITAN SMALL SCRIPT FILLER", "invisible-filler"},
+		0x2D7F:  {"TIFINAGH CONSONANT JOINER", "invisible-joiner"},
+		0x1107F: {"BRAHMI NUMBER JOINER", "invisible-joiner"},
+		0x1BC9D: {"DUPLOYAN THICK LETTER SELECTOR", "invisible-joiner"},
+		0x11A47: {"ZANABAZAR SQUARE SUBJOINER", "invisible-joiner"},
+		0x11A99: {"SOYOMBO SUBJOINER", "invisible-joiner"},
+	}
+	for r, want := range cases {
+		s := "del" + string(r) + "ete"
+		if Escape(s) == s {
+			t.Errorf("U+%05X written raw", r)
+		}
+		fs := Findings(s)
+		if len(fs) != 1 || fs[0].Offset != 3 || fs[0].Rune != r || fs[0].Name != want[0] || fs[0].Category != want[1] {
+			t.Errorf("U+%05X: Findings = %+v, want name %q category %q", r, fs, want[0], want[1])
 		}
 	}
 }

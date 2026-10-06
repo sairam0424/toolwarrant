@@ -3,10 +3,10 @@ package textdiff
 import (
 	"strconv"
 	"strings"
+	"sync"
 )
 
-// c0Names holds the Unicode names of U+0000..U+001F in order, joined by '|'
-// so no mutable table is needed at package level.
+// c0Names holds the Unicode names of U+0000..U+001F in order, joined by '|'.
 const c0Names = "NULL|START OF HEADING|START OF TEXT|END OF TEXT|END OF TRANSMISSION|" +
 	"ENQUIRY|ACKNOWLEDGE|BELL|BACKSPACE|CHARACTER TABULATION|LINE FEED|" +
 	"LINE TABULATION|FORM FEED|CARRIAGE RETURN|SHIFT OUT|SHIFT IN|" +
@@ -18,6 +18,50 @@ const c0Names = "NULL|START OF HEADING|START OF TEXT|END OF TEXT|END OF TRANSMIS
 
 // digitNames are the Unicode names of the ASCII digits, in order.
 const digitNames = "ZERO|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE"
+
+// asciiPunctuationNames lists ASCII space and punctuation, each entry being
+// the character followed by its name. The vertical line is the separator, so
+// it is handled in code.
+const asciiPunctuationNames = " SPACE|!EXCLAMATION MARK|\"QUOTATION MARK|#NUMBER SIGN|$DOLLAR SIGN|" +
+	"%PERCENT SIGN|&AMPERSAND|'APOSTROPHE|(LEFT PARENTHESIS|)RIGHT PARENTHESIS|" +
+	"*ASTERISK|+PLUS SIGN|,COMMA|-HYPHEN-MINUS|.FULL STOP|/SOLIDUS|:COLON|" +
+	";SEMICOLON|<LESS-THAN SIGN|=EQUALS SIGN|>GREATER-THAN SIGN|?QUESTION MARK|" +
+	"@COMMERCIAL AT|[LEFT SQUARE BRACKET|\\REVERSE SOLIDUS|]RIGHT SQUARE BRACKET|" +
+	"^CIRCUMFLEX ACCENT|_LOW LINE|`GRAVE ACCENT|{LEFT CURLY BRACKET|" +
+	"}RIGHT CURLY BRACKET|~TILDE"
+
+// nameTables holds every hand-written name. It is built exactly once and never
+// written again, so it is shared immutable data rather than mutable global
+// state. Building the maps on every call, as the first version did, cost a
+// gigabyte of allocation on a one-megabyte run of unassigned runes.
+type nameTables struct {
+	c0        []string
+	digits    []string
+	punct     map[byte]string
+	format    map[rune]string
+	space     map[rune]string
+	invisible map[rune]string
+}
+
+var (
+	tablesOnce sync.Once
+	tables     nameTables
+)
+
+// names returns the shared tables, building them on first use.
+func names() *nameTables {
+	tablesOnce.Do(func() {
+		tables = nameTables{
+			c0:        strings.Split(c0Names, "|"),
+			digits:    strings.Split(digitNames, "|"),
+			punct:     punctuationTable(),
+			format:    formatTable(),
+			space:     spaceTable(),
+			invisible: invisibleTable(),
+		}
+	})
+	return &tables
+}
 
 // runeName returns a human-readable name for a suspicious rune, in the style
 // of the Unicode character names. Runes without a hand-written name get the
@@ -49,7 +93,7 @@ func codePoint(r rune) string {
 func controlName(r rune) string {
 	switch {
 	case r < asciiPrintable:
-		return strings.Split(c0Names, "|")[r]
+		return names().c0[r]
 	case r == c1Start:
 		return "DELETE"
 	}
@@ -110,50 +154,46 @@ func asciiName(c byte) string {
 	case c >= 'a' && c <= 'z':
 		return "LATIN SMALL LETTER " + string(c-'a'+'A')
 	case c >= '0' && c <= '9':
-		return "DIGIT " + strings.Split(digitNames, "|")[c-'0']
-	}
-	return asciiPunctuationName(c)
-}
-
-// asciiPunctuationName names ASCII space and punctuation.
-func asciiPunctuationName(c byte) string {
-	const names = " SPACE|!EXCLAMATION MARK|\"QUOTATION MARK|#NUMBER SIGN|$DOLLAR SIGN|" +
-		"%PERCENT SIGN|&AMPERSAND|'APOSTROPHE|(LEFT PARENTHESIS|)RIGHT PARENTHESIS|" +
-		"*ASTERISK|+PLUS SIGN|,COMMA|-HYPHEN-MINUS|.FULL STOP|/SOLIDUS|:COLON|" +
-		";SEMICOLON|<LESS-THAN SIGN|=EQUALS SIGN|>GREATER-THAN SIGN|?QUESTION MARK|" +
-		"@COMMERCIAL AT|[LEFT SQUARE BRACKET|\\REVERSE SOLIDUS|]RIGHT SQUARE BRACKET|" +
-		"^CIRCUMFLEX ACCENT|_LOW LINE|`GRAVE ACCENT|{LEFT CURLY BRACKET|" +
-		"}RIGHT CURLY BRACKET|~TILDE"
-	for _, entry := range strings.Split(names, "|") {
-		if entry != "" && entry[0] == c {
-			return entry[1:]
-		}
-	}
-	// The vertical line is the entry separator, so it cannot be listed above.
-	if c == '|' {
+		return "DIGIT " + names().digits[c-'0']
+	case c == '|':
 		return "VERTICAL LINE"
 	}
+	if n, ok := names().punct[c]; ok {
+		return n
+	}
 	return "ASCII CHARACTER " + codePoint(rune(c))
+}
+
+// punctuationTable parses asciiPunctuationNames into a lookup table.
+func punctuationTable() map[byte]string {
+	out := make(map[byte]string)
+	for _, entry := range strings.Split(asciiPunctuationNames, "|") {
+		if entry != "" {
+			out[entry[0]] = entry[1:]
+		}
+	}
+	return out
 }
 
 // knownName returns the Unicode name of the suspicious characters that are
 // listed in the threat model, or "" for any other rune.
 func knownName(r rune) string {
-	if n := formatName(r); n != "" {
+	t := names()
+	if n := t.format[r]; n != "" {
 		return n
 	}
-	if n := spaceName(r); n != "" {
+	if n := t.space[r]; n != "" {
 		return n
 	}
-	if n := fillerName(r); n != "" {
+	if n := t.invisible[r]; n != "" {
 		return n
 	}
 	return variationName(r)
 }
 
-// formatName names the format (Cf) characters used to hide text.
-func formatName(r rune) string {
-	names := map[rune]string{
+// formatTable names the format (Cf) characters used to hide text.
+func formatTable() map[rune]string {
+	return map[rune]string{
 		0x00AD: "SOFT HYPHEN", 0x034F: "COMBINING GRAPHEME JOINER",
 		0x061C: "ARABIC LETTER MARK", 0x180E: "MONGOLIAN VOWEL SEPARATOR",
 		0x200B: "ZERO WIDTH SPACE", 0x200C: "ZERO WIDTH NON-JOINER",
@@ -173,12 +213,11 @@ func formatName(r rune) string {
 		0xFFFB: "INTERLINEAR ANNOTATION TERMINATOR", 0xFFFC: "OBJECT REPLACEMENT CHARACTER",
 		0x2028: "LINE SEPARATOR", 0x2029: "PARAGRAPH SEPARATOR",
 	}
-	return names[r]
 }
 
-// spaceName names the spaces that are not a plain space.
-func spaceName(r rune) string {
-	names := map[rune]string{
+// spaceTable names the spaces that are not a plain space.
+func spaceTable() map[rune]string {
+	return map[rune]string{
 		0x00A0: "NO-BREAK SPACE", 0x1680: "OGHAM SPACE MARK", 0x2000: "EN QUAD",
 		0x2001: "EM QUAD", 0x2002: "EN SPACE", 0x2003: "EM SPACE",
 		0x2004: "THREE-PER-EM SPACE", 0x2005: "FOUR-PER-EM SPACE",
@@ -186,19 +225,20 @@ func spaceName(r rune) string {
 		0x2009: "THIN SPACE", 0x200A: "HAIR SPACE", 0x202F: "NARROW NO-BREAK SPACE",
 		0x205F: "MEDIUM MATHEMATICAL SPACE", 0x3000: "IDEOGRAPHIC SPACE",
 	}
-	return names[r]
 }
 
-// fillerName names the characters that draw nothing but are letters or
-// symbols to a text engine.
-func fillerName(r rune) string {
-	names := map[rune]string{
-		0x115F: "HANGUL CHOSEONG FILLER", 0x1160: "HANGUL JUNGSEONG FILLER",
-		0x3164: "HANGUL FILLER", 0xFFA0: "HALFWIDTH HANGUL FILLER",
-		0x2800: "BRAILLE PATTERN BLANK", 0x17B4: "KHMER VOWEL INHERENT AQ",
-		0x17B5: "KHMER VOWEL INHERENT AA",
+// invisibleTable names the characters that draw nothing but are letters or
+// marks to a text engine: the fillers and the script-specific joiners.
+func invisibleTable() map[rune]string {
+	return map[rune]string{
+		hangulChoseongFiller: "HANGUL CHOSEONG FILLER", hangulJungseongFiller: "HANGUL JUNGSEONG FILLER",
+		hangulFiller: "HANGUL FILLER", halfwidthHangulFiller: "HALFWIDTH HANGUL FILLER",
+		brailleBlank: "BRAILLE PATTERN BLANK", khmerVowelInherentAQ: "KHMER VOWEL INHERENT AQ",
+		khmerVowelInherentAA: "KHMER VOWEL INHERENT AA", khitanFiller: "KHITAN SMALL SCRIPT FILLER",
+		tifinaghConsonantJoiner: "TIFINAGH CONSONANT JOINER", brahmiNumberJoiner: "BRAHMI NUMBER JOINER",
+		zanabazarSubjoiner: "ZANABAZAR SQUARE SUBJOINER", soyomboSubjoiner: "SOYOMBO SUBJOINER",
+		duployanThickSelector: "DUPLOYAN THICK LETTER SELECTOR",
 	}
-	return names[r]
 }
 
 // variationName names the variation selectors.
@@ -209,7 +249,7 @@ func variationName(r rune) string {
 	case r >= 0xE0100 && r <= 0xE01EF:
 		return "VARIATION SELECTOR-" + strconv.Itoa(int(r-0xE0100)+17)
 	case r >= 0x180B && r <= 0x180D:
-		return "MONGOLIAN FREE VARIATION SELECTOR " + strings.Split(digitNames, "|")[r-0x180B+1]
+		return "MONGOLIAN FREE VARIATION SELECTOR " + names().digits[r-0x180B+1]
 	case r == 0x180F:
 		return "MONGOLIAN FREE VARIATION SELECTOR FOUR"
 	}

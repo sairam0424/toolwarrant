@@ -13,6 +13,16 @@
 // Latin one). Those are ordinary printable characters and pass through
 // unchanged; a reader is not warned about them.
 //
+// Known limit: Tool decodes its two documents with encoding/json, which turns
+// a lone surrogate escape such as \udc00 into U+FFFD without saying so, and a
+// genuine U+FFFD in the text renders the same way, so the approver could not
+// tell the two apart. Tool refuses a document that is not valid UTF-8, which
+// closes the same gap for raw bytes, but it does not scan the JSON escapes.
+// Through the catalog the escape cannot arrive: the canonicaliser (RFC 8785)
+// rejects lone surrogates, so every document the catalog stores decodes
+// without substitution. Callers that feed Tool bytes which did not pass the
+// canonicaliser must not rely on U+FFFD being genuine.
+//
 // Nothing here uses colour. The CLI adds that later.
 package textdiff
 
@@ -30,6 +40,7 @@ const (
 	catBidi              = "bidi-control"
 	catTag               = "tag-character"
 	catFiller            = "invisible-filler"
+	catInvisibleJoiner   = "invisible-joiner"
 	catInvisibleOperator = "invisible-operator"
 	catVariationSelector = "variation-selector"
 	catGraphemeJoiner    = "grapheme-joiner"
@@ -59,6 +70,28 @@ const (
 	noncharMask    = 0xFFFE // U+xFFFE and U+xFFFF of every plane
 	surrogateStart = 0xD800
 	surrogateEnd   = 0xDFFF
+)
+
+// Invisible characters that Unicode files under a graphic category (a letter
+// or a non-spacing mark) and that a category table therefore lets through.
+// They are listed one by one; the Default_Ignorable_Code_Point property is
+// the source for the fillers, and the joiners are shaping controls of the same
+// kind as the zero width joiner: they draw nothing on their own.
+const (
+	hangulChoseongFiller  = 0x115F
+	hangulJungseongFiller = 0x1160
+	khmerVowelInherentAQ  = 0x17B4
+	khmerVowelInherentAA  = 0x17B5
+	brailleBlank          = 0x2800
+	hangulFiller          = 0x3164
+	halfwidthHangulFiller = 0xFFA0
+	khitanFiller          = 0x16FE4
+
+	tifinaghConsonantJoiner = 0x2D7F
+	brahmiNumberJoiner      = 0x1107F
+	zanabazarSubjoiner      = 0x11A47
+	soyomboSubjoiner        = 0x11A99
+	duployanThickSelector   = 0x1BC9D
 )
 
 // classify reports why r must not be written raw. The second result is false
@@ -113,9 +146,10 @@ func classifyExplicit(r rune) (string, bool) {
 		return catInvisibleOperator, true
 	case r >= 0x206A && r <= 0x206F:
 		return catDeprecatedFormat, true
-	case r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0,
-		r == 0x2800, r == 0x17B4, r == 0x17B5:
+	case isFiller(r):
 		return catFiller, true
+	case isInvisibleJoiner(r):
+		return catInvisibleJoiner, true
 	case isVariationSelector(r):
 		return catVariationSelector, true
 	case r >= tagBlockStart && r <= tagBlockEnd:
@@ -126,6 +160,29 @@ func classifyExplicit(r rune) (string, bool) {
 		return catLineSeparator, true
 	}
 	return "", false
+}
+
+// isFiller reports the fillers: characters that are letters or marks to a
+// text engine but draw nothing, so text can hide between them.
+func isFiller(r rune) bool {
+	switch r {
+	case hangulChoseongFiller, hangulJungseongFiller, hangulFiller, halfwidthHangulFiller,
+		brailleBlank, khmerVowelInherentAQ, khmerVowelInherentAA, khitanFiller:
+		return true
+	}
+	return false
+}
+
+// isInvisibleJoiner reports the script-specific joiners and selectors that,
+// like the zero width joiner, only change how neighbouring characters are
+// shaped and render nothing themselves.
+func isInvisibleJoiner(r rune) bool {
+	switch r {
+	case tifinaghConsonantJoiner, brahmiNumberJoiner, zanabazarSubjoiner,
+		soyomboSubjoiner, duployanThickSelector:
+		return true
+	}
+	return false
 }
 
 // isVariationSelector reports the standard and supplementary variation
@@ -161,4 +218,11 @@ func classifyByTable(r rune) (string, bool) {
 func isAssigned(r rune) bool {
 	return unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S,
 		unicode.Z, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs)
+}
+
+// isCombining reports a non-spacing or enclosing mark. Such a mark draws over
+// the character before it, so at the start of a diff line it would attach to
+// the change marker and could turn "-" into something that reads as "+".
+func isCombining(r rune) bool {
+	return unicode.In(r, unicode.Mn, unicode.Me)
 }

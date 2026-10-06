@@ -40,6 +40,7 @@ func injectionCorpus() []corpusCase {
 		{"line and paragraph separators", "a\u2028b\u2029c\u0085d"},
 		{"variation selectors", "a\ufe0f\ufe00b\U000E0100"},
 		{"invisible fillers", "a\u3164b\u115fc\u1160d\uffa0e\u2800f\u034fg\ufffc"},
+		{"invisible joiners and khitan filler", "de\u2d7fl\U0001107Fe\U0001BC9Dt\U00011A47e\U00011A99 \U00016FE4files"},
 		{"invisible operators", "1\u20612\u20623\u20634\u2064"},
 		{"bom and soft hyphen", "\ufeffhello\u00adworld"},
 		{"private use and non-characters", "\ue000\uf8ff\U0010ffff\ufdd0\ufffe"},
@@ -47,6 +48,8 @@ func injectionCorpus() []corpusCase {
 		{"nfd", "cafe\u0301"},
 		{"hangul jamo", "\u1112\u1161\u11ab"},
 		{"many combining marks", "a" + strings.Repeat("\u0301", 500)},
+		{"leading combining mark", "\u20d2removed"},
+		{"header-like text", "++ forged\n@@ -1,1 +1,1 @@\n--- old"},
 		{"very long line", strings.Repeat("abcdefghij", 100000) + "\u200b" + strings.Repeat("z", 1000)},
 	}
 }

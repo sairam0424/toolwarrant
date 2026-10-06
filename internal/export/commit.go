@@ -1,7 +1,6 @@
 package export
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const (
@@ -22,9 +20,6 @@ const (
 	// gitWaitDelay is how long to wait for git's pipes to close after the
 	// process was killed on timeout.
 	gitWaitDelay = 2 * time.Second
-
-	maxMessageBytes  = 64 << 10
-	maxIdentityBytes = 256
 
 	// maxGitOutputBytes caps captured git output; errors quote even less.
 	maxGitOutputBytes = 64 << 10
@@ -42,56 +37,6 @@ const (
 type Identity struct {
 	Name  string
 	Email string
-}
-
-// validateIdentity rejects values that could break out of a `-c key=value`
-// argument or forge extra ident fields: control characters (including NUL and
-// newlines), angle brackets, and for the address any whitespace.
-func validateIdentity(who Identity) error {
-	fields := []struct{ field, v string }{{"name", who.Name}, {"email", who.Email}}
-	for _, f := range fields {
-		field, v := f.field, f.v
-		if strings.TrimSpace(v) == "" {
-			return fmt.Errorf("export: identity %s is empty", field)
-		}
-		if len(v) > maxIdentityBytes || !utf8.ValidString(v) {
-			return fmt.Errorf("export: identity %s is too long or not valid UTF-8", field)
-		}
-		for _, r := range v {
-			if r < ' ' || r == 0x7f || r == '<' || r == '>' {
-				return fmt.Errorf("export: identity %s contains a forbidden character", field)
-			}
-		}
-	}
-	if strings.ContainsAny(who.Email, " \t") {
-		return errors.New("export: identity email contains whitespace")
-	}
-	return nil
-}
-
-// validateMessage rejects empty messages and NUL, which git would truncate at.
-func validateMessage(msg string) error {
-	if strings.TrimSpace(msg) == "" {
-		return errors.New("export: commit message is empty")
-	}
-	if len(msg) > maxMessageBytes || !utf8.ValidString(msg) {
-		return errors.New("export: commit message is too long or not valid UTF-8")
-	}
-	if strings.ContainsRune(msg, 0) {
-		return errors.New("export: commit message contains NUL")
-	}
-	return nil
-}
-
-// cappedBuffer keeps at most maxGitOutputBytes and silently drops the rest, so
-// a runaway git cannot exhaust memory.
-type cappedBuffer struct{ buf bytes.Buffer }
-
-func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if room := maxGitOutputBytes - c.buf.Len(); room > 0 {
-		c.buf.Write(p[:min(len(p), room)])
-	}
-	return len(p), nil
 }
 
 // gitRunner runs git with a sanitized environment inside one directory.
@@ -124,9 +69,11 @@ func gitEnv(home string) []string {
 }
 
 // gitConfigFlags are the per-invocation settings that make the commit
-// reproducible and keep repository-local config from running programs:
-// no hooks, no signing, no fsmonitor, no line-ending rewriting of approved
-// bytes, no automatic gc or maintenance.
+// reproducible and keep repository-local config from running programs or
+// changing bytes: no hooks, no signing, no fsmonitor, no external diff, no
+// per-user attributes or excludes files, no line-ending rewriting of approved
+// bytes, no automatic gc or maintenance. They override .git/config; the keys
+// that cannot be overridden safely are refused by checkRepoConfig instead.
 func gitConfigFlags(who Identity) []string {
 	return []string{
 		"-c", "core.hooksPath=/dev/null",
@@ -134,6 +81,9 @@ func gitConfigFlags(who Identity) []string {
 		"-c", "core.fsmonitor=false",
 		"-c", "core.autocrlf=false",
 		"-c", "core.safecrlf=false",
+		"-c", "core.attributesFile=/dev/null",
+		"-c", "core.excludesFile=/dev/null",
+		"-c", "diff.external=",
 		"-c", "gc.auto=0",
 		"-c", "maintenance.auto=false",
 		"-c", "user.name=" + who.Name,
@@ -141,13 +91,23 @@ func gitConfigFlags(who Identity) []string {
 	}
 }
 
-// run executes git with args (after the -c flags) and optional stdin, under
-// gitTimeout. On a non-zero exit it returns an *exec.ExitError wrapped with a
-// short quote of stderr.
+// run executes git with the -c flags, then args, and optional stdin.
 func (g gitRunner) run(ctx context.Context, stdin string, args ...string) (string, error) {
+	full := append(append([]string{}, g.args...), args...)
+	return g.execute(ctx, stdin, full)
+}
+
+// runPlain executes git without the -c flags. Listing the repository
+// configuration needs it, or the flags would show up as configuration.
+func (g gitRunner) runPlain(ctx context.Context, args ...string) (string, error) {
+	return g.execute(ctx, "", args)
+}
+
+// execute runs one git command under gitTimeout. On a non-zero exit it returns
+// an *exec.ExitError wrapped with a short quote of stderr.
+func (g gitRunner) execute(ctx context.Context, stdin string, full []string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	full := append(append([]string{}, g.args...), args...)
 	cmd := exec.CommandContext(cctx, g.bin, full...)
 	cmd.Dir = g.dir
 	cmd.Env = g.env
@@ -162,7 +122,7 @@ func (g gitRunner) run(ctx context.Context, stdin string, args ...string) (strin
 		if len(quote) > maxGitErrorQuote {
 			quote = quote[:maxGitErrorQuote]
 		}
-		return stdout.buf.String(), fmt.Errorf("export: git %s: %w: %s", subcommand(args), err, quote)
+		return stdout.buf.String(), fmt.Errorf("export: git %s: %w: %s", subcommand(full), err, quote)
 	}
 	return stdout.buf.String(), nil
 }
@@ -224,7 +184,11 @@ func (g gitRunner) isOwnToplevel(ctx context.Context) (bool, error) {
 // The commit runs with a sanitized environment, hooks disabled and the given
 // identity, inside a repository that must be dir's own: if dir is not the top
 // level of a repository (an enclosing parent repository does not count) a new
-// one is initialised there. Nothing staged means no commit and false.
+// one is initialised there. dir must hold a complete MANIFEST.json from Write;
+// a repository-local configuration outside the allow-list, an attributes file,
+// or an ignore rule that would drop an export file from the commit is refused,
+// because each could make the committed history differ from what was
+// approved. Nothing staged means no commit and false.
 func Commit(ctx context.Context, dir, message string, who Identity) (committed bool, err error) {
 	if err := validateMessage(message); err != nil {
 		return false, err
@@ -240,18 +204,29 @@ func Commit(ctx context.Context, dir, message string, who Identity) (committed b
 	if err != nil {
 		return false, err
 	}
+	expected, err := exportFiles(resolved)
+	if err != nil {
+		return false, err
+	}
 	home, err := os.MkdirTemp("", "toolwarrant-git-home-")
 	if err != nil {
 		return false, fmt.Errorf("export: temp home: %w", err)
 	}
-	defer os.RemoveAll(home)
+	defer func() { _ = os.RemoveAll(home) }()
 	g := gitRunner{bin: bin, dir: resolved, env: gitEnv(home), args: gitConfigFlags(who)}
-	return g.commitAll(ctx, message)
+	return g.commitAll(ctx, message, expected)
 }
 
-// commitAll initialises the repository if needed, stages everything and
-// commits if anything is staged.
-func (g gitRunner) commitAll(ctx context.Context, message string) (bool, error) {
+// commitAll checks the repository, initialises it if needed, stages
+// everything, verifies that the export files were staged and commits if
+// anything is staged.
+func (g gitRunner) commitAll(ctx context.Context, message string, expected []string) (bool, error) {
+	if err := g.checkRepoConfig(ctx); err != nil {
+		return false, err
+	}
+	if err := checkAttributes(g.dir); err != nil {
+		return false, err
+	}
 	own, err := g.isOwnToplevel(ctx)
 	if err != nil {
 		return false, err
@@ -262,6 +237,9 @@ func (g gitRunner) commitAll(ctx context.Context, message string) (bool, error) 
 		}
 	}
 	if _, err := g.run(ctx, "", "add", "-A", "--", "."); err != nil {
+		return false, err
+	}
+	if err := g.verifyTracked(ctx, expected); err != nil {
 		return false, err
 	}
 	staged, err := g.hasStagedChanges(ctx)
@@ -275,9 +253,10 @@ func (g gitRunner) commitAll(ctx context.Context, message string) (bool, error) 
 }
 
 // hasStagedChanges uses `git diff --cached --quiet`: exit 0 means nothing is
-// staged, exit 1 means something is, anything else is a real failure.
+// staged, exit 1 means something is, anything else is a real failure. The
+// external diff driver is switched off twice over, by flag and by config.
 func (g gitRunner) hasStagedChanges(ctx context.Context) (bool, error) {
-	_, err := g.run(ctx, "", "diff", "--cached", "--quiet", "--exit-code")
+	_, err := g.run(ctx, "", "diff", "--cached", "--quiet", "--exit-code", "--no-ext-diff")
 	if err == nil {
 		return false, nil
 	}

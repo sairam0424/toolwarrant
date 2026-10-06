@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -24,23 +26,15 @@ func TestWrite_StaleRemovalIsLimitedToManifestFiles(t *testing.T) {
 	lone := mkTool(t, "solo", "only", "1")
 	mustWrite(t, dir, keep, gone, lone)
 
-	userFile := filepath.Join(dir, "s", "notes.txt")
-	topFile := filepath.Join(dir, "README.md")
-	soloUser := filepath.Join(dir, "solo", "mine.json")
-	for _, f := range []string{userFile, topFile, soloUser} {
-		if err := os.WriteFile(f, []byte("user"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	for _, f := range []string{filepath.Join(dir, "s", "notes.txt"), filepath.Join(dir, "README.md"), filepath.Join(dir, "solo", "mine.json")} {
+		writeFile(t, f, "user")
 	}
-	userDir := filepath.Join(dir, "userdir")
-	if err := os.Mkdir(userDir, 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "userdir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	rep := mustWrite(t, dir, keep)
-	if rep != (Report{Unchanged: 1, Removed: 2}) {
-		t.Fatalf("report = %+v", rep)
-	}
+	wantReport(t, rep, 0, 2, 1)
 	snap := snapshot(t, dir)
 	for _, p := range []string{"s/keep.json", "s/notes.txt", "README.md", "solo/mine.json", "userdir"} {
 		if _, ok := snap[p]; !ok {
@@ -65,36 +59,26 @@ func TestWrite_EmptiedServerDirectoryIsRemoved(t *testing.T) {
 
 func TestWrite_UntrustedPreviousManifestDeletesNothing(t *testing.T) {
 	victimName := "victim.txt"
-	cases := map[string]func(dir string) string{
-		"not json": func(string) string { return "{{{" },
-		"wrong version": func(string) string {
-			return `{"version":2,"tools":[{"server":"s","tool":"old","file":"s/old.json"}]}`
-		},
-		"path traversal": func(string) string {
-			return `{"version":1,"tools":[{"server":"s","tool":"old","file":"../` + victimName + `"}]}`
-		},
-		"file does not match names": func(string) string {
-			return `{"version":1,"tools":[{"server":"s","tool":"old","file":"s/other.json"},{"server":"s","tool":"old","file":"s/old.json"}]}`
-		},
-		"unencoded dot": func(string) string {
-			return `{"version":1,"tools":[{"server":"..","tool":"x","file":"../x.json"}]}`
-		},
-		"duplicate entries": func(string) string {
-			return `{"version":1,"tools":[{"server":"s","tool":"old","file":"s/old.json"},{"server":"s","tool":"old","file":"s/old.json"}]}`
-		},
-		"oversized": func(string) string { return strings.Repeat(" ", maxManifestBytes+1) },
+	head := `{"version":2,"status":"complete","tools":[`
+	cases := map[string]string{
+		"not json":                  "{{{",
+		"old version":               `{"version":1,"tools":[{"server":"s","tool":"old","file":"s/old.json"}]}`,
+		"unknown status":            `{"version":2,"status":"done","tools":[{"server":"s","tool":"old","file":"s/old.json"}]}`,
+		"path traversal":            head + `{"server":"s","tool":"old","file":"../` + victimName + `"}]}`,
+		"file does not match names": head + `{"server":"s","tool":"old","file":"s/other.json"},{"server":"s","tool":"old","file":"s/old.json"}]}`,
+		"unencoded dot in server":   head + `{"server":"..","tool":"x","file":"../x.json"}]}`,
+		"lower-case hex escape":     head + `{"server":"s","tool":"a%2eb","file":"s/a%2eb.json"}]}`,
+		"needless escape":           head + `{"server":"s","tool":"%6Fld","file":"s/%6Fld.json"}]}`,
+		"duplicate entries":         head + `{"server":"s","tool":"old","file":"s/old.json"},{"server":"s","tool":"old","file":"s/old.json"}]}`,
+		"oversized":                 strings.Repeat(" ", maxManifestBytes+1),
 	}
 	for label, body := range cases {
 		dir := t.TempDir()
 		old := mkTool(t, "s", "old", "1")
 		mustWrite(t, dir, old)
 		victim := filepath.Join(filepath.Dir(dir), victimName)
-		if err := os.WriteFile(victim, []byte("v"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, manifestName), []byte(body(dir)), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, victim, "v")
+		writeFile(t, filepath.Join(dir, manifestName), body)
 		mustWrite(t, dir, mkTool(t, "s", "new", "1"))
 		if _, err := os.Stat(filepath.Join(dir, "s", "old.json")); err != nil {
 			t.Errorf("%s: untrusted manifest must not cause deletions: %v", label, err)
@@ -102,16 +86,16 @@ func TestWrite_UntrustedPreviousManifestDeletesNothing(t *testing.T) {
 		if readFile(t, victim) != "v" {
 			t.Errorf("%s: file outside dir was touched", label)
 		}
-		os.Remove(victim)
+		if err := os.Remove(victim); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func TestWrite_StaleEntryThatIsNowASymlinkOrDirectoryIsNotFollowed(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, outside, "outside")
 	mustWrite(t, dir, mkTool(t, "s", "link", "1"), mkTool(t, "d", "dir", "1"), mkTool(t, "s", "keep", "1"))
 	link := filepath.Join(dir, "s", "link.json")
 	if err := os.Remove(link); err != nil {
@@ -144,9 +128,7 @@ func TestWrite_StaleServerDirectorySymlinkIsNotFollowed(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, dir, mkTool(t, "s", "old", "1"), mkTool(t, "k", "keep", "1"))
 	outsideDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outsideDir, "old.json"), []byte("outside"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(outsideDir, "old.json"), "outside")
 	if err := os.RemoveAll(filepath.Join(dir, "s")); err != nil {
 		t.Fatal(err)
 	}
@@ -159,35 +141,29 @@ func TestWrite_StaleServerDirectorySymlinkIsNotFollowed(t *testing.T) {
 	}
 }
 
-func TestRemoveUnwanted_CaseInsensitiveKeepSet(t *testing.T) {
+func TestPlanActions_CaseInsensitiveKeepSet(t *testing.T) {
 	dir := t.TempDir()
 	root, err := openExportRoot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
-	if err := os.MkdirAll(filepath.Join(dir, "Srv"), 0o755); err != nil {
+	defer func() { _ = root.Close() }()
+	writeFile(t, filepath.Join(dir, "Srv", "Tool.json"), "x")
+	prev := manifestDoc{Version: manifestVersion, Status: statusComplete, Tools: []manifestEntry{{Server: "Srv", Tool: "Tool", File: "Srv/Tool.json"}}}
+	planned := []plannedTool{{dirName: "srv", encTool: "tool", rel: "srv/tool.json", data: []byte("y")}}
+	act, err := planActions(root, prev, planned)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Srv", "Tool.json"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var rep Report
-	planned := []plannedTool{{rel: "srv/tool.json"}}
-	if err := removeUnwanted(root, []string{"Srv/Tool.json"}, planned, &rep); err != nil {
-		t.Fatal(err)
-	}
-	if rep.Removed != 0 {
-		t.Fatalf("a case-variant of a wanted file must not be deleted: %+v", rep)
+	if len(act.remove) != 0 {
+		t.Fatalf("a case-variant of a wanted file must not be deleted: %+v", act)
 	}
 }
 
 func TestWrite_SymlinkRefusals(t *testing.T) {
 	outside := t.TempDir()
 	victim := filepath.Join(outside, "victim.json")
-	if err := os.WriteFile(victim, []byte("victim"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, victim, "victim")
 	tool := mkTool(t, "s", "t", "1")
 
 	t.Run("export dir is a symlink", func(t *testing.T) {
@@ -204,9 +180,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 	})
 	t.Run("export dir is a file", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "file")
-		if err := os.WriteFile(f, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, f, "")
 		if _, err := Write(f, []Tool{tool}); err == nil {
 			t.Fatal("want refusal")
 		}
@@ -222,12 +196,13 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(outside, "t.json")); !os.IsNotExist(err) {
 			t.Fatal("wrote through a symlinked server dir")
 		}
+		if _, err := os.Stat(filepath.Join(dir, manifestName)); !os.IsNotExist(err) {
+			t.Fatal("a refused layout must not get a pending manifest")
+		}
 	})
 	t.Run("server path is a file", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "s"), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(dir, "s"), "")
 		if _, err := Write(dir, []Tool{tool}); err == nil {
 			t.Fatal("want refusal")
 		}
@@ -271,28 +246,39 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 }
 
 // Simulated failure: a read-only server directory makes the temp file
-// impossible to create. The old file must be intact and nothing partial or
-// temporary may be visible.
-func TestWrite_FailureLeavesNoPartialFile(t *testing.T) {
+// impossible to create. The old file must be intact, nothing partial or
+// temporary may be visible, and the pending manifest, written before the
+// attempt, still lists the file so a retry can finish.
+func TestWrite_FailureLeavesNoPartialFileAndAPendingManifest(t *testing.T) {
 	skipIfRoot(t)
 	dir := t.TempDir()
 	v1 := mkTool(t, "s", "t", "version one")
 	mustWrite(t, dir, v1)
-	before := snapshot(t, dir)
 	lockDir(t, filepath.Join(dir, "s"))
 
-	if _, err := Write(dir, []Tool{mkTool(t, "s", "t", "version two, longer")}); err == nil {
+	v2 := mkTool(t, "s", "t", "version two, longer")
+	if _, err := Write(dir, []Tool{v2}); err == nil {
 		t.Fatal("want an error from the read-only directory")
 	}
 	if err := os.Chmod(filepath.Join(dir, "s"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	after := snapshot(t, dir)
-	if !reflectEqualContent(before, after) {
-		t.Fatalf("state changed after failed write:\nbefore %v\nafter  %v", names(before), names(after))
-	}
-	if after["s/t.json"].Content != string(v1.Canonical)+"\n" {
+	snap := snapshot(t, dir)
+	if snap["s/t.json"].Content != string(v1.Canonical)+"\n" {
 		t.Fatal("old file content was damaged")
+	}
+	for p := range snap {
+		if strings.Contains(p, tmpPrefix) {
+			t.Fatalf("temporary file left behind: %s", p)
+		}
+	}
+	if doc := readManifest(t, dir); doc.Status != statusPending || !reflect.DeepEqual(doc.files(), []string{"s/t.json"}) {
+		t.Fatalf("manifest after the failure = %+v, want pending and listing s/t.json", doc)
+	}
+	rep := mustWrite(t, dir, v2)
+	wantReport(t, rep, 1, 0, 0)
+	if doc := readManifest(t, dir); doc.Status != statusComplete {
+		t.Fatalf("the retry must complete the manifest, got %q", doc.Status)
 	}
 }
 
@@ -308,39 +294,35 @@ func TestWrite_FailureCreatingServerDirectoryLeavesNothing(t *testing.T) {
 	}
 }
 
-func TestWrite_RemovalFailureIsReportedAndManifestIsKept(t *testing.T) {
+// A stale file that cannot be removed stays listed in the pending manifest, so
+// it is never orphaned; the next Write removes it.
+func TestWrite_RemovalFailureKeepsThePendingManifest(t *testing.T) {
 	skipIfRoot(t)
 	dir := t.TempDir()
 	mustWrite(t, dir, mkTool(t, "s", "gone", "1"), mkTool(t, "k", "keep", "1"))
-	oldManifest := readFile(t, filepath.Join(dir, manifestName))
 	lockDir(t, filepath.Join(dir, "s"))
 
-	_, err := Write(dir, []Tool{mkTool(t, "k", "keep", "1")})
-	if err == nil {
+	if _, err := Write(dir, []Tool{mkTool(t, "k", "keep", "1")}); err == nil {
 		t.Fatal("want an error when a stale file cannot be removed")
 	}
-	if readFile(t, filepath.Join(dir, manifestName)) != oldManifest {
-		t.Fatal("manifest must not advance past a failed removal, or the stale file is orphaned")
+	if doc := readManifest(t, dir); doc.Status != statusPending || !slices.Contains(doc.files(), "s/gone.json") {
+		t.Fatalf("manifest after the failure = %+v, want pending and still listing s/gone.json", doc)
 	}
-}
-
-// reflectEqualContent compares snapshots ignoring directory mod times, which
-// legitimately move when a temp file is created and removed.
-func reflectEqualContent(a, b map[string]entry) bool {
-	if len(a) != len(b) {
-		return false
+	if err := os.Chmod(filepath.Join(dir, "s"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for k, ea := range a {
-		eb, ok := b[k]
-		if !ok || ea.Mode != eb.Mode || ea.Content != eb.Content {
-			return false
-		}
+	rep := mustWrite(t, dir, mkTool(t, "k", "keep", "1"))
+	wantReport(t, rep, 0, 1, 1)
+	if _, err := os.Stat(filepath.Join(dir, "s", "gone.json")); !os.IsNotExist(err) {
+		t.Fatal("the retry must remove the stale file")
 	}
-	return true
+	if doc := readManifest(t, dir); doc.Status != statusComplete || !reflect.DeepEqual(doc.files(), []string{"k/keep.json"}) {
+		t.Fatalf("manifest after the retry = %+v", doc)
+	}
 }
 
 func TestWriteAtomic_TempFileNamesNeverCollideWithExports(t *testing.T) {
-	for _, n := range []string{"a", ".", "..", ".hidden"} {
+	for _, n := range []string{"a", ".", "..", ".hidden", ".tmp-x"} {
 		enc, err := encodeName("tool", n)
 		if err != nil || strings.HasPrefix(enc, ".") {
 			t.Fatalf("encoded %q = %q (%v) could collide with %q temp files", n, enc, err, tmpPrefix)
@@ -353,13 +335,7 @@ func TestWrite_DirectoryTargetAndExistingUserFileAtToolPath(t *testing.T) {
 	// counted as written; here it already has identical bytes.
 	dir := t.TempDir()
 	tool := mkTool(t, "s", "t", "1")
-	if err := os.Mkdir(filepath.Join(dir, "s"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "s", "t.json"), append(append([]byte{}, tool.Canonical...), '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if rep := mustWrite(t, dir, tool); rep.Unchanged != 1 || rep.Written != 0 {
-		t.Fatalf("identical pre-existing file should be unchanged: %+v", rep)
-	}
+	writeFile(t, filepath.Join(dir, "s", "t.json"), string(tool.Canonical)+"\n")
+	rep := mustWrite(t, dir, tool)
+	wantReport(t, rep, 0, 0, 1)
 }

@@ -17,9 +17,7 @@ func TestWrite_LayoutManifestAndModes(t *testing.T) {
 	add := mkTool(t, "math", "add", "Adds.")
 	rep := mustWrite(t, dir, echo, add)
 
-	if rep != (Report{Written: 2}) {
-		t.Fatalf("report = %+v, want 2 written", rep)
-	}
+	wantReport(t, rep, 2, 0, 0)
 	if got := readFile(t, filepath.Join(dir, "weather", "echo.json")); got != string(echo.Canonical)+"\n" {
 		t.Fatalf("echo.json = %q", got)
 	}
@@ -56,6 +54,9 @@ func TestWrite_ManifestIsSortedPrettyAndUTC(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		t.Fatal(err)
 	}
+	if doc.Version != manifestVersion || doc.Status != statusComplete {
+		t.Fatalf("version/status = %d/%q", doc.Version, doc.Status)
+	}
 	var order []string
 	for _, e := range doc.Tools {
 		order = append(order, e.Server+"/"+e.Tool)
@@ -73,16 +74,23 @@ func TestWrite_ManifestIsSortedPrettyAndUTC(t *testing.T) {
 	}
 }
 
-func TestWrite_ManifestKeepsNamesReadable(t *testing.T) {
+// The manifest used to carry the raw upstream names, so a tool called
+// "a<b>&c" put those bytes into a file people read with git diff. It now
+// holds the percent-encoded names, which are also the file names.
+func TestWrite_ManifestHoldsEncodedNamesOnly(t *testing.T) {
 	dir := t.TempDir()
 	tool := mkTool(t, "s", "a<b>&c", "x")
 	mustWrite(t, dir, tool)
-	if raw := readFile(t, filepath.Join(dir, "MANIFEST.json")); !strings.Contains(raw, `"tool": "a<b>&c"`) {
-		t.Fatalf("manifest escaped HTML characters:\n%s", raw)
+	raw := readFile(t, filepath.Join(dir, "MANIFEST.json"))
+	if !strings.Contains(raw, `"tool": "a%3Cb%3E%26c"`) || !strings.Contains(raw, `"file": "s/a%3Cb%3E%26c.json"`) {
+		t.Fatalf("manifest does not hold the encoded name:\n%s", raw)
+	}
+	if strings.ContainsAny(raw, "<>&") {
+		t.Fatalf("manifest carries a raw name byte:\n%s", raw)
 	}
 }
 
-func TestWrite_TwiceIsByteIdentical(t *testing.T) {
+func TestWrite_TwiceIsByteIdenticalAndUntouched(t *testing.T) {
 	dir := t.TempDir()
 	a := mkTool(t, "s1", "one", "1")
 	b := mkTool(t, "s2", "two", "2")
@@ -94,11 +102,9 @@ func TestWrite_TwiceIsByteIdentical(t *testing.T) {
 	rep := mustWrite(t, dir, c, b, a) // different input order
 	after := snapshot(t, dir)
 
-	if rep != (Report{Unchanged: 3}) {
-		t.Fatalf("second report = %+v, want 3 unchanged", rep)
-	}
+	wantReport(t, rep, 0, 0, 3)
 	if !reflect.DeepEqual(before, after) {
-		t.Fatalf("directory changed between identical writes:\nbefore %v\nafter  %v", names(before), names(after))
+		t.Fatalf("directory changed between identical writes (times included):\nbefore %v\nafter  %v", names(before), names(after))
 	}
 }
 
@@ -111,9 +117,7 @@ func TestWrite_ChangedToolIsRewrittenOthersAreNot(t *testing.T) {
 	a2.VersionNo = 2
 
 	rep := mustWrite(t, dir, a2, b)
-	if rep != (Report{Written: 1, Unchanged: 1}) {
-		t.Fatalf("report = %+v", rep)
-	}
+	wantReport(t, rep, 1, 0, 1)
 	if !strings.Contains(readFile(t, filepath.Join(dir, "s", "one.json")), "v2 with") {
 		t.Fatal("changed tool was not rewritten")
 	}
@@ -128,9 +132,7 @@ func TestWrite_EmptyListClearsOnlyCreatedFiles(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, dir, mkTool(t, "s", "one", "1"))
 	rep := mustWrite(t, dir)
-	if rep != (Report{Removed: 1}) {
-		t.Fatalf("report = %+v", rep)
-	}
+	wantReport(t, rep, 0, 1, 0)
 	snap := snapshot(t, dir)
 	if _, ok := snap["s"]; ok {
 		t.Fatal("empty server directory must be removed")
@@ -138,6 +140,9 @@ func TestWrite_EmptyListClearsOnlyCreatedFiles(t *testing.T) {
 	var doc manifestDoc
 	if err := json.Unmarshal([]byte(snap["MANIFEST.json"].Content), &doc); err != nil || doc.Tools == nil || len(doc.Tools) != 0 {
 		t.Fatalf("manifest must list an empty tools array, got %q (%v)", snap["MANIFEST.json"].Content, err)
+	}
+	if doc.Status != statusComplete {
+		t.Fatalf("status = %q", doc.Status)
 	}
 }
 
@@ -154,21 +159,19 @@ func TestWrite_HostileNameCorpusStaysInsideDir(t *testing.T) {
 	corpus := []string{
 		"../x", "..", ".", "a/b", "/abs", `..\x`, `a\b`, "a\x00b", "\x00", "~", "$(id)", "`id`",
 		"CON", "nul.txt", ".git", ".git/config", "MANIFEST.json", "x.json", "é", "a b", "-rf", "--", "%2E%2E",
-		"../../../../etc/passwd", "a/../../b", "..%2F", "line\nbreak", "tab\t", "*", "?", "<>", "a:b",
+		"../../../../etc/passwd", "a/../../b", "..%2F", "line\nbreak", "tab\t", "*", "?", "<>", "a:b", ".tmp-x",
 	}
 	parent := t.TempDir()
 	sentinel := filepath.Join(parent, "sentinel.txt")
-	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, sentinel, "keep")
 	dir := filepath.Join(parent, "out")
 	var tools []Tool
-	for i, n := range corpus {
+	for _, n := range corpus {
 		tools = append(tools, mkTool(t, n, n, "body"))
 		tools = append(tools, mkTool(t, "srv", n, "body"))
-		_ = i
 	}
-	mustWrite(t, dir, tools...)
+	rep := mustWrite(t, dir, tools...)
+	wantReport(t, rep, 2*len(corpus), 0, 0)
 
 	for p := range snapshot(t, parent) {
 		if p == "." || p == "sentinel.txt" || p == "out" || strings.HasPrefix(p, "out"+string(filepath.Separator)) {
@@ -197,9 +200,8 @@ func TestWrite_HostileNameCorpusStaysInsideDir(t *testing.T) {
 func TestWrite_CollisionsAreRefusedBeforeAnythingIsWritten(t *testing.T) {
 	cases := map[string][]Tool{
 		"exact duplicate":   {mkTool(t, "s", "a", "1"), mkTool(t, "s", "a", "2")},
-		"case tool":         {mkTool(t, "s", "Tool", "1"), mkTool(t, "s", "tool", "2")},
 		"case server":       {mkTool(t, "Srv", "a", "1"), mkTool(t, "srv", "b", "2")},
-		"case plus escapes": {mkTool(t, "s", "é", "1"), mkTool(t, "s", "É", "2")}, // %C3%A9 vs %C3%89 differ: must NOT collide
+		"case plus escapes": {mkTool(t, "s", "é", "1"), mkTool(t, "s", "\u00c9", "2")}, // %C3%A9 vs %C3%89 differ: must NOT collide
 	}
 	for label, tools := range cases {
 		dir := filepath.Join(t.TempDir(), "out")
@@ -219,12 +221,54 @@ func TestWrite_CollisionsAreRefusedBeforeAnythingIsWritten(t *testing.T) {
 	}
 }
 
+// Two approved tools of one server whose names differ only in case used to
+// make Write refuse the whole batch, so the mirror stopped recording every
+// other approval. The colliding group is now left out and reported.
+func TestWrite_CaseCollidingToolsAreSkippedNotFatal(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "out")
+	upper := mkTool(t, "s", "Fetch", "1")
+	lower := mkTool(t, "s", "fetch", "2")
+	other := mkTool(t, "s", "other", "3")
+	elsewhere := mkTool(t, "t", "fetch", "4")
+	rep, err := Write(dir, []Tool{lower, other, upper, elsewhere})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	wantSkipped := []Skipped{
+		{Server: "s", Name: "Fetch", Reason: ReasonCaseCollision},
+		{Server: "s", Name: "fetch", Reason: ReasonCaseCollision},
+	}
+	if rep.Written != 2 || rep.Removed != 0 || rep.Unchanged != 0 || !reflect.DeepEqual(rep.Skipped, wantSkipped) {
+		t.Fatalf("report = %+v", rep)
+	}
+	snap := snapshot(t, dir)
+	for _, p := range []string{"s/other.json", "t/fetch.json"} {
+		if _, ok := snap[p]; !ok {
+			t.Errorf("%s must be written", p)
+		}
+	}
+	for p := range snap {
+		if strings.EqualFold(p, filepath.Join("s", "fetch.json")) {
+			t.Errorf("a colliding tool was written: %s", p)
+		}
+	}
+	if files := readManifest(t, dir).files(); !reflect.DeepEqual(files, []string{"s/other.json", "t/fetch.json"}) {
+		t.Fatalf("manifest files = %v", files)
+	}
+	again, err := Write(dir, []Tool{lower, other, upper, elsewhere})
+	if err != nil || again.Unchanged != 2 || !reflect.DeepEqual(again.Skipped, wantSkipped) {
+		t.Fatalf("second Write = %+v, %v", again, err)
+	}
+	three, err := Write(filepath.Join(t.TempDir(), "three"), []Tool{upper, lower, mkTool(t, "s", "FETCH", "5")})
+	if err != nil || three.Written != 0 || len(three.Skipped) != 3 {
+		t.Fatalf("three-way collision: %+v, %v", three, err)
+	}
+}
+
 func TestWrite_NamesThatLookAlikeAfterDecodingDoNotCollide(t *testing.T) {
 	dir := t.TempDir()
 	rep := mustWrite(t, dir, mkTool(t, "s", "a.b", "1"), mkTool(t, "s", "a%2Eb", "2"), mkTool(t, "s", "a%252Eb", "3"))
-	if rep.Written != 3 {
-		t.Fatalf("report = %+v", rep)
-	}
+	wantReport(t, rep, 3, 0, 0)
 }
 
 func TestWrite_InputValidationRefusesAndTouchesNothing(t *testing.T) {
@@ -235,16 +279,19 @@ func TestWrite_InputValidationRefusesAndTouchesNothing(t *testing.T) {
 		return c
 	}
 	cases := map[string]Tool{
-		"digest mismatch":    mut(func(x *Tool) { x.Digest = strings.Repeat("0", 64) }),
-		"upper-case digest":  mut(func(x *Tool) { x.Digest = strings.ToUpper(x.Digest) }),
-		"empty digest":       mut(func(x *Tool) { x.Digest = "" }),
-		"tampered canonical": mut(func(x *Tool) { x.Canonical = append([]byte(nil), x.Canonical...); x.Canonical[2] ^= 1 }),
-		"invalid json":       withDigest(t, []byte(`{"name":`)),
-		"empty canonical":    mut(func(x *Tool) { x.Canonical = nil }),
-		"negative version":   mut(func(x *Tool) { x.VersionNo = -1 }),
-		"empty server":       mut(func(x *Tool) { x.Server = "" }),
-		"empty name":         mut(func(x *Tool) { x.Name = "" }),
-		"oversized":          withDigest(t, []byte(`"`+strings.Repeat("a", maxToolBytes)+`"`)),
+		"digest mismatch":         mut(func(x *Tool) { x.Digest = strings.Repeat("0", 64) }),
+		"upper-case digest":       mut(func(x *Tool) { x.Digest = strings.ToUpper(x.Digest) }),
+		"empty digest":            mut(func(x *Tool) { x.Digest = "" }),
+		"tampered canonical":      mut(func(x *Tool) { x.Canonical = append([]byte(nil), x.Canonical...); x.Canonical[2] ^= 1 }),
+		"invalid json":            withDigest(t, []byte(`{"name":`)),
+		"invalid utf-8 canonical": withDigest(t, []byte("{\"name\":\"t\",\"d\":\"\xff\xfe\"}")),
+		"empty canonical":         mut(func(x *Tool) { x.Canonical = nil }),
+		"negative version":        mut(func(x *Tool) { x.VersionNo = -1 }),
+		"empty server":            mut(func(x *Tool) { x.Server = "" }),
+		"empty name":              mut(func(x *Tool) { x.Name = "" }),
+		"oversized":               withDigest(t, []byte(`"`+strings.Repeat("a", maxToolBytes)+`"`)),
+		"approver too long":       mut(func(x *Tool) { x.ApprovedBy = strings.Repeat("a", maxApproverBytes+1) }),
+		"approver invalid utf-8":  mut(func(x *Tool) { x.ApprovedBy = "al\xffice" }),
 	}
 	for label, bad := range cases {
 		dir := filepath.Join(t.TempDir(), "out")
@@ -272,13 +319,13 @@ func TestWrite_EmptyDirArgumentIsRefused(t *testing.T) {
 	}
 }
 
-func TestWrite_SortedKeysHelper(t *testing.T) {
-	in := []plannedTool{{tool: Tool{Server: "b", Name: "a"}}, {tool: Tool{Server: "a", Name: "z"}}}
+func TestWrite_SortedPlannedHelper(t *testing.T) {
+	in := []plannedTool{{rel: "b/a.json"}, {rel: "a/z.json"}}
 	out := sortPlanned(in)
-	if in[0].tool.Server != "b" {
+	if in[0].rel != "b/a.json" {
 		t.Fatal("sortPlanned must not mutate its argument")
 	}
-	got := []string{out[0].tool.Server, out[1].tool.Server}
+	got := []string{out[0].rel, out[1].rel}
 	if !sort.StringsAreSorted(got) {
 		t.Fatalf("not sorted: %v", got)
 	}

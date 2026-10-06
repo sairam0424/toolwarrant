@@ -3,9 +3,14 @@ package export
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"sort"
 	"time"
+
+	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 const (
@@ -15,17 +20,31 @@ const (
 	manifestName = "MANIFEST.json"
 
 	// manifestVersion is bumped on any incompatible change to the layout. A
-	// manifest with another version is ignored rather than trusted.
-	manifestVersion = 1
+	// manifest with another version is ignored rather than trusted, which
+	// means its files are left alone and never deleted. Version 2 stores the
+	// percent-encoded server and tool names (version 1 stored the raw upstream
+	// names) and carries a status.
+	manifestVersion = 2
 
 	// maxManifestBytes bounds how much of a previous manifest is parsed; the
 	// file lives in a directory other people can edit.
 	maxManifestBytes = 32 << 20
 
 	manifestIndent = "  "
+
+	// statusComplete marks a manifest that lists exactly the files on disk.
+	statusComplete = "complete"
+	// statusPending marks the manifest Write puts down before it touches any
+	// tool file. It lists the union of the previous files and the new plan, so
+	// a Write that dies half way leaves a record that still covers every file
+	// this package may have created, and the next Write finishes the clean-up.
+	statusPending = "pending"
 )
 
-// manifestEntry is one approved tool as listed in MANIFEST.json.
+// manifestEntry is one approved tool as listed in MANIFEST.json. Server and
+// Tool hold the encoded names: the manifest is read in terminals and web
+// views, so it must never carry a raw upstream name with a control character
+// or an invisible code point in it.
 type manifestEntry struct {
 	Server     string `json:"server"`
 	Tool       string `json:"tool"`
@@ -39,40 +58,70 @@ type manifestEntry struct {
 // manifestDoc is the whole MANIFEST.json document.
 type manifestDoc struct {
 	Version int             `json:"version"`
+	Status  string          `json:"status"`
 	Tools   []manifestEntry `json:"tools"`
 }
 
-// sortPlanned orders tools by raw server then raw tool name, so the manifest
-// does not depend on the order the caller passed them in.
-func sortPlanned(in []plannedTool) []plannedTool {
-	out := make([]plannedTool, len(in))
-	copy(out, in)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].tool.Server != out[j].tool.Server {
-			return out[i].tool.Server < out[j].tool.Server
+// files returns the relative paths the manifest lists.
+func (d manifestDoc) files() []string {
+	out := make([]string, 0, len(d.Tools))
+	for _, e := range d.Tools {
+		out = append(out, e.File)
+	}
+	return out
+}
+
+// entryOf builds the manifest entry of a planned tool. The names are the
+// encoded ones, which are plain ASCII, and the approver's name goes through
+// textdiff.Escape, so nothing in the manifest can act on a terminal or hide
+// from a reader. The file field is the exact identity of the snapshot.
+func entryOf(p plannedTool) manifestEntry {
+	return manifestEntry{
+		Server:     p.dirName,
+		Tool:       p.encTool,
+		File:       p.rel,
+		Digest:     p.tool.Digest,
+		ApprovedBy: textdiff.Escape(p.tool.ApprovedBy),
+		ApprovedAt: p.tool.ApprovedAt.UTC().Format(time.RFC3339Nano),
+		VersionNo:  p.tool.VersionNo,
+	}
+}
+
+// planEntries returns the manifest entries of a plan.
+func planEntries(planned []plannedTool) []manifestEntry {
+	out := make([]manifestEntry, 0, len(planned))
+	for _, p := range planned {
+		out = append(out, entryOf(p))
+	}
+	return out
+}
+
+// unionEntries returns the plan's entries plus every previous entry whose file
+// the plan does not claim: exactly the set of files that may exist on disk
+// while a Write is in progress.
+func unionEntries(prev []manifestEntry, planned []plannedTool) []manifestEntry {
+	out := planEntries(planned)
+	claimed := make(map[string]struct{}, len(planned))
+	for _, p := range planned {
+		claimed[p.rel] = struct{}{}
+	}
+	for _, e := range prev {
+		if _, ok := claimed[e.File]; !ok {
+			out = append(out, e)
 		}
-		return out[i].tool.Name < out[j].tool.Name
-	})
+	}
 	return out
 }
 
 // renderManifest returns the deterministic, pretty-printed manifest bytes for
-// a validated plan, ending in a newline. HTML escaping is off so names stay
-// readable in a git diff.
-func renderManifest(planned []plannedTool) ([]byte, error) {
-	sorted := sortPlanned(planned)
-	doc := manifestDoc{Version: manifestVersion, Tools: make([]manifestEntry, 0, len(sorted))}
-	for _, p := range sorted {
-		doc.Tools = append(doc.Tools, manifestEntry{
-			Server:     p.tool.Server,
-			Tool:       p.tool.Name,
-			File:       p.rel,
-			Digest:     p.tool.Digest,
-			ApprovedBy: p.tool.ApprovedBy,
-			ApprovedAt: p.tool.ApprovedAt.UTC().Format(time.RFC3339Nano),
-			VersionNo:  p.tool.VersionNo,
-		})
-	}
+// the entries, sorted by file and ending in a newline. HTML escaping is off so
+// the digests and dates stay readable in a git diff; the names are encoded,
+// so there is nothing hostile left for the JSON encoder to escape.
+func renderManifest(entries []manifestEntry, status string) ([]byte, error) {
+	sorted := make([]manifestEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].File < sorted[j].File })
+	doc := manifestDoc{Version: manifestVersion, Status: status, Tools: sorted}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -83,28 +132,59 @@ func renderManifest(planned []plannedTool) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// parseManifestFiles reads the file list out of a previous manifest. The input
-// is untrusted: it returns ok=false unless the version matches and every entry
-// names exactly the path this package would derive from its own server and
-// tool fields. One bad entry invalidates the whole manifest, because the
-// alternative is deleting files on the word of a document we only half trust.
-func parseManifestFiles(raw []byte) (files []string, ok bool) {
+// parseManifest reads an untrusted manifest. It returns ok=false unless the
+// version matches, the status is one this package writes, and every entry
+// names exactly the file this package derives from its own encoded server and
+// tool fields, with no file listed twice. One bad entry invalidates the whole
+// manifest, because the alternative is deleting files on the word of a
+// document we only half trust.
+func parseManifest(raw []byte) (manifestDoc, bool) {
 	var doc manifestDoc
 	if err := json.Unmarshal(raw, &doc); err != nil || doc.Version != manifestVersion {
-		return nil, false
+		return manifestDoc{}, false
+	}
+	if doc.Status != statusComplete && doc.Status != statusPending {
+		return manifestDoc{}, false
 	}
 	seen := make(map[string]struct{}, len(doc.Tools))
 	for _, e := range doc.Tools {
-		encServer, errS := encodeName("server", e.Server)
-		encTool, errT := encodeName("tool", e.Tool)
-		if errS != nil || errT != nil || e.File != relPath(encServer, encTool) {
-			return nil, false
+		if !isEncodedName("server", e.Server) || !isEncodedName("tool", e.Tool) || e.File != relPath(e.Server, e.Tool) {
+			return manifestDoc{}, false
 		}
 		if _, dup := seen[e.File]; dup {
-			return nil, false
+			return manifestDoc{}, false
 		}
 		seen[e.File] = struct{}{}
-		files = append(files, e.File)
 	}
-	return files, true
+	return doc, true
+}
+
+// readPrevManifest returns the previous manifest, pending or complete, as the
+// record of the files this package created. A missing, oversized, unreadable
+// or invalid manifest yields an empty one, which means nothing will be
+// deleted. Only a symlink or directory at the manifest path is an error,
+// because writing the new manifest there would follow it or fail.
+func readPrevManifest(root *os.Root) (manifestDoc, error) {
+	fi, err := root.Lstat(manifestName)
+	if errors.Is(err, fs.ErrNotExist) {
+		return manifestDoc{}, nil
+	}
+	if err != nil {
+		return manifestDoc{}, fmt.Errorf("export: stat manifest: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return manifestDoc{}, errors.New("export: manifest path is a symlink or not a regular file")
+	}
+	if fi.Size() > maxManifestBytes {
+		return manifestDoc{}, nil
+	}
+	raw, err := root.ReadFile(manifestName)
+	if err != nil {
+		return manifestDoc{}, nil //nolint:nilerr // unreadable manifest is treated as invalid: delete nothing
+	}
+	doc, ok := parseManifest(raw)
+	if !ok {
+		return manifestDoc{}, nil
+	}
+	return doc, nil
 }

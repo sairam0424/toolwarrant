@@ -112,9 +112,7 @@ func TestCommit_AppliesIdentityAndIgnoresAmbientEnvironment(t *testing.T) {
 	requireGit(t)
 	home := t.TempDir()
 	cfg := "[user]\n\tname = Evil Global\n\temail = evil@example.com\n[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n"
-	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(home, ".gitconfig"), cfg)
 	t.Setenv("HOME", home)
 	t.Setenv("GIT_AUTHOR_NAME", "Evil Env")
 	t.Setenv("GIT_AUTHOR_EMAIL", "env@example.com")
@@ -216,15 +214,7 @@ func TestCommit_HooksAndRepoLocalProgramsAreNotExecuted(t *testing.T) {
 	if err := os.WriteFile(fsmon, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	local := "\n[core]\n\thooksPath = " + otherHooks + "\n\tfsmonitor = " + fsmon + "\n[commit]\n\tgpgsign = true\n"
-	cfg, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cfg.WriteString(local); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Close()
+	appendGitConfig(t, dir, "\n[core]\n\thooksPath = "+otherHooks+"\n\tfsmonitor = "+fsmon+"\n[commit]\n\tgpgsign = true\n")
 
 	mustWrite(t, dir, mkTool(t, "s", "one", "2"))
 	if !mustCommit(t, dir, "second") {
@@ -288,16 +278,9 @@ func TestCommit_RefusesUnsafeDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(base, "file")
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, file, "")
 	gitfile := filepath.Join(base, "gitfile")
-	if err := os.Mkdir(gitfile, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitfile, ".git"), []byte("gitdir: "+real+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(gitfile, ".git"), "gitdir: "+real+"\n")
 	gitlink := filepath.Join(base, "gitlink")
 	if err := os.Mkdir(gitlink, 0o755); err != nil {
 		t.Fatal(err)
@@ -369,9 +352,12 @@ func TestGitEnv_HasNoInheritedGitVariables(t *testing.T) {
 	}
 }
 
-func TestGitConfigFlags_DisableHooksAndSigning(t *testing.T) {
+func TestGitConfigFlags_DisableHooksSigningAndRepoLocalPrograms(t *testing.T) {
 	joined := strings.Join(gitConfigFlags(alice), " ")
-	for _, want := range []string{"core.hooksPath=/dev/null", "commit.gpgsign=false", "user.name=Alice Approver", "user.email=alice@example.com", "core.fsmonitor=false"} {
+	for _, want := range []string{
+		"core.hooksPath=/dev/null", "commit.gpgsign=false", "user.name=Alice Approver", "user.email=alice@example.com",
+		"core.fsmonitor=false", "diff.external=", "core.attributesFile=/dev/null", "core.excludesFile=/dev/null",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
 		}
@@ -400,7 +386,7 @@ func TestGitRunner_ErrorPaths(t *testing.T) {
 	if _, err := missing.isOwnToplevel(ctx); err == nil {
 		t.Fatal("a git binary that cannot start must be an error, not 'not a repo'")
 	}
-	if _, err := missing.commitAll(ctx, "m"); err == nil {
+	if _, err := missing.commitAll(ctx, "m", nil); err == nil {
 		t.Fatal("commitAll must propagate the start failure")
 	}
 }

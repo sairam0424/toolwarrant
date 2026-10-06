@@ -6,15 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // decodeJSON parses exactly one JSON document. Numbers stay as their original
 // text so pretty-printing never rewrites them. Trailing data is an error: a
-// document with anything after the value is not canonical JSON.
+// document with anything after the value is not canonical JSON. Bytes that are
+// not valid UTF-8 are an error too, because the decoder would otherwise turn
+// them into U+FFFD without saying so and the approver would review a text the
+// upstream never sent.
 func decodeJSON(raw []byte) (any, error) {
+	if !utf8.Valid(raw) {
+		return nil, errors.New("decode json: not valid UTF-8")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var v any
@@ -27,57 +33,82 @@ func decodeJSON(raw []byte) (any, error) {
 	return v, nil
 }
 
-// prettyJSON renders v with sorted keys and two-space indentation and without
-// a trailing newline. HTML escaping is off so "<" stays "<" and the approver
-// reads the text the agent will read.
-func prettyJSON(v any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		return "", fmt.Errorf("encode json: %w", err)
+// noIndex marks a pathNode that is an object key or the root, not an array
+// element.
+const noIndex = -1
+
+// pathNode is one segment of a display path such as $.a["b c"][0]. A node
+// points at its parent and holds only its own segment, so the strings of a
+// document share their prefixes: the path text is built only for the few
+// entries that are printed. The first version built a full string per value,
+// which for a 255-deep array of 65,000 items was 50 MB of paths.
+type pathNode struct {
+	parent *pathNode
+	key    string
+	index  int
+}
+
+// rootNode returns the node that renders as "$".
+func rootNode() *pathNode {
+	return &pathNode{index: noIndex}
+}
+
+// child returns the node for key k below n.
+func (n *pathNode) child(k string) *pathNode {
+	return &pathNode{parent: n, key: k, index: noIndex}
+}
+
+// element returns the node for array index i below n.
+func (n *pathNode) element(i int) *pathNode {
+	return &pathNode{parent: n, index: i}
+}
+
+// String renders the display path, escaped and safe to print.
+func (n *pathNode) String() string {
+	var chain []*pathNode
+	for p := n; p.parent != nil; p = p.parent {
+		chain = append(chain, p)
 	}
-	return strings.TrimSuffix(buf.String(), "\n"), nil
+	var sb strings.Builder
+	sb.WriteByte('$')
+	for i := len(chain) - 1; i >= 0; i-- {
+		seg := chain[i]
+		if seg.index != noIndex {
+			sb.WriteByte('[')
+			sb.WriteString(strconv.Itoa(seg.index))
+			sb.WriteByte(']')
+			continue
+		}
+		sb.WriteString(keySegment(seg.key))
+	}
+	return sb.String()
 }
 
 // stringEntry is one decoded string found in a document: either a string
-// value or an object key. path is a display path such as $.a["b c"][0].
+// value or an object key. For a key, node is the path of the member it names.
 type stringEntry struct {
-	path  string
+	node  *pathNode
 	value string
 	isKey bool
 }
 
-// collectStrings lists every string value and object key in v in a fixed
-// order (keys sorted, arrays by index). The decoded text is used, not the raw
-// JSON, because a JSON escape such as backslash-u-200b hides the character in the source.
-func collectStrings(v any) []stringEntry {
-	w := &walker{}
-	w.visit(v, "$")
-	return w.entries
-}
-
-type walker struct{ entries []stringEntry }
-
-func (w *walker) visit(v any, path string) {
+// walkStrings calls visit for every string value and object key in v in a
+// fixed order (keys sorted, arrays by index). The decoded text is used, not
+// the raw JSON, because a JSON escape such as backslash-u-200b hides the
+// character in the source.
+func walkStrings(v any, node *pathNode, visit func(stringEntry)) {
 	switch t := v.(type) {
 	case string:
-		w.entries = append(w.entries, stringEntry{path: path, value: t})
+		visit(stringEntry{node: node, value: t})
 	case []any:
 		for i, el := range t {
-			w.visit(el, path+"["+strconv.Itoa(i)+"]")
+			walkStrings(el, node.element(i), visit)
 		}
 	case map[string]any:
-		keys := make([]string, 0, len(t))
-		for k := range t {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			child := path + keySegment(k)
-			w.entries = append(w.entries, stringEntry{path: child, value: k, isKey: true})
-			w.visit(t[k], child)
+		for _, k := range sortedKeys(t) {
+			child := node.child(k)
+			visit(stringEntry{node: child, value: k, isKey: true})
+			walkStrings(t[k], child, visit)
 		}
 	}
 }
@@ -105,15 +136,4 @@ func isSimpleKey(k string) bool {
 		}
 	}
 	return true
-}
-
-// stringValues returns the string values (not keys) by display path.
-func stringValues(entries []stringEntry) map[string]string {
-	out := make(map[string]string, len(entries))
-	for _, e := range entries {
-		if !e.isKey {
-			out[e.path] = e.value
-		}
-	}
-	return out
 }
