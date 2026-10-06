@@ -139,6 +139,11 @@ type VersionView struct {
 type ToolPolicy struct {
 	State    lifecycle.State
 	Approved string // digest, or ""
+	// LastSeen is the digest the upstream served in the latest crawl, or "" if
+	// the tool was absent. The tools/call hook carries no tool definition, so
+	// this is how the control plane can veto a call for a client that has not
+	// re-listed since the upstream changed.
+	LastSeen string
 }
 
 // Snapshot is the serving policy of one server at one generation. Keys are
