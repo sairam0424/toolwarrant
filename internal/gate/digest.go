@@ -30,25 +30,40 @@ func Canonical(raw []byte) ([]byte, error) {
 	return canonicalize(raw)
 }
 
-// Digest returns the lowercase hex SHA-256 of the canonical form of a tool
-// object, after removing VolatileKeys. It fails on anything that is not a JSON
-// object so that callers can fail closed.
-func Digest(tool []byte) (string, error) {
+// CanonicalTool returns the exact bytes that Digest hashes: the RFC 8785
+// canonical form of the tool object after removing VolatileKeys. It fails on
+// anything that is not a JSON object so that callers can fail closed.
+func CanonicalTool(tool []byte) ([]byte, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(tool, &obj); err != nil || obj == nil {
-		return "", errors.New("gate: tool definition is not a JSON object")
+		return nil, errors.New("gate: tool definition is not a JSON object")
 	}
 	for _, k := range VolatileKeys {
 		delete(obj, k)
 	}
 	stripped, err := json.Marshal(obj)
 	if err != nil {
-		return "", fmt.Errorf("gate: re-encode tool: %w", err)
+		return nil, fmt.Errorf("gate: re-encode tool: %w", err)
 	}
 	canon, err := canonicalize(stripped)
 	if err != nil {
-		return "", fmt.Errorf("gate: canonicalize tool: %w", err)
+		return nil, fmt.Errorf("gate: canonicalize tool: %w", err)
 	}
-	sum := sha256.Sum256(canon)
-	return hex.EncodeToString(sum[:]), nil
+	return canon, nil
+}
+
+// DigestOfCanonical returns the lowercase hex SHA-256 of bytes previously
+// produced by CanonicalTool.
+func DigestOfCanonical(canonical []byte) string {
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
+}
+
+// Digest returns the lowercase hex SHA-256 of CanonicalTool(tool).
+func Digest(tool []byte) (string, error) {
+	canon, err := CanonicalTool(tool)
+	if err != nil {
+		return "", err
+	}
+	return DigestOfCanonical(canon), nil
 }
