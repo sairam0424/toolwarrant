@@ -1,0 +1,54 @@
+// Package gate holds the approval logic that decides which MCP tools callers
+// may see and call. Approvals are bound to a digest of the whole tool
+// definition, so any change to a description, schema or annotation makes the
+// tool unapproved until an owner approves the new version.
+package gate
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/gowebpki/jcs"
+)
+
+// VolatileKeys are top-level tool keys that legitimately change between
+// requests without changing what the tool is or does, so they are excluded
+// from the digest. Everything else, including fields this code has never heard
+// of, is part of the tool's identity: a new field is a change that needs
+// approval.
+var VolatileKeys = []string{"_meta"}
+
+// canonicalize is the single place the RFC 8785 library is used, so it can be
+// swapped or cross-checked. Every approval depends on it.
+var canonicalize = jcs.Transform
+
+// Canonical returns the RFC 8785 (JCS) canonical form of a JSON document.
+func Canonical(raw []byte) ([]byte, error) {
+	return canonicalize(raw)
+}
+
+// Digest returns the lowercase hex SHA-256 of the canonical form of a tool
+// object, after removing VolatileKeys. It fails on anything that is not a JSON
+// object so that callers can fail closed.
+func Digest(tool []byte) (string, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(tool, &obj); err != nil || obj == nil {
+		return "", errors.New("gate: tool definition is not a JSON object")
+	}
+	for _, k := range VolatileKeys {
+		delete(obj, k)
+	}
+	stripped, err := json.Marshal(obj)
+	if err != nil {
+		return "", fmt.Errorf("gate: re-encode tool: %w", err)
+	}
+	canon, err := canonicalize(stripped)
+	if err != nil {
+		return "", fmt.Errorf("gate: canonicalize tool: %w", err)
+	}
+	sum := sha256.Sum256(canon)
+	return hex.EncodeToString(sum[:]), nil
+}

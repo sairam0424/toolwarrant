@@ -27,6 +27,13 @@ var ErrNoTools = errors.New("mcpwire: result has no tools array")
 // array, or contains a tool without a string name is an error: a gate that
 // cannot read a tool must not let it through.
 func FilterToolsList(raw []byte, allow func(name string) bool) (out []byte, dropped []string, err error) {
+	return FilterToolsListRaw(raw, func(name string, _ []byte) bool { return allow(name) })
+}
+
+// FilterToolsListRaw is FilterToolsList for callers that need to look at the
+// tool itself, for example to compute a digest of its definition. allow gets
+// the tool's name and its exact raw JSON bytes.
+func FilterToolsListRaw(raw []byte, allow func(name string, tool []byte) bool) (out []byte, dropped []string, err error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return nil, nil, fmt.Errorf("mcpwire: tools/list result is not a JSON object: %w", err)
@@ -48,7 +55,7 @@ func FilterToolsList(raw []byte, allow func(name string) bool) (out []byte, drop
 		if err := json.Unmarshal(t, &head); err != nil || head.Name == "" {
 			return nil, nil, fmt.Errorf("mcpwire: tool %d has no string name", i)
 		}
-		if allow(head.Name) {
+		if allow(head.Name, t) {
 			kept = append(kept, t)
 		} else {
 			dropped = append(dropped, head.Name)

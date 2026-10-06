@@ -115,3 +115,21 @@ func TestFilterToolsList_DoesNotHTMLEscapeKeptTools(t *testing.T) {
 		t.Fatalf("kept tool bytes were rewritten (HTML-escaped): %s", out)
 	}
 }
+
+func TestFilterToolsListRaw_PassesExactToolBytesToTheCallback(t *testing.T) {
+	seen := map[string]string{}
+	_, _, err := FilterToolsListRaw([]byte(listResult), func(name string, tool []byte) bool {
+		seen[name] = string(tool)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAdd := `{"name":"add","description":"Adds.","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}`
+	if seen["add"] != wantAdd {
+		t.Fatalf("callback got %q, want the tool's exact bytes %q", seen["add"], wantAdd)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("callback saw %d tools, want 3", len(seen))
+	}
+}

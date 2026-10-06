@@ -18,6 +18,7 @@ import (
 func main() {
 	url := flag.String("url", "http://127.0.0.1:3000/mcp", "gateway MCP endpoint")
 	call := flag.String("call", "", "comma-separated tools to try calling")
+	nolist := flag.Bool("nolist", false, "skip tools/list and call directly (tests call-time checks against a stale snapshot)")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -31,15 +32,18 @@ func main() {
 	}
 	defer session.Close()
 
-	tools, err := session.ListTools(ctx, nil)
-	if err != nil {
-		fmt.Println("LIST ERROR:", err)
-	} else {
-		names := make([]string, 0, len(tools.Tools))
-		for _, t := range tools.Tools {
-			names = append(names, fmt.Sprintf("%s(%q)", t.Name, t.Description))
+	if !*nolist {
+		tools, err := session.ListTools(ctx, nil)
+		if err != nil {
+			fmt.Println("LIST ERROR:", err)
+		} else {
+			names := make([]string, 0, len(tools.Tools))
+			for _, t := range tools.Tools {
+				names = append(names, fmt.Sprintf("%s(%q)", t.Name, t.Description))
+			}
+			fmt.Printf("LIST OK  tools=%d  %s\n", len(tools.Tools), strings.Join(names, " | "))
 		}
-		fmt.Printf("LIST OK  tools=%d  %s\n", len(tools.Tools), strings.Join(names, " | "))
+
 	}
 
 	for _, name := range strings.Split(*call, ",") {

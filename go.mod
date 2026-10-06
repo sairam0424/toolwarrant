@@ -3,6 +3,7 @@ module github.com/sairam0424/toolwarrant
 go 1.27.1
 
 require (
+	github.com/gowebpki/jcs v1.0.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
