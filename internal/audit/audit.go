@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
@@ -37,8 +38,40 @@ type Entry struct {
 	Hash       string `json:"hash"`
 }
 
+// maxSeq is the largest sequence number RFC 8785 can represent exactly: it
+// serialises numbers as IEEE 754 doubles, so 2^53 and 2^53+1 would otherwise
+// hash alike.
+const maxSeq = int64(1)<<53 - 1
+
+// validate rejects entries whose hash would not identify them uniquely. Invalid
+// UTF-8 is re-encoded as U+FFFD by JSON, so two different byte strings would
+// share a hash and a change between them would go unnoticed.
+func validate(e Entry) error {
+	// Only exactness matters here. Whether the sequence runs 1..n is Verify's job.
+	if e.Seq < -maxSeq || e.Seq > maxSeq {
+		return fmt.Errorf("audit: seq %d is outside ±%d", e.Seq, maxSeq)
+	}
+	fields := []struct {
+		name  string
+		value string
+	}{
+		{"ts", e.TS}, {"actor", e.Actor}, {"actor_type", e.ActorType}, {"event", e.Event},
+		{"subject", e.Subject}, {"before_hash", e.BeforeHash}, {"after_hash", e.AfterHash},
+		{"detail", e.Detail}, {"prev_hash", e.PrevHash},
+	}
+	for _, f := range fields {
+		if !utf8.ValidString(f.value) {
+			return fmt.Errorf("audit: field %s is not valid UTF-8", f.name)
+		}
+	}
+	return nil
+}
+
 // compute returns the hash of e over every field except Hash itself.
 func compute(e Entry) (string, error) {
+	if err := validate(e); err != nil {
+		return "", err
+	}
 	hashless := e
 	hashless.Hash = ""
 	raw, err := json.Marshal(struct {

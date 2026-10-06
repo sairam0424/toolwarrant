@@ -12,6 +12,8 @@ import (
 	"fmt"
 
 	"github.com/gowebpki/jcs"
+
+	"github.com/sairam0424/toolwarrant/internal/strictjson"
 )
 
 // VolatileKeys are top-level tool keys that legitimately change between
@@ -34,6 +36,11 @@ func Canonical(raw []byte) ([]byte, error) {
 // canonical form of the tool object after removing VolatileKeys. It fails on
 // anything that is not a JSON object so that callers can fail closed.
 func CanonicalTool(tool []byte) ([]byte, error) {
+	// Decoding into a map keeps only the last of two duplicate keys, so the
+	// digest could hide a shadowed field. Refuse such definitions instead.
+	if err := strictjson.Object(tool); err != nil {
+		return nil, fmt.Errorf("gate: tool definition: %w", err)
+	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(tool, &obj); err != nil || obj == nil {
 		return nil, errors.New("gate: tool definition is not a JSON object")

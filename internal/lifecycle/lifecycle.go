@@ -88,8 +88,9 @@ type Policy struct {
 	// disabled tool comes back only after a fresh approval of a specific
 	// digest. When false, Enable restores the retained approval.
 	ReEnableRequiresReview bool
-	// DeprecateAfter is how many consecutive successful crawls may miss a tool
-	// before it is deprecated. Zero or less disables deprecation.
+	// DeprecateAfter is the number of consecutive successful crawls that must
+	// miss a tool for it to be deprecated: the tool is deprecated on the Nth
+	// miss. Zero or less disables deprecation.
 	DeprecateAfter int
 }
 
