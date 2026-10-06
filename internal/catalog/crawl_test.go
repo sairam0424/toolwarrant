@@ -1,0 +1,280 @@
+package catalog
+
+import (
+	"errors"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/sairam0424/toolwarrant/internal/audit"
+	"github.com/sairam0424/toolwarrant/internal/lifecycle"
+)
+
+func entryOf(t *testing.T, s *Store, event string) audit.Entry {
+	t.Helper()
+	entries, err := s.AuditEntries(bg, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Event == event {
+			return entries[i]
+		}
+	}
+	t.Fatalf("no audit entry with event %s in %v", event, auditEvents(t, s))
+	return audit.Entry{}
+}
+
+func TestRecordCrawl_FirstCrawlDiscoversAndNeverApproves(t *testing.T) {
+	s, path := newStoreAt(t, defaultPolicyForTests())
+	mustAddServer(t, s, "alpha")
+
+	rep := mustCrawl(t, s, "alpha", tool("b", "v1"), tool("a", "v1"))
+	if !rep.Complete || rep.CrawlID <= 0 || len(rep.Changes) != 2 {
+		t.Fatalf("report = %+v", rep)
+	}
+	for i, want := range []string{"a", "b"} {
+		c := rep.Changes[i]
+		if c.Tool != want || c.Kind != ChangeNew || c.State != lifecycle.PendingReview || c.Digest != digestOf(t, want, "v1") {
+			t.Errorf("Changes[%d] = %+v", i, c)
+		}
+	}
+	for _, n := range []string{"a", "b"} {
+		v := mustTool(t, s, "alpha", n)
+		if v.Approved != "" || v.Pending != digestOf(t, n, "v1") || v.LastSeen != v.Pending || v.Versions != 1 || v.Drifted {
+			t.Errorf("tool %s = %+v", n, v)
+		}
+	}
+	want := []string{"server.added",
+		"tool.discovered", "version.proposed", "tool.discovered", "version.proposed", "crawl.completed"}
+	if got := auditEvents(t, s); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("audit events = %v\nwant %v", got, want)
+	}
+	snap, err := s.Snapshot(bg, "alpha")
+	if err != nil || len(snap.Tools) != 2 {
+		t.Fatalf("Snapshot = %+v, %v", snap, err)
+	}
+	for n, p := range snap.Tools {
+		if p.Approved != "" || snap.Serves(n, p.LastSeen) {
+			t.Errorf("nothing is approved yet, but %s is served: %+v", n, p)
+		}
+	}
+	if list, err := s.Approved(bg); err != nil || len(list) != 0 {
+		t.Errorf("Approved = %v, %v; want none", list, err)
+	}
+	if n := mustCount(t, rawDB(t, path), `SELECT COUNT(*) FROM tools WHERE state = 'discovered'`); n != 0 {
+		t.Errorf("%d tools persisted in the transient discovered state", n)
+	}
+	if _, err := s.VerifyAudit(bg); err != nil {
+		t.Errorf("VerifyAudit: %v", err)
+	}
+}
+
+func TestRecordCrawl_RecrawlOfSameDefinitionIsUnchanged(t *testing.T) {
+	s := newStore(t)
+	mustAddServer(t, s, "alpha")
+	mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	before := auditCount(t, s)
+
+	rep := mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	if k := kindsOf(rep)["echo"]; k != ChangeUnchanged {
+		t.Fatalf("kind = %s, want unchanged", k)
+	}
+	if got := auditCount(t, s); got != before+1 || entryOf(t, s, "crawl.completed").Detail == "" {
+		t.Errorf("audit grew by %d, want only the crawl.completed entry", got-before)
+	}
+	if v := mustTool(t, s, "alpha", "echo"); v.Versions != 1 {
+		t.Errorf("versions = %d", v.Versions)
+	}
+}
+
+func TestRecordCrawl_DriftRevertAndStrictMode(t *testing.T) {
+	s := newStore(t)
+	mustAddServer(t, s, "alpha")
+	d1, d2 := digestOf(t, "echo", "v1"), digestOf(t, "echo", "v2")
+	mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	mustApprove(t, s, "alpha", "echo", d1)
+
+	rep := mustCrawl(t, s, "alpha", tool("echo", "v2"))
+	if c := rep.Changes[0]; c.Kind != ChangeChanged || c.State != lifecycle.ChangedPendingReapproval || c.Digest != d2 {
+		t.Fatalf("drift change = %+v", c)
+	}
+	v := mustTool(t, s, "alpha", "echo")
+	if v.Approved != d1 || v.Pending != d2 || v.LastSeen != d2 || !v.Drifted || v.Versions != 2 {
+		t.Fatalf("drifted tool = %+v", v)
+	}
+	ev := entryOf(t, s, "tool.drifted")
+	if ev.Detail != "digest="+d2+" state=enabled->changed_pending_reapproval" ||
+		ev.BeforeHash != d1 || ev.AfterHash != d1 || ev.Subject != "alpha/echo" || ev.Actor != "crawler" || ev.ActorType != "system" {
+		t.Errorf("drift audit entry = %+v", ev)
+	}
+	snap, _ := s.Snapshot(bg, "alpha")
+	if snap.Serves("echo", d2) {
+		t.Error("strict mode: the unapproved definition must not be served")
+	}
+	if !snap.Serves("echo", d1) {
+		t.Error("the approved definition is served again as soon as the upstream serves it")
+	}
+	if p := snap.Tools["echo"]; p.LastSeen != d2 || p.Approved != d1 || p.State != lifecycle.ChangedPendingReapproval {
+		t.Errorf("policy = %+v", p)
+	}
+
+	rep = mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	if c := rep.Changes[0]; c.Kind != ChangeReverted || c.State != lifecycle.Enabled || c.Digest != d1 {
+		t.Fatalf("revert change = %+v", c)
+	}
+	vs, err := s.Versions(bg, "alpha", "echo")
+	if err != nil || len(vs) != 2 || vs[0].Status != lifecycle.VersionApproved || vs[1].Status != lifecycle.VersionSuperseded {
+		t.Fatalf("versions after revert = %+v, %v", vs, err)
+	}
+}
+
+func TestRecordCrawl_MissingDeprecatedAndReappeared(t *testing.T) {
+	s := newStore(t)
+	mustAddServer(t, s, "alpha")
+	da := digestOf(t, "a", "v1")
+	mustCrawl(t, s, "alpha", tool("a", "v1"), tool("b", "v1"))
+	mustApprove(t, s, "alpha", "a", da)
+
+	for i, want := range []ChangeKind{ChangeMissing, ChangeMissing, ChangeDeprecated} {
+		rep := mustCrawl(t, s, "alpha", tool("b", "v1"))
+		kinds := kindsOf(rep)
+		if kinds["a"] != want || kinds["b"] != ChangeUnchanged {
+			t.Fatalf("crawl %d: kinds = %v, want a=%s", i+1, kinds, want)
+		}
+		for _, c := range rep.Changes {
+			if c.Tool == "a" && c.Digest != "" {
+				t.Errorf("an absent tool has no live digest, got %q", c.Digest)
+			}
+		}
+	}
+	if v := mustTool(t, s, "alpha", "a"); v.State != lifecycle.Deprecated || v.MissingCrawls != 3 || v.LastSeen != "" {
+		t.Fatalf("deprecated tool = %+v", v)
+	}
+	snap, _ := s.Snapshot(bg, "alpha")
+	if _, ok := snap.Tools["a"]; ok || snap.Serves("a", da) {
+		t.Errorf("a deprecated tool must not be in the snapshot: %+v", snap.Tools)
+	}
+	if list, _ := s.Approved(bg); len(list) != 0 {
+		t.Errorf("Approved lists a deprecated tool: %+v", list)
+	}
+	// A deprecated tool that stays away produces no further noise.
+	if k := kindsOf(mustCrawl(t, s, "alpha", tool("b", "v1")))["a"]; k != ChangeUnchanged {
+		t.Errorf("deprecated and still absent: kind %s", k)
+	}
+
+	rep := mustCrawl(t, s, "alpha", tool("a", "v1"), tool("b", "v1"))
+	if c := rep.Changes[0]; c.Tool != "a" || c.Kind != ChangeReappeared || c.State != lifecycle.PendingReview {
+		t.Fatalf("reappearance = %+v", c)
+	}
+	if v := mustTool(t, s, "alpha", "a"); v.Approved != "" || v.Pending != da || v.MissingCrawls != 0 {
+		t.Errorf("after reappearing the old approval must be gone: %+v", v)
+	}
+}
+
+func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
+	s, path := newStoreAt(t, defaultPolicyForTests())
+	db := rawDB(t, path)
+	mustAddServer(t, s, "alpha")
+	d := digestOf(t, "a", "v1")
+	mustCrawl(t, s, "alpha", tool("a", "v1"), tool("b", "v1"))
+	mustApprove(t, s, "alpha", "a", d)
+	tools := mustCount(t, db, `SELECT COUNT(*) FROM tools`)
+	versions := mustCount(t, db, `SELECT COUNT(*) FROM tool_versions`)
+	gen, audits := mustGeneration(t, s), auditCount(t, s)
+
+	rep, err := s.RecordCrawl(bg, CrawlInput{
+		Server: "alpha", Complete: false,
+		Error: "get https://host/mcp?token=SECRET123: timeout\nline2\x00",
+		Tools: []CrawledTool{tool("brand-new", "v1")},
+	}, crawler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Complete || len(rep.Changes) != 0 || rep.CrawlID <= 0 {
+		t.Fatalf("report = %+v", rep)
+	}
+	if got := mustCount(t, db, `SELECT COUNT(*) FROM tools`); got != tools {
+		t.Errorf("an incomplete crawl created a tool: %d -> %d", tools, got)
+	}
+	if got := mustCount(t, db, `SELECT COUNT(*) FROM tool_versions`); got != versions {
+		t.Errorf("an incomplete crawl created a version: %d -> %d", versions, got)
+	}
+	for n, want := range map[string]lifecycle.State{"a": lifecycle.Enabled, "b": lifecycle.PendingReview} {
+		if v := mustTool(t, s, "alpha", n); v.State != want || v.MissingCrawls != 0 || v.LastSeen != digestOf(t, n, "v1") {
+			t.Errorf("tool %s moved: %+v", n, v)
+		}
+	}
+	if mustGeneration(t, s) != gen+1 || auditCount(t, s) != audits+1 {
+		t.Errorf("the failure is one committed write with one audit entry")
+	}
+	e := entryOf(t, s, "crawl.failed")
+	if strings.Contains(e.Detail, "SECRET") || strings.Contains(e.Detail, "timeout") || e.Subject != "alpha" ||
+		e.Detail != "crawl="+itoa(rep.CrawlID)+" tools=1 complete=false" {
+		t.Errorf("crawl.failed entry = %+v", e)
+	}
+	var complete, toolCount int
+	var stored string
+	if err := db.QueryRowContext(bg, `SELECT complete, tool_count, error FROM crawls WHERE id = ?`, rep.CrawlID).
+		Scan(&complete, &toolCount, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if complete != 0 || toolCount != 1 || stored != "get https://host/mcp?token=SECRET123: timeout line2?" {
+		t.Errorf("crawls row = %d %d %q", complete, toolCount, stored)
+	}
+
+	long, err := s.RecordCrawl(bg, CrawlInput{Server: "alpha", Error: strings.Repeat("é", 5000)}, crawler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRowContext(bg, `SELECT length(CAST(error AS BLOB)) FROM crawls WHERE id = ?`, long.CrawlID).Scan(&n); err != nil || n > maxCrawlErrorBytes {
+		t.Errorf("stored error is %d bytes (%v), limit %d", n, err, maxCrawlErrorBytes)
+	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestRecordCrawl_ProposerCannotApproveOwnCrawl(t *testing.T) {
+	t.Run("default policy", func(t *testing.T) {
+		s := newStore(t)
+		mustAddServer(t, s, "alpha")
+		if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), alice); err != nil {
+			t.Fatal(err)
+		}
+		gen, audits := mustGeneration(t, s), auditCount(t, s)
+		err := s.Approve(bg, "alpha", "echo", digestOf(t, "echo", "v1"), alice)
+		if !errors.Is(err, lifecycle.ErrSelfApproval) {
+			t.Fatalf("Approve by the proposer: %v, want ErrSelfApproval", err)
+		}
+		if mustGeneration(t, s) != gen || auditCount(t, s) != audits || stateOf(t, s, "alpha", "echo") != lifecycle.PendingReview {
+			t.Error("a refused approval must leave no trace")
+		}
+		mustApprove(t, s, "alpha", "echo", digestOf(t, "echo", "v1"))
+	})
+	t.Run("self approval allowed by policy", func(t *testing.T) {
+		p := lifecycle.DefaultPolicy()
+		p.AllowSelfApproval = true
+		s, _ := newStoreAt(t, p)
+		mustAddServer(t, s, "alpha")
+		if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), alice); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Approve(bg, "alpha", "echo", digestOf(t, "echo", "v1"), alice); err != nil {
+			t.Fatalf("Approve: %v", err)
+		}
+	})
+}
+
+func TestRecordCrawl_VolatileMetaDoesNotChangeTheDigest(t *testing.T) {
+	s := newStore(t)
+	mustAddServer(t, s, "alpha")
+	withMeta := func(id string) CrawledTool {
+		return CrawledTool{Name: "echo", Raw: []byte(`{"name":"echo","description":"d","_meta":{"requestId":"` + id + `"}}`)}
+	}
+	mustCrawl(t, s, "alpha", withMeta("one"))
+	rep := mustCrawl(t, s, "alpha", withMeta("two"))
+	if k := kindsOf(rep)["echo"]; k != ChangeUnchanged {
+		t.Fatalf("a changed _meta looked like a new definition: %s", k)
+	}
+}
