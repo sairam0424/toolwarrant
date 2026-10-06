@@ -2,9 +2,9 @@ package lifecycle_test
 
 // Property tests over random command sequences (pgregory.net/rapid).
 //
-// Invariants 1-9 live in invariants_test.go and effects_test.go; invariant 10
-// (replay determinism) and the differential comparison with the specification
-// oracle are here.
+// Invariants 1-9 live in invariants_test.go, effects_test.go and
+// event_invariants_test.go; invariant 10 (replay determinism) and the
+// differential comparison with the specification oracle are here.
 
 import (
 	"errors"
@@ -37,8 +37,8 @@ func checkAll(rt *rapid.T, perStepPolicy, withOracle bool) {
 			problems = append(problems, oracleMismatches(rec)...)
 		}
 		if len(problems) > 0 {
-			rt.Fatalf("step %d: %T %+v under policy %+v\n  %s\nbefore: %+v\nresult: %+v (err %v)",
-				i, rec.cmd, rec.cmd, rec.pol, strings.Join(problems, "\n  "), rec.before, rec.res.Tool, rec.err)
+			rt.Fatalf("step %d: %T %+v under policy %+v\n  %s\nbefore: %+v\nresult: %+v (err %v)\nevents: %+v",
+				i, rec.cmd, rec.cmd, rec.pol, strings.Join(problems, "\n  "), rec.before, rec.res.Tool, rec.err, rec.res.Events)
 		}
 	}
 }
@@ -103,7 +103,7 @@ func TestProperty_GeneratorsExerciseEveryStateErrorAndCommand(t *testing.T) {
 			t.Errorf("no random sequence produced %v", e)
 		}
 	}
-	for _, kind := range []string{"crawl", "miss", "approve", "reject", "disable", "enable", "rollback"} {
+	for _, kind := range []string{"crawl", "unusable", "miss", "approve", "reject", "disable", "enable", "rollback"} {
 		if !succeeded[kind] {
 			t.Errorf("no random %s command ever succeeded", kind)
 		}
@@ -113,7 +113,10 @@ func TestProperty_GeneratorsExerciseEveryStateErrorAndCommand(t *testing.T) {
 func commandKind(cmd lc.Command) string {
 	switch c := cmd.(type) {
 	case lc.ObserveCrawl:
-		if c.Present {
+		switch {
+		case c.Unusable:
+			return "unusable"
+		case c.Present:
 			return "crawl"
 		}
 		return "miss"

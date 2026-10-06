@@ -5,7 +5,9 @@ package lifecycle_test
 // Digests come from a four-element alphabet (plus the digests the tool already
 // knows, plus occasionally the empty string) so collisions, reverts, re-proposals
 // and stale approvals happen constantly. Actors come from three names so the
-// proposer and the approver coincide often.
+// proposer and the approver coincide often. Unusable sightings and, rarely,
+// contradictory observations are drawn too, so the D3 marker and its
+// validation are exercised on every shape of tool.
 
 import (
 	"fmt"
@@ -23,13 +25,19 @@ const (
 	guidedPercent = 50
 
 	// Cumulative command mix, in percent of draws; the remainder is Rollback.
-	cutCrawlPresent = 30
-	cutCrawlMissing = 45
-	cutApprove      = 62
-	cutReject       = 70
-	cutDisable      = 78
-	cutEnable       = 88
-	percentScale    = 100
+	cutCrawlPresent  = 28
+	cutCrawlUnusable = 34
+	cutCrawlMissing  = 45
+	cutApprove       = 62
+	cutReject        = 70
+	cutDisable       = 78
+	cutEnable        = 88
+	percentScale     = 100
+
+	// contradictionOdds is the one-in-N chance that an unusable draw is made
+	// contradictory (a digest alongside, or not present), to reach
+	// ErrInvalidObservation.
+	contradictionOdds = 8
 
 	// knownDigestBias is how many times each known digest is repeated in the
 	// pool a digest is drawn from, so commands often name an existing version.
@@ -89,22 +97,30 @@ func drawCommand(rt *rapid.T, label string, tool lc.Tool) lc.Command {
 	return randomCommand(rt, label, tool)
 }
 
+// approverFor picks a principal who never proposed the version, so a guided
+// approval can succeed under the two-person rule; when every name proposed it
+// the approval is left to fail, which is a path worth exercising too.
+func approverFor(tool lc.Tool, digest string) string {
+	v, _ := findVersion(tool, digest)
+	for _, a := range []string{bob, carol, alice} {
+		if a != v.ProposedBy && !v.Proposers.Contains(a) {
+			return a
+		}
+	}
+	return bob
+}
+
 // guidedCommand picks among commands that fit the tool's current shape.
 func guidedCommand(rt *rapid.T, label string, tool lc.Tool) lc.Command {
 	options := []lc.Command{
 		lc.ObserveCrawl{Present: true, Digest: dA, Actor: carol},
 		lc.ObserveCrawl{Present: true, Digest: dB, Actor: carol},
 		lc.ObserveCrawl{Present: true, Digest: dC, Actor: alice},
+		lc.ObserveCrawl{Present: true, Unusable: true, Actor: carol},
 		lc.ObserveCrawl{Present: false, Actor: crawler},
 	}
 	if pending := tool.Pending(); pending != "" {
-		proposer, approver := "", bob
-		if v, ok := findVersion(tool, pending); ok {
-			proposer = v.ProposedBy
-		}
-		if proposer == bob {
-			approver = carol
-		}
+		approver := approverFor(tool, pending)
 		options = append(options,
 			lc.Approve{Digest: pending, Actor: approver},
 			lc.Approve{Digest: pending, Actor: approver},
@@ -129,6 +145,8 @@ func randomCommand(rt *rapid.T, label string, tool lc.Tool) lc.Command {
 	switch {
 	case roll < cutCrawlPresent:
 		return lc.ObserveCrawl{Present: true, Digest: digest, Actor: actor}
+	case roll < cutCrawlUnusable:
+		return randomUnusable(rt, label, actor, digest)
 	case roll < cutCrawlMissing:
 		return lc.ObserveCrawl{Present: false, Actor: actor}
 	case roll < cutApprove:
@@ -142,6 +160,19 @@ func randomCommand(rt *rapid.T, label string, tool lc.Tool) lc.Command {
 	default:
 		return lc.Rollback{To: digest, Actor: actor}
 	}
+}
+
+// randomUnusable is mostly a well-formed unusable sighting; one draw in
+// contradictionOdds carries a digest or claims absence, which the state
+// machine must refuse.
+func randomUnusable(rt *rapid.T, label, actor, digest string) lc.Command {
+	if rapid.IntRange(0, contradictionOdds-1).Draw(rt, label+".contradict") != 0 {
+		return lc.ObserveCrawl{Present: true, Unusable: true, Actor: actor}
+	}
+	if rapid.Bool().Draw(rt, label+".absent") {
+		return lc.ObserveCrawl{Present: false, Unusable: true, Actor: actor}
+	}
+	return lc.ObserveCrawl{Present: true, Unusable: true, Digest: digest, Actor: actor}
 }
 
 // walk draws a random command sequence, applies it to a new tool, and returns

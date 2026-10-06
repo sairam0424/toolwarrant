@@ -5,10 +5,11 @@ package lifecycle_test
 //	Approve{Digest:d, Actor:a}: allowed only in pending_review or
 //	changed_pending_reapproval (else ErrInvalidTransition); d must name a known
 //	version (else ErrUnknownVersion) whose status is pending (else
-//	ErrStaleVersion); unless policy.AllowSelfApproval, a must differ from that
-//	version's ProposedBy (else ErrSelfApproval). Effect: the previously
-//	approved version (if any) becomes superseded, d becomes approved with
-//	EverApproved true, Approved=d, state enabled.
+//	ErrStaleVersion); unless policy.AllowSelfApproval, a must differ from every
+//	proposer of that version, ProposedBy and Proposers alike (else
+//	ErrSelfApproval). Effect: the previously approved version (if any) becomes
+//	superseded, d becomes approved with EverApproved true, Approved=d, state
+//	enabled.
 //
 //	Reject{Digest:d, Actor:a}: same preconditions as Approve but no proposer
 //	rule. d becomes rejected; a tool in changed_pending_reapproval becomes
@@ -41,12 +42,12 @@ func TestApprove_Success(t *testing.T) {
 				ver(dB, lc.VersionApproved, alice, true)),
 		},
 		{
-			name: "pending_review re-approving a reused superseded digest keeps EverApproved",
+			name: "pending_review re-approving a reused superseded digest keeps EverApproved and the proposer history",
 			start: toolOf(lc.PendingReview, "", dA, 0,
-				ver(dA, lc.VersionPending, bob, true)),
+				verP(dA, lc.VersionPending, bob, true, bob, alice)),
 			cmd:  lc.Approve{Digest: dA, Actor: carol},
 			pol:  p,
-			want: toolOf(lc.Enabled, dA, dA, 0, ver(dA, lc.VersionApproved, bob, true)),
+			want: toolOf(lc.Enabled, dA, dA, 0, verP(dA, lc.VersionApproved, bob, true, bob, alice)),
 		},
 		{
 			name: "approval leaves unrelated versions alone",
@@ -83,13 +84,35 @@ func TestApprove_SelfApprovalPolicy(t *testing.T) {
 	}
 }
 
-func TestApprove_SelfApprovalChecksTheProposerOfThatVersionOnly(t *testing.T) {
+func TestApprove_SelfApprovalChecksTheProposersOfThatVersionOnly(t *testing.T) {
 	// bob proposed the pending version; alice proposed the old approved one.
 	start := toolOf(lc.ChangedPendingReapproval, dA, dB, 0,
 		ver(dA, lc.VersionApproved, alice, true),
 		ver(dB, lc.VersionPending, bob, false))
 	applyOK(t, start, lc.Approve{Digest: dB, Actor: alice}, plainPolicy())
 	mustFail(t, start, lc.Approve{Digest: dB, Actor: bob}, plainPolicy(), lc.ErrSelfApproval)
+}
+
+// D4: "Nobody whose crawl ever proposed a version can approve it". Every
+// name in the history is refused, however it got there; a version stored
+// before the list existed is protected through ProposedBy alone.
+func TestApprove_EveryProposerIsRefused(t *testing.T) {
+	p := plainPolicy()
+	twice := toolOf(lc.PendingReview, "", dA, 0, verP(dA, lc.VersionPending, alice, false, alice, carol))
+	mustFail(t, twice, lc.Approve{Digest: dA, Actor: alice}, p, lc.ErrSelfApproval)
+	mustFail(t, twice, lc.Approve{Digest: dA, Actor: carol}, p, lc.ErrSelfApproval)
+	approved := applyOK(t, twice, lc.Approve{Digest: dA, Actor: bob}, p).Tool
+	requireState(t, approved, lc.Enabled)
+	requireProposers(t, approved, dA, alice, carol)
+
+	legacy := toolOf(lc.PendingReview, "", dA, 0, lc.Version{Digest: dA, Status: lc.VersionPending, ProposedBy: alice})
+	mustFail(t, legacy, lc.Approve{Digest: dA, Actor: alice}, p, lc.ErrSelfApproval)
+	applyOK(t, legacy, lc.Approve{Digest: dA, Actor: bob}, p)
+
+	// With the policy switched on, any proposer may approve.
+	for _, actor := range []string{alice, carol} {
+		applyOK(t, twice, lc.Approve{Digest: dA, Actor: actor}, selfApprovePolicy())
+	}
 }
 
 func TestApprove_Errors(t *testing.T) {

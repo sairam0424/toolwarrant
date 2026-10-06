@@ -10,8 +10,8 @@ import (
 	lc "github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-func plantedRecord(before lc.Tool, cmd lc.Command, pol lc.Policy, after lc.Tool) stepRecord {
-	return stepRecord{before: before, cmd: cmd, pol: pol, res: lc.Result{Tool: after}}
+func plantedRecord(before lc.Tool, cmd lc.Command, pol lc.Policy, after lc.Tool, events ...lc.Event) stepRecord {
+	return stepRecord{before: before, cmd: cmd, pol: pol, res: lc.Result{Tool: after, Events: events}}
 }
 
 func TestMeta_InvariantCheckerAcceptsACorrectStep(t *testing.T) {
@@ -21,6 +21,11 @@ func TestMeta_InvariantCheckerAcceptsACorrectStep(t *testing.T) {
 	}
 	if m := oracleMismatches(good); len(m) != 0 {
 		t.Errorf("a correct step disagrees with the oracle: %v", m)
+	}
+	drift := plantedRecord(enabledTool(dA), crawl(dB, bob), plainPolicy(),
+		changedTool(dA, dB, bob), lc.Event{Kind: lc.EvProposed, Digest: dB}, lc.Event{Kind: lc.EvDrifted, Digest: dB})
+	if v := stepViolations(drift); len(v) != 0 {
+		t.Errorf("a correct drift step was flagged: %v", v)
 	}
 }
 
@@ -32,6 +37,10 @@ func TestMeta_InvariantCheckerCatchesPlantedViolations(t *testing.T) {
 	}{
 		{"self approval (invariant 8)", plantedRecord(
 			pendingReviewTool(dA, alice), lc.Approve{Digest: dA, Actor: alice}, plain, enabledTool(dA))},
+		{"self approval by a later proposer (D4)", plantedRecord(
+			toolOf(lc.PendingReview, "", dA, 0, verP(dA, lc.VersionPending, alice, false, alice, carol)),
+			lc.Approve{Digest: dA, Actor: carol}, plain,
+			toolOf(lc.Enabled, dA, dA, 0, verP(dA, lc.VersionApproved, alice, true, alice, carol)))},
 		{"crawl approves a new digest (invariant 5)", plantedRecord(
 			enabledTool(dA), crawl(dB, bob), plain,
 			toolOf(lc.Enabled, dB, dB, 0, ver(dA, lc.VersionSuperseded, alice, true), ver(dB, lc.VersionApproved, bob, true)))},
@@ -77,10 +86,32 @@ func TestMeta_InvariantCheckerCatchesPlantedViolations(t *testing.T) {
 		{"enable with review keeps the approval", plantedRecord(
 			toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, reviewPolicy(),
 			enabledTool(dA))},
+		{"enable without a live definition restores the approval (D-finding)", plantedRecord(
+			toolOf(lc.Disabled, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, plain,
+			toolOf(lc.Enabled, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)))},
+		{"enable rewrites the proposer (D4)", plantedRecord(
+			toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, reviewPolicy(),
+			toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, bob, true)))},
+		{"re-proposal drops a proposer (D4)", plantedRecord(
+			toolOf(lc.PendingReview, "", dB, 0, verP(dA, lc.VersionSuperseded, alice, false, alice, bob), ver(dB, lc.VersionPending, bob, false)),
+			crawl(dA, carol), plain,
+			toolOf(lc.PendingReview, "", dA, 0, verP(dA, lc.VersionPending, alice, false, alice, carol), ver(dB, lc.VersionSuperseded, bob, false)))},
 		{"rollback without superseding", plantedRecord(
 			toolOf(lc.Enabled, dB, dB, 0, ver(dA, lc.VersionSuperseded, alice, true), ver(dB, lc.VersionApproved, bob, true)),
 			lc.Rollback{To: dA, Actor: carol}, plain,
 			toolOf(lc.Enabled, dA, dB, 0, ver(dA, lc.VersionApproved, alice, true), ver(dB, lc.VersionApproved, bob, true)))},
+		{"serving flip without an event (D5)", plantedRecord(
+			toolOf(lc.Enabled, dA, dB, 0, ver(dA, lc.VersionApproved, alice, true), ver(dB, lc.VersionRejected, bob, false)),
+			crawl(dA, carol), plain, enabledTool(dA))},
+		{"return after a miss without an event (D5)", plantedRecord(
+			toolOf(lc.Enabled, dA, "", 1, ver(dA, lc.VersionApproved, alice, true)), crawl(dA, carol), plain,
+			enabledTool(dA), lc.Event{Kind: lc.EvReverted, Digest: dA})},
+		{"events on an unchanged tool (D5)", plantedRecord(
+			enabledTool(dA), crawl(dA, carol), plain, enabledTool(dA), lc.Event{Kind: lc.EvReverted, Digest: dA})},
+		{"unusable sighting changes the state (D3)", plantedRecord(
+			enabledTool(dA), unusable(), plain,
+			toolOf(lc.ChangedPendingReapproval, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+			lc.Event{Kind: lc.EvUnusable})},
 		{"error is not a documented sentinel", stepRecord{
 			before: enabledTool(dA), cmd: crawl(dA, bob), pol: plain, err: errors.New("boom")}},
 		{"empty actor reported as another error", stepRecord{
@@ -112,8 +143,21 @@ func TestMeta_OracleRejectsAWrongResult(t *testing.T) {
 	if len(oracleMismatches(succeeded)) == 0 {
 		t.Error("the oracle accepted a self-approval")
 	}
+	laundered := plantedRecord(
+		toolOf(lc.PendingReview, "", dA, 0, verP(dA, lc.VersionPending, alice, false, alice, carol)),
+		lc.Approve{Digest: dA, Actor: alice}, plainPolicy(),
+		toolOf(lc.Enabled, dA, dA, 0, verP(dA, lc.VersionApproved, alice, true, alice, carol)))
+	if len(oracleMismatches(laundered)) == 0 {
+		t.Error("the oracle accepted an approval by the first of two proposers")
+	}
 	failed := stepRecord{before: pendingReviewTool(dA, alice), cmd: lc.Approve{Digest: dA, Actor: bob}, pol: plainPolicy(), err: lc.ErrStaleVersion}
 	if len(oracleMismatches(failed)) == 0 {
 		t.Error("the oracle accepted a spurious failure")
+	}
+	enabledBlind := plantedRecord(
+		toolOf(lc.Disabled, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, plainPolicy(),
+		toolOf(lc.Enabled, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)))
+	if len(oracleMismatches(enabledBlind)) == 0 {
+		t.Error("the oracle accepted Enable restoring an approval with no live definition")
 	}
 }

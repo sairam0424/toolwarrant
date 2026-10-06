@@ -74,9 +74,15 @@ func selfApprovePolicy() lc.Policy {
 	return p
 }
 
-// ver builds a Version literal.
+// ver builds a Version literal whose only proposer is by.
 func ver(digest string, status lc.VersionStatus, by string, ever bool) lc.Version {
-	return lc.Version{Digest: digest, Status: status, ProposedBy: by, EverApproved: ever}
+	return verP(digest, status, by, ever, by)
+}
+
+// verP builds a Version literal with an explicit proposer history; by is the
+// first proposer and must head the list.
+func verP(digest string, status lc.VersionStatus, by string, ever bool, proposers ...string) lc.Version {
+	return lc.Version{Digest: digest, Status: status, ProposedBy: by, EverApproved: ever, Proposers: lc.ProposersOf(proposers...)}
 }
 
 // toolOf builds a Tool literal. The versions are copied so fixtures never
@@ -122,6 +128,16 @@ func miss() lc.ObserveCrawl {
 	return lc.ObserveCrawl{Present: false, Actor: crawler}
 }
 
+// unusable is a successful crawl that listed the tool with a definition that
+// could not be used.
+func unusable() lc.ObserveCrawl {
+	return lc.ObserveCrawl{Present: true, Unusable: true, Actor: crawler}
+}
+
+// isLiveDigest reports whether a LastSeen value names a definition: neither
+// absent nor the unusable marker.
+func isLiveDigest(s string) bool { return s != "" && s != lc.UnusableDigest }
+
 // cloneTool deep-copies a Tool.
 func cloneTool(t lc.Tool) lc.Tool {
 	c := t
@@ -130,7 +146,7 @@ func cloneTool(t lc.Tool) lc.Tool {
 }
 
 // sameTool compares two tools, treating a nil and an empty Versions slice as
-// equal.
+// equal. Versions compare with ==, proposer history included.
 func sameTool(a, b lc.Tool) bool {
 	return a.State == b.State &&
 		a.Approved == b.Approved &&
@@ -142,7 +158,7 @@ func sameTool(a, b lc.Tool) bool {
 // sentinel marks the spare capacity used to detect appends into the caller's
 // backing array.
 func sentinel() lc.Version {
-	return lc.Version{Digest: "sentinel", Status: lc.VersionRejected, ProposedBy: "nobody", EverApproved: true}
+	return verP("sentinel", lc.VersionRejected, "nobody", true, "nobody")
 }
 
 // withSpareCapacity returns a copy of t whose Versions slice has spare
@@ -216,7 +232,7 @@ func checkPure(t errorfer, tool lc.Tool, cmd lc.Command, p lc.Policy) (lc.Result
 // would show up as a change in another Tool) and returns vs.
 func scramble(vs []lc.Version) []lc.Version {
 	for i := range vs {
-		vs[i] = lc.Version{Digest: "scrambled", Status: "scrambled", ProposedBy: "scrambled"}
+		vs[i] = verP("scrambled", "scrambled", "scrambled", false, "scrambled")
 	}
 	return vs
 }
@@ -304,6 +320,28 @@ func hasEvent(res lc.Result, kind lc.EventKind, digest string) bool {
 	return false
 }
 
+// kindsOf returns the event kinds of res, sorted, so two results can be
+// compared as multisets.
+func kindsOf(res lc.Result) []lc.EventKind {
+	kinds := make([]lc.EventKind, 0, len(res.Events))
+	for _, e := range res.Events {
+		kinds = append(kinds, e.Kind)
+	}
+	slices.Sort(kinds)
+	return kinds
+}
+
+// requireKinds asserts that res emitted exactly the given kinds (as a
+// multiset, in any order).
+func requireKinds(t *testing.T, res lc.Result, want ...lc.EventKind) {
+	t.Helper()
+	w := slices.Clone(want)
+	slices.Sort(w)
+	if got := kindsOf(res); !slices.Equal(got, w) {
+		t.Errorf("events = %v, want %v (full events %+v)", got, w, res.Events)
+	}
+}
+
 // findVersion returns the version with the given digest.
 func findVersion(t lc.Tool, digest string) (lc.Version, bool) {
 	for _, v := range t.Versions {
@@ -327,5 +365,18 @@ func requireState(t *testing.T, tool lc.Tool, want lc.State) {
 	t.Helper()
 	if tool.State != want {
 		t.Errorf("state = %s, want %s (tool %+v)", tool.State, want, tool)
+	}
+}
+
+// requireProposers asserts the proposer history of one version: ProposedBy is
+// the first name and the list is exactly want.
+func requireProposers(t *testing.T, tool lc.Tool, digest string, want ...string) {
+	t.Helper()
+	v, ok := findVersion(tool, digest)
+	if !ok {
+		t.Fatalf("version %s not found in %+v", digest, tool)
+	}
+	if got := v.Proposers.All(); !slices.Equal(got, want) || v.ProposedBy != want[0] {
+		t.Errorf("version %s: ProposedBy=%q Proposers=%v, want %v", digest, v.ProposedBy, got, want)
 	}
 }

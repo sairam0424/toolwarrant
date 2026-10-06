@@ -2,9 +2,13 @@ package lifecycle_test
 
 // A second, deliberately naive implementation of the written specification,
 // used as an oracle for differential testing against lifecycle.Apply. It is
-// written from the specification text only. Where the text is silent or
-// ambiguous the oracle says so (altStates, skipMissing, skipAll) instead of
-// guessing, so a mismatch is always a real disagreement with the text.
+// written from the specification text (the doc comments on ObserveCrawl,
+// Approve, Reject, Disable, Enable, Rollback and Version) only. Where the text
+// is ambiguous the oracle says so (altStates) instead of guessing, so a
+// mismatch is always a real disagreement with the text.
+//
+// The oracle compares tools, not events; the event rules are checked by
+// eventViolations in event_invariants_test.go.
 
 import (
 	"errors"
@@ -22,10 +26,6 @@ type oracleOutcome struct {
 	wantErrs []error
 	// altStates lists further states the text allows (ambiguous thresholds).
 	altStates []lc.State
-	// skipMissing: the text does not say what happens to MissingCrawls.
-	skipMissing bool
-	// skipAll: the text is silent about the outcome; only invariants apply.
-	skipAll bool
 }
 
 func oracleFail(errs ...error) oracleOutcome { return oracleOutcome{wantErrs: errs} }
@@ -65,16 +65,32 @@ func retireApproval(t *lc.Tool) {
 	t.Approved = ""
 }
 
-// propose makes digest the single pending version proposed by actor.
+// propose makes digest the single pending version. Spec (Version): the first
+// proposer is set once and never changes; the proposer list only grows and the
+// crawl's actor joins it.
 func propose(t *lc.Tool, digest, actor string) {
 	i := indexOf(*t, digest)
 	if i < 0 {
 		t.Versions = append(t.Versions, lc.Version{Digest: digest})
 		i = len(t.Versions) - 1
 	}
-	t.Versions[i].Status = lc.VersionPending
-	t.Versions[i].ProposedBy = actor
+	v := &t.Versions[i]
+	v.Status = lc.VersionPending
+	if v.ProposedBy == "" {
+		v.ProposedBy = actor
+	}
+	if v.Proposers.Len() == 0 {
+		v.Proposers = lc.ProposersOf(v.ProposedBy)
+	}
+	v.Proposers = v.Proposers.Add(actor)
 	supersedePending(t, i)
+}
+
+// isProposer reports whether actor ever proposed v: the first proposer and the
+// list both count, because a version stored before the list existed only has
+// the former.
+func isProposer(v lc.Version, actor string) bool {
+	return v.ProposedBy == actor || v.Proposers.Contains(actor)
 }
 
 func oracle(tool lc.Tool, cmd lc.Command, p lc.Policy) oracleOutcome {
@@ -103,19 +119,36 @@ func oracle(tool lc.Tool, cmd lc.Command, p lc.Policy) oracleOutcome {
 	return oracleFail()
 }
 
-func oracleObserve(t lc.Tool, c lc.ObserveCrawl, p lc.Policy) oracleOutcome {
+// observationErrors lists the preconditions an observation fails: spec
+// "Unusable (Present must be true and Digest empty, else
+// ErrInvalidObservation)", "Digest is required when Present and Unusable is
+// false; it must not be UnusableDigest".
+func observationErrors(c lc.ObserveCrawl) []error {
 	var errs []error
 	if c.Actor == "" {
 		errs = append(errs, lc.ErrNoActor)
 	}
-	if c.Present && c.Digest == "" {
+	switch {
+	case c.Unusable && (!c.Present || c.Digest != ""):
+		errs = append(errs, lc.ErrInvalidObservation)
+	case c.Present && !c.Unusable && c.Digest == "":
 		errs = append(errs, lc.ErrNoDigest)
+	case c.Present && !c.Unusable && c.Digest == lc.UnusableDigest:
+		errs = append(errs, lc.ErrInvalidObservation)
 	}
-	if len(errs) > 0 {
+	return errs
+}
+
+func oracleObserve(t lc.Tool, c lc.ObserveCrawl, p lc.Policy) oracleOutcome {
+	if errs := observationErrors(c); len(errs) > 0 {
 		return oracleFail(errs...)
 	}
 	if !c.Present {
 		return oracleMissing(t, p)
+	}
+	if c.Unusable {
+		t.LastSeen, t.MissingCrawls = lc.UnusableDigest, 0
+		return oracleOutcome{tool: t}
 	}
 	t.LastSeen, t.MissingCrawls = c.Digest, 0
 	if t.State == lc.Deprecated {
@@ -141,20 +174,25 @@ func oracleObserve(t lc.Tool, c lc.ObserveCrawl, p lc.Policy) oracleOutcome {
 	return oracleOutcome{tool: t}
 }
 
-// oracleReappear is rule (e). When the digest is rejected and another version
-// is pending the text does not say what happens to that version.
+// oracleReappear: "A deprecated tool reappears: the approval is retired, the
+// state becomes pending_review and d is proposed unless it was rejected."
 func oracleReappear(t lc.Tool, c lc.ObserveCrawl) oracleOutcome {
 	retireApproval(&t)
 	t.State = lc.PendingReview
 	if i := indexOf(t, c.Digest); i >= 0 && t.Versions[i].Status == lc.VersionRejected {
-		return oracleOutcome{tool: t, skipAll: pendingIndex(t) >= 0}
+		return oracleOutcome{tool: t}
 	}
 	propose(&t, c.Digest, c.Actor)
 	return oracleOutcome{tool: t}
 }
 
+// oracleMissing: "a discovered or deprecated tool only loses an unusable
+// marker; any other tool gets LastSeen = "" and MissingCrawls + 1 and is
+// deprecated when the count reaches Policy.DeprecateAfter (when > 0), unless
+// it is disabled."
 func oracleMissing(t lc.Tool, p lc.Policy) oracleOutcome {
 	if t.State == lc.Discovered || t.State == lc.Deprecated {
+		t.LastSeen = ""
 		return oracleOutcome{tool: t}
 	}
 	t.LastSeen = ""
@@ -204,6 +242,9 @@ func oracleDecide(t lc.Tool, digest, actor string, approve bool, p lc.Policy) or
 	return oracleOutcome{tool: t}
 }
 
+// versionPreconditionErrors: the version must be known and pending, and (D4)
+// "Nobody whose crawl ever proposed a version can approve it, unless the
+// policy allows self-approval."
 func versionPreconditionErrors(t lc.Tool, i int, actor string, approve bool, p lc.Policy) []error {
 	if i < 0 {
 		return []error{lc.ErrUnknownVersion}
@@ -212,12 +253,16 @@ func versionPreconditionErrors(t lc.Tool, i int, actor string, approve bool, p l
 	if t.Versions[i].Status != lc.VersionPending {
 		errs = append(errs, lc.ErrStaleVersion)
 	}
-	if approve && !p.AllowSelfApproval && t.Versions[i].ProposedBy == actor {
+	if approve && !p.AllowSelfApproval && isProposer(t.Versions[i], actor) {
 		errs = append(errs, lc.ErrSelfApproval)
 	}
 	return errs
 }
 
+// oracleEnable follows the Enable doc comment: without re-review and with a
+// live digest the retained approval is restored; otherwise the approval is
+// retired, the state is pending_review, and a live, non-rejected LastSeen
+// digest becomes the single pending version again without gaining a proposer.
 func oracleEnable(t lc.Tool, c lc.Enable, p lc.Policy) oracleOutcome {
 	if c.Actor == "" {
 		return oracleFail(lc.ErrNoActor)
@@ -225,29 +270,26 @@ func oracleEnable(t lc.Tool, c lc.Enable, p lc.Policy) oracleOutcome {
 	if t.State != lc.Disabled {
 		return oracleFail(lc.ErrInvalidTransition)
 	}
-	// The text does not say whether Enable resets MissingCrawls.
-	out := oracleOutcome{tool: t, skipMissing: true}
-	if !p.ReEnableRequiresReview {
+	live := isLiveDigest(t.LastSeen)
+	if !p.ReEnableRequiresReview && live {
 		switch {
 		case t.Approved == "":
-			out.tool.State = lc.PendingReview
+			t.State = lc.PendingReview
 		case pendingIndex(t) >= 0:
-			out.tool.State = lc.ChangedPendingReapproval
+			t.State = lc.ChangedPendingReapproval
 		default:
-			out.tool.State = lc.Enabled
+			t.State = lc.Enabled
 		}
-		return out
+		return oracleOutcome{tool: t}
 	}
-	retireApproval(&out.tool)
-	out.tool.State = lc.PendingReview
-	i := indexOf(out.tool, t.LastSeen)
-	if t.LastSeen != "" && i >= 0 && out.tool.Versions[i].Status != lc.VersionRejected {
-		propose(&out.tool, t.LastSeen, c.Actor)
-		return out
+	retireApproval(&t)
+	t.State = lc.PendingReview
+	i := indexOf(t, t.LastSeen)
+	if live && i >= 0 && t.Versions[i].Status != lc.VersionRejected && t.Versions[i].Status != lc.VersionPending {
+		t.Versions[i].Status = lc.VersionPending
+		supersedePending(&t, i)
 	}
-	// No proposal: the text does not say what becomes of other pending versions.
-	out.skipAll = pendingIndex(out.tool) >= 0
-	return out
+	return oracleOutcome{tool: t}
 }
 
 func oracleRollback(t lc.Tool, c lc.Rollback) oracleOutcome {
@@ -291,13 +333,7 @@ func oracleMismatches(rec stepRecord) []string {
 	if rec.err != nil {
 		return []string{"implementation failed (" + rec.err.Error() + ") where the specification succeeds"}
 	}
-	if want.skipAll {
-		return nil
-	}
 	got, exp := cloneTool(rec.res.Tool), cloneTool(want.tool)
-	if want.skipMissing {
-		got.MissingCrawls, exp.MissingCrawls = 0, 0
-	}
 	if len(want.altStates) > 0 && slices.Contains(want.altStates, got.State) {
 		got.State = exp.State
 	}

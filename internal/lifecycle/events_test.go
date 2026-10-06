@@ -1,11 +1,9 @@
 package lifecycle_test
 
-// Event emission. The written specification does not define which events a
-// transition emits; the only source is the EventKind names and the doc
-// comment "Digest is the version it concerns, if any". These tests therefore
-// assert only that the obviously-named event is present (and names the right
-// digest when the digest is unambiguous). They never assert the absence of
-// extra events, except where the name forbids them (a crawl never approves).
+// Event emission by name. The exact observation rules (D5) are checked in
+// audit_events_test.go and by eventViolations; these tables assert that the
+// obviously-named event is present (and names the right digest when the digest
+// is unambiguous) for every transition kind.
 
 import (
 	"testing"
@@ -63,6 +61,12 @@ func TestEvents_TransitionsEmitTheNamedEvent(t *testing.T) {
 			toolOf(lc.Deprecated, dA, "", deprecateAfterThree, ver(dA, lc.VersionApproved, alice, true)),
 			crawl(dA, carol), p, lc.EvReappeared, "",
 		},
+		{"unusable", enabledTool(dA), unusable(), p, lc.EvUnusable, ""},
+		{
+			"return after a miss",
+			toolOf(lc.Enabled, dA, "", 1, ver(dA, lc.VersionApproved, alice, true)),
+			crawl(dA, carol), p, lc.EvReturned, dA,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,6 +85,7 @@ func TestEvents_UneventfulCrawlEmitsNoTransitionEvents(t *testing.T) {
 	forbidden := []lc.EventKind{
 		lc.EvDiscovered, lc.EvProposed, lc.EvSuperseded, lc.EvApproved, lc.EvRejected, lc.EvRolledBack,
 		lc.EvDrifted, lc.EvReverted, lc.EvDisabled, lc.EvEnabled, lc.EvDeprecated, lc.EvReappeared,
+		lc.EvReturned, lc.EvUnusable, lc.EvMissing,
 	}
 	for _, kind := range forbidden {
 		if hasEvent(res, kind, "") {

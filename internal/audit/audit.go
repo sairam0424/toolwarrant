@@ -38,18 +38,23 @@ type Entry struct {
 	Hash       string `json:"hash"`
 }
 
-// maxSeq is the largest sequence number RFC 8785 can represent exactly: it
-// serialises numbers as IEEE 754 doubles, so 2^53 and 2^53+1 would otherwise
-// hash alike.
-const maxSeq = int64(1)<<53 - 1
+// minSeq and maxSeq bound Seq to [-2^53, 2^53-1]. RFC 8785 serialises numbers
+// as IEEE 754 doubles, which represent every integer in that range exactly and
+// distinctly, whereas 2^53+1 rounds onto 2^53 and -2^53-1 onto -2^53: two
+// entries differing only there would hash alike, so one past each end is
+// refused.
+const (
+	maxSeq = int64(1)<<53 - 1
+	minSeq = -(int64(1) << 53)
+)
 
 // validate rejects entries whose hash would not identify them uniquely. Invalid
 // UTF-8 is re-encoded as U+FFFD by JSON, so two different byte strings would
 // share a hash and a change between them would go unnoticed.
 func validate(e Entry) error {
 	// Only exactness matters here. Whether the sequence runs 1..n is Verify's job.
-	if e.Seq < -maxSeq || e.Seq > maxSeq {
-		return fmt.Errorf("audit: seq %d is outside ±%d", e.Seq, maxSeq)
+	if e.Seq < minSeq || e.Seq > maxSeq {
+		return fmt.Errorf("audit: seq %d is outside [%d, %d]", e.Seq, minSeq, maxSeq)
 	}
 	fields := []struct {
 		name  string

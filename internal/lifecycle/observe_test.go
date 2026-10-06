@@ -1,7 +1,9 @@
 package lifecycle_test
 
-// ObserveCrawl tables. Every expectation is derived from the specification
-// sentence quoted next to the case group.
+// ObserveCrawl tables for sightings and misses. Every expectation is derived
+// from the specification sentence quoted next to the case group. The unusable
+// observation has its own file (unusable_test.go), as do the event rules
+// (audit_events_test.go, events_test.go).
 
 import (
 	"testing"
@@ -9,8 +11,9 @@ import (
 	lc "github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// Spec: "ObserveCrawl{Present:true, Digest:d, Actor:a}: sets LastSeen=d and
-// MissingCrawls=0, then (first match wins): ... (d) otherwise ..."
+// Spec: "Present with Digest d: LastSeen = d, MissingCrawls = 0 ... any other
+// d is proposed ... a discovered tool becomes pending_review and an enabled
+// tool becomes changed_pending_reapproval."
 func TestObservePresent_ProposesUnknownDigest(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
@@ -61,20 +64,21 @@ func TestObservePresent_ProposesUnknownDigest(t *testing.T) {
 	})
 }
 
-// Spec: "(d) ... (a known superseded version is reused and set to pending,
-// keeping EverApproved)".
+// Spec: "a superseded version is reused, keeping EverApproved and adding Actor
+// to its proposers" and (D4) "ProposedBy ... is set once and never changes".
+// Before D4 these rows expected ProposedBy to become the new actor.
 func TestObservePresent_ReusesKnownSupersededVersion(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
 		{
-			name: "previously approved superseded digest comes back as a proposal",
+			name: "previously approved superseded digest comes back as a proposal with a second proposer",
 			start: toolOf(lc.Enabled, dB, dB, 0,
 				ver(dA, lc.VersionSuperseded, alice, true),
 				ver(dB, lc.VersionApproved, bob, true)),
 			cmd: crawl(dA, carol),
 			pol: p,
 			want: toolOf(lc.ChangedPendingReapproval, dB, dA, 0,
-				ver(dA, lc.VersionPending, carol, true),
+				verP(dA, lc.VersionPending, alice, true, alice, carol),
 				ver(dB, lc.VersionApproved, bob, true)),
 		},
 		{
@@ -85,11 +89,11 @@ func TestObservePresent_ReusesKnownSupersededVersion(t *testing.T) {
 			cmd: crawl(dA, carol),
 			pol: p,
 			want: toolOf(lc.ChangedPendingReapproval, dB, dA, 0,
-				ver(dA, lc.VersionPending, carol, false),
+				verP(dA, lc.VersionPending, alice, false, alice, carol),
 				ver(dB, lc.VersionApproved, bob, true)),
 		},
 		{
-			name: "reusing a superseded digest supersedes the current pending one",
+			name: "reusing a superseded digest supersedes the current pending one; a known proposer is not repeated",
 			start: toolOf(lc.ChangedPendingReapproval, dB, dC, 0,
 				ver(dA, lc.VersionSuperseded, alice, true),
 				ver(dB, lc.VersionApproved, bob, true),
@@ -109,15 +113,36 @@ func TestObservePresent_ReusesKnownSupersededVersion(t *testing.T) {
 			cmd: crawl(dA, carol),
 			pol: p,
 			want: toolOf(lc.PendingReview, "", dA, 0,
-				ver(dA, lc.VersionPending, carol, false),
+				verP(dA, lc.VersionPending, alice, false, alice, carol),
+				ver(dB, lc.VersionSuperseded, bob, false)),
+		},
+		{
+			name: "a third proposer is appended after the second",
+			start: toolOf(lc.PendingReview, "", dB, 0,
+				verP(dA, lc.VersionSuperseded, alice, false, alice, bob),
+				ver(dB, lc.VersionPending, bob, false)),
+			cmd: crawl(dA, carol),
+			pol: p,
+			want: toolOf(lc.PendingReview, "", dA, 0,
+				verP(dA, lc.VersionPending, alice, false, alice, bob, carol),
+				ver(dB, lc.VersionSuperseded, bob, false)),
+		},
+		{
+			name: "a version stored without its proposer list is protected through ProposedBy",
+			start: toolOf(lc.PendingReview, "", dB, 0,
+				lc.Version{Digest: dA, Status: lc.VersionSuperseded, ProposedBy: alice},
+				ver(dB, lc.VersionPending, bob, false)),
+			cmd: crawl(dA, carol),
+			pol: p,
+			want: toolOf(lc.PendingReview, "", dA, 0,
+				verP(dA, lc.VersionPending, alice, false, alice, carol),
 				ver(dB, lc.VersionSuperseded, bob, false)),
 		},
 	})
 }
 
-// Spec: "(b) if d equals Approved: no new version; if the state is
-// changed_pending_reapproval the upstream reverted, so every pending version
-// becomes superseded and the state becomes enabled."
+// Spec: "if d is the approved digest, a changed_pending_reapproval tool goes
+// back to enabled and its pending proposal is superseded".
 func TestObservePresent_ApprovedDigest(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
@@ -151,8 +176,7 @@ func TestObservePresent_ApprovedDigest(t *testing.T) {
 	})
 }
 
-// Spec: "(c) if d is a known version whose status is rejected or pending: no
-// status changes".
+// Spec: "if d is a rejected or already pending version nothing else changes".
 func TestObservePresent_KnownRejectedOrPending(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
@@ -204,7 +228,7 @@ func TestObservePresent_KnownRejectedOrPending(t *testing.T) {
 	})
 }
 
-// Spec: "disabled ... stay".
+// Spec: a disabled tool records what the upstream does but stays disabled.
 func TestObservePresent_DisabledToolStaysDisabled(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
@@ -227,19 +251,17 @@ func TestObservePresent_DisabledToolStaysDisabled(t *testing.T) {
 	})
 }
 
-// Spec: "(e) if the tool is deprecated it reappeared: the approval is retired
-// (the approved version becomes superseded and Approved becomes \"\"), the
-// state becomes pending_review, and d is proposed (becomes the single pending
-// version with ProposedBy a) unless d is a version that was rejected".
+// Spec: "A deprecated tool reappears: the approval is retired, the state
+// becomes pending_review and d is proposed unless it was rejected."
 func TestObservePresent_DeprecatedToolReappears(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
 		{
-			name:  "same digest as the retired approval is proposed afresh",
+			name:  "same digest as the retired approval is proposed afresh and gains the crawler as a proposer",
 			start: toolOf(lc.Deprecated, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)),
 			cmd:   crawl(dA, carol),
 			pol:   p,
-			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, carol, true)),
+			want:  toolOf(lc.PendingReview, "", dA, 0, verP(dA, lc.VersionPending, alice, true, alice, carol)),
 		},
 		{
 			name:  "different digest: approval retired and the new digest proposed",
@@ -280,11 +302,20 @@ func TestObservePresent_DeprecatedToolReappears(t *testing.T) {
 				ver(dB, lc.VersionSuperseded, bob, false),
 				ver(dC, lc.VersionPending, carol, false)),
 		},
+		{
+			name:  "reappearing from an unusable marker works like reappearing from absence",
+			start: toolOf(lc.Deprecated, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+			cmd:   crawl(dB, carol),
+			pol:   p,
+			want: toolOf(lc.PendingReview, "", dB, 0,
+				ver(dA, lc.VersionSuperseded, alice, true),
+				ver(dB, lc.VersionPending, carol, false)),
+		},
 	})
 }
 
-// Spec: "A crawl NEVER sets Approved to a new digest and never makes a version
-// approved." Exhaustive over state fixtures and crawled digests.
+// Spec: "A crawl (ObserveCrawl) never approves anything." Exhaustive over
+// state fixtures and crawled digests, including the unusable observation.
 func TestObservePresent_NeverApproves(t *testing.T) {
 	fixtures := map[string]lc.Tool{
 		"discovered": newTool(),
@@ -296,9 +327,10 @@ func TestObservePresent_NeverApproves(t *testing.T) {
 		"superseded-known": toolOf(lc.Enabled, dB, dB, 0,
 			ver(dA, lc.VersionSuperseded, alice, true), ver(dB, lc.VersionApproved, bob, true)),
 	}
+	cmds := []lc.ObserveCrawl{crawl(dA, carol), crawl(dB, carol), crawl(dC, carol), crawl(dD, carol), unusable()}
 	for name, start := range fixtures {
-		for _, d := range []string{dA, dB, dC, dD} {
-			got := applyOK(t, start, crawl(d, carol), plainPolicy())
+		for _, cmd := range cmds {
+			got := applyOK(t, start, cmd, plainPolicy())
 			for _, v := range got.Tool.Versions {
 				wasApproved := false
 				for _, old := range start.Versions {
@@ -307,22 +339,22 @@ func TestObservePresent_NeverApproves(t *testing.T) {
 					}
 				}
 				if v.Status == lc.VersionApproved && !wasApproved {
-					t.Errorf("%s crawl %s: version %s became approved by a crawl", name, d, v.Digest)
+					t.Errorf("%s %+v: version %s became approved by a crawl", name, cmd, v.Digest)
 				}
 			}
-			if got.Tool.Approved != start.Approved && !(start.State == lc.Deprecated && got.Tool.Approved == "") {
-				t.Errorf("%s crawl %s: Approved changed from %q to %q", name, d, start.Approved, got.Tool.Approved)
+			if got.Tool.Approved != start.Approved && (start.State != lc.Deprecated || got.Tool.Approved != "") {
+				t.Errorf("%s %+v: Approved changed from %q to %q", name, cmd, start.Approved, got.Tool.Approved)
 			}
 			if hasEvent(got, lc.EvApproved, "") || hasEvent(got, lc.EvRolledBack, "") {
-				t.Errorf("%s crawl %s: a crawl emitted an approval event: %+v", name, d, got.Events)
+				t.Errorf("%s %+v: a crawl emitted an approval event: %+v", name, cmd, got.Events)
 			}
 		}
 	}
 }
 
-// Spec: "ObserveCrawl{Present:false}: for discovered and deprecated tools
-// nothing changes."
-func TestObserveMissing_DiscoveredAndDeprecatedUnchanged(t *testing.T) {
+// Spec: "Not present: a discovered or deprecated tool only loses an unusable
+// marker".
+func TestObserveMissing_DiscoveredAndDeprecatedOnlyLoseTheUnusableMarker(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
 		{
@@ -339,10 +371,28 @@ func TestObserveMissing_DiscoveredAndDeprecatedUnchanged(t *testing.T) {
 			pol:   p,
 			want:  toolOf(lc.Deprecated, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)),
 		},
+		{
+			name:  "discovered with an unusable marker loses it and nothing else",
+			start: toolOf(lc.Discovered, "", lc.UnusableDigest, 0),
+			cmd:   miss(),
+			pol:   p,
+			want:  newTool(),
+		},
+		{
+			name:  "deprecated with an unusable marker loses it and keeps its counter",
+			start: toolOf(lc.Deprecated, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+			cmd:   miss(),
+			pol:   p,
+			want:  toolOf(lc.Deprecated, dA, "", 0, ver(dA, lc.VersionApproved, alice, true)),
+		},
 	})
+	res := applyOK(t, toolOf(lc.Deprecated, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)), miss(), p)
+	requireKinds(t, res, lc.EvMissing)
+	res = applyOK(t, toolOf(lc.Deprecated, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)), miss(), p)
+	requireKinds(t, res)
 }
 
-// Spec: "Otherwise LastSeen becomes \"\", MissingCrawls increments".
+// Spec: "any other tool gets LastSeen = "" and MissingCrawls + 1".
 func TestObserveMissing_ClearsLastSeenAndCounts(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
@@ -383,12 +433,18 @@ func TestObserveMissing_ClearsLastSeenAndCounts(t *testing.T) {
 			pol:   p,
 			want:  toolOf(lc.Enabled, dA, "", 1, ver(dA, lc.VersionApproved, alice, true)),
 		},
+		{
+			name:  "an unusable marker is cleared like a digest",
+			start: toolOf(lc.Enabled, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+			cmd:   miss(),
+			pol:   p,
+			want:  toolOf(lc.Enabled, dA, "", 1, ver(dA, lc.VersionApproved, alice, true)),
+		},
 	})
 }
 
-// Spec: "if policy.DeprecateAfter > 0 and MissingCrawls reaches it and the
-// state is not disabled, the state becomes deprecated; a disabled tool is
-// never deprecated."
+// Spec: "deprecated when the count reaches Policy.DeprecateAfter (when > 0),
+// unless it is disabled".
 func TestObserveMissing_DeprecatesWhenThresholdReached(t *testing.T) {
 	for _, state := range []lc.State{lc.PendingReview, lc.Enabled, lc.ChangedPendingReapproval} {
 		t.Run(string(state), func(t *testing.T) {
@@ -442,7 +498,7 @@ func TestObserveMissing_DisabledIsNeverDeprecated(t *testing.T) {
 	}
 }
 
-// Spec: "sets LastSeen=d and MissingCrawls=0": a sighting resets the streak.
+// Spec: "LastSeen = d, MissingCrawls = 0": a sighting resets the streak.
 func TestObserveMissing_PresentCrawlResetsTheStreak(t *testing.T) {
 	tool := enabledTool(dA)
 	tool = step(t, tool, miss(), plainPolicy())

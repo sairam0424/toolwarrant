@@ -2,7 +2,8 @@ package lifecycle_test
 
 // The invariants from the specification, as pure functions over a recorded
 // step so they can be run on random sequences and also unit-tested against
-// hand-made violations (see meta_test.go).
+// hand-made violations (see meta_test.go). The event rules (D5) and the
+// proposer history rules (D4) live in event_invariants_test.go.
 
 import (
 	"errors"
@@ -12,12 +13,12 @@ import (
 )
 
 // liveProbes are the live digests used when probing Serves.
-func liveProbes() []string { return []string{"", dA, dB, dC, dD, "digest-unknown"} }
+func liveProbes() []string { return []string{"", dA, dB, dC, dD, "digest-unknown", lc.UnusableDigest} }
 
 func sentinelErrors() []error {
 	return []error{
 		lc.ErrInvalidTransition, lc.ErrUnknownVersion, lc.ErrStaleVersion, lc.ErrSelfApproval,
-		lc.ErrNotRollbackTarget, lc.ErrNoActor, lc.ErrNoDigest,
+		lc.ErrNotRollbackTarget, lc.ErrNoActor, lc.ErrNoDigest, lc.ErrInvalidObservation,
 	}
 }
 
@@ -78,6 +79,7 @@ func stepViolations(rec stepRecord) []string {
 	out = append(out, crawlViolations(rec)...)
 	out = append(out, serveViolations(rec.res.Tool)...)
 	out = append(out, effectViolations(rec)...)
+	out = append(out, eventViolations(rec)...)
 	return out
 }
 
@@ -91,7 +93,7 @@ func failureViolations(rec stepRecord) []string {
 	if actorOf(rec.cmd) == "" && !errors.Is(rec.err, lc.ErrNoActor) {
 		out = append(out, fmt.Sprintf("empty actor reported as %v, want ErrNoActor", rec.err))
 	}
-	if c, ok := rec.cmd.(lc.ObserveCrawl); ok && c.Present && c.Actor != "" && c.Digest == "" && !errors.Is(rec.err, lc.ErrNoDigest) {
+	if c, ok := rec.cmd.(lc.ObserveCrawl); ok && c.Present && !c.Unusable && c.Actor != "" && c.Digest == "" && !errors.Is(rec.err, lc.ErrNoDigest) {
 		out = append(out, fmt.Sprintf("crawl without digest reported as %v, want ErrNoDigest", rec.err))
 	}
 	return out
@@ -102,8 +104,8 @@ func shapeViolations(t lc.Tool) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, v := range t.Versions {
-		if v.Digest == "" {
-			out = append(out, "a version has an empty digest")
+		if v.Digest == "" || v.Digest == lc.UnusableDigest {
+			out = append(out, "a version has an empty or marker digest")
 		}
 		if seen[v.Digest] {
 			out = append(out, "duplicate digest "+v.Digest)
@@ -125,13 +127,13 @@ func shapeViolations(t lc.Tool) []string {
 	if t.MissingCrawls < 0 {
 		out = append(out, "negative MissingCrawls")
 	}
-	if t.LastSeen != "" {
+	if isLiveDigest(t.LastSeen) {
 		if _, ok := findVersion(t, t.LastSeen); !ok {
 			out = append(out, "LastSeen names an unknown version")
 		}
-		if t.MissingCrawls != 0 {
-			out = append(out, "LastSeen is set while MissingCrawls is not zero")
-		}
+	}
+	if t.LastSeen != "" && t.MissingCrawls != 0 {
+		out = append(out, "LastSeen is set while MissingCrawls is not zero")
 	}
 	return out
 }
@@ -165,7 +167,9 @@ func stateShapeViolations(t lc.Tool, pending int) []string {
 			return []string{"pending_review with an approved digest " + t.Approved}
 		}
 	case lc.Discovered:
-		if len(t.Versions) != 0 || t.Approved != "" || t.LastSeen != "" {
+		// An unusable marker is the one sighting a discovered tool may carry:
+		// it proves nothing about a definition, so it does not move the state.
+		if len(t.Versions) != 0 || t.Approved != "" || isLiveDigest(t.LastSeen) {
 			return []string{"discovered tool has versions, an approval or a sighting"}
 		}
 	case lc.Disabled, lc.Deprecated:
@@ -206,7 +210,7 @@ func retiresThenProposes(rec stepRecord) bool {
 	case lc.Enable:
 		return true
 	case lc.ObserveCrawl:
-		return c.Present && rec.before.State == lc.Deprecated
+		return c.Present && !c.Unusable && rec.before.State == lc.Deprecated
 	}
 	return false
 }
@@ -219,15 +223,17 @@ func edgeViolations(rec stepRecord) []string {
 	}
 	var out []string
 	added := len(after.Versions) - len(before.Versions)
-	_, isCrawl := rec.cmd.(lc.ObserveCrawl)
-	if added > 1 || (added == 1 && !isCrawl) {
+	c, isCrawl := rec.cmd.(lc.ObserveCrawl)
+	if added > 1 || (added == 1 && (!isCrawl || c.Unusable)) {
 		out = append(out, fmt.Sprintf("%d versions added by %T", added, rec.cmd))
 	}
 	for i, old := range before.Versions {
 		out = append(out, versionEdgeViolations(rec, old, after.Versions[i])...)
+		out = append(out, proposerViolations(rec, old, after.Versions[i])...)
 	}
 	for _, nv := range after.Versions[len(before.Versions):] {
-		if nv.Status != lc.VersionPending || nv.EverApproved || nv.ProposedBy != actorOf(rec.cmd) {
+		if nv.Status != lc.VersionPending || nv.EverApproved || nv.ProposedBy != actorOf(rec.cmd) ||
+			nv.Proposers != lc.ProposersOf(actorOf(rec.cmd)) {
 			out = append(out, fmt.Sprintf("new version is not a fresh proposal by the actor: %+v", nv))
 		}
 	}
@@ -246,7 +252,7 @@ func versionEdgeViolations(rec stepRecord, old, nw lc.Version) []string {
 	if old.EverApproved && !nw.EverApproved {
 		out = append(out, "EverApproved went from true to false for "+old.Digest)
 	}
-	if !old.EverApproved && nw.EverApproved && !(nw.Status == lc.VersionApproved && isApproveOrRollback(rec.cmd)) {
+	if !old.EverApproved && nw.EverApproved && (nw.Status != lc.VersionApproved || !isApproveOrRollback(rec.cmd)) {
 		out = append(out, "EverApproved set without an approval for "+old.Digest)
 	}
 	if nw.Status == lc.VersionApproved && old.Status != lc.VersionApproved && !isApproveOrRollback(rec.cmd) {
@@ -254,9 +260,6 @@ func versionEdgeViolations(rec stepRecord, old, nw lc.Version) []string {
 	}
 	if _, isReject := rec.cmd.(lc.Reject); nw.Status == lc.VersionRejected && old.Status != lc.VersionRejected && !isReject {
 		out = append(out, fmt.Sprintf("%T rejected %s", rec.cmd, old.Digest))
-	}
-	if nw.ProposedBy != old.ProposedBy && nw.Status != lc.VersionPending {
-		out = append(out, "ProposedBy changed on a version that is not pending: "+old.Digest)
 	}
 	return out
 }
@@ -268,18 +271,32 @@ func crawlViolations(rec stepRecord) []string {
 		return nil
 	}
 	before, after := rec.before, rec.res.Tool
-	retired := c.Present && before.State == lc.Deprecated
+	retired := c.Present && !c.Unusable && before.State == lc.Deprecated
 	var out []string
-	if after.Approved != before.Approved && !(retired && after.Approved == "") {
+	if after.Approved != before.Approved && (!retired || after.Approved != "") {
 		out = append(out, fmt.Sprintf("crawl changed Approved %q -> %q", before.Approved, after.Approved))
 	}
 	if retired && (after.State != lc.PendingReview || after.Approved != "") {
 		out = append(out, "a reappearing deprecated tool must be pending_review with no approval")
 	}
-	if c.Present {
+	switch {
+	case c.Unusable:
+		return append(out, unusableCrawlViolations(before, after)...)
+	case c.Present:
 		return append(out, presentCrawlViolations(c, before, after)...)
 	}
 	return append(out, missingCrawlViolations(rec.pol, before, after)...)
+}
+
+// unusableCrawlViolations: "LastSeen = UnusableDigest, MissingCrawls = 0,
+// nothing else changes."
+func unusableCrawlViolations(before, after lc.Tool) []string {
+	want := cloneTool(before)
+	want.LastSeen, want.MissingCrawls = lc.UnusableDigest, 0
+	if !sameTool(after, want) {
+		return []string{fmt.Sprintf("an unusable sighting changed more than the marker: %+v -> %+v", before, after)}
+	}
+	return nil
 }
 
 func presentCrawlViolations(c lc.ObserveCrawl, before, after lc.Tool) []string {
@@ -328,7 +345,9 @@ func containsState(list []lc.State, s lc.State) bool {
 
 func missingCrawlViolations(p lc.Policy, before, after lc.Tool) []string {
 	if before.State == lc.Discovered || before.State == lc.Deprecated {
-		if !sameTool(before, after) {
+		want := cloneTool(before)
+		want.LastSeen = "" // only an unusable marker can go
+		if !sameTool(want, after) {
 			return []string{fmt.Sprintf("a miss changed a %s tool: %+v -> %+v", before.State, before, after)}
 		}
 		return nil

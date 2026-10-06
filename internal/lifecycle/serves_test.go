@@ -3,10 +3,11 @@ package lifecycle_test
 // Serves, Tool.Serves, Tool.Drifted, Tool.Pending and DefaultPolicy.
 //
 // Spec: "Serves(state, approved, live): true exactly when approved != \"\" and
-// live == approved and the state is enabled or changed_pending_reapproval.
-// Tool.Serves(live) and Tool.Drifted() (Approved and LastSeen both non-empty
-// and different) and Tool.Pending() (digest of the pending version or \"\")
-// follow from the fields."
+// live == approved and the state is enabled or changed_pending_reapproval. A
+// live value of "" or UnusableDigest never matches. Tool.Serves(live) and
+// Tool.Drifted() (Approved and LastSeen both non-empty and different, an
+// unusable definition included) and Tool.Pending() (digest of the pending
+// version or \"\") follow from the fields."
 
 import (
 	"testing"
@@ -23,7 +24,7 @@ func TestServes_ExhaustiveTruthTable(t *testing.T) {
 	states := append(allStates(), lc.State("bogus"), lc.State(""))
 	for _, state := range states {
 		for _, approved := range []string{"", dA, dB} {
-			for _, live := range []string{"", dA, dB, dC} {
+			for _, live := range []string{"", dA, dB, dC, lc.UnusableDigest} {
 				got := lc.Serves(state, approved, live)
 				if want := wantServes(state, approved, live); got != want {
 					t.Errorf("Serves(%q, %q, %q) = %v, want %v", state, approved, live, got, want)
@@ -34,10 +35,14 @@ func TestServes_ExhaustiveTruthTable(t *testing.T) {
 }
 
 func TestServes_NothingIsServedWithoutAnApproval(t *testing.T) {
-	// The dangerous corner: both the approved and the live digest are empty.
+	// The dangerous corners: both digests empty, or both the marker. No
+	// version ever carries either value, so neither may match.
 	for _, state := range allStates() {
 		if lc.Serves(state, "", "") {
 			t.Errorf("Serves(%s, \"\", \"\") = true: empty must never match empty", state)
+		}
+		if lc.Serves(state, lc.UnusableDigest, lc.UnusableDigest) {
+			t.Errorf("Serves(%s, marker, marker) = true: the marker must never match", state)
 		}
 	}
 }
@@ -45,7 +50,7 @@ func TestServes_NothingIsServedWithoutAnApproval(t *testing.T) {
 func TestToolServes_MatchesTheFunctionForEveryStateAndFieldCombination(t *testing.T) {
 	for _, state := range allStates() {
 		for _, approved := range []string{"", dA} {
-			for _, live := range []string{"", dA, dB} {
+			for _, live := range []string{"", dA, dB, lc.UnusableDigest} {
 				tool := lc.Tool{State: state, Approved: approved, LastSeen: dB}
 				if got, want := tool.Serves(live), lc.Serves(state, approved, live); got != want {
 					t.Errorf("Tool{%s,%q}.Serves(%q) = %v, Serves() = %v", state, approved, live, got, want)
@@ -66,6 +71,8 @@ func TestToolDrifted(t *testing.T) {
 		{"nothing approved", "", dA, false},
 		{"not seen", dA, "", false},
 		{"nothing approved and not seen", "", "", false},
+		{"unusable definition", dA, lc.UnusableDigest, true},
+		{"unusable definition and nothing approved", "", lc.UnusableDigest, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

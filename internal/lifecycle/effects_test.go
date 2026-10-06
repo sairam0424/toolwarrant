@@ -1,10 +1,12 @@
 package lifecycle_test
 
 // Per-command effect invariants, including invariant (8): after a successful
-// Approve the proposer differs from the approver unless AllowSelfApproval.
+// Approve the approver is none of the version's proposers unless
+// AllowSelfApproval.
 
 import (
 	"fmt"
+	"slices"
 
 	lc "github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
@@ -30,20 +32,21 @@ func effectViolations(rec stepRecord) []string {
 
 // stateOwnerViolations: deprecated is reachable only through a miss, disabled
 // only through Disable and left only through Enable, and a deprecated tool is
-// left only by a sighting.
+// left only by a sighting with a digest.
 func stateOwnerViolations(rec stepRecord) []string {
 	before, after := rec.before.State, rec.res.Tool.State
 	crawl, isCrawl := rec.cmd.(lc.ObserveCrawl)
 	_, isDisable := rec.cmd.(lc.Disable)
 	_, isEnable := rec.cmd.(lc.Enable)
+	sighting := isCrawl && crawl.Present && !crawl.Unusable
 	switch {
-	case after == lc.Deprecated && before != lc.Deprecated && !(isCrawl && !crawl.Present):
+	case after == lc.Deprecated && before != lc.Deprecated && (!isCrawl || crawl.Present):
 		return []string{fmt.Sprintf("%T deprecated a tool", rec.cmd)}
 	case after == lc.Disabled && before != lc.Disabled && !isDisable:
 		return []string{fmt.Sprintf("%T disabled a tool", rec.cmd)}
 	case before == lc.Disabled && after != lc.Disabled && !isEnable:
 		return []string{fmt.Sprintf("%T re-enabled a tool", rec.cmd)}
-	case before == lc.Deprecated && after != lc.Deprecated && !(isCrawl && crawl.Present) && !isDisable:
+	case before == lc.Deprecated && after != lc.Deprecated && !sighting && !isDisable:
 		return []string{fmt.Sprintf("%T revived a deprecated tool", rec.cmd)}
 	}
 	return nil
@@ -66,8 +69,8 @@ func approveViolations(c lc.Approve, rec stepRecord) []string {
 	if !ok || nv.Status != lc.VersionApproved || !nv.EverApproved || after.Approved != c.Digest || after.State != lc.Enabled {
 		out = append(out, fmt.Sprintf("approval left %+v in state %s approved=%q", nv, after.State, after.Approved))
 	}
-	if ok && !rec.pol.AllowSelfApproval && nv.ProposedBy == c.Actor {
-		out = append(out, fmt.Sprintf("invariant 8: %q approved a version they proposed", c.Actor))
+	if ok && !rec.pol.AllowSelfApproval && slices.Contains(proposerHistory(nv), c.Actor) {
+		out = append(out, fmt.Sprintf("invariant 8: %q approved a version they proposed (%v)", c.Actor, proposerHistory(nv)))
 	}
 	if before.Approved != "" {
 		if prev, found := findVersion(after, before.Approved); !found || prev.Status != lc.VersionSuperseded {
@@ -111,18 +114,21 @@ func disableViolations(rec stepRecord) []string {
 	return nil
 }
 
+// enableViolations follows the Enable doc comment: the retained approval is
+// restored only without re-review and with a live digest in LastSeen; in every
+// other case the approval is retired and the tool is pending_review.
 func enableViolations(rec stepRecord) []string {
 	before, after := rec.before, rec.res.Tool
 	var out []string
 	if before.State != lc.Disabled {
 		out = append(out, "enabled from state "+string(before.State))
 	}
-	if after.LastSeen != before.LastSeen {
-		out = append(out, "enable changed LastSeen")
+	if after.LastSeen != before.LastSeen || after.MissingCrawls != before.MissingCrawls {
+		out = append(out, "enable changed LastSeen or MissingCrawls")
 	}
-	if rec.pol.ReEnableRequiresReview {
+	if rec.pol.ReEnableRequiresReview || !isLiveDigest(before.LastSeen) {
 		if after.State != lc.PendingReview || after.Approved != "" {
-			out = append(out, fmt.Sprintf("enable with review left state %s approved=%q", after.State, after.Approved))
+			out = append(out, fmt.Sprintf("enable needing review left state %s approved=%q", after.State, after.Approved))
 		}
 		return append(out, reviewProposalViolations(rec)...)
 	}
@@ -134,14 +140,15 @@ func enableViolations(rec stepRecord) []string {
 	case pending > 0:
 		want = lc.ChangedPendingReapproval
 	}
-	if after.State != want || after.Approved != before.Approved {
-		out = append(out, fmt.Sprintf("enable without review left state %s approved=%q, want %s %q", after.State, after.Approved, want, before.Approved))
+	if after.State != want || after.Approved != before.Approved || !sameVersions(before, after) {
+		out = append(out, fmt.Sprintf("enable without review left state %s approved=%q, want %s %q with versions unchanged", after.State, after.Approved, want, before.Approved))
 	}
 	return out
 }
 
-// reviewProposalViolations: with re-review the LastSeen digest, unless absent
-// or rejected, is proposed by the enabler, and the old approval is superseded.
+// reviewProposalViolations: the old approval is retired, and a live,
+// non-rejected LastSeen digest is pending afterwards with its proposer history
+// exactly as before (D4: Enable adds nobody).
 func reviewProposalViolations(rec stepRecord) []string {
 	before, after := rec.before, rec.res.Tool
 	var out []string
@@ -150,12 +157,13 @@ func reviewProposalViolations(rec stepRecord) []string {
 			out = append(out, "enable with review did not retire the approval")
 		}
 	}
-	if before.LastSeen == "" || isRejected(before, before.LastSeen) {
+	if !isLiveDigest(before.LastSeen) || isRejected(before, before.LastSeen) {
 		return out
 	}
+	old, _ := findVersion(before, before.LastSeen)
 	nv, ok := findVersion(after, before.LastSeen)
-	if !ok || nv.Status != lc.VersionPending || nv.ProposedBy != actorOf(rec.cmd) {
-		out = append(out, fmt.Sprintf("LastSeen digest was not proposed by the enabler: %+v", nv))
+	if !ok || nv.Status != lc.VersionPending || nv.ProposedBy != old.ProposedBy || nv.Proposers != old.Proposers {
+		out = append(out, fmt.Sprintf("LastSeen digest was not re-proposed with its history intact: %+v -> %+v", old, nv))
 	}
 	return out
 }

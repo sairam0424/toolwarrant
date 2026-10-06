@@ -6,9 +6,10 @@ package audit_test
 //	zeros, when prev.Hash is empty) and e.Hash to the lower-case hex SHA-256 of
 //	the RFC 8785 canonical JSON of the entry WITHOUT the hash field, with keys
 //	seq, ts, actor, actor_type, event, subject, before_hash, after_hash,
-//	detail, prev_hash.
+//	detail, prev_hash. Seq must lie in [-2^53, 2^53-1].
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -152,7 +153,7 @@ func TestSeal_InjectionLookingValuesStayDistinct(t *testing.T) {
 // "\xff" and "\xfe" (and U+FFFD) alike. Rejecting such input with an error is
 // acceptable; silently aliasing distinct values is not.
 func TestSeal_DistinctInvalidUTF8ValuesDoNotCollide(t *testing.T) {
-	values := []string{"a\xffb", "a\xfeb", "a�b", "a?b"}
+	values := []string{"a\xffb", "a\xfeb", "a" + string(rune(0xfffd)) + "b", "a?b"}
 	seen := map[string]string{}
 	for _, v := range values {
 		e := sampleEntry(1)
@@ -184,6 +185,51 @@ func TestSeal_SeqsBeyondDoublePrecisionDoNotCollide(t *testing.T) {
 	}
 	if sealedA.Hash == sealedB.Hash {
 		t.Errorf("seq %d and seq %d produce the same hash %s", a.Seq, b.Seq, sealedA.Hash)
+	}
+}
+
+// Spec: "Seq must lie in [-2^53, 2^53-1]". Both ends are accepted, one beyond
+// each end is refused, and the accepted extremes hash differently from their
+// neighbours. A mutant that moved either bound by one survived the earlier
+// tests; this pins them.
+func TestSeal_SeqBoundaries(t *testing.T) {
+	const twoTo53 = int64(1) << 53
+	accepted := []int64{-twoTo53, -twoTo53 + 1, -1, 0, 1, twoTo53 - 2, twoTo53 - 1}
+	hashes := map[string]int64{}
+	for _, seq := range accepted {
+		e := sampleEntry(1)
+		e.Seq = seq
+		sealed, err := audit.Seal(audit.Entry{}, e)
+		if err != nil {
+			t.Errorf("Seal(seq %d) = %v, want accepted", seq, err)
+			continue
+		}
+		if other, dup := hashes[sealed.Hash]; dup {
+			t.Errorf("seq %d and seq %d share hash %s", other, seq, sealed.Hash)
+		}
+		hashes[sealed.Hash] = seq
+	}
+	refused := []int64{-twoTo53 - 1, twoTo53, math.MinInt64, math.MaxInt64}
+	for _, seq := range refused {
+		e := sampleEntry(1)
+		e.Seq = seq
+		if sealed, err := audit.Seal(audit.Entry{}, e); err == nil {
+			t.Errorf("Seal(seq %d) accepted with hash %s, want a refusal", seq, sealed.Hash)
+		} else if sealed != (audit.Entry{}) {
+			t.Errorf("Seal(seq %d) returned a non-zero entry alongside the error", seq)
+		}
+	}
+}
+
+// Verify applies the same bound: an entry sealed by other means with a Seq the
+// canonical form cannot hold is reported as broken at that entry.
+func TestVerify_RefusesSeqBeyondTheBound(t *testing.T) {
+	const twoTo53 = int64(1) << 53
+	chain := buildChain(t, 2)
+	chain[1].Seq = twoTo53
+	err := audit.Verify(chain)
+	if err == nil {
+		t.Fatal("Verify accepted a chain whose second entry has seq 2^53")
 	}
 }
 

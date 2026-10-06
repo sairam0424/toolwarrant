@@ -181,6 +181,8 @@ func TestPath_DisableCrawlWhileOffThenEnableWithoutReview(t *testing.T) {
 	}
 }
 
+// D4: the enabler (carol) introduced nothing and may approve; alice, whose
+// crawl first proposed dA, may not. Before D4 the roles were reversed.
 func TestPath_DisableThenEnableWithReview(t *testing.T) {
 	p := reviewPolicy()
 	tool := approvedAt(t, dA, p)
@@ -195,8 +197,8 @@ func TestPath_DisableThenEnableWithReview(t *testing.T) {
 	}
 	requireServes(t, tool, dA, false) // nothing is served until a person approves again
 
-	mustFail(t, tool, lc.Approve{Digest: dA, Actor: carol}, p, lc.ErrSelfApproval)
-	tool = step(t, tool, lc.Approve{Digest: dA, Actor: bob}, p)
+	mustFail(t, tool, lc.Approve{Digest: dA, Actor: alice}, p, lc.ErrSelfApproval)
+	tool = step(t, tool, lc.Approve{Digest: dA, Actor: carol}, p)
 	requireState(t, tool, lc.Enabled)
 	requireServes(t, tool, dA, true)
 }
@@ -224,6 +226,47 @@ func TestPath_DeprecateThenReappear(t *testing.T) {
 	tool = step(t, tool, lc.Approve{Digest: dA, Actor: bob}, p)
 	requireState(t, tool, lc.Enabled)
 	requireServes(t, tool, dA, true)
+}
+
+// Reviewer's reproduction (catalog review, "Deprecated tool keeps its approval;
+// Disable then Enable re-enables it"): a tool that vanished long enough to be
+// deprecated cannot be brought back to enabled through Disable and Enable. The
+// miss counter survives Disable, Enable finds no live definition, retires the
+// approval, and the old digest is a proposal when it is listed again. Before
+// the fix the no-review policy went straight to enabled with LastSeen "".
+func TestPath_DeprecatedDisableEnableNeedsReview(t *testing.T) {
+	for name, p := range map[string]lc.Policy{"no review": plainPolicy(), "review": reviewPolicy()} {
+		t.Run(name, func(t *testing.T) {
+			tool := approvedAt(t, dA, p)
+			for i := 0; i < deprecateAfterThree; i++ {
+				tool = step(t, tool, miss(), p)
+			}
+			requireState(t, tool, lc.Deprecated)
+
+			tool = step(t, tool, lc.Disable{Actor: carol}, p)
+			if tool.MissingCrawls != deprecateAfterThree || tool.LastSeen != "" {
+				t.Fatalf("Disable must keep the miss record: %+v", tool)
+			}
+			res := applyOK(t, tool, lc.Enable{Actor: carol}, p)
+			tool = res.Tool
+			requireState(t, tool, lc.PendingReview)
+			requireKinds(t, res, lc.EvSuperseded, lc.EvEnabled)
+			if tool.Approved != "" {
+				t.Fatalf("Enable revived the approval of a vanished tool: %+v", tool)
+			}
+			requireServes(t, tool, dA, false)
+
+			tool = step(t, tool, crawl(dA, carol), p) // the upstream lists the old definition again
+			requireState(t, tool, lc.PendingReview)
+			requireServes(t, tool, dA, false)
+			if tool.Pending() != dA {
+				t.Fatalf("pending = %q, want %q", tool.Pending(), dA)
+			}
+			mustFail(t, tool, lc.Approve{Digest: dA, Actor: alice}, p, lc.ErrSelfApproval)
+			tool = step(t, tool, lc.Approve{Digest: dA, Actor: bob}, p)
+			requireServes(t, tool, dA, true)
+		})
+	}
 }
 
 func TestPath_RejectInPendingReviewThenNewDefinition(t *testing.T) {
@@ -273,12 +316,15 @@ func TestPath_CrawlsAloneNeverServeAnything(t *testing.T) {
 		if tool.Approved != "" {
 			t.Fatalf("crawl %d approved %q", i, tool.Approved)
 		}
-		for _, live := range []string{dA, dB, dC, dD, ""} {
+		for _, live := range []string{dA, dB, dC, dD, "", lc.UnusableDigest} {
 			requireServes(t, tool, live, false)
 		}
 	}
 }
 
+// alice's crawl first proposed dA, so under D4 she can never approve it;
+// before D4 the re-proposal by carol let her (the sequence approved dA as
+// alice here).
 func TestPath_LongLifeKeepsExactlyOneApproval(t *testing.T) {
 	p := reviewPolicy()
 	tool := approvedAt(t, dA, p)
@@ -287,7 +333,7 @@ func TestPath_LongLifeKeepsExactlyOneApproval(t *testing.T) {
 		crawl(dC, carol), lc.Reject{Digest: dC, Actor: bob},
 		lc.Rollback{To: dA, Actor: bob},
 		lc.Disable{Actor: bob}, lc.Enable{Actor: bob},
-		crawl(dA, carol), lc.Approve{Digest: dA, Actor: alice},
+		crawl(dA, carol), lc.Approve{Digest: dA, Actor: bob},
 		miss(), miss(), miss(),
 		crawl(dA, carol), lc.Approve{Digest: dA, Actor: bob},
 	}
@@ -305,4 +351,5 @@ func TestPath_LongLifeKeepsExactlyOneApproval(t *testing.T) {
 	}
 	requireState(t, tool, lc.Enabled)
 	requireServes(t, tool, dA, true)
+	requireProposers(t, tool, dA, alice, carol)
 }

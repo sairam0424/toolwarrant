@@ -5,12 +5,13 @@ package lifecycle_test
 //	Disable{Actor}: allowed from every state except disabled
 //	(ErrInvalidTransition); only the state changes.
 //
-//	Enable{Actor}: only from disabled. With policy.ReEnableRequiresReview: the
-//	approved version (if any) becomes superseded and Approved becomes "", the
-//	state becomes pending_review, and the digest in LastSeen (if non-empty and
-//	not a rejected version) is proposed with ProposedBy equal to the Enable
-//	actor. Without it: Approved=="" gives pending_review, otherwise a pending
-//	version gives changed_pending_reapproval, otherwise enabled.
+//	Enable{Actor}: only from disabled. With policy.ReEnableRequiresReview the
+//	retained approval is retired and the digest in LastSeen, if it is a real
+//	digest that was not rejected, becomes the proposal again without gaining a
+//	proposer (D4: Enable adds nobody; before D4 the rows below expected the
+//	enabler to become ProposedBy). Without it the retained approval is restored,
+//	except when LastSeen is "" or UnusableDigest: with no live definition to
+//	compare, the approval is retired and the tool waits in pending_review.
 
 import (
 	"testing"
@@ -25,16 +26,18 @@ func TestDisable_FromEveryStateButDisabled(t *testing.T) {
 		"enabled":    enabledTool(dA),
 		"changed":    changedTool(dA, dB, bob),
 		"deprecated": toolOf(lc.Deprecated, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)),
+		"unusable":   toolOf(lc.Enabled, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
 	}
 	for name, start := range starts {
 		t.Run(name, func(t *testing.T) {
-			got := applyOK(t, start, lc.Disable{Actor: bob}, plainPolicy()).Tool
+			res := applyOK(t, start, lc.Disable{Actor: bob}, plainPolicy())
 			want := cloneTool(start)
 			want.State = lc.Disabled
-			if !sameTool(got, want) {
-				t.Errorf("Disable must change only the state\n got: %+v\nwant: %+v", got, want)
+			if !sameTool(res.Tool, want) {
+				t.Errorf("Disable must change only the state\n got: %+v\nwant: %+v", res.Tool, want)
 			}
-			if got.Serves(start.Approved) {
+			requireKinds(t, res, lc.EvDisabled)
+			if res.Tool.Serves(start.Approved) {
 				t.Error("a disabled tool must not be served")
 			}
 		})
@@ -70,22 +73,23 @@ func TestEnable_Errors(t *testing.T) {
 	mustFail(t, disabled, lc.Enable{}, reviewPolicy(), lc.ErrNoActor)
 }
 
+// The three branches of Enable without review, each with a live digest.
 func TestEnable_WithoutReview(t *testing.T) {
 	p := plainPolicy()
 	runApplyCases(t, []applyCase{
-		{
-			name:  "nothing was ever observed: pending_review",
-			start: toolOf(lc.Disabled, "", "", 0),
-			cmd:   lc.Enable{Actor: bob},
-			pol:   p,
-			want:  toolOf(lc.PendingReview, "", "", 0),
-		},
 		{
 			name:  "no approval and a pending proposal: pending_review",
 			start: toolOf(lc.Disabled, "", dA, 0, ver(dA, lc.VersionPending, alice, false)),
 			cmd:   lc.Enable{Actor: bob},
 			pol:   p,
 			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, alice, false)),
+		},
+		{
+			name:  "no approval and only a rejected digest: pending_review",
+			start: toolOf(lc.Disabled, "", dA, 0, ver(dA, lc.VersionRejected, alice, false)),
+			cmd:   lc.Enable{Actor: bob},
+			pol:   p,
+			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionRejected, alice, false)),
 		},
 		{
 			name:  "approval retained and nothing pending: enabled",
@@ -117,20 +121,67 @@ func TestEnable_WithoutReview(t *testing.T) {
 				ver(dB, lc.VersionRejected, carol, false)),
 		},
 	})
+	res := applyOK(t, toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, p)
+	requireKinds(t, res, lc.EvEnabled)
+}
+
+// Spec: "except when LastSeen is "" or UnusableDigest: with no live definition
+// to compare, the approval is retired and the tool waits in pending_review".
+// This closes the reviewer's finding that Disable then Enable (no review)
+// brought a deprecated tool straight back to enabled.
+func TestEnable_WithoutReviewNeedsALiveDefinition(t *testing.T) {
+	p := plainPolicy()
+	runApplyCases(t, []applyCase{
+		{
+			name:  "nothing was ever observed: pending_review",
+			start: toolOf(lc.Disabled, "", "", 0),
+			cmd:   lc.Enable{Actor: bob},
+			pol:   p,
+			want:  toolOf(lc.PendingReview, "", "", 0),
+		},
+		{
+			name:  "approval retained but absent at the last crawl: the approval is retired",
+			start: toolOf(lc.Disabled, dA, "", 2, ver(dA, lc.VersionApproved, alice, true)),
+			cmd:   lc.Enable{Actor: bob},
+			pol:   p,
+			want:  toolOf(lc.PendingReview, "", "", 2, ver(dA, lc.VersionSuperseded, alice, true)),
+		},
+		{
+			name:  "approval retained but the live definition is unusable: the approval is retired",
+			start: toolOf(lc.Disabled, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+			cmd:   lc.Enable{Actor: bob},
+			pol:   p,
+			want:  toolOf(lc.PendingReview, "", lc.UnusableDigest, 0, ver(dA, lc.VersionSuperseded, alice, true)),
+		},
+		{
+			name: "absent with an approval and a pending proposal: the proposal stays, the approval goes",
+			start: toolOf(lc.Disabled, dA, "", 1,
+				ver(dA, lc.VersionApproved, alice, true),
+				ver(dB, lc.VersionPending, carol, false)),
+			cmd: lc.Enable{Actor: bob},
+			pol: p,
+			want: toolOf(lc.PendingReview, "", "", 1,
+				ver(dA, lc.VersionSuperseded, alice, true),
+				ver(dB, lc.VersionPending, carol, false)),
+		},
+	})
+	res := applyOK(t, toolOf(lc.Disabled, dA, "", 2, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, p)
+	requireKinds(t, res, lc.EvSuperseded, lc.EvEnabled)
+	requireServes(t, res.Tool, dA, false)
 }
 
 func TestEnable_WithReview(t *testing.T) {
 	p := reviewPolicy()
 	runApplyCases(t, []applyCase{
 		{
-			name:  "approved digest is retired and re-proposed by the enabler",
+			name:  "approved digest is retired and becomes the proposal again, with its original proposer only",
 			start: toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)),
 			cmd:   lc.Enable{Actor: bob},
 			pol:   p,
-			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, bob, true)),
+			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, alice, true)),
 		},
 		{
-			name: "a different LastSeen digest is proposed and the old approval is superseded",
+			name: "a different LastSeen digest stays the proposal, unchanged, and the old approval is superseded",
 			start: toolOf(lc.Disabled, dA, dB, 0,
 				ver(dA, lc.VersionApproved, alice, true),
 				ver(dB, lc.VersionPending, carol, false)),
@@ -138,14 +189,21 @@ func TestEnable_WithReview(t *testing.T) {
 			pol: p,
 			want: toolOf(lc.PendingReview, "", dB, 0,
 				ver(dA, lc.VersionSuperseded, alice, true),
-				ver(dB, lc.VersionPending, bob, false)),
+				ver(dB, lc.VersionPending, carol, false)),
 		},
 		{
-			name:  "an unknown LastSeen digest cannot occur, but an absent one proposes nothing",
+			name:  "an absent LastSeen proposes nothing",
 			start: toolOf(lc.Disabled, dA, "", 0, ver(dA, lc.VersionApproved, alice, true)),
 			cmd:   lc.Enable{Actor: bob},
 			pol:   p,
 			want:  toolOf(lc.PendingReview, "", "", 0, ver(dA, lc.VersionSuperseded, alice, true)),
+		},
+		{
+			name:  "an unusable LastSeen proposes nothing",
+			start: toolOf(lc.Disabled, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+			cmd:   lc.Enable{Actor: bob},
+			pol:   p,
+			want:  toolOf(lc.PendingReview, "", lc.UnusableDigest, 0, ver(dA, lc.VersionSuperseded, alice, true)),
 		},
 		{
 			name: "a rejected LastSeen digest is not proposed",
@@ -159,22 +217,22 @@ func TestEnable_WithReview(t *testing.T) {
 				ver(dB, lc.VersionRejected, carol, false)),
 		},
 		{
-			name: "a superseded LastSeen digest is reused as the proposal",
+			name: "a superseded LastSeen digest is reused as the proposal with its history intact",
 			start: toolOf(lc.Disabled, dB, dA, 0,
-				ver(dA, lc.VersionSuperseded, alice, true),
+				verP(dA, lc.VersionSuperseded, alice, true, alice, carol),
 				ver(dB, lc.VersionApproved, bob, true)),
 			cmd: lc.Enable{Actor: carol},
 			pol: p,
 			want: toolOf(lc.PendingReview, "", dA, 0,
-				ver(dA, lc.VersionPending, carol, true),
+				verP(dA, lc.VersionPending, alice, true, alice, carol),
 				ver(dB, lc.VersionSuperseded, bob, true)),
 		},
 		{
-			name:  "no approval to retire: the LastSeen pending digest is proposed by the enabler",
+			name:  "no approval to retire: the LastSeen pending digest stays as it is",
 			start: toolOf(lc.Disabled, "", dA, 0, ver(dA, lc.VersionPending, alice, false)),
 			cmd:   lc.Enable{Actor: bob},
 			pol:   p,
-			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, bob, false)),
+			want:  toolOf(lc.PendingReview, "", dA, 0, ver(dA, lc.VersionPending, alice, false)),
 		},
 		{
 			name:  "nothing ever observed: pending_review with no versions",
@@ -186,14 +244,30 @@ func TestEnable_WithReview(t *testing.T) {
 	})
 }
 
-// Spec: "ProposedBy equal to the Enable actor": the enabler cannot approve the
-// digest they just re-proposed, under the default policy.
-func TestEnable_EnablerCannotSelfApproveTheReReview(t *testing.T) {
+// Spec: a digest that is already pending "stays as it is and no event is
+// emitted for it"; a retired approval that becomes the proposal again is
+// announced once.
+func TestEnable_WithReviewEvents(t *testing.T) {
+	p := reviewPolicy()
+	res := applyOK(t, toolOf(lc.Disabled, "", dA, 0, ver(dA, lc.VersionPending, alice, false)), lc.Enable{Actor: bob}, p)
+	requireKinds(t, res, lc.EvEnabled)
+	res = applyOK(t, toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, p)
+	requireKinds(t, res, lc.EvSuperseded, lc.EvProposed, lc.EvEnabled)
+	res = applyOK(t, toolOf(lc.Disabled, dA, "", 1, ver(dA, lc.VersionApproved, alice, true)), lc.Enable{Actor: bob}, p)
+	requireKinds(t, res, lc.EvSuperseded, lc.EvEnabled)
+}
+
+// D4: "Enable adds none." The person who runs Enable introduced no
+// definition, so the two-person rule does not bind them; it still binds the
+// original proposer. Before D4 this test expected the opposite (the enabler
+// refused, anyone else allowed).
+func TestEnable_ReReviewKeepsTheOriginalProposer(t *testing.T) {
 	disabled := toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true))
 	enabled := applyOK(t, disabled, lc.Enable{Actor: bob}, lc.DefaultPolicy()).Tool
 	requireState(t, enabled, lc.PendingReview)
-	mustFail(t, enabled, lc.Approve{Digest: dA, Actor: bob}, lc.DefaultPolicy(), lc.ErrSelfApproval)
-	approved := applyOK(t, enabled, lc.Approve{Digest: dA, Actor: carol}, lc.DefaultPolicy()).Tool
+	requireProposers(t, enabled, dA, alice)
+	mustFail(t, enabled, lc.Approve{Digest: dA, Actor: alice}, lc.DefaultPolicy(), lc.ErrSelfApproval)
+	approved := applyOK(t, enabled, lc.Approve{Digest: dA, Actor: bob}, lc.DefaultPolicy()).Tool
 	requireState(t, approved, lc.Enabled)
 	requireServes(t, approved, dA, true)
 }

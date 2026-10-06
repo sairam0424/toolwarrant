@@ -22,9 +22,12 @@ import (
 // It is a function so no mutable package state exists.
 func fixtureTools() map[string]lc.Tool {
 	return map[string]lc.Tool{
-		"discovered": newTool(),
-		"pending":    pendingReviewTool(dA, alice),
-		"pending-with-rejected": toolOf(lc.PendingReview, "", dB, 1,
+		"discovered":          newTool(),
+		"discovered-unusable": toolOf(lc.Discovered, "", lc.UnusableDigest, 0),
+		"pending":             pendingReviewTool(dA, alice),
+		"pending-with-rejected": toolOf(lc.PendingReview, "", dB, 0,
+			ver(dA, lc.VersionRejected, alice, false), ver(dB, lc.VersionPending, bob, false)),
+		"pending-missed": toolOf(lc.PendingReview, "", "", 1,
 			ver(dA, lc.VersionRejected, alice, false), ver(dB, lc.VersionPending, bob, false)),
 		"enabled": enabledTool(dA),
 		"enabled-with-history": toolOf(lc.Enabled, dB, dB, 0,
@@ -32,11 +35,16 @@ func fixtureTools() map[string]lc.Tool {
 			ver(dB, lc.VersionApproved, bob, true),
 			ver(dC, lc.VersionSuperseded, alice, false),
 			ver(dD, lc.VersionRejected, alice, true)),
+		"enabled-unusable": toolOf(lc.Enabled, dA, lc.UnusableDigest, 0, ver(dA, lc.VersionApproved, alice, true)),
+		"enabled-two-proposers": toolOf(lc.Enabled, dB, dB, 0,
+			verP(dA, lc.VersionSuperseded, alice, false, alice, carol),
+			ver(dB, lc.VersionApproved, bob, true)),
 		"changed": changedTool(dA, dB, bob),
 		"changed-reproposed": toolOf(lc.ChangedPendingReapproval, dB, dA, 0,
 			ver(dA, lc.VersionPending, carol, true), ver(dB, lc.VersionApproved, bob, true)),
 		"disabled-approved":    toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)),
 		"disabled-unapproved":  toolOf(lc.Disabled, "", dA, 0, ver(dA, lc.VersionPending, alice, false)),
+		"disabled-absent":      toolOf(lc.Disabled, dA, "", 2, ver(dA, lc.VersionApproved, alice, true)),
 		"disabled-empty":       toolOf(lc.Disabled, "", "", 0),
 		"deprecated":           toolOf(lc.Deprecated, dA, "", 3, ver(dA, lc.VersionApproved, alice, true)),
 		"deprecated-with-prop": toolOf(lc.Deprecated, dA, "", 3, ver(dA, lc.VersionApproved, alice, true), ver(dB, lc.VersionPending, bob, false)),
@@ -47,7 +55,10 @@ func fixtureTools() map[string]lc.Tool {
 func commandMatrix() []lc.Command {
 	var cmds []lc.Command
 	for _, actor := range []string{alice, bob} {
-		cmds = append(cmds, lc.ObserveCrawl{Present: false, Actor: actor}, lc.Disable{Actor: actor}, lc.Enable{Actor: actor})
+		cmds = append(cmds,
+			lc.ObserveCrawl{Present: false, Actor: actor},
+			lc.ObserveCrawl{Present: true, Unusable: true, Actor: actor},
+			lc.Disable{Actor: actor}, lc.Enable{Actor: actor})
 		for _, d := range []string{dA, dB, dC, dD} {
 			cmds = append(cmds,
 				lc.ObserveCrawl{Present: true, Digest: d, Actor: actor},
@@ -80,9 +91,27 @@ func TestApply_PureAndDeterministicForEveryFixtureCommandAndPolicy(t *testing.T)
 	}
 }
 
+// Every successful step over the fixture matrix must also satisfy the
+// invariants the property tests check on random sequences, so hand-made
+// awkward layouts (legacy versions, markers, histories) get the same scrutiny.
+func TestApply_FixtureMatrixSatisfiesTheInvariants(t *testing.T) {
+	for name, tool := range fixtureTools() {
+		for _, cmd := range commandMatrix() {
+			for _, p := range policyMatrix() {
+				res, err := checkPure(t, tool, cmd, p)
+				rec := stepRecord{before: cloneTool(tool), cmd: cmd, pol: p, res: res, err: err}
+				if v := stepViolations(rec); len(v) != 0 {
+					t.Errorf("%s %T %+v policy %+v: %v\nresult %+v events %+v", name, cmd, cmd, p, v, res.Tool, res.Events)
+				}
+			}
+		}
+	}
+}
+
 func TestApply_EmptyActorIsRejectedForEveryCommandInEveryState(t *testing.T) {
 	cmds := []lc.Command{
 		lc.ObserveCrawl{Present: true, Digest: dA},
+		lc.ObserveCrawl{Present: true, Unusable: true},
 		lc.ObserveCrawl{Present: false},
 		lc.Approve{Digest: dA},
 		lc.Reject{Digest: dA},
@@ -103,7 +132,7 @@ func TestApply_EmptyActorIsRejectedForEveryCommandInEveryState(t *testing.T) {
 }
 
 func TestApply_EmptyDigestIsRejectedWhereADigestIsNeeded(t *testing.T) {
-	// ObserveCrawl needs a digest in every state when Present.
+	// ObserveCrawl needs a digest in every state when Present and usable.
 	for name, tool := range fixtureTools() {
 		_, err := checkPure(t, tool, lc.ObserveCrawl{Present: true, Actor: crawler}, plainPolicy())
 		if !errors.Is(err, lc.ErrNoDigest) {
@@ -168,7 +197,7 @@ func TestApply_ErrorResultIsTheZeroResult(t *testing.T) {
 func TestErrors_AreDistinctSentinels(t *testing.T) {
 	all := []error{
 		lc.ErrInvalidTransition, lc.ErrUnknownVersion, lc.ErrStaleVersion, lc.ErrSelfApproval,
-		lc.ErrNotRollbackTarget, lc.ErrNoActor, lc.ErrNoDigest,
+		lc.ErrNotRollbackTarget, lc.ErrNoActor, lc.ErrNoDigest, lc.ErrInvalidObservation,
 	}
 	for i, a := range all {
 		if a == nil || a.Error() == "" {
