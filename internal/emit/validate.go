@@ -19,6 +19,14 @@ const (
 	maxNameShown  = 64
 )
 
+// Secret bounds. A shared secret shorter than MinSecretLen gives false
+// assurance (a burst of hooks can guess it), and MaxSecretLen keeps the config
+// line and the processor's constant-time comparison small.
+const (
+	MinSecretLen = 16
+	MaxSecretLen = 256
+)
+
 // ErrInvalidInput is wrapped by every error AgentGateway returns for input it
 // refuses to turn into gateway configuration, so callers can tell "fix the
 // catalog" apart from an internal failure with errors.Is.
@@ -49,6 +57,12 @@ func shown(s string) string {
 // name. The caller's slice is never modified. Nothing is emitted for input
 // that fails any check, because a half-written gateway config is worse than
 // none: it could leave a route without an authorization rule.
+//
+// A processor address may appear once: the processor serves exactly one
+// target and denies hooks for any other, so two servers on one address would
+// leave the second one with every tool denied and nothing in the config to
+// say why. The comparison is textual; two spellings of one listener are the
+// operator's problem to avoid.
 func validate(in Input) ([]Server, error) {
 	if in.ListenPort < minPort || in.ListenPort > maxPort {
 		return nil, invalid("listen port %d is outside %d-%d", in.ListenPort, minPort, maxPort)
@@ -56,16 +70,21 @@ func validate(in Input) ([]Server, error) {
 	if len(in.Servers) == 0 {
 		return nil, invalid("no servers: a gateway with no routes would serve nothing")
 	}
-	seen := make(map[string]struct{}, len(in.Servers))
+	names := make(map[string]struct{}, len(in.Servers))
+	processors := make(map[string]string, len(in.Servers))
 	out := make([]Server, 0, len(in.Servers))
 	for _, s := range in.Servers {
 		if err := validateServer(s); err != nil {
 			return nil, err
 		}
-		if _, dup := seen[s.Name]; dup {
+		if _, dup := names[s.Name]; dup {
 			return nil, invalid("duplicate server name %s", shown(s.Name))
 		}
-		seen[s.Name] = struct{}{}
+		if other, dup := processors[s.ProcessorAddr]; dup {
+			return nil, invalid("duplicate processor address %s: used by servers %s and %s", shown(s.ProcessorAddr), other, s.Name)
+		}
+		names[s.Name] = struct{}{}
+		processors[s.ProcessorAddr] = s.Name
 		out = append(out, s)
 	}
 	sortServers(out)
@@ -80,6 +99,9 @@ func validateServer(s Server) error {
 		return invalid("server %s: %v", s.Name, err)
 	}
 	if err := validateProcessorAddr(s.ProcessorAddr); err != nil {
+		return invalid("server %s: %v", s.Name, err)
+	}
+	if err := validateSecret(s.Secret); err != nil {
 		return invalid("server %s: %v", s.Name, err)
 	}
 	return nil
@@ -112,7 +134,10 @@ func validateUpstreamURL(raw string) error {
 }
 
 // validateProcessorAddr requires host:port with a DNS-name or IPv4 host and a
-// decimal port in range.
+// decimal port in range. agentgateway's --validate-only also accepts http://,
+// https:// and unix:// forms in this field, but its schema documents the field
+// only as "Hostname or IP address", so those forms stay refused until an
+// end-to-end run proves what the gateway does with them.
 func validateProcessorAddr(addr string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -123,6 +148,21 @@ func validateProcessorAddr(addr string) error {
 	}
 	if !isPortNumber(port) {
 		return fmt.Errorf("processor port must be %d-%d", minPort, maxPort)
+	}
+	return nil
+}
+
+// validateSecret accepts an empty secret (the check is off) or printable ASCII
+// within the length bounds. The value is never echoed: it is a credential.
+func validateSecret(secret string) error {
+	if secret == "" {
+		return nil
+	}
+	if !isPrintableASCII(secret) {
+		return errors.New("secret must be printable ASCII")
+	}
+	if len(secret) < MinSecretLen || len(secret) > MaxSecretLen {
+		return fmt.Errorf("secret must be %d-%d bytes", MinSecretLen, MaxSecretLen)
 	}
 	return nil
 }

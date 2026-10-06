@@ -11,6 +11,8 @@ func validServer(name string) Server {
 }
 
 func TestRejectsInvalidInput(t *testing.T) {
+	second := validServer("b")
+	second.ProcessorAddr = "127.0.0.1:9002"
 	cases := []struct {
 		name string
 		in   Input
@@ -19,7 +21,9 @@ func TestRejectsInvalidInput(t *testing.T) {
 		{"port zero", Input{ListenPort: 0, Servers: []Server{validServer("a")}}},
 		{"port negative", Input{ListenPort: -1, Servers: []Server{validServer("a")}}},
 		{"port too big", Input{ListenPort: 65536, Servers: []Server{validServer("a")}}},
-		{"duplicate names", Input{ListenPort: testListenPort, Servers: []Server{validServer("a"), validServer("a")}}},
+		{"duplicate names", Input{ListenPort: testListenPort, Servers: []Server{validServer("a"), {Name: "a", URL: testUpstreamURL, ProcessorAddr: "127.0.0.1:9002"}}}},
+		{"duplicate processor address", Input{ListenPort: testListenPort, Servers: []Server{validServer("a"), validServer("b")}}},
+		{"duplicate processor address, third server", Input{ListenPort: testListenPort, Servers: []Server{validServer("a"), second, validServer("c")}}},
 		{"name empty", Input{ListenPort: testListenPort, Servers: []Server{validServer("")}}},
 		{"name uppercase", Input{ListenPort: testListenPort, Servers: []Server{validServer("Github")}}},
 		{"name leading dash", Input{ListenPort: testListenPort, Servers: []Server{validServer("-a")}}},
@@ -32,6 +36,36 @@ func TestRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { requireInvalid(t, tc.in) })
+	}
+}
+
+// TestDuplicateProcessorAddrNamesBothServers: one processor serves exactly one
+// target, so the second server on an address would have every call denied
+// with nothing in the config to say why. The error names both servers.
+func TestDuplicateProcessorAddrNamesBothServers(t *testing.T) {
+	_, err := AgentGateway(Input{ListenPort: testListenPort, Servers: []Server{
+		{Name: "alpha", URL: testUpstreamURL, ProcessorAddr: testProcessorAddr, ApprovedTools: []string{"echo"}},
+		{Name: "beta", URL: "http://10.0.0.5:3001/mcp", ProcessorAddr: testProcessorAddr, ApprovedTools: []string{"echo"}},
+	}})
+	if err == nil || !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("shared processor address accepted: %v", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"duplicate processor address", testProcessorAddr, "alpha", "beta"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q lacks %q", msg, want)
+		}
+	}
+}
+
+func TestDistinctProcessorAddrsAccepted(t *testing.T) {
+	_, err := AgentGateway(Input{ListenPort: testListenPort, Servers: []Server{
+		{Name: "alpha", URL: testUpstreamURL, ProcessorAddr: "127.0.0.1:9001"},
+		{Name: "beta", URL: testUpstreamURL, ProcessorAddr: "127.0.0.1:9002"},
+		{Name: "gamma", URL: testUpstreamURL, ProcessorAddr: "localhost:9001"},
+	}})
+	if err != nil {
+		t.Fatalf("distinct addresses rejected: %v", err)
 	}
 }
 
@@ -86,11 +120,15 @@ func TestURLNotEchoedInError(t *testing.T) {
 	}
 }
 
+// TestProcessorAddr pins host:port as the only accepted form. The scheme and
+// socket forms are ones agentgateway's --validate-only accepts but its schema
+// does not document for processors[].host, so they stay refused on purpose.
 func TestProcessorAddr(t *testing.T) {
 	bad := []string{
 		"", "nocolon", ":9001", "host:", "host:0", "host:65536", "host:+80", "host: 80", "host:80a", "host:-1",
 		"a b:80", "host:80\n", "[::1]:9001", "::1:9001", "ho\"st:80", "hé.example:80", "-bad.example:80", "a..b:80",
 		"host:123456", strings.Repeat("a", 64) + ":80", strings.Repeat("a.", 130) + "a:80",
+		"unix:///tmp/p.sock", "unix:/tmp/p.sock", "https://127.0.0.1:9001", "http://127.0.0.1:9001", "127.0.0.1:9001/path",
 	}
 	for _, addr := range bad {
 		s := validServer("a")
@@ -106,9 +144,44 @@ func TestProcessorAddr(t *testing.T) {
 	}
 }
 
+func TestSecretRules(t *testing.T) {
+	pad := strings.Repeat("p", MinSecretLen)
+	good := []string{
+		"", strings.Repeat("x", MinSecretLen), strings.Repeat("x", MaxSecretLen), fixtureMetadataValue,
+		`spaces 'single' "double" \back ~!@#$%^&*()_+-=[]{}|;:,.<>/?` + "`",
+	}
+	for _, secret := range good {
+		s := validServer("a")
+		s.Secret = secret
+		if _, err := AgentGateway(Input{ListenPort: testListenPort, Servers: []Server{s}}); err != nil {
+			t.Errorf("secret of %d bytes rejected: %v", len(secret), err)
+		}
+	}
+	bad := []string{
+		strings.Repeat("x", MinSecretLen-1), strings.Repeat("x", MaxSecretLen+1),
+		"café" + pad, "line\nbreak" + pad, "del\x7f" + pad, "tab\t" + pad, "nul\x00" + pad, "bad\xffutf8" + pad,
+	}
+	for _, secret := range bad {
+		s := validServer("a")
+		s.Secret = secret
+		requireInvalid(t, Input{ListenPort: testListenPort, Servers: []Server{s}})
+	}
+}
+
+func TestSecretNotEchoedInError(t *testing.T) {
+	for _, secret := range []string{"supersecret\t0123456789abcdef", "supersecret", "supersecret" + strings.Repeat("x", MaxSecretLen)} {
+		s := validServer("a")
+		s.Secret = secret
+		_, err := AgentGateway(Input{ListenPort: testListenPort, Servers: []Server{s}})
+		if err == nil || strings.Contains(err.Error(), "supersecret") {
+			t.Errorf("want a secret-free error, got %v", err)
+		}
+	}
+}
+
 func TestInvalidInputProducesNoOutput(t *testing.T) {
 	out, err := AgentGateway(Input{})
-	if err == nil || out.YAML != nil || out.Skipped != nil {
+	if err == nil || out.YAML != nil || out.Skipped != nil || out.BodyHash != "" {
 		t.Errorf("want error and zero Output, got %v %#v", err, out)
 	}
 }
@@ -129,7 +202,7 @@ func requireInvalid(t *testing.T, in Input) {
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("error does not wrap ErrInvalidInput: %v", err)
 	}
-	if out.YAML != nil {
+	if out.YAML != nil || out.BodyHash != "" {
 		t.Errorf("output must be empty on error")
 	}
 }

@@ -24,11 +24,13 @@ const (
 var nastyNames = []string{
 	`"`, `\`, `\"`, `"\`, `\\`, `A`, `\x41`, `' || true || '`, `") || true || ("`,
 	"line\nbreak", "cr\r", "tab\t", "nul\x00", "\u202e", "é", "\U0001F600", "#", ": ", "- ", "{", "[", "&a", "*a", "!x", "%", "@", "`",
+	" lead", "trail ", "two  spaces", "u\u0308ber", "zero\u200bwidth", strings.Repeat("l", 256), strings.Repeat("l", 257),
 }
 
-// oracleAllowed is an independent statement of which names may be emitted.
+// oracleAllowed is an independent statement of which names may be emitted:
+// 1-256 bytes of printable ASCII, no leading, trailing or doubled space.
 func oracleAllowed(name string) bool {
-	if len(name) == 0 || len(name) > 128 {
+	if len(name) == 0 || len(name) > 256 {
 		return false
 	}
 	for i := 0; i < len(name); i++ {
@@ -36,7 +38,7 @@ func oracleAllowed(name string) bool {
 			return false
 		}
 	}
-	return true
+	return name[0] != ' ' && name[len(name)-1] != ' ' && !strings.Contains(name, "  ")
 }
 
 func drawServers(t *rapid.T) []Server {
@@ -55,17 +57,19 @@ func drawServers(t *rapid.T) []Server {
 			rapid.SampledFrom(nastyNames),
 			rapid.StringOf(rapid.SampledFrom([]rune(`"\ab|=. é`))),
 		), 0, maxGenTools).Draw(t, "tools")
+		secret := rapid.OneOf(rapid.Just(""), rapid.StringMatching(`[ -~]{16,40}`)).Draw(t, "secret")
 		servers = append(servers, Server{
-			Name: name, URL: testUpstreamURL, ProcessorAddr: fmt.Sprintf("127.0.0.1:%d", 9000+i), ApprovedTools: tools,
+			Name: name, URL: testUpstreamURL, ProcessorAddr: fmt.Sprintf("127.0.0.1:%d", 9000+i), Secret: secret, ApprovedTools: tools,
 		})
 	}
 	return servers
 }
 
-// TestPropertyEveryRouteHasAnAllowRule checks, for arbitrary tool names, that
-// each route carries exactly one allow rule, that the rule decodes to exactly
-// the safe approved tools, that unsafe tools are reported, and that tool names
-// never change the shape of the file.
+// TestPropertyEveryRouteHasAnAllowRule checks, for arbitrary tool names and
+// secrets, that each route carries exactly one allow rule, that the rule
+// decodes to exactly the safe approved tools, that the secret decodes to
+// itself, that unsafe tools are reported, and that tool names never change
+// the shape of the file.
 func TestPropertyEveryRouteHasAnAllowRule(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		servers := drawServers(t)
@@ -88,6 +92,9 @@ func TestPropertyEveryRouteHasAnAllowRule(t *testing.T) {
 			if !slices.Equal(got, allowed) {
 				t.Fatalf("server %q: allow rule decodes to %q, want %q", s.Name, got, allowed)
 			}
+			if secret := decodeSecret(t, routes[i]); secret != s.Secret {
+				t.Fatalf("server %q: secret decodes to %q, want %q", s.Name, secret, s.Secret)
+			}
 		}
 		if len(out.Skipped) != len(wantSkipped) {
 			t.Fatalf("skipped %d tools, want %d", len(out.Skipped), len(wantSkipped))
@@ -97,13 +104,16 @@ func TestPropertyEveryRouteHasAnAllowRule(t *testing.T) {
 				t.Fatalf("skipped[%d] = %#v, want %#v", i, out.Skipped[i], wantSkipped[i])
 			}
 		}
+		if _, ok := Verify(out.YAML); !ok {
+			t.Fatalf("fresh output does not verify")
+		}
 		assertShapeIndependentOfTools(t, servers, out.YAML)
 	})
 }
 
 // assertShapeIndependentOfTools re-renders the same servers with no tools and
-// requires that only the allow lines differ: tool names are data, never
-// structure.
+// requires that only the allow lines and the hash line differ: tool names are
+// data, never structure.
 func assertShapeIndependentOfTools(t *rapid.T, servers []Server, got []byte) {
 	bare := make([]Server, len(servers))
 	for i, s := range servers {
@@ -120,7 +130,7 @@ func assertShapeIndependentOfTools(t *rapid.T, servers []Server, got []byte) {
 		t.Fatalf("tool names changed the line count: %d vs %d", len(gotLines), len(baseLines))
 	}
 	for i := range gotLines {
-		if gotLines[i] != baseLines[i] && !strings.HasPrefix(gotLines[i], allowLinePrefix) {
+		if gotLines[i] != baseLines[i] && !strings.HasPrefix(gotLines[i], allowLinePrefix) && !strings.HasPrefix(gotLines[i], hashLinePrefix) {
 			t.Fatalf("line %d differs outside the allow rule: %q vs %q", i, gotLines[i], baseLines[i])
 		}
 	}
@@ -165,7 +175,7 @@ func TestPropertyShuffledInputGivesIdenticalOutput(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(got.YAML, want.YAML) {
+		if !bytes.Equal(got.YAML, want.YAML) || got.BodyHash != want.BodyHash {
 			t.Fatalf("shuffling changed the output")
 		}
 	})
@@ -218,6 +228,36 @@ func decodeAllow(t fataler, route string) []string {
 		t.Fatalf("allow expression %q names no tool", expr)
 	}
 	return names
+}
+
+// decodeSecret returns the secret carried by the route's single metadata line
+// after undoing both quoting layers, or "" when the route has none.
+func decodeSecret(t fataler, route string) string {
+	var scalars []string
+	for _, line := range strings.Split(route, "\n") {
+		if strings.HasPrefix(line, secretLinePrefix) {
+			scalars = append(scalars, strings.TrimPrefix(line, secretLinePrefix))
+		}
+	}
+	if len(scalars) == 0 {
+		return ""
+	}
+	if len(scalars) != 1 {
+		t.Fatalf("route has %d secret lines, want at most 1:\n%s", len(scalars), route)
+	}
+	var cel string
+	if err := json.Unmarshal([]byte(scalars[0]), &cel); err != nil {
+		t.Fatalf("secret scalar is not a valid quoted string: %v (%s)", err, scalars[0])
+	}
+	body, ok := strings.CutPrefix(cel, `"`)
+	if !ok {
+		t.Fatalf("secret %q is not a CEL string literal", cel)
+	}
+	secret, rest, err := readCELString(body)
+	if err != nil || rest != "" {
+		t.Fatalf("secret literal %q does not parse cleanly: %v (rest %q)", cel, err, rest)
+	}
+	return secret
 }
 
 // parseDisjunction is a strict reader for exactly the grammar the emitter

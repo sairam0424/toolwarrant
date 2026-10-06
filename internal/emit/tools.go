@@ -3,24 +3,37 @@ package emit
 import (
 	"slices"
 	"strings"
+
+	"github.com/sairam0424/toolwarrant/internal/toolname"
 )
 
 // Reasons reported in Skipped. They are constants so callers and tests can
-// match on them without parsing prose.
+// match on them without parsing prose. ReasonInvalidName is a prefix: it is
+// followed by ": " and the shared rule's own explanation, which never echoes
+// the name.
 const (
 	// ReasonEmptyName marks an approved tool whose name is empty.
 	ReasonEmptyName = "tool name is empty"
 	// ReasonNameTooLong marks a name longer than MaxToolNameLen bytes.
 	ReasonNameTooLong = "tool name is too long"
-	// ReasonNotPrintableASCII marks a name with a control or non-ASCII
-	// character.
+	// ReasonInvalidName marks a name the shared tool-name rule
+	// (internal/toolname) refuses: invalid UTF-8, a spelling that is not NFC,
+	// a control or invisible character, or stray spaces. The crawler and the
+	// catalog apply the same rule, so such a name should never reach the
+	// emitter; if one does, hiding it is the safe direction.
+	ReasonInvalidName = "tool name fails the shared tool-name rule"
+	// ReasonNotPrintableASCII marks a name the shared rule accepts but that
+	// cannot be written into a CEL rule as plain printable ASCII. The emitter
+	// could escape it, but a rule an operator cannot read byte for byte is not
+	// reviewable, so the tool stays hidden and is reported instead.
 	ReasonNotPrintableASCII = "tool name has characters outside printable ASCII"
 )
 
-// MaxToolNameLen bounds a tool name the emitter will put in an allow rule.
-// MCP recommends 1-128 characters; a longer name is almost certainly abuse,
-// and leaving it hidden is the safe direction.
-const MaxToolNameLen = 128
+// MaxToolNameLen bounds a tool name the emitter will put in an allow rule. It
+// is the shared rule's cap, so a name the catalog accepted is never too long
+// here: the review found three different caps across the crawler, the catalog
+// and the emitter, which let an approved tool silently never be served.
+const MaxToolNameLen = toolname.MaxBytes
 
 const (
 	// celNeverMatches is the allow expression used when nothing can be
@@ -58,14 +71,21 @@ func classifyTools(server string, names []string) toolPlan {
 	return plan
 }
 
-// unsafeReason returns why name must not be emitted, or "" if it is safe.
+// unsafeReason returns why name must not be emitted, or "" if it is safe. The
+// shared rule runs first so its reasons are reported as such; the printable
+// ASCII rule is the emitter's own extra requirement on top.
 func unsafeReason(name string) string {
 	switch {
 	case name == "":
 		return ReasonEmptyName
 	case len(name) > MaxToolNameLen:
 		return ReasonNameTooLong
-	case !isPrintableASCII(name):
+	}
+	if err := toolname.Validate(name); err != nil {
+		detail := strings.TrimPrefix(err.Error(), toolname.ErrInvalid.Error()+": ")
+		return ReasonInvalidName + ": " + detail
+	}
+	if !isPrintableASCII(name) {
 		return ReasonNotPrintableASCII
 	}
 	return ""
