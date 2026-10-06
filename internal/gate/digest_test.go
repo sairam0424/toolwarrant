@@ -98,3 +98,25 @@ func TestCanonical_SortsKeysByUTF16(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkDigest measures the per-tool cost that tools/list pays on every page:
+// one canonicalisation plus one SHA-256 of a realistically sized tool definition.
+func BenchmarkDigest(b *testing.B) {
+	tool := []byte(`{"name":"create_issue","title":"Create issue","description":"Creates a new issue in a repository. ` +
+		`Use this when the user asks to open, file or report an issue. The title is required; the body supports Markdown. ` +
+		`Labels and assignees must already exist in the repository or the call fails.",` +
+		`"inputSchema":{"type":"object","properties":{"owner":{"type":"string","description":"Repository owner"},` +
+		`"repo":{"type":"string","description":"Repository name"},"title":{"type":"string","description":"Issue title"},` +
+		`"body":{"type":"string","description":"Issue body in Markdown"},"labels":{"type":"array","items":{"type":"string"}},` +
+		`"assignees":{"type":"array","items":{"type":"string"}},"milestone":{"type":"integer"}},` +
+		`"required":["owner","repo","title"],"additionalProperties":false},` +
+		`"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true},` +
+		`"_meta":{"ui":{"resourceUri":"ui://x"}}}`)
+	b.SetBytes(int64(len(tool)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := Digest(tool); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

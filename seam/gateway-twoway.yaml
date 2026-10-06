@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# Day 3-4 session/reachability experiment. Same backend behind:
+#   :3000 /mcp    guarded (processor)
+#   :3000 /crawl  NOT guarded  -- a second route on the same bind
+#   :3002 /mcp    NOT guarded  -- a second bind
+binds:
+- port: 3000
+  listeners:
+  - routes:
+    - name: serving
+      matches:
+      - path:
+          exact: /mcp
+      policies:
+        mcpGuardrails:
+          processors:
+          - host: 127.0.0.1:9001
+            kind: remote
+            failureMode: failClosed
+            methods:
+              tools/call: request
+              tools/list: response
+      backends:
+      - mcp:
+          targets:
+          - name: mock
+            mcp:
+              host: http://127.0.0.1:3001/mcp
+    - name: crawl
+      matches:
+      - path:
+          exact: /crawl
+      backends:
+      - mcp:
+          targets:
+          - name: mock
+            mcp:
+              host: http://127.0.0.1:3001/mcp
+- port: 3002
+  listeners:
+  - routes:
+    - name: crawl-bind
+      backends:
+      - mcp:
+          targets:
+          - name: mock
+            mcp:
+              host: http://127.0.0.1:3001/mcp

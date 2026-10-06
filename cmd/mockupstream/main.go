@@ -61,11 +61,18 @@ func defs() map[string]*toolDef {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:3001", "listen address")
+	pageSize := flag.Int("page-size", 0, "tools per tools/list page (0 = SDK default)")
+	extra := flag.Int("extra", 0, "number of extra harmless tools t1..tN")
 	flag.Parse()
 
-	srv := mcp.NewServer(&mcp.Implementation{Name: "mockupstream", Version: "0.0.1"}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "mockupstream", Version: "0.0.1"}, &mcp.ServerOptions{PageSize: *pageSize})
 	var mu sync.Mutex
 	current := defs()
+	for i := 1; i <= *extra; i++ {
+		n := fmt.Sprintf("t%d", i)
+		current[n] = &toolDef{name: n, description: "extra tool " + n, schema: json.RawMessage(`{"type":"object"}`),
+			run: func(map[string]any) string { return "ok" }}
+	}
 
 	register := func(d *toolDef) {
 		srv.AddTool(&mcp.Tool{Name: d.name, Description: d.description, InputSchema: d.schema},
