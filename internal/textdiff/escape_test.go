@@ -1,3 +1,13 @@
+// Three tests in this package walk every Unicode code point and dominate the
+// suite under the race detector (hundreds of seconds on a loaded machine):
+// TestEscape_everyRune and TestEscape_coversEveryRuneTheToolNameRuleForbids in
+// this file and TestNames_noSuspiciousRuneHasAnEmptyName in findings_test.go.
+// They skip under -short so the default suite stays fast. The full run is
+//
+//	go test ./internal/textdiff
+//
+// without -short. No assertion is weakened: the skip is the only gate.
+
 package textdiff
 
 import (
@@ -131,6 +141,9 @@ func TestEscape_requiredCharactersAreAllEscaped(t *testing.T) {
 // TestEscape_everyRune walks all of Unicode. The safety invariant: a rune
 // that is written raw must be an ordinary printable character.
 func TestEscape_everyRune(t *testing.T) {
+	if testing.Short() {
+		t.Skip("walks all of Unicode; run without -short")
+	}
 	for r := rune(0); r <= unicode.MaxRune; r++ {
 		if r >= surrogateStart && r <= surrogateEnd {
 			continue
@@ -156,6 +169,9 @@ func TestEscape_everyRune(t *testing.T) {
 // letters or marks) must also be invisible to no one here: Escape writes it
 // as an escape. Tab and newline are the two exceptions by design.
 func TestEscape_coversEveryRuneTheToolNameRuleForbids(t *testing.T) {
+	if testing.Short() {
+		t.Skip("walks all of Unicode; run without -short")
+	}
 	for r := rune(0); r <= unicode.MaxRune; r++ {
 		if (r >= surrogateStart && r <= surrogateEnd) || r == '\n' || r == '\t' {
 			continue

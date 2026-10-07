@@ -1,3 +1,12 @@
+// TestNames_noSuspiciousRuneHasAnEmptyName walks every Unicode code point and,
+// with the two walks in escape_test.go, dominates the suite under the race
+// detector. It skips under -short so the default suite stays fast. The full
+// run is
+//
+//	go test ./internal/textdiff
+//
+// without -short. No assertion is weakened: the skip is the only gate.
+
 package textdiff
 
 import (
@@ -110,6 +119,9 @@ func TestNames_everyPrintableAsciiHasARealName(t *testing.T) {
 }
 
 func TestNames_noSuspiciousRuneHasAnEmptyName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("walks all of Unicode; run without -short")
+	}
 	for r := rune(0); r <= 0x10FFFF; r += 1 {
 		if r >= surrogateStart && r <= surrogateEnd {
 			continue
