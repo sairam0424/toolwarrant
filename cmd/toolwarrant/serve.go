@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/processor"
@@ -16,19 +16,28 @@ const (
 	unixPrefix = "unix:"
 	localhost  = "localhost"
 	// socketMode lets only the owner connect. The ExtMCP protocol has no
-	// authentication and every reply decides what the gateway serves, so the
-	// socket must not be reachable by other users of the machine.
+	// authentication of its own and every reply decides what the gateway
+	// serves, so the socket must not be reachable by other users of the
+	// machine.
 	socketMode os.FileMode = 0o600
+	// privateDirMask selects the group and other permission bits of the
+	// socket's directory. A directory that grants any of them lets another
+	// user reach the socket in the instant before it is chmod'ed.
+	privateDirMask os.FileMode = 0o077
 )
 
 // runServe runs the ExtMCP processor for one server until SIGINT or SIGTERM.
-// Only loopback and unix-socket listeners are accepted by default, for the
-// same reason the socket is owner-only.
-func runServe(a *app, c *command, args []string) error {
+// The catalog is opened read-only: the processor reads policy and must never
+// be able to change it. Only loopback and unix-socket listeners are accepted
+// by default, for the same reason the socket is owner-only.
+func runServe(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	server := fs.String("server", "", "catalog server this processor guards (required)")
 	listen := fs.String("listen", "", "host:port or unix:/path to listen on (required; loopback unless --allow-non-loopback)")
-	allowNonLoopback := fs.Bool("allow-non-loopback", false, "listen on a non-loopback address even though ExtMCP has no authentication")
+	target := fs.String("target", "", "backend name the gateway reports in service_names for this route (default: the server name, which is what emit writes)")
+	allowNonLoopback := fs.Bool("allow-non-loopback", false, "listen on a non-loopback address; only with --secret-env, on a network nobody but the gateway can reach")
+	secretEnv := fs.String("secret-env", "", "environment variable holding the shared secret the gateway sends with every hook (the one given to emit --secret-env); never a flag value")
+	maxEvidenceAge := fs.Duration("max-evidence-age", 0, "how long a digest seen in a tools/list counts as evidence for a tools/call (0 means it never expires)")
 	pos, err := a.parseArgs(c, fs, args)
 	if err != nil {
 		return err
@@ -42,31 +51,59 @@ func runServe(a *app, c *command, args []string) error {
 	if err := requireFlag(c, *listen, "listen", "give host:port or unix:/path"); err != nil {
 		return err
 	}
+	if *maxEvidenceAge < 0 {
+		return &usageError{msg: "--max-evidence-age must not be negative", cmd: c}
+	}
 	if err := checkListenAddr(c, *listen, *allowNonLoopback); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	secret, err := readSecret(c, a.getenv, *secretEnv)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	if *target == "" {
+		*target = *server
+	}
+	store, err := a.openStore(openReadOnly)
+	if err != nil {
+		return err
+	}
+	defer closeStore(store, &err)
 	if _, err := store.Server(a.ctx, *server); err != nil {
 		return err
 	}
-	lis, err := listenOn(*listen)
+	lis, err := listenOn(*listen, a.stderr)
 	if err != nil {
 		return err
 	}
-	defer lis.Close()
-	logger := slog.New(slog.NewJSONHandler(a.stderr, nil))
-	proc := processor.New(store, processor.Config{Server: *server, Logger: logger})
-	fmt.Fprintf(a.stdout, "listening on %s, guarding server %s\n", textdiff.Escape(lis.Addr().String()), cell(*server))
+	// Serve closes the listener itself when it stops; this covers the error
+	// paths, where a second Close only reports that it is already closed.
+	defer func() { _ = lis.Close() }()
+	cfg := processor.Config{
+		Server:              *server,
+		Target:              *target,
+		Logger:              slog.New(slog.NewJSONHandler(a.stderr, nil)),
+		Secret:              secret,
+		AllowRemoteListener: *allowNonLoopback,
+		MaxEvidenceAge:      *maxEvidenceAge,
+	}
+	proc := processor.New(store, cfg)
+	a.stdout.printf("listening on %s, guarding server %s, target %s%s\n", textdiff.Escape(lis.Addr().String()), cell(*server), cell(*target), secretNote(secret))
 	serveErr := proc.Serve(a.ctx, lis)
 	writeStats(a.stdout, proc.Stats())
 	if serveErr != nil {
 		return fmt.Errorf("processor stopped: %w", serveErr)
 	}
-	return nil
+	return a.stdout.broken()
+}
+
+// secretNote says on the listening line whether hooks are authenticated, so an
+// operator can see at a glance which mode the processor runs in.
+func secretNote(secret string) string {
+	if secret == "" {
+		return " (hooks are not authenticated: no --secret-env)"
+	}
+	return " (hooks must carry the shared secret)"
 }
 
 // checkListenAddr refuses a TCP address that is not loopback unless the
@@ -85,7 +122,7 @@ func checkListenAddr(c *command, addr string, allowNonLoopback bool) error {
 	if allowNonLoopback || isLoopbackHost(host) {
 		return nil
 	}
-	return &usageError{msg: fmt.Sprintf("refusing to listen on %s: it is not a loopback address and the ExtMCP protocol has no authentication; pass --allow-non-loopback only on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
+	return &usageError{msg: fmt.Sprintf("refusing to listen on %s: it is not a loopback address and the ExtMCP protocol has no authentication; pass --allow-non-loopback (with --secret-env) only on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
 }
 
 // isLoopbackHost accepts "localhost" and loopback IP literals. A host name
@@ -101,28 +138,55 @@ func isLoopbackHost(host string) bool {
 
 // listenOn opens the listener. A unix socket is made owner-only right after it
 // is created; Go removes the socket file when the listener closes.
-func listenOn(addr string) (net.Listener, error) {
-	if path, ok := strings.CutPrefix(addr, unixPrefix); ok {
-		lis, err := net.Listen("unix", path)
+//
+// The chmod window: between net.Listen and os.Chmod the socket file carries
+// the process umask's permissions (0755 under the usual 022), so for that
+// instant another local user could connect. Go cannot close the window
+// without changing the umask of the whole process, which would also change
+// how every other file this command creates comes out. The directory is
+// checked instead: a 0700 directory keeps everyone else away from the socket
+// during the window, and anything looser is warned about so the operator can
+// move the socket.
+func listenOn(addr string, warn *stream) (net.Listener, error) {
+	path, ok := strings.CutPrefix(addr, unixPrefix)
+	if !ok {
+		lis, err := net.Listen("tcp", addr)
 		if err != nil {
-			return nil, fmt.Errorf("listen on unix socket: %w", err)
-		}
-		if err := os.Chmod(path, socketMode); err != nil {
-			_ = lis.Close()
-			return nil, fmt.Errorf("restrict socket permissions: %w", err)
+			return nil, fmt.Errorf("listen: %w", err)
 		}
 		return lis, nil
 	}
-	lis, err := net.Listen("tcp", addr)
+	warnLooseSocketDir(path, warn)
+	lis, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
+		return nil, fmt.Errorf("listen on unix socket: %w", err)
+	}
+	if err := os.Chmod(path, socketMode); err != nil {
+		_ = lis.Close() // the chmod failure is the one to report
+		return nil, fmt.Errorf("restrict socket permissions: %w", err)
 	}
 	return lis, nil
 }
 
+// warnLooseSocketDir warns when the socket's directory lets other users in. A
+// directory that cannot be read is left to net.Listen to report.
+func warnLooseSocketDir(path string, warn *stream) {
+	dir := filepath.Dir(path)
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return
+	}
+	if perm := fi.Mode().Perm(); perm&privateDirMask != 0 {
+		warn.printf("warning: socket directory %s has mode %04o, not 0700: until the socket is restricted to 0600 another local user could connect to it; use a private directory\n", textdiff.Escape(dir), perm)
+	}
+}
+
 // writeStats prints the processor counters when it stops, so an operator can
-// see at a glance whether the gateway ever asked and what was hidden.
-func writeStats(w io.Writer, st processor.Stats) {
-	fmt.Fprintf(w, "stats: lists served=%d denied=%d, tools hidden=%d, calls allowed=%d denied=%d, source errors=%d\n",
-		st.ListsServed, st.ListsDenied, st.ToolsHidden, st.CallsAllowed, st.CallsDenied, st.SourceErrors)
+// see at a glance whether the gateway ever asked, what was hidden and why.
+// The three bracketed counters break ToolsHidden down; the remainder is tools
+// the catalog has never heard of.
+func writeStats(w *stream, st processor.Stats) {
+	w.printf("stats: lists served=%d denied=%d, tools hidden=%d (mismatched=%d unapproved=%d oversized=%d), calls allowed=%d denied=%d, wrong backend=%d, unauthenticated=%d, throttled=%d, source errors=%d\n",
+		st.ListsServed, st.ListsDenied, st.ToolsHidden, st.ToolsMismatched, st.ToolsUnapproved, st.ToolsOversized,
+		st.CallsAllowed, st.CallsDenied, st.WrongBackend, st.Unauthenticated, st.Throttled, st.SourceErrors)
 }

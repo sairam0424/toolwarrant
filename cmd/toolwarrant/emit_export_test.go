@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sairam0424/toolwarrant/internal/emit"
 )
 
 func readFile(t *testing.T, path string) string {
@@ -31,9 +33,13 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 	yaml := readFile(t, out)
 	wantContains(t, "yaml", yaml, "port: 3000", `exact: "/s1/mcp"`, `exact: "/s0/mcp"`, `mcp.tool.name == \"echo\"`,
 		`host: "127.0.0.1:9001"`, `host: "127.0.0.1:9002"`, `host: "http://127.0.0.1:3001/mcp"`, "failClosed", `allow: "false"`)
-	wantNotContains(t, "yaml", yaml, "stale", "wipe_database")
+	wantNotContains(t, "yaml", yaml, "stale", "wipe_database", emit.SecretMetadataKey)
 	if idx0, idx1 := strings.Index(yaml, `name: "s0"`), strings.Index(yaml, `name: "s1"`); idx0 < 0 || idx1 < idx0 {
 		t.Errorf("servers must be emitted in name order")
+	}
+	hash, ok := emit.Verify([]byte(yaml))
+	if !ok {
+		t.Fatal("the written file does not verify")
 	}
 	fi, err := os.Stat(out)
 	if err != nil {
@@ -50,9 +56,9 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 		t.Errorf("temp files left behind: %v", entries)
 	}
 	abs, _ := filepath.Abs(c.db)
-	wantContains(t, "stdout", stdout, "wrote "+out, "s0", "/s0/mcp", "127.0.0.1:9001", "s1", "/s1/mcp", "127.0.0.1:9002",
-		"run one processor per server", programName+" --db "+abs+" serve --server s1 --listen 127.0.0.1:9002")
-	wantNotContains(t, "stdout", stdout, u.url()+"?")
+	wantContains(t, "stdout", stdout, "wrote "+out, "body sha256 "+hash, "s0", "/s0/mcp", "127.0.0.1:9001", "s1", "/s1/mcp", "127.0.0.1:9002",
+		"run one processor per server", programName+" --db "+abs+" serve --server s1 --target s1 --listen 127.0.0.1:9002")
+	wantNotContains(t, "stdout", stdout, u.url()+"?", "--secret-env")
 
 	c.ok("emit", "--out", out, "--processor", "s1=127.0.0.1:9100", "--listen-port", "8080", "--processor-base-port", "7000")
 	yaml = readFile(t, out)
@@ -67,6 +73,42 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 	wantContains(t, "stderr", r.stderr, "temp file")
 	r = c.fail(exitFailure, "emit", "--out", out, "--listen-port", "70000")
 	wantContains(t, "stderr", r.stderr, "emit again")
+}
+
+func TestEmitWithASecretWritesAPrivateFileAndWiresServe(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	c.env[secretVar] = plant("secret")
+	out := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(out, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := c.run("emit", "--out", out, "--secret-env", secretVar)
+	if r.code != exitOK {
+		t.Fatalf("emit --secret-env: exit %d: %s", r.code, r.stderr)
+	}
+	yaml := readFile(t, out)
+	wantContains(t, "yaml", yaml, emit.SecretMetadataKey+": ", plant("secret"))
+	if _, ok := emit.Verify([]byte(yaml)); !ok {
+		t.Error("the written file does not verify")
+	}
+	fi, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != secretConfigFileMode {
+		t.Errorf("config mode %o, want %o when it carries a secret", fi.Mode().Perm(), secretConfigFileMode)
+	}
+	wantContains(t, "stderr", r.stderr, "warning: "+out+" contains the processor secret", secretVar, "0600")
+	wantContains(t, "stdout", r.stdout, "serve --server s1 --target s1 --listen 127.0.0.1:9001 --secret-env "+secretVar, "body sha256 ")
+	wantNotContains(t, "output", r.stdout+r.stderr, canary)
+
+	c.env["SHORT_SECRET"] = "short"
+	c.fail(exitUsage, "emit", "--out", out, "--secret-env", "SHORT_SECRET")
+	c.fail(exitUsage, "emit", "--out", out, "--secret-env", "UNSET_SECRET")
+	if readFile(t, out) != yaml {
+		t.Error("a refused secret must not touch the file")
+	}
 }
 
 func TestEmitWithNoServersFailsAndSkippedToolsAreWarnedAbout(t *testing.T) {
@@ -95,7 +137,7 @@ func TestExportWritesFilesAndCommits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "approved")
 
 	out := c.ok("export", "--dir", dir)
-	wantContains(t, "stdout", out, "exported 1 approved tools to "+dir, "1 written, 0 removed, 0 unchanged")
+	wantContains(t, "stdout", out, "exported 1 approved tools to "+dir, "1 written, 0 removed, 0 unchanged, 0 skipped")
 	snapshot := readFile(t, filepath.Join(dir, "s1", "echo.json"))
 	wantContains(t, "echo.json", snapshot, echoV1, `"name":"echo"`)
 	wantContains(t, "manifest", readFile(t, filepath.Join(dir, "MANIFEST.json")), "s1/echo.json", v1)
@@ -118,4 +160,28 @@ func TestExportWritesFilesAndCommits(t *testing.T) {
 	wantContains(t, "third commit", out, "1 written", "committed as Release Bot <bot@example.com>")
 	r := c.fail(exitFailure, "export", "--dir", dir, "--commit", "--git-email", "bad email")
 	wantContains(t, "stderr", r.stderr, "whitespace")
+}
+
+// Two approved tools of one server whose names differ only in letter case
+// would be one file on a case-insensitive file system; the exporter leaves both
+// out and the CLI must say so, or a missing file would look like a missing
+// approval.
+func TestExportReportsSkippedTools(t *testing.T) {
+	c := newCLI(t)
+	u := newUpstream(t, map[string]string{"Echo": "Upper case.", "echo": "Lower case.", "add": "Adds two numbers."})
+	c.ok("server", "add", "s1", u.url(), "--allow-private")
+	c.ok("crawl", "s1")
+	c.approve("alice", "s1", "Echo", c.tool("s1", "Echo").Pending)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	c.approve("alice", "s1", "add", c.tool("s1", "add").Pending)
+	dir := filepath.Join(t.TempDir(), "approved")
+	r := c.run("export", "--dir", dir)
+	if r.code != exitOK {
+		t.Fatalf("export: exit %d: %s", r.code, r.stderr)
+	}
+	wantContains(t, "stdout", r.stdout, "exported 3 approved tools", "1 written", "2 skipped")
+	wantContains(t, "stderr", r.stderr, "warning: s1/Echo is approved but was not exported", "warning: s1/echo is approved but was not exported", "letter case")
+	if _, err := os.Stat(filepath.Join(dir, "s1", "add.json")); err != nil {
+		t.Errorf("add.json missing: %v", err)
+	}
 }

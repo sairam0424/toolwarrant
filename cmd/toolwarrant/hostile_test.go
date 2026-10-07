@@ -4,16 +4,23 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	_ "modernc.org/sqlite" // the tests reach into the database to tamper with it
+
+	"github.com/sairam0424/toolwarrant/internal/catalog"
+	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
+// The hostile characters are built from their code points so that no source
+// file carries an invisible character of its own (an editor or pipeline that
+// rewrites \u escapes cannot rewrite these).
 const (
-	zeroWidth = "​"
-	bidi      = "‮"
-	esc       = "\x1b"
+	zeroWidth = string(rune(0x200B))
+	bidi      = string(rune(0x202E))
+	esc       = string(rune(0x1B))
 	bearerVar = "TW_BEARER"
 	// canary is the substring every planted sensitive value carries, so one
 	// wantNotContains proves that none of them reached the output.
@@ -31,7 +38,7 @@ func execSQL(t *testing.T, path string, stmts ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
 			t.Fatalf("%s: %v", s, err)
@@ -45,7 +52,7 @@ func queryRow(t *testing.T, path, query string, dest ...any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	if err := db.QueryRow(query).Scan(dest...); err != nil {
 		t.Fatalf("%s: %v", query, err)
 	}
@@ -122,17 +129,82 @@ func TestUnknownCommandsAndSubcommandsAreEscaped(t *testing.T) {
 	wantNotContains(t, "stderr", r.stderr, bidi)
 }
 
-func TestCrawlRefusesInvisibleCharactersInToolNames(t *testing.T) {
+// D3: one hostile tool no longer fails the crawl. The crawl completes, the
+// valid tools are recorded, the hostile entry is reported as rejected with its
+// name withheld, and only --strict turns that into a failure.
+func TestCrawlReportsAnInvisibleToolNameAsRejected(t *testing.T) {
 	c := newCLI(t)
-	u := newUpstream(t, map[string]string{"echo" + zeroWidth: "Looks like echo."})
+	u := newUpstream(t, map[string]string{"echo" + zeroWidth: "Looks like echo.", "add": "Adds two numbers."})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
-	r := c.fail(exitFailure, "crawl", "s1")
-	wantContains(t, "stderr", r.stderr, "U+200B")
-	wantNotContains(t, "stderr", r.stderr, zeroWidth)
+	out := c.ok("crawl", "s1")
+	wantContains(t, "crawl", out, "1 tools, new=1, 1 rejected", "REJECTED "+nameWithheld, "invalid-name", "U+200B")
+	wantNotContains(t, "crawl", out, zeroWidth)
 	var n int
 	queryRow(t, c.db, "SELECT COUNT(*) FROM tools", &n)
-	if n != 0 {
-		t.Errorf("%d tools recorded from a refused crawl", n)
+	if n != 1 {
+		t.Errorf("%d tools recorded, want only add", n)
+	}
+	rejected := false
+	for _, e := range c.auditEntries() {
+		if e.Event == "tool.rejected" {
+			rejected = true
+			wantNotContains(t, "audit detail", e.Detail, zeroWidth)
+		}
+	}
+	if !rejected {
+		t.Error("no tool.rejected audit entry")
+	}
+	var rep crawlJSON
+	c.jsonInto(&rep, "crawl", "s1", "--json")
+	if len(rep.Rejected) != 1 || rep.Rejected[0].Name != "" || rep.Rejected[0].Reason != "invalid-name" || !strings.Contains(rep.Rejected[0].Detail, "U+200B") {
+		t.Errorf("crawl --json rejected = %+v", rep.Rejected)
+	}
+	r := c.fail(exitFailure, "crawl", "s1", "--strict")
+	wantContains(t, "strict stderr", r.stderr, "--strict", "1 rejected", "0 unusable")
+	wantContains(t, "strict stdout", r.stdout, "REJECTED")
+	wantNotContains(t, "strict", r.stdout+r.stderr, zeroWidth)
+	r = c.fail(exitFailure, "crawl", "s1", "--every", loopEvery.String(), "--strict")
+	wantContains(t, "strict --every", r.stderr, "--strict refuses it")
+}
+
+// A known tool whose upstream starts listing a definition over the size cap is
+// observed as unusable: hidden, flagged, nothing stored, and the approval kept
+// for when a clean definition returns.
+func TestCrawlMarksAKnownToolWithAnUnusableDefinition(t *testing.T) {
+	c, u := fixture(t)
+	v1 := c.tool("s1", "echo").Pending
+	c.approve("alice", "s1", "echo", v1)
+	u.set("echo", strings.Repeat("a", catalog.MaxToolBytes+1))
+	out := c.ok("crawl", "s1")
+	wantContains(t, "crawl", out, "UNUSABLE", "too-large", "unusable=1", "unchanged=2", lifecycle.UnusableDigest)
+	tv := c.tool("s1", "echo")
+	if !tv.Unusable || tv.Live != lifecycle.UnusableDigest || tv.Approved != v1 || len(tv.History) != 1 {
+		t.Fatalf("after an unusable observation: %+v history %d", tv.toolJSON, len(tv.History))
+	}
+	wantContains(t, "list", c.ok("list"), flagUnusable)
+	r := c.fail(exitFailure, "diff", "s1", "echo")
+	wantContains(t, "diff", r.stderr, "cannot be used")
+	r = c.fail(exitFailure, "crawl", "s1", "--strict")
+	wantContains(t, "strict", r.stderr, "0 rejected and 1 unusable")
+	var rep crawlJSON
+	c.jsonInto(&rep, "crawl", "s1", "--json")
+	seen := false
+	for _, ch := range rep.Changes {
+		if ch.Tool == "echo" {
+			seen = true
+			if !ch.Unusable || ch.Reason != "too-large" || ch.Digest != "" {
+				t.Errorf("echo change = %+v", ch)
+			}
+		}
+	}
+	if !seen {
+		t.Errorf("echo missing from %+v", rep.Changes)
+	}
+	u.set("echo", echoV1)
+	c.ok("crawl", "s1", "--strict")
+	wantNotContains(t, "list", c.ok("list"), flagUnusable)
+	if tv = c.tool("s1", "echo"); tv.Live != v1 || tv.Unusable {
+		t.Fatalf("after the clean definition returned: %+v", tv.toolJSON)
 	}
 }
 
@@ -140,11 +212,11 @@ func TestServerURLsAreShownWithoutCredentials(t *testing.T) {
 	c := newCLI(t)
 	c.ok("server", "add", "s1", "http://127.0.0.1:1/mcp?q="+plant("query"))
 	out := c.ok("server", "list")
-	wantContains(t, "server list", out, "http://127.0.0.1:1/mcp", "s1", "NAME")
+	wantContains(t, "server list", out, "http://127.0.0.1:1/mcp", "s1", "NAME", "PAUSED")
 	wantNotContains(t, "server list", out, canary, "q=")
 	var rows []serverJSON
 	c.jsonInto(&rows, "server", "list", "--json")
-	if len(rows) != 1 || rows[0].URL != "http://127.0.0.1:1/mcp" || rows[0].AllowPrivate {
+	if len(rows) != 1 || rows[0].URL != "http://127.0.0.1:1/mcp" || rows[0].AllowPrivate || rows[0].Paused {
 		t.Fatalf("server list --json = %+v", rows)
 	}
 	r := c.fail(exitFailure, "server", "add", "s2", "http://user:"+plant("pw")+"@127.0.0.1:1/mcp")

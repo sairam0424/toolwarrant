@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +13,9 @@ import (
 )
 
 const (
-	flagDrift   = "DRIFT"
-	flagMissing = "MISSING"
+	flagDrift    = "DRIFT"
+	flagMissing  = "MISSING"
+	flagUnusable = "UNUSABLE"
 	// emptyDocument stands in for "nothing approved yet", so the first
 	// proposal of a tool is reviewed as a diff against nothing: every line is
 	// an addition and nothing is hidden by an absent baseline.
@@ -32,19 +32,24 @@ type toolJSON struct {
 	Live          string `json:"live"`
 	Pending       string `json:"pending"`
 	Drifted       bool   `json:"drifted"`
+	Unusable      bool   `json:"unusable"`
 	MissingCrawls int    `json:"missing_crawls"`
 	Versions      int    `json:"versions"`
 }
 
-// versionJSON is one immutable version in machine-readable output.
+// versionJSON is one immutable version in machine-readable output. Proposers
+// lists every principal whose crawl proposed it, oldest first; none of them
+// may approve it. DigestProfile names the rule the digest was computed under.
 type versionJSON struct {
-	No           int             `json:"no"`
-	Digest       string          `json:"digest"`
-	Status       string          `json:"status"`
-	ProposedBy   string          `json:"proposed_by"`
-	EverApproved bool            `json:"ever_approved"`
-	FirstSeen    time.Time       `json:"first_seen"`
-	Canonical    json.RawMessage `json:"canonical"`
+	No            int             `json:"no"`
+	Digest        string          `json:"digest"`
+	DigestProfile string          `json:"digest_profile"`
+	Status        string          `json:"status"`
+	ProposedBy    string          `json:"proposed_by"`
+	Proposers     []string        `json:"proposers"`
+	EverApproved  bool            `json:"ever_approved"`
+	FirstSeen     time.Time       `json:"first_seen"`
+	Canonical     json.RawMessage `json:"canonical"`
 }
 
 // showJSON is the output of show --json.
@@ -63,7 +68,7 @@ type diffSide struct {
 
 // runList prints every tool, or those of one server, with the digests an
 // operator compares: approved, live (last crawled) and pending.
-func runList(a *app, c *command, args []string) error {
+func runList(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	asJSON := fs.Bool("json", false, "print JSON")
 	pos, err := a.parseArgs(c, fs, args)
@@ -73,11 +78,11 @@ func runList(a *app, c *command, args []string) error {
 	if len(pos) > 1 {
 		return &usageError{msg: fmt.Sprintf("expected at most one argument (SERVER), got %d", len(pos)), cmd: c}
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	server := ""
 	if len(pos) == 1 {
 		server = pos[0]
@@ -100,8 +105,9 @@ func runList(a *app, c *command, args []string) error {
 	return t.flush()
 }
 
-// toolFlags marks the two conditions that need a person: the upstream serves
-// something other than the approved digest, or stopped serving the tool.
+// toolFlags marks the conditions that need a person: the upstream serves
+// something other than the approved digest, stopped serving the tool, or
+// serves a definition that cannot be used at all.
 func toolFlags(v catalog.ToolView) string {
 	var flags []string
 	if v.Drifted {
@@ -110,12 +116,15 @@ func toolFlags(v catalog.ToolView) string {
 	if v.MissingCrawls > 0 {
 		flags = append(flags, flagMissing)
 	}
+	if v.Unusable {
+		flags = append(flags, flagUnusable)
+	}
 	return strings.Join(flags, ",")
 }
 
 func toolJSONOf(v catalog.ToolView) toolJSON {
 	return toolJSON{Server: v.Server, Tool: v.Name, State: string(v.State), Approved: v.Approved, Live: v.LastSeen,
-		Pending: v.Pending, Drifted: v.Drifted, MissingCrawls: v.MissingCrawls, Versions: v.Versions}
+		Pending: v.Pending, Drifted: v.Drifted, Unusable: v.Unusable, MissingCrawls: v.MissingCrawls, Versions: v.Versions}
 }
 
 func toolsJSON(tools []catalog.ToolView) []toolJSON {
@@ -129,8 +138,10 @@ func toolsJSON(tools []catalog.ToolView) []toolJSON {
 func versionsJSON(versions []catalog.VersionView) []versionJSON {
 	out := make([]versionJSON, 0, len(versions))
 	for _, v := range versions {
-		out = append(out, versionJSON{No: v.No, Digest: v.Digest, Status: string(v.Status), ProposedBy: v.ProposedBy,
-			EverApproved: v.EverApproved, FirstSeen: v.FirstSeen.UTC(), Canonical: json.RawMessage(v.Canonical)})
+		proposers := append([]string{}, v.Proposers...)
+		out = append(out, versionJSON{No: v.No, Digest: v.Digest, DigestProfile: v.DigestProfile, Status: string(v.Status),
+			ProposedBy: v.ProposedBy, Proposers: proposers, EverApproved: v.EverApproved, FirstSeen: v.FirstSeen.UTC(),
+			Canonical: json.RawMessage(v.Canonical)})
 	}
 	return out
 }
@@ -148,8 +159,9 @@ func loadTool(ctx context.Context, store *catalog.Store, server, tool string) (c
 	return view, versions, nil
 }
 
-// runShow prints one tool and every version it ever had, with full digests.
-func runShow(a *app, c *command, args []string) error {
+// runShow prints one tool and every version it ever had, with full digests,
+// every proposer and the digest profile each version was hashed under.
+func runShow(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	asJSON := fs.Bool("json", false, "print JSON")
 	pos, err := a.parseArgs(c, fs, args)
@@ -159,11 +171,11 @@ func runShow(a *app, c *command, args []string) error {
 	if err := wantArgs(c, pos, "SERVER", "TOOL"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	view, versions, err := loadTool(a.ctx, store, pos[0], pos[1])
 	if err != nil {
 		return err
@@ -171,19 +183,31 @@ func runShow(a *app, c *command, args []string) error {
 	if *asJSON {
 		return writeJSON(a.stdout, showJSON{toolJSON: toolJSONOf(view), History: versionsJSON(versions)})
 	}
-	fmt.Fprintf(a.stdout, "%s/%s\n  state:          %s\n  approved:       %s\n  pending:        %s\n  live:           %s\n  drifted:        %t\n  missing crawls: %d\n\n",
-		cell(view.Server), cell(view.Name), view.State, cell(view.Approved), cell(view.Pending), cell(view.LastSeen), view.Drifted, view.MissingCrawls)
+	a.stdout.printf("%s/%s\n  state:          %s\n  approved:       %s\n  pending:        %s\n  live:           %s\n  drifted:        %t\n  unusable:       %t\n  missing crawls: %d\n\n",
+		cell(view.Server), cell(view.Name), view.State, cell(view.Approved), cell(view.Pending), cell(view.LastSeen), view.Drifted, view.Unusable, view.MissingCrawls)
 	t := newTable(a.stdout)
-	t.row("NO", "STATUS", "PROPOSER", "FIRST SEEN", "DIGEST")
+	t.row("NO", "STATUS", "PROPOSERS", "FIRST SEEN", "PROFILE", "DIGEST")
 	for _, v := range versions {
-		t.row(strconv.Itoa(v.No), string(v.Status), cell(v.ProposedBy), v.FirstSeen.UTC().Format(time.RFC3339), v.Digest)
+		t.row(strconv.Itoa(v.No), string(v.Status), cells(proposersOf(v)), v.FirstSeen.UTC().Format(time.RFC3339), cell(v.DigestProfile), v.Digest)
 	}
 	return t.flush()
 }
 
+// proposersOf lists a version's proposers, falling back to the first one for
+// a version stored before the history existed.
+func proposersOf(v catalog.VersionView) []string {
+	if len(v.Proposers) > 0 {
+		return v.Proposers
+	}
+	if v.ProposedBy != "" {
+		return []string{v.ProposedBy}
+	}
+	return nil
+}
+
 // runDiff renders what changed between two versions through textdiff.Tool,
 // so every line an approver reads is escaped.
-func runDiff(a *app, c *command, args []string) error {
+func runDiff(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	from := fs.String("from", "", "digest or prefix to compare from (default: the approved version)")
 	to := fs.String("to", "", "digest or prefix to compare to (default: the pending version, or the live one when drifted)")
@@ -194,11 +218,11 @@ func runDiff(a *app, c *command, args []string) error {
 	if err := wantArgs(c, pos, "SERVER", "TOOL"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	view, versions, err := loadTool(a.ctx, store, pos[0], pos[1])
 	if err != nil {
 		return err
@@ -215,21 +239,19 @@ func runDiff(a *app, c *command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "%s/%s\nfrom: %s\nto:   %s\n\n", cell(view.Server), cell(view.Name), fromSide.summary, toSide.summary)
+	a.stdout.printf("%s/%s\nfrom: %s\nto:   %s\n\n", cell(view.Server), cell(view.Name), fromSide.summary, toSide.summary)
 	rendered, err := textdiff.Tool(fromSide.label, toSide.label, fromSide.canonical, toSide.canonical)
 	if err != nil {
 		return fmt.Errorf("render diff: %w", err)
 	}
-	if _, err := io.WriteString(a.stdout, rendered); err != nil {
-		return fmt.Errorf("write diff: %w", err)
-	}
-	return nil
+	a.stdout.print(rendered)
+	return a.stdout.broken()
 }
 
 // diffTargets chooses the two digests: explicit prefixes win; otherwise the
 // approved version is compared with the pending one, or with the live one
-// when the upstream drifted and nothing is pending (for example after a
-// reject).
+// when the upstream drifted to a known digest and nothing is pending (for
+// example after a reject). An unusable live definition has no digest to show.
 func diffTargets(ctx context.Context, store *catalog.Store, view catalog.ToolView, from, to string) (string, string, error) {
 	fromDigest := view.Approved
 	if from != "" {
@@ -248,6 +270,8 @@ func diffTargets(ctx context.Context, store *catalog.Store, view catalog.ToolVie
 		return fromDigest, d, nil
 	case view.Pending != "":
 		return fromDigest, view.Pending, nil
+	case view.Unusable:
+		return "", "", fmt.Errorf("nothing to compare: the upstream lists %s/%s with a definition that cannot be used, so there is no live version; run crawl again once it is fixed", view.Server, view.Name)
 	case view.Drifted:
 		return fromDigest, view.LastSeen, nil
 	}
@@ -265,7 +289,7 @@ func sideOf(view catalog.ToolView, versions []catalog.VersionView, digest string
 	}
 	return diffSide{
 		label:     fmt.Sprintf("%s/%s@%s", view.Server, view.Name, shortDigest(v.Digest)),
-		summary:   fmt.Sprintf("%s (version %d, %s, proposed by %s)", v.Digest, v.No, v.Status, cell(v.ProposedBy)),
+		summary:   fmt.Sprintf("%s (version %d, %s, proposed by %s)", v.Digest, v.No, v.Status, cells(proposersOf(v))),
 		canonical: v.Canonical,
 	}, nil
 }

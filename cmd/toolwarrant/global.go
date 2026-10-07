@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
+	"github.com/sairam0424/toolwarrant/internal/emit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
@@ -30,12 +30,38 @@ const (
 	dbFileMode os.FileMode = 0o600
 	// argTerminator is the flag package's end-of-flags marker.
 	argTerminator = "--"
+	// Printable ASCII bounds, the only characters a processor secret may hold:
+	// the emitter writes it into a CEL string literal and the processor
+	// compares it byte for byte.
+	minPrintableASCII = 0x20
+	maxPrintableASCII = 0x7e
 )
 
 // actorNamePattern bounds who can be named with --as. Lookalike and invisible
 // characters are refused so one person cannot appear as two identities, which
-// would defeat the rule that the proposer cannot approve.
+// would defeat the rule that the proposer cannot approve. The catalog applies
+// the same charset after NFKC and lower-casing, so a name accepted here is
+// never refused there.
 var actorNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
+
+// openMode says how a command opens the catalog. Only init may create the
+// file, so a mistyped --db cannot quietly become an empty catalog; serve must
+// never be able to write; the audit commands must be able to read a file that
+// a normal open refuses as corrupt, because naming the broken entry is their
+// job.
+type openMode int
+
+const (
+	// openCreate creates a missing file (init only).
+	openCreate openMode = iota
+	// openWrite requires an existing file and allows changes.
+	openWrite
+	// openReadOnly requires an existing file and refuses every change.
+	openReadOnly
+	// openForensic reads a database even when its guard objects were
+	// dropped, read-only.
+	openForensic
+)
 
 // globals are the flags that come before the command.
 type globals struct {
@@ -47,8 +73,8 @@ type globals struct {
 // bind registers the global flags on fs.
 func (g *globals) bind(fs *flag.FlagSet) {
 	fs.StringVar(&g.db, "db", "", "catalog database path (env "+envDB+"; default ./"+defaultDBName+")")
-	fs.StringVar(&g.actor, "as", "", "who is acting (env "+envActor+"; default the current OS user)")
-	fs.BoolVar(&g.allowSelfApproval, "allow-self-approval", false, "let the person who crawled a version approve it")
+	fs.StringVar(&g.actor, "as", "", "who is acting (env "+envActor+"; default the current OS user; \""+systemActorName+"\" is the system actor)")
+	fs.BoolVar(&g.allowSelfApproval, "allow-self-approval", false, "let a person whose crawl proposed a version approve it")
 }
 
 // newFlagSet returns a FlagSet that reports errors instead of exiting and
@@ -121,20 +147,34 @@ func (a *app) policy() lifecycle.Policy {
 	return p
 }
 
-// openStore opens the catalog. Every command except init requires the file to
-// exist already, so a typo in --db cannot quietly create an empty catalog.
-func (a *app) openStore(create bool) (*catalog.Store, error) {
+// openStore opens the catalog in the given mode. Every mode but openCreate
+// requires the file to exist already; the catalog reports that as ErrNotFound,
+// which becomes the one sentence a new operator needs.
+func (a *app) openStore(mode openMode) (*catalog.Store, error) {
 	path := a.dbPath()
-	if !create {
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("database %s does not exist; run \"%s init\" first", path, programName)
-		}
+	opts := catalog.OpenOptions{
+		Policy:    a.policy(),
+		MustExist: mode != openCreate,
+		ReadOnly:  mode == openReadOnly,
+		Forensic:  mode == openForensic,
 	}
-	store, err := catalog.Open(path, a.policy())
+	store, err := catalog.OpenWith(path, opts)
 	if err != nil {
+		if mode != openCreate && errors.Is(err, catalog.ErrNotFound) {
+			return nil, fmt.Errorf("database %s does not exist; run \"%s init\" first", textdiff.Escape(path), programName)
+		}
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	return store, nil
+}
+
+// closeStore closes the store at the end of a command. Its error is kept only
+// when the command itself succeeded, so a failed close is reported but never
+// hides the error that made the command fail.
+func closeStore(store *catalog.Store, err *error) {
+	if cerr := store.Close(); cerr != nil && *err == nil {
+		*err = fmt.Errorf("close database: %w", cerr)
+	}
 }
 
 // actor returns the principal for this invocation. A crawl without --as runs as
@@ -191,6 +231,35 @@ func currentUser(getenv func(string) string) (string, error) {
 	return "", &usageError{msg: "cannot determine the current user; pass --as NAME"}
 }
 
+// readSecret takes the processor's shared secret from the named environment
+// variable, never from a flag value, so it stays out of process listings and
+// shell histories. It is checked against the emitter's rule up front, so a
+// secret the gateway configuration could not carry is refused before anything
+// is written or listened on. The value never appears in any message.
+func readSecret(c *command, getenv func(string) string, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	secret := getenv(name)
+	if secret == "" {
+		return "", &usageError{msg: fmt.Sprintf("environment variable %s is unset or empty", textdiff.Escape(name)), cmd: c}
+	}
+	if len(secret) < emit.MinSecretLen || len(secret) > emit.MaxSecretLen || !isPrintableASCII(secret) {
+		return "", &usageError{msg: fmt.Sprintf("the secret in %s must be %d to %d printable ASCII characters", textdiff.Escape(name), emit.MinSecretLen, emit.MaxSecretLen), cmd: c}
+	}
+	return secret, nil
+}
+
+// isPrintableASCII reports whether every byte of s is printable ASCII.
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < minPrintableASCII || s[i] > maxPrintableASCII {
+			return false
+		}
+	}
+	return true
+}
+
 // runInit creates the database if it is absent and prints its absolute path.
 // The file is created owner-only before the catalog opens it, so the mode never
 // depends on another package's defaults.
@@ -207,7 +276,7 @@ func runInit(a *app, c *command, args []string) error {
 	if err := ensurePrivateFile(path); err != nil {
 		return err
 	}
-	store, err := a.openStore(true)
+	store, err := a.openStore(openCreate)
 	if err != nil {
 		return err
 	}
@@ -218,7 +287,7 @@ func runInit(a *app, c *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve database path: %w", err)
 	}
-	fmt.Fprintln(a.stdout, textdiff.Escape(abs))
+	a.stdout.printf("%s\n", textdiff.Escape(abs))
 	return nil
 }
 

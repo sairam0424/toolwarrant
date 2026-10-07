@@ -16,8 +16,10 @@ const (
 )
 
 // runExport mirrors the approved definitions into a directory that people can
-// read and diff in git. The export is write-only: nothing reads it back.
-func runExport(a *app, c *command, args []string) error {
+// read and diff in git. The export is write-only: nothing reads it back. Tools
+// the exporter had to leave out are reported, because a missing file in the
+// mirror must not be mistaken for a missing approval.
+func runExport(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	dir := fs.String("dir", "", "directory for <server>/<tool>.json and MANIFEST.json (required)")
 	commit := fs.Bool("commit", false, "commit the directory in a git repository of its own")
@@ -33,11 +35,11 @@ func runExport(a *app, c *command, args []string) error {
 	if err := requireFlag(c, *dir, "dir", "name the directory to write"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	approved, err := store.Approved(a.ctx)
 	if err != nil {
 		return err
@@ -47,10 +49,13 @@ func runExport(a *app, c *command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "exported %d approved tools to %s: %d written, %d removed, %d unchanged\n",
-		len(tools), textdiff.Escape(*dir), report.Written, report.Removed, report.Unchanged)
+	a.stdout.printf("exported %d approved tools to %s: %d written, %d removed, %d unchanged, %d skipped\n",
+		len(tools), textdiff.Escape(*dir), report.Written, report.Removed, report.Unchanged, len(report.Skipped))
+	for _, s := range report.Skipped {
+		a.stderr.printf("warning: %s/%s is approved but was not exported: %s\n", cell(s.Server), cell(s.Name), cell(s.Reason))
+	}
 	if !*commit {
-		return nil
+		return a.stdout.broken()
 	}
 	return a.commitExport(*dir, len(tools), *gitName, *gitEmail)
 }
@@ -83,9 +88,9 @@ func (a *app) commitExport(dir string, count int, name, email string) error {
 		return err
 	}
 	if !committed {
-		fmt.Fprintln(a.stdout, "nothing to commit")
-		return nil
+		a.stdout.printf("nothing to commit\n")
+		return a.stdout.broken()
 	}
-	fmt.Fprintf(a.stdout, "committed as %s <%s>\n", cell(name), cell(email))
-	return nil
+	a.stdout.printf("committed as %s <%s>\n", cell(name), cell(email))
+	return a.stdout.broken()
 }

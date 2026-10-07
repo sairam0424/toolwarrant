@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/sairam0424/toolwarrant/internal/gate"
 )
 
 const (
@@ -39,7 +41,7 @@ func TestFirstCrawlListShowAndDiff(t *testing.T) {
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
 	out := c.ok("crawl", "s1")
 	wantContains(t, "crawl", out, "crawl 1 of s1 complete: 3 tools, new=3", "NEW", "echo", "pending_review")
-	wantNotContains(t, "crawl", out, flagDrift)
+	wantNotContains(t, "crawl", out, flagDrift, "REJECTED")
 
 	out = c.ok("list")
 	wantContains(t, "list", out, "SERVER/TOOL", "s1/echo", "s1/wipe_database", "pending_review")
@@ -52,7 +54,7 @@ func TestFirstCrawlListShowAndDiff(t *testing.T) {
 
 	var rows []toolJSON
 	c.jsonInto(&rows, "list", "--json")
-	if len(rows) != 3 || rows[1].Tool != "echo" || rows[1].Pending == "" || rows[1].Approved != "" {
+	if len(rows) != 3 || rows[1].Tool != "echo" || rows[1].Pending == "" || rows[1].Approved != "" || rows[1].Unusable {
 		t.Fatalf("list --json = %+v", rows)
 	}
 	if !hexDigest.MatchString(rows[1].Pending) || rows[1].Live != rows[1].Pending {
@@ -60,7 +62,11 @@ func TestFirstCrawlListShowAndDiff(t *testing.T) {
 	}
 
 	out = c.ok("show", "s1", "echo")
-	wantContains(t, "show", out, "state:          pending_review", "PROPOSER", "crawler", "pending", rows[1].Pending)
+	wantContains(t, "show", out, "state:          pending_review", "unusable:       false", "PROPOSERS", "PROFILE", gate.DigestProfile, "crawler", "pending", rows[1].Pending)
+	tv := c.tool("s1", "echo")
+	if len(tv.History) != 1 || tv.History[0].DigestProfile != gate.DigestProfile || strings.Join(tv.History[0].Proposers, ",") != systemActorName {
+		t.Errorf("show --json history = %+v", tv.History)
+	}
 	out = c.ok("diff", "s1", "echo")
 	wantContains(t, "diff", out, noApprovedLabel, "+", echoV1, "Suspicious characters", "none")
 
@@ -68,7 +74,7 @@ func TestFirstCrawlListShowAndDiff(t *testing.T) {
 	wantContains(t, "second crawl", out, "unchanged=3")
 	var report crawlJSON
 	c.jsonInto(&report, "crawl", "s1", "--json")
-	if !report.Complete || len(report.Changes) != 3 || report.Changes[0].Kind != "unchanged" {
+	if !report.Complete || len(report.Changes) != 3 || report.Changes[0].Kind != "unchanged" || len(report.Rejected) != 0 {
 		t.Errorf("crawl --json = %+v", report)
 	}
 	r = c.fail(exitFailure, "show", "s1", "nope")
@@ -77,6 +83,9 @@ func TestFirstCrawlListShowAndDiff(t *testing.T) {
 	wantContains(t, "stderr", r.stderr, "not found")
 }
 
+// The scenario follows D4: the person who ran enable proposed nothing and may
+// approve what the crawl proposed; a person whose own crawl proposed a version
+// is the one who is refused.
 func TestApprovalFlowWithDriftRejectEnableAndRollback(t *testing.T) {
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
@@ -132,13 +141,23 @@ func TestApprovalFlowWithDriftRejectEnableAndRollback(t *testing.T) {
 	if tv = c.tool("s1", "echo"); tv.Pending != v1 {
 		t.Fatalf("after enable: %+v", tv.toolJSON)
 	}
-	r = c.fail(exitFailure, "--as", "alice", "approve", "s1", "echo", "--hash", v1)
-	wantContains(t, "self approval after enable", r.stderr, adviceSelfApproval)
-	c.approve("bob", "s1", "echo", v1)
+	// D4: alice only ran enable, she proposed nothing, so she may approve.
+	c.approve("alice", "s1", "echo", v1)
+	if tv = c.tool("s1", "echo"); tv.State != "enabled" || tv.Approved != v1 {
+		t.Fatalf("after the enabler approved: %+v", tv.toolJSON)
+	}
 
+	// A person whose crawl proposed a version is the one who is refused.
 	u.set("echo", echoV3)
-	c.ok("crawl", "s1")
-	v3 := c.tool("s1", "echo").Pending
+	c.ok("--as", "bob", "crawl", "s1")
+	tv = c.tool("s1", "echo")
+	v3 := tv.Pending
+	if len(tv.History) != 3 || strings.Join(tv.History[2].Proposers, ",") != "bob" {
+		t.Fatalf("v3 proposers = %+v", tv.History)
+	}
+	wantContains(t, "show", c.ok("show", "s1", "echo"), "bob")
+	r = c.fail(exitFailure, "--as", "bob", "approve", "s1", "echo", "--hash", v3)
+	wantContains(t, "proposer approving", r.stderr, adviceSelfApproval)
 	c.approve("alice", "s1", "echo", v3)
 	if tv = c.tool("s1", "echo"); tv.Approved != v3 || tv.State != "enabled" {
 		t.Fatalf("after approving v3: %+v", tv.toolJSON)
@@ -196,12 +215,18 @@ func TestHashPrefixHandling(t *testing.T) {
 	}
 }
 
-func TestMissingToolsAreFlaggedThenDeprecatedThenReappear(t *testing.T) {
+func TestMissingToolsReturnAreDeprecatedAndReappear(t *testing.T) {
 	c, u := fixture(t)
 	u.remove("add")
 	out := c.ok("crawl", "s1")
 	wantContains(t, "crawl", out, "missing=1")
 	wantContains(t, "list", c.ok("list"), flagMissing)
+	u.set("add", "Adds two numbers.")
+	out = c.ok("crawl", "s1")
+	wantContains(t, "return", out, "returned=1")
+	wantNotContains(t, "list after return", c.ok("list"), flagMissing)
+	u.remove("add")
+	c.ok("crawl", "s1")
 	c.ok("crawl", "s1")
 	out = c.ok("crawl", "s1")
 	wantContains(t, "third miss", out, "deprecated=1")
@@ -213,5 +238,44 @@ func TestMissingToolsAreFlaggedThenDeprecatedThenReappear(t *testing.T) {
 	wantContains(t, "reappear", out, "REAPPEARED")
 	if tv := c.tool("s1", "add"); tv.State != "pending_review" {
 		t.Fatalf("state %q, want pending_review", tv.State)
+	}
+}
+
+func TestPauseBlocksCrawlingAndServing(t *testing.T) {
+	c, u := fixture(t)
+	v1 := c.tool("s1", "echo").Pending
+	c.approve("alice", "s1", "echo", v1)
+	out := c.ok("--as", "alice", "server", "pause", "s1")
+	wantContains(t, "pause", out, "paused server s1", "server resume s1")
+	wantContains(t, "server list", c.ok("server", "list"), "PAUSED", "true")
+	var servers []serverJSON
+	c.jsonInto(&servers, "server", "list", "--json")
+	if len(servers) != 1 || !servers[0].Paused {
+		t.Fatalf("server list --json = %+v", servers)
+	}
+	before := u.sessions.Load()
+	r := c.fail(exitFailure, "crawl", "s1")
+	wantContains(t, "stderr", r.stderr, "paused", "server resume")
+	if u.sessions.Load() != before {
+		t.Error("a paused server must not be contacted")
+	}
+	// The snapshot of a paused server is empty, so through a pass-through
+	// gateway even the approved tool is a leak.
+	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", u.url())
+	wantContains(t, "stdout", r.stdout, verdictLeak+" echo "+v1[:shortDigestLen])
+	// Decisions keep working and the views still show the tools.
+	wantContains(t, "list", c.ok("list"), "s1/echo", "enabled")
+	c.fail(exitFailure, "--as", "alice", "server", "pause", "s1")
+	c.fail(exitUsage, "--as", "crawler", "server", "resume", "s1")
+	out = c.ok("--as", "alice", "server", "resume", "s1")
+	wantContains(t, "resume", out, "resumed server s1")
+	c.fail(exitFailure, "--as", "alice", "server", "resume", "s1")
+	c.ok("crawl", "s1")
+	events := map[string]bool{}
+	for _, e := range c.auditEntries() {
+		events[e.Event] = true
+	}
+	if !events["server.paused"] || !events["server.resumed"] {
+		t.Errorf("audit events = %v, want server.paused and server.resumed", events)
 	}
 }

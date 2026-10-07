@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // headReminder is printed after every successful verify. The chain proves
@@ -11,17 +13,20 @@ import (
 // that the whole log was not replaced; only a head recorded elsewhere does.
 const headReminder = "record this head outside the database (a ticket, a notebook): the chain alone cannot show that the whole log was rewritten"
 
-// auditCommands is the table behind "audit".
+// auditCommands is the table behind "audit". Both commands open the database
+// in forensic mode: read-only, and tolerant of the dropped guard objects that
+// make a normal open refuse the file as corrupt, because naming the broken
+// entry after tampering is exactly what they are for.
 func auditCommands() []*command {
 	return []*command{
-		{name: "verify", synopsis: "audit verify [--expect-head HASH]", summary: "check the hash chain of the audit log and print its head", run: runAuditVerify},
-		{name: "list", synopsis: "audit list [--after N] [--limit N] [--json]", summary: "print audit entries", run: runAuditList},
+		{name: "verify", synopsis: "audit verify [--expect-head HASH]", summary: "check the hash chain of the audit log and print its head (opens the database read-only, tampered or not)", run: runAuditVerify},
+		{name: "list", synopsis: "audit list [--after N] [--limit N] [--json]", summary: "print audit entries (opens the database read-only, tampered or not)", run: runAuditList},
 	}
 }
 
 // runAuditVerify checks the whole chain and, when asked, that the head is the
 // one the operator recorded.
-func runAuditVerify(a *app, c *command, args []string) error {
+func runAuditVerify(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	expect := fs.String("expect-head", "", "fail unless the head equals this hash you recorded earlier")
 	pos, err := a.parseArgs(c, fs, args)
@@ -31,26 +36,26 @@ func runAuditVerify(a *app, c *command, args []string) error {
 	if err := wantArgs(c, pos); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openForensic)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	summary, err := store.VerifyAudit(a.ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)
+	a.stdout.printf("audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)
 	if *expect != "" && !strings.EqualFold(*expect, summary.Head) {
-		return fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", *expect, summary.Head)
+		return fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", textdiff.Escape(*expect), summary.Head)
 	}
-	fmt.Fprintln(a.stdout, headReminder)
-	return nil
+	a.stdout.printf("%s\n", headReminder)
+	return a.stdout.broken()
 }
 
 // runAuditList prints entries in sequence order. Every field comes from the
 // database and is rendered through cell, because subjects carry tool names.
-func runAuditList(a *app, c *command, args []string) error {
+func runAuditList(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	after := fs.Int64("after", 0, "only entries with a sequence number above this")
 	limit := fs.Int("limit", 0, "at most this many entries (0 means all)")
@@ -65,11 +70,11 @@ func runAuditList(a *app, c *command, args []string) error {
 	if *after < 0 || *limit < 0 {
 		return &usageError{msg: "--after and --limit must not be negative", cmd: c}
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openForensic)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	entries, err := store.AuditEntries(a.ctx, *after, *limit)
 	if err != nil {
 		return err

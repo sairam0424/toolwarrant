@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,21 +12,22 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/crawl"
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
 	"github.com/sairam0424/toolwarrant/internal/fetch"
+	"github.com/sairam0424/toolwarrant/internal/processor"
 )
 
 const (
 	// maxUnixPath is the shortest sun_path limit among the supported systems.
-	maxUnixPath  = 100
-	loopInterval = 30 * time.Millisecond
-	loopRun      = 400 * time.Millisecond
+	maxUnixPath = 100
+	secretVar   = "TW_SECRET"
 )
 
 var listeningLine = regexp.MustCompile(`listening on ([^,]+), guarding`)
@@ -54,6 +57,28 @@ func listBody(tools []json.RawMessage) []byte {
 		parts[i] = string(tl)
 	}
 	return []byte(`{"tools":[` + strings.Join(parts, ",") + `]}`)
+}
+
+// listHook is a tools/list response hook as the gateway sends it for the
+// backend named target, carrying md as its metadata context (nil for none).
+func listHook(target string, body []byte, md *structpb.Struct) *api.McpResponse {
+	return &api.McpResponse{Method: "tools/list", ServiceNames: []string{target}, MetadataContext: md, McpResponse: body}
+}
+
+// callHook is a tools/call request hook for one tool of the backend target.
+func callHook(target, tool string, md *structpb.Struct) *api.McpRequest {
+	return &api.McpRequest{Method: "tools/call", ServiceNames: []string{target}, MetadataContext: md, McpRequest: []byte(`{"name":"` + tool + `","arguments":{}}`)}
+}
+
+// secretMetadata is the metadata context the gateway builds from the emitted
+// processor entry.
+func secretMetadata(t *testing.T, secret string) *structpb.Struct {
+	t.Helper()
+	md, err := structpb.NewStruct(map[string]any{processor.SecretMetadataKey: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return md
 }
 
 func servedNames(t *testing.T, mutated []byte) []string {
@@ -87,6 +112,19 @@ func waitListening(t *testing.T, out *syncBuffer) string {
 	return addr
 }
 
+// dial connects a gRPC client to a running processor.
+func dial(t *testing.T, addr string) (api.ExtMcpClient, context.Context) {
+	t.Helper()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	t.Cleanup(cancel)
+	return api.NewExtMcpClient(conn), ctx
+}
+
 func TestServeRefusesNonLoopbackAndBadAddresses(t *testing.T) {
 	c, _ := fixture(t)
 	r := c.fail(exitUsage, "serve", "--server", "s1", "--listen", "0.0.0.0:0")
@@ -110,17 +148,10 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 	if !strings.HasPrefix(addr, "127.0.0.1:") {
 		t.Fatalf("listening on %q, want a loopback address", addr)
 	}
+	client, ctx := dial(t, addr)
+	body := listBody(rawTools(t, u.url()))
 
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	client := api.NewExtMcpClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	defer cancel()
-
-	res, err := client.CheckResponse(ctx, &api.McpResponse{Method: "tools/list", McpResponse: listBody(rawTools(t, u.url()))})
+	res, err := client.CheckResponse(ctx, listHook("s1", body, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,11 +161,17 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 	if names := servedNames(t, res.GetMutated()); len(names) != 1 || names[0] != "echo" {
 		t.Fatalf("served %v, want only echo", names)
 	}
-	denied, err := client.CheckRequest(ctx, &api.McpRequest{Method: "tools/call", McpRequest: []byte(`{"name":"wipe_database","arguments":{}}`)})
+	// D2: a hook about another backend is denied, never judged with s1's
+	// approvals.
+	other, err := client.CheckResponse(ctx, listHook("other", body, nil))
+	if err != nil || other.GetError() == nil || !strings.Contains(other.GetError().GetReason(), "wrong backend") {
+		t.Fatalf("hook for another backend = %v, %v; want a wrong-backend denial", other, err)
+	}
+	denied, err := client.CheckRequest(ctx, callHook("s1", "wipe_database", nil))
 	if err != nil || denied.GetError() == nil {
 		t.Fatalf("wipe_database call = %v, %v; want a denial", denied, err)
 	}
-	allowed, err := client.CheckRequest(ctx, &api.McpRequest{Method: "tools/call", McpRequest: []byte(`{"name":"echo","arguments":{}}`)})
+	allowed, err := client.CheckRequest(ctx, callHook("s1", "echo", nil))
 	if err != nil || allowed.GetPass() == nil {
 		t.Fatalf("echo call = %v, %v; want pass", allowed, err)
 	}
@@ -142,10 +179,104 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 	if code := stop(); code != exitOK {
 		t.Fatalf("serve exit %d:\n%s", code, out.String())
 	}
-	wantContains(t, "stdout", out.String(), "stats:", "tools hidden=2", "calls allowed=1 denied=1", "guarding server s1")
+	wantContains(t, "stdout", out.String(), "guarding server s1, target s1", "hooks are not authenticated",
+		"stats: lists served=1 denied=1, tools hidden=2 (mismatched=0 unapproved=2 oversized=0), calls allowed=1 denied=1, wrong backend=1, unauthenticated=0, throttled=0, source errors=0")
 }
 
-func TestServeOnAUnixSocketIsOwnerOnly(t *testing.T) {
+func TestServeRequiresTheSharedSecretWhenConfigured(t *testing.T) {
+	c, u := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	c.env[secretVar] = plant("secret")
+	out, errb, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0", "--secret-env", secretVar, "--target", "s1", "--max-evidence-age", "1h")
+	addr := waitListening(t, out)
+	client, ctx := dial(t, addr)
+	body := listBody(rawTools(t, u.url()))
+
+	denied, err := client.CheckResponse(ctx, listHook("s1", body, nil))
+	if err != nil || denied.GetError() == nil || !strings.Contains(denied.GetError().GetReason(), "secret") {
+		t.Fatalf("hook without the secret = %v, %v; want a denial naming the secret", denied, err)
+	}
+	wrong, err := client.CheckRequest(ctx, callHook("s1", "echo", secretMetadata(t, plant("other"))))
+	if err != nil || wrong.GetError() == nil {
+		t.Fatalf("call with the wrong secret = %v, %v; want a denial", wrong, err)
+	}
+	res, err := client.CheckResponse(ctx, listHook("s1", body, secretMetadata(t, plant("secret"))))
+	if err != nil || res.GetMutated() == nil {
+		t.Fatalf("hook with the secret = %v, %v; want a filtered list", res, err)
+	}
+	if names := servedNames(t, res.GetMutated()); len(names) != 1 || names[0] != "echo" {
+		t.Fatalf("served %v, want only echo", names)
+	}
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s", code, out.String())
+	}
+	wantContains(t, "stdout", out.String(), "hooks must carry the shared secret", "unauthenticated=2")
+	wantNotContains(t, "output", out.String()+errb.String(), canary)
+}
+
+func TestServeHidesEverythingOfAPausedServer(t *testing.T) {
+	c, u := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	c.ok("--as", "alice", "server", "pause", "s1")
+	out, _, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0")
+	client, ctx := dial(t, waitListening(t, out))
+
+	res, err := client.CheckResponse(ctx, listHook("s1", listBody(rawTools(t, u.url())), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.GetPass() != nil {
+		t.Fatal("the list of a paused server was passed through")
+	}
+	if m := res.GetMutated(); m != nil {
+		if names := servedNames(t, m); len(names) != 0 {
+			t.Fatalf("served %v from a paused server, want nothing", names)
+		}
+	}
+	denied, err := client.CheckRequest(ctx, callHook("s1", "echo", nil))
+	if err != nil || denied.GetError() == nil {
+		t.Fatalf("call on a paused server = %v, %v; want a denial", denied, err)
+	}
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s", code, out.String())
+	}
+}
+
+func TestServeOpensTheCatalogReadOnly(t *testing.T) {
+	c, _ := fixture(t)
+	a := &app{ctx: context.Background(), stdout: &stream{w: io.Discard}, stderr: &stream{w: io.Discard}, getenv: c.getenv, globals: globals{db: c.db}}
+	alice := catalog.Actor{Name: "alice", Type: catalog.ActorHuman}
+	for _, mode := range []openMode{openReadOnly, openForensic} {
+		store, err := a.openStore(mode)
+		if err != nil {
+			t.Fatalf("mode %d: %v", mode, err)
+		}
+		if !store.ReadOnly() {
+			t.Errorf("mode %d opened the catalog writable", mode)
+		}
+		_, err = store.AddServer(a.ctx, catalog.ServerSpec{Name: "x", URL: "https://x.example.com/mcp"}, alice)
+		if !errors.Is(err, catalog.ErrReadOnly) {
+			t.Errorf("mode %d: write = %v, want ErrReadOnly", mode, err)
+		}
+		if msg := describe(err); !strings.Contains(msg, adviceReadOnly) {
+			t.Errorf("describe = %q", msg)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missing := &app{ctx: context.Background(), getenv: c.getenv, globals: globals{db: filepath.Join(t.TempDir(), "none.db")}}
+	for _, mode := range []openMode{openWrite, openReadOnly, openForensic} {
+		if _, err := missing.openStore(mode); err == nil || !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("mode %d on a missing file: %v", mode, err)
+		}
+	}
+	if _, err := os.Stat(missing.globals.db); !os.IsNotExist(err) {
+		t.Error("a non-create open made the file")
+	}
+}
+
+func TestServeOnAUnixSocketIsOwnerOnlyAndWarnsAboutALooseDirectory(t *testing.T) {
 	dir, err := os.MkdirTemp("", "tw")
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +287,7 @@ func TestServeOnAUnixSocketIsOwnerOnly(t *testing.T) {
 		t.Skipf("temp path too long for a unix socket: %s", path)
 	}
 	c, _ := fixture(t)
-	out, _, stop := c.start("serve", "--server", "s1", "--listen", unixPrefix+path)
+	out, errb, stop := c.start("serve", "--server", "s1", "--listen", unixPrefix+path)
 	if addr := waitListening(t, out); addr != path {
 		t.Fatalf("listening on %q, want %q", addr, path)
 	}
@@ -173,8 +304,21 @@ func TestServeOnAUnixSocketIsOwnerOnly(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("socket file still present after shutdown: %v", err)
 	}
+	wantNotContains(t, "stderr for a 0700 directory", errb.String(), "warning")
+
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, errb, stop = c.start("serve", "--server", "s1", "--listen", unixPrefix+path)
+	waitListening(t, out)
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s", code, out.String())
+	}
+	wantContains(t, "stderr for a 0755 directory", errb.String(), "warning: socket directory", "0755", "not 0700")
 }
 
+// The scheduled crawl is checked by waiting for completed iterations, not by
+// a fixed time window, so a loaded machine cannot turn it into a flake.
 func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
 	c := newCLI(t)
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -185,32 +329,22 @@ func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
 	u := newUpstream(t, map[string]string{"echo": echoV1})
 	c.ok("server", "add", "up", u.url(), "--allow-private")
 
-	ctx, cancel := context.WithTimeout(context.Background(), loopRun)
-	defer cancel()
-	r := c.runCtx(ctx, "crawl", "down", "--every", loopInterval.String())
-	if r.code != exitOK {
-		t.Fatalf("crawl --every against a broken upstream: exit %d: %s", r.code, r.stderr)
+	out, errb, stop := c.start("crawl", "down", "--every", loopEvery.String())
+	waitFor(t, "two crawl lines", func() bool { return len(nonEmptyLines(out.String())) >= 2 })
+	if code := stop(); code != exitOK {
+		t.Fatalf("crawl --every against a broken upstream: exit %d: %s", code, errb.String())
 	}
-	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("want at least two crawl lines, got:\n%s", r.stdout)
-	}
-	for _, line := range lines {
+	for _, line := range nonEmptyLines(out.String()) {
 		wantContains(t, "line", line, "down:", "http status 500")
 		wantNotContains(t, "line", line, broken.URL)
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), loopRun)
-	defer cancel2()
-	r = c.runCtx(ctx2, "crawl", "up", "--every", loopInterval.String(), "--json")
-	if r.code != exitOK {
-		t.Fatalf("crawl --every --json: exit %d: %s", r.code, r.stderr)
+	out, errb, stop = c.start("crawl", "up", "--every", loopEvery.String(), "--json")
+	waitFor(t, "two json lines", func() bool { return len(nonEmptyLines(out.String())) >= 2 })
+	if code := stop(); code != exitOK {
+		t.Fatalf("crawl --every --json: exit %d: %s", code, errb.String())
 	}
-	lines = strings.Split(strings.TrimSpace(r.stdout), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("want at least two json lines, got:\n%s", r.stdout)
-	}
-	for i, line := range lines {
+	for i, line := range nonEmptyLines(out.String()) {
 		var rep crawlJSON
 		if err := json.Unmarshal([]byte(line), &rep); err != nil || !rep.Complete || rep.Server != "up" {
 			t.Fatalf("line %d = %s (%v)", i, line, err)

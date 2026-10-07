@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -11,11 +9,6 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/sairam0424/toolwarrant/internal/audit"
-	"github.com/sairam0424/toolwarrant/internal/catalog"
-	"github.com/sairam0424/toolwarrant/internal/emit"
-	"github.com/sairam0424/toolwarrant/internal/fetch"
-	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
@@ -28,19 +21,59 @@ const (
 	// same \u{HEX} style textdiff.Escape uses for everything else invisible.
 	escapedNewline = `\u{000A}`
 	invalidURL     = "(invalid url)"
-)
-
-// Advice for the lifecycle refusals an operator meets most often. The sentinel
-// text alone ("approver must differ from the proposer") does not say what to
-// do next; these do.
-const (
-	adviceSelfApproval = "you proposed this version; another person must approve it, or pass --allow-self-approval"
-	adviceStale        = "the proposal changed since you looked; run diff again"
-	adviceAmbiguous    = "give more characters of the hash"
+	// nameWithheld stands for a tool name the catalog refused to keep (it
+	// broke the shared tool-name rule), so that no look-alike is ever shown.
+	nameWithheld = "(name withheld)"
 )
 
 // shellWordPattern matches arguments that need no quoting in a POSIX shell.
 var shellWordPattern = regexp.MustCompile(`^[A-Za-z0-9_./:@%+=,-]+$`)
+
+// stream is one of the program's two output streams. It remembers the first
+// write error instead of returning one from every print site, so that output
+// code stays one line per message while run can still turn a broken stdout or
+// stderr into exit 1: a closed pipe must not look like success, and an error
+// must never be dropped on the floor just because printing it is tedious.
+type stream struct {
+	w   io.Writer
+	err error
+}
+
+// Write implements io.Writer for the table writer and the JSON encoder. After
+// the first failure nothing more is written and that error is returned.
+func (s *stream) Write(p []byte) (int, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	n, err := s.w.Write(p)
+	if err != nil {
+		s.err = err
+	}
+	return n, err
+}
+
+// printf formats one message onto the stream.
+func (s *stream) printf(format string, args ...any) {
+	if s.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(s.w, format, args...); err != nil {
+		s.err = err
+	}
+}
+
+// print writes text as it is.
+func (s *stream) print(text string) {
+	if s.err != nil {
+		return
+	}
+	if _, err := io.WriteString(s.w, text); err != nil {
+		s.err = err
+	}
+}
+
+// broken returns the first write error, or nil if every write succeeded.
+func (s *stream) broken() error { return s.err }
 
 // cell renders untrusted text (tool names, actor names, server error text) for
 // one line of terminal output. Every such string goes through textdiff.Escape,
@@ -50,6 +83,18 @@ func cell(s string) string {
 		return emptyCell
 	}
 	return strings.ReplaceAll(textdiff.Escape(s), "\n", escapedNewline)
+}
+
+// cells renders a list of untrusted names as one comma-separated cell.
+func cells(names []string) string {
+	if len(names) == 0 {
+		return emptyCell
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, cell(n))
+	}
+	return strings.Join(out, ",")
 }
 
 // shortDigest shows the first shortDigestLen hex digits of a digest.
@@ -85,18 +130,31 @@ func shellWord(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// table aligns rows of already-escaped cells.
-type table struct{ w *tabwriter.Writer }
+// table aligns rows of already-escaped cells. The first write error is kept
+// and returned from flush, so a table printed to a closed pipe is reported
+// once instead of once per row.
+type table struct {
+	w   *tabwriter.Writer
+	err error
+}
 
 func newTable(w io.Writer) *table {
 	return &table{w: tabwriter.NewWriter(w, 0, 0, tabPadding, ' ', 0)}
 }
 
 func (t *table) row(cells ...string) {
-	fmt.Fprintln(t.w, strings.Join(cells, "\t"))
+	if t.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintln(t.w, strings.Join(cells, "\t")); err != nil {
+		t.err = err
+	}
 }
 
 func (t *table) flush() error {
+	if t.err != nil {
+		return fmt.Errorf("write table: %w", t.err)
+	}
 	if err := t.w.Flush(); err != nil {
 		return fmt.Errorf("write table: %w", err)
 	}
@@ -115,60 +173,10 @@ func writeJSON(w io.Writer, v any) error {
 }
 
 // writeCompactJSON prints v as one line, for the one-object-per-line output of
-// a scheduled crawl.
+// a scheduled crawl or check.
 func writeCompactJSON(w io.Writer, v any) error {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		return fmt.Errorf("write json: %w", err)
 	}
 	return nil
-}
-
-// describe turns an error into the one sentence the operator reads on stderr.
-// Known sentinels get advice; everything else is the error text, escaped
-// because upstream-controlled strings can end up inside it.
-func describe(err error) string {
-	msg := textdiff.Escape(err.Error())
-	var broken *audit.BrokenError
-	switch {
-	case errors.Is(err, lifecycle.ErrSelfApproval):
-		return adviceSelfApproval
-	case errors.Is(err, lifecycle.ErrStaleVersion):
-		return adviceStale
-	case errors.Is(err, lifecycle.ErrInvalidTransition):
-		return msg + "; run show to see the tool's state"
-	case errors.Is(err, lifecycle.ErrNotRollbackTarget):
-		return msg + "; only a version that was approved before can be rolled back to"
-	case errors.Is(err, catalog.ErrAmbiguous):
-		return msg + "; " + adviceAmbiguous
-	case errors.Is(err, catalog.ErrNotFound), errors.Is(err, catalog.ErrExists), errors.Is(err, catalog.ErrInvalid):
-		return msg
-	case errors.Is(err, catalog.ErrSchema):
-		return msg + "; upgrade toolwarrant or point --db at a toolwarrant database"
-	case errors.Is(err, catalog.ErrCorrupt):
-		return msg + "; do not serve from this database, restore it from a backup"
-	case errors.As(err, &broken):
-		return fmt.Sprintf("the audit log is broken at entry %d (%s); the database was changed outside toolwarrant", broken.Seq, textdiff.Escape(broken.Reason))
-	case errors.Is(err, emit.ErrInvalidInput):
-		return msg + "; fix the catalog or the flags and run emit again"
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "interrupted"
-	}
-	return describeFetch(err, msg)
-}
-
-// describeFetch adds advice for the egress policy refusals.
-func describeFetch(err error, msg string) string {
-	switch {
-	case errors.Is(err, fetch.ErrBlockedAddress):
-		return msg + "; the egress policy forbids loopback, private and link-local addresses unless the server was added with --allow-private (lab use only)"
-	case errors.Is(err, fetch.ErrBlockedHost):
-		return msg + "; the url must have a plain host and no user info"
-	case errors.Is(err, fetch.ErrBlockedScheme):
-		return msg + "; only http and https are crawled"
-	case errors.Is(err, fetch.ErrRedirect):
-		return msg + "; register the final url instead of following redirects"
-	case errors.Is(err, fetch.ErrTooLarge):
-		return msg + "; the response exceeded the size cap"
-	}
-	return msg
 }

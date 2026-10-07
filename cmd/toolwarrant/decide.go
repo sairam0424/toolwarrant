@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"sort"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
@@ -29,14 +28,16 @@ type located struct {
 }
 
 // decidingActor is actor(false) plus the rule that only a person decides: the
-// system crawler proposes, it never approves.
+// system crawler proposes, it never approves, rejects, pauses or resumes. The
+// catalog enforces the same rule (ErrHumanRequired); refusing here turns it
+// into a usage error with the fix in it.
 func (a *app) decidingActor(c *command) (catalog.Actor, error) {
 	actor, err := a.actor(false)
 	if err != nil {
 		return catalog.Actor{}, err
 	}
 	if actor.Type != catalog.ActorHuman {
-		return catalog.Actor{}, &usageError{msg: "the system actor cannot approve, reject, disable, enable or roll back; pass --as with your own name", cmd: c}
+		return catalog.Actor{}, &usageError{msg: "the system actor cannot approve, reject, disable, enable, roll back, pause or resume; pass --as with your own name", cmd: c}
 	}
 	return actor, nil
 }
@@ -62,7 +63,7 @@ func (a *app) beginDecision(c *command, fs *flag.FlagSet, args []string) (server
 // runApprove approves the exact digest the operator reviewed. The definition
 // is first scanned for characters a person cannot see or a terminal would
 // obey; a hidden instruction is exactly what the review exists to catch.
-func runApprove(a *app, c *command, args []string) error {
+func runApprove(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	hash := fs.String(hashFlagName, "", hashFlagHelp)
 	accept := fs.Bool("accept-suspicious", false, "approve even though the definition holds invisible or terminal-controlling characters")
@@ -73,11 +74,11 @@ func runApprove(a *app, c *command, args []string) error {
 	if err := requireFlag(c, *hash, hashFlagName, "name the digest you reviewed"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	digest, err := store.ResolveDigest(a.ctx, server, tool, *hash)
 	if err != nil {
 		return err
@@ -96,13 +97,13 @@ func runApprove(a *app, c *command, args []string) error {
 	if err := store.Approve(a.ctx, server, tool, digest, actor); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "approved %s/%s at %s\n", cell(server), cell(tool), digest)
+	a.stdout.printf("approved %s/%s at %s\n", cell(server), cell(tool), digest)
 	return nil
 }
 
 // reviewSuspicious lists every suspicious character in the decoded strings of
 // the definition and refuses unless the operator accepted them explicitly.
-func reviewSuspicious(stderr io.Writer, canonical []byte, accept bool) error {
+func reviewSuspicious(stderr *stream, canonical []byte, accept bool) error {
 	found, err := scanStrings(canonical)
 	if err != nil {
 		return err
@@ -110,20 +111,21 @@ func reviewSuspicious(stderr io.Writer, canonical []byte, accept bool) error {
 	if len(found) == 0 {
 		return nil
 	}
-	fmt.Fprintln(stderr, "suspicious characters in this definition:")
+	stderr.printf("suspicious characters in this definition:\n")
 	for _, f := range found {
-		fmt.Fprintf(stderr, "  %s byte %d: U+%04X %s (%s)\n", cell(f.path), f.Offset, f.Rune, f.Name, f.Category)
+		stderr.printf("  %s byte %d: U+%04X %s (%s)\n", cell(f.path), f.Offset, f.Rune, f.Name, f.Category)
 	}
 	if !accept {
 		return fmt.Errorf("refusing to approve: the definition holds %d suspicious character(s), listed above; review them and pass --accept-suspicious to approve anyway", len(found))
 	}
-	fmt.Fprintf(stderr, "warning: approving despite %d suspicious character(s)\n", len(found))
+	stderr.printf("warning: approving despite %d suspicious character(s)\n", len(found))
 	return nil
 }
 
 // scanStrings decodes the canonical definition and runs textdiff.Findings over
 // every string value and object key. The decoded text is scanned because a
-// JSON escape such as ​ hides the character in the raw bytes.
+// JSON escape (backslash, u, 2, 0, 0, b for the zero-width space) hides the
+// character in the raw bytes.
 func scanStrings(canonical []byte) ([]located, error) {
 	dec := json.NewDecoder(bytes.NewReader(canonical))
 	dec.UseNumber()
@@ -171,7 +173,7 @@ func locate(path, s string) []located {
 }
 
 // runReject rejects a pending version by the digest the operator looked at.
-func runReject(a *app, c *command, args []string) error {
+func runReject(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	hash := fs.String(hashFlagName, "", hashFlagHelp)
 	server, tool, actor, err := a.beginDecision(c, fs, args)
@@ -181,11 +183,11 @@ func runReject(a *app, c *command, args []string) error {
 	if err := requireFlag(c, *hash, hashFlagName, "name the digest you are rejecting"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	digest, err := store.ResolveDigest(a.ctx, server, tool, *hash)
 	if err != nil {
 		return err
@@ -193,42 +195,43 @@ func runReject(a *app, c *command, args []string) error {
 	if err := store.Reject(a.ctx, server, tool, digest, actor); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "rejected %s/%s at %s\n", cell(server), cell(tool), digest)
+	a.stdout.printf("rejected %s/%s at %s\n", cell(server), cell(tool), digest)
 	return nil
 }
 
 // runDisable switches a tool off; it is never served until enabled again.
-func runDisable(a *app, c *command, args []string) error {
+func runDisable(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	server, tool, actor, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	if err := store.Disable(a.ctx, server, tool, actor); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "disabled %s/%s\n", cell(server), cell(tool))
+	a.stdout.printf("disabled %s/%s\n", cell(server), cell(tool))
 	return nil
 }
 
 // runEnable brings a disabled tool back under the policy; with the default
-// policy that means a fresh review, so the new state is printed.
-func runEnable(a *app, c *command, args []string) error {
+// policy that means a fresh review, so the new state is printed. The enabler
+// proposes nothing and so may approve what the crawl proposed (D4).
+func runEnable(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	server, tool, actor, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	if err := store.Enable(a.ctx, server, tool, actor); err != nil {
 		return err
 	}
@@ -236,12 +239,12 @@ func runEnable(a *app, c *command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "enabled %s/%s; state is now %s\n", cell(server), cell(tool), view.State)
+	a.stdout.printf("enabled %s/%s; state is now %s\n", cell(server), cell(tool), view.State)
 	return nil
 }
 
 // runRollback re-approves a version that was approved before.
-func runRollback(a *app, c *command, args []string) error {
+func runRollback(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	to := fs.String(toFlagName, "", "digest or prefix of a version that was approved before (required)")
 	server, tool, actor, err := a.beginDecision(c, fs, args)
@@ -251,11 +254,11 @@ func runRollback(a *app, c *command, args []string) error {
 	if err := requireFlag(c, *to, toFlagName, "name the version to return to"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	store, err := a.openStore(openWrite)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeStore(store, &err)
 	digest, err := store.ResolveDigest(a.ctx, server, tool, *to)
 	if err != nil {
 		return err
@@ -263,6 +266,6 @@ func runRollback(a *app, c *command, args []string) error {
 	if err := store.Rollback(a.ctx, server, tool, digest, actor); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "rolled back %s/%s to %s\n", cell(server), cell(tool), digest)
+	a.stdout.printf("rolled back %s/%s to %s\n", cell(server), cell(tool), digest)
 	return nil
 }

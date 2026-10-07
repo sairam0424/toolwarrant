@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,24 +20,66 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
+// classTokenPattern mirrors the catalog's rule for a crawl error class: lower
+// case letters, digits and "._-", words separated by single spaces. A class
+// that breaks it is stored quoted as free text instead of as a class.
+var classTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*( [a-z0-9._-]+)*$`)
+
+// maxClassLen is the catalog's cap on a stored class.
+const maxClassLen = 64
+
 func TestCellEscapesEverythingATerminalWouldObey(t *testing.T) {
 	cases := map[string]string{
-		"":                emptyCell,
-		"plain":           "plain",
-		"a​b":             `a\u{200B}b`,
-		"a\x1b[31mb":      `a\u{001B}[31mb`,
-		"a‮b":             `a\u{202E}b`,
-		"line\nbreak":     `line\u{000A}break`,
-		`back\slash`:      `back\\slash`,
-		"tab\there":       `tab\there`,
-		"café":            "café",
-		"bad\xffbyte":     `bad\x{FF}byte`,
-		`\u{000A}` + "\n": `\\u{000A}\u{000A}`,
+		"":                         emptyCell,
+		"plain":                    "plain",
+		"a" + zeroWidth + "b":      `a\u{200B}b`,
+		"a" + esc + "[31mb":        `a\u{001B}[31mb`,
+		"a" + bidi + "b":           `a\u{202E}b`,
+		"line\nbreak":              `line\u{000A}break`,
+		`back\slash`:               `back\\slash`,
+		"tab\there":                `tab\there`,
+		"caf" + string(rune(0xE9)): "caf" + string(rune(0xE9)),
+		"bad\xffbyte":              `bad\x{FF}byte`,
+		`\u{000A}` + "\n":          `\\u{000A}\u{000A}`,
 	}
 	for in, want := range cases {
 		if got := cell(in); got != want {
 			t.Errorf("cell(%q) = %q, want %q", in, got, want)
 		}
+	}
+	if got := cells(nil); got != emptyCell {
+		t.Errorf("cells(nil) = %q", got)
+	}
+	if got := cells([]string{"a", "b" + zeroWidth}); got != `a,b\u{200B}` {
+		t.Errorf("cells = %q", got)
+	}
+}
+
+func TestStreamKeepsTheFirstWriteError(t *testing.T) {
+	pipe := &brokenPipe{}
+	s := &stream{w: pipe}
+	s.printf("one %d\n", 1)
+	s.print("two\n")
+	if _, err := s.Write([]byte("three")); err == nil {
+		t.Error("Write after a failure returned no error")
+	}
+	if err := s.broken(); err == nil || !strings.Contains(err.Error(), "broken pipe") {
+		t.Errorf("broken = %v", err)
+	}
+	if pipe.writes != 1 {
+		t.Errorf("the underlying writer was called %d times, want once: nothing is written after the first failure", pipe.writes)
+	}
+	var sb strings.Builder
+	ok := &stream{w: &sb}
+	ok.printf("a")
+	ok.print("b")
+	if ok.broken() != nil || sb.String() != "ab" {
+		t.Errorf("healthy stream: %q, %v", sb.String(), ok.broken())
+	}
+	table := newTable(&stream{w: &brokenPipe{}})
+	table.row("x", "y")
+	if err := table.flush(); err == nil || !strings.Contains(err.Error(), "write table") {
+		t.Errorf("table on a broken stream: %v", err)
 	}
 }
 
@@ -70,10 +113,10 @@ func TestSafeURLKeepsOnlySchemeHostAndPath(t *testing.T) {
 	}
 	// A path is re-encoded, so an invisible character cannot reach the terminal
 	// raw either way; the escape step still guards the host.
-	if got := displayURL("http://h/​p"); strings.Contains(got, "​") || !strings.Contains(got, "%E2%80%8B") {
+	if got := displayURL("http://h/" + zeroWidth + "p"); strings.Contains(got, zeroWidth) || !strings.Contains(got, "%E2%80%8B") {
 		t.Errorf("displayURL left the path unsafe: %q", got)
 	}
-	if got := displayURL("http://h\x1b/p"); strings.Contains(got, "\x1b") {
+	if got := displayURL("http://h" + esc + "/p"); strings.Contains(got, esc) {
 		t.Errorf("displayURL leaked a control character: %q", got)
 	}
 }
@@ -147,17 +190,20 @@ func TestDescribeMapsSentinelsToAdvice(t *testing.T) {
 		{wrap(catalog.ErrNotFound), "not found"},
 		{wrap(catalog.ErrExists), "already exists"},
 		{wrap(catalog.ErrInvalid), "invalid input"},
-		{wrap(catalog.ErrSchema), "upgrade toolwarrant"},
-		{wrap(catalog.ErrCorrupt), "do not serve"},
+		{wrap(catalog.ErrSchema), "delete the file and run init again"},
+		{wrap(catalog.ErrCorrupt), adviceCorrupt},
+		{wrap(catalog.ErrReadOnly), adviceReadOnly},
+		{wrap(catalog.ErrPaused), "server resume NAME"},
+		{wrap(catalog.ErrHumanRequired), "pass --as"},
 		{&audit.BrokenError{Seq: 7, Reason: "hash mismatch"}, "broken at entry 7"},
 		{wrap(emit.ErrInvalidInput), "emit again"},
-		{context.Canceled, "interrupted"},
+		{context.Canceled, adviceInterrupted},
 		{wrap(fetch.ErrBlockedAddress), "--allow-private"},
 		{wrap(fetch.ErrBlockedHost), "user info"},
 		{wrap(fetch.ErrBlockedScheme), "http and https"},
 		{wrap(fetch.ErrRedirect), "redirect"},
 		{wrap(fetch.ErrTooLarge), "size cap"},
-		{errors.New("plain \x1b[31m text"), `plain \u{001B}[31m text`},
+		{errors.New("plain " + esc + "[31m text"), `plain \u{001B}[31m text`},
 	}
 	for _, tc := range cases {
 		if got := describe(tc.err); !strings.Contains(got, tc.want) {
@@ -166,7 +212,7 @@ func TestDescribeMapsSentinelsToAdvice(t *testing.T) {
 	}
 }
 
-func TestScrubCrawlErrorNeverLeaksText(t *testing.T) {
+func TestScrubCrawlErrorNeverLeaksTextAndYieldsCatalogClasses(t *testing.T) {
 	secret := "http://host/mcp?token=SECRET"
 	cases := []struct {
 		err  error
@@ -174,15 +220,15 @@ func TestScrubCrawlErrorNeverLeaksText(t *testing.T) {
 	}{
 		{fmt.Errorf("initialize: %w", &crawl.HTTPStatusError{Status: 403}), "http status 403"},
 		{&crawl.RPCError{Code: -32600, Message: secret}, "json-rpc error -32600"},
-		{fmt.Errorf("%w: %s", fetch.ErrBlockedAddress, secret), "egress policy: address not allowed"},
-		{fmt.Errorf("%w: %s", fetch.ErrBlockedHost, secret), "egress policy: host not allowed"},
-		{fetch.ErrBlockedScheme, "egress policy: scheme not allowed"},
-		{fetch.ErrRedirect, "egress policy: redirect refused"},
+		{fmt.Errorf("%w: %s", fetch.ErrBlockedAddress, secret), "egress policy address not allowed"},
+		{fmt.Errorf("%w: %s", fetch.ErrBlockedHost, secret), "egress policy host not allowed"},
+		{fetch.ErrBlockedScheme, "egress policy scheme not allowed"},
+		{fetch.ErrRedirect, "egress policy redirect refused"},
 		{fetch.ErrTooLarge, "response too large"},
 		{crawl.ErrTooManyPages, "too many pages"},
 		{crawl.ErrTooManyTools, "too many tools"},
+		{crawl.ErrTooLarge, "tool definitions too large"},
 		{crawl.ErrCursorLoop, "pagination cursor loop"},
-		{crawl.ErrDuplicateTool, "duplicate tool name"},
 		{fmt.Errorf("%w: %s", crawl.ErrMalformed, secret), "malformed server response"},
 		{crawl.ErrInvalidOptions, "invalid crawl options"},
 		{&url.Error{Op: "Post", URL: secret, Err: context.DeadlineExceeded}, classTimeout},
@@ -199,6 +245,9 @@ func TestScrubCrawlErrorNeverLeaksText(t *testing.T) {
 		}
 		if strings.Contains(got, "SECRET") || strings.Contains(got, "token") {
 			t.Errorf("scrub leaked: %q", got)
+		}
+		if !classTokenPattern.MatchString(got) || len(got) > maxClassLen {
+			t.Errorf("class %q would be quoted by the catalog instead of stored as a class", got)
 		}
 	}
 }
@@ -221,30 +270,70 @@ func TestNormalizeActorName(t *testing.T) {
 			t.Errorf("normalize(%q) = %q, %v", in, got, err)
 		}
 	}
-	for _, bad := range []string{"", ".dot", "has space", "ali​ce", strings.Repeat("a", 65), "semi;colon"} {
+	for _, bad := range []string{"", ".dot", "has space", "ali" + zeroWidth + "ce", strings.Repeat("a", 65), "semi;colon"} {
 		if _, err := normalizeActorName(bad); err == nil {
 			t.Errorf("normalize(%q) accepted", bad)
 		}
 	}
 }
 
-func TestSummarizeAndFlags(t *testing.T) {
+func TestReadSecretAppliesTheEmitterRule(t *testing.T) {
+	c := &command{name: "x", synopsis: "x"}
+	env := map[string]string{
+		"GOOD":    strings.Repeat("s", emit.MinSecretLen),
+		"SHORT":   strings.Repeat("s", emit.MinSecretLen-1),
+		"LONG":    strings.Repeat("s", emit.MaxSecretLen+1),
+		"CONTROL": strings.Repeat("s", emit.MinSecretLen) + "\n",
+		"WIDE":    strings.Repeat("s", emit.MinSecretLen) + string(rune(0xE9)),
+	}
+	getenv := func(k string) string { return env[k] }
+	if got, err := readSecret(c, getenv, ""); err != nil || got != "" {
+		t.Errorf("no variable: %q, %v", got, err)
+	}
+	if got, err := readSecret(c, getenv, "GOOD"); err != nil || got != env["GOOD"] {
+		t.Errorf("GOOD: %q, %v", got, err)
+	}
+	for _, name := range []string{"UNSET", "SHORT", "LONG", "CONTROL", "WIDE"} {
+		_, err := readSecret(c, getenv, name)
+		var ue *usageError
+		if !errors.As(err, &ue) {
+			t.Errorf("%s: %v, want a usage error", name, err)
+			continue
+		}
+		if strings.Contains(ue.msg, "sss") {
+			t.Errorf("%s: the message echoes the secret: %q", name, ue.msg)
+		}
+	}
+}
+
+func TestSummarizeLabelsAndFlags(t *testing.T) {
 	changes := []catalog.ToolChange{
 		{Tool: "a", Kind: catalog.ChangeNew, State: lifecycle.PendingReview},
 		{Tool: "b", Kind: catalog.ChangeChanged, State: lifecycle.ChangedPendingReapproval},
 		{Tool: "c", Kind: catalog.ChangeUnchanged, State: lifecycle.Enabled},
+		{Tool: "d", Kind: catalog.ChangeUnusable, State: lifecycle.Enabled, Reason: "too-large"},
+		{Tool: "e", Kind: catalog.ChangeReturned, State: lifecycle.PendingReview},
 	}
-	if got := summarize(changes); got != "new=1 changed=1 unchanged=1" {
+	if got := summarize(changes); got != "new=1 changed=1 returned=1 unusable=1 unchanged=1" {
 		t.Errorf("summarize = %q", got)
 	}
 	if got := summarize(nil); got != "no changes" {
 		t.Errorf("summarize(nil) = %q", got)
 	}
-	if changeLabel(changes[0]) != "NEW" || changeLabel(changes[2]) != "unchanged" || driftFlag(changes[1]) != flagDrift || driftFlag(changes[0]) != "" {
-		t.Error("labels or drift flag wrong")
+	if changeLabel(changes[0]) != "NEW" || changeLabel(changes[2]) != "unchanged" || changeLabel(changes[3]) != "UNUSABLE" || changeLabel(changes[4]) != "returned" {
+		t.Error("labels wrong")
 	}
-	v := catalog.ToolView{Drifted: true, MissingCrawls: 2}
-	if got := toolFlags(v); got != flagDrift+","+flagMissing {
+	if changeFlags(changes[1]) != flagDrift || changeFlags(changes[0]) != "" || changeFlags(changes[3]) != flagUnusable {
+		t.Error("change flags wrong")
+	}
+	if liveCell(changes[3]) != lifecycle.UnusableDigest || liveCell(changes[0]) != emptyCell {
+		t.Error("live cell wrong")
+	}
+	if countUnusable(changes) != 1 || rejectedSuffix(nil) != "" || rejectedSuffix([]catalog.RejectedTool{{}}) != ", 1 rejected" {
+		t.Error("counts wrong")
+	}
+	v := catalog.ToolView{Drifted: true, MissingCrawls: 2, Unusable: true}
+	if got := toolFlags(v); got != flagDrift+","+flagMissing+","+flagUnusable {
 		t.Errorf("toolFlags = %q", got)
 	}
 	if got := toolFlags(catalog.ToolView{}); got != "" {
@@ -253,7 +342,7 @@ func TestSummarizeAndFlags(t *testing.T) {
 }
 
 func TestWalkStringsFindsHiddenCharactersWithPaths(t *testing.T) {
-	doc := []byte(`{"name":"t","description":"a​b","inputSchema":{"properties":{"x‮":{"description":"ok"}}},"list":["\u001b[31m"]}`)
+	doc := []byte(`{"name":"t","description":"a` + zeroWidth + `b","inputSchema":{"properties":{"x` + bidi + `":{"description":"ok"}}},"list":["\u001b[31m"]}`)
 	found, err := scanStrings(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +351,7 @@ func TestWalkStringsFindsHiddenCharactersWithPaths(t *testing.T) {
 	for _, f := range found {
 		paths = append(paths, fmt.Sprintf("%s:%04X", f.path, f.Rune))
 	}
-	want := []string{"$.description:200B", "$.inputSchema.properties.x‮ (key):202E", "$.list[0]:001B"}
+	want := []string{"$.description:200B", "$.inputSchema.properties.x" + bidi + " (key):202E", "$.list[0]:001B"}
 	if strings.Join(paths, "|") != strings.Join(want, "|") {
 		t.Errorf("findings = %v, want %v", paths, want)
 	}
@@ -274,25 +363,44 @@ func TestWalkStringsFindsHiddenCharactersWithPaths(t *testing.T) {
 	}
 }
 
-func TestCompareServed(t *testing.T) {
+func TestCompareSortsLiveToolsIntoVerdicts(t *testing.T) {
 	approved := strings.Repeat("a", 64)
 	other := strings.Repeat("b", 64)
 	snap := catalog.Snapshot{Server: "s1", Tools: map[string]catalog.ToolPolicy{
 		"served":   {State: lifecycle.Enabled, Approved: approved, LastSeen: approved},
 		"drifted":  {State: lifecycle.ChangedPendingReapproval, Approved: approved, LastSeen: other},
 		"disabled": {State: lifecycle.Disabled, Approved: approved, LastSeen: approved},
+		"reserial": {State: lifecycle.Enabled, Approved: approved, LastSeen: approved},
+		"absent":   {State: lifecycle.Enabled, Approved: approved, LastSeen: approved},
+		"gone":     {State: lifecycle.Enabled, Approved: approved, LastSeen: ""},
 	}}
-	live := []liveTool{{"served", approved}, {"drifted", other}, {"unknown", other}, {"broken", ""}}
-	leaks, missing := compareServed(snap, live)
-	if len(leaks) != 3 || leaks[0].name != "drifted" || leaks[1].name != "unknown" || leaks[2].name != "broken" {
-		t.Errorf("leaks = %+v", leaks)
+	live := []liveTool{{name: "served", digest: approved}, {name: "drifted", digest: other}, {name: "unknown", digest: other},
+		{name: "broken", unusable: "not-canonical"}, {name: "disabled", digest: approved}, {name: "reserial", digest: other}}
+	var res verdicts
+	compare(snap, live, &res)
+	leaks := make([]string, 0, len(res.leaks))
+	for _, l := range res.leaks {
+		leaks = append(leaks, l.name)
 	}
-	if len(missing) != 0 {
-		t.Errorf("missing = %v", missing)
+	if strings.Join(leaks, ",") != "drifted,unknown,broken,disabled" {
+		t.Errorf("leaks = %v", leaks)
 	}
-	leaks, missing = compareServed(snap, nil)
-	if len(leaks) != 0 || strings.Join(missing, ",") != "served" {
-		t.Errorf("empty gateway: leaks %v missing %v", leaks, missing)
+	if len(res.mismatches) != 1 || res.mismatches[0].name != "reserial" {
+		t.Errorf("mismatches = %+v", res.mismatches)
+	}
+	if strings.Join(res.missing, ",") != "absent" || res.served != 1 || !res.failed() {
+		t.Errorf("missing %v served %d failed %v", res.missing, res.served, res.failed())
+	}
+	wantContains(t, "summary", res.summary(), "serves 6 tool(s), 1 approved and current", "4 leaked", "1 with a digest other", "1 approved but not listed")
+
+	var clean verdicts
+	compare(snap, []liveTool{{name: "served", digest: approved}}, &clean)
+	if clean.failed() || clean.served != 1 || strings.Join(clean.missing, ",") != "absent,reserial" {
+		t.Errorf("clean = %+v", clean)
+	}
+	edited := verdicts{configEdited: true}
+	if !edited.failed() || !strings.Contains(edited.summary(), "configuration edited") {
+		t.Errorf("edited = %+v", edited)
 	}
 }
 

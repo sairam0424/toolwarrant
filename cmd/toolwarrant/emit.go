@@ -18,11 +18,15 @@ const (
 	defaultListenPort        = 3000
 	defaultProcessorBasePort = 9001
 	processorHost            = "127.0.0.1"
-	// configFileMode is world-readable: the config holds upstream URLs and
-	// tool names, no secrets, and the gateway often runs as another user.
+	// configFileMode is world-readable: without a secret the config holds
+	// upstream URLs and tool names, and the gateway often runs as another
+	// user.
 	configFileMode os.FileMode = 0o644
-	tempPattern                = ".toolwarrant-*.tmp"
-	routeSuffix                = "/mcp"
+	// secretConfigFileMode is owner-only: with --secret-env the file carries
+	// the processor secret in clear, so only the gateway's user may read it.
+	secretConfigFileMode os.FileMode = 0o600
+	tempPattern                      = ".toolwarrant-*.tmp"
+	routeSuffix                      = "/mcp"
 )
 
 // processorOverrides is the repeatable --processor NAME=HOST:PORT flag.
@@ -61,14 +65,16 @@ type emitPlan struct {
 
 // runEmit writes the agentgateway configuration: one route per server, each
 // with an explicit allow rule for its approved tools and the processor that
-// enforces strict mode.
-func runEmit(a *app, c *command, args []string) error {
+// enforces strict mode. With --secret-env every processor entry carries the
+// shared secret and the file is written owner-only.
+func runEmit(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	out := fs.String("out", "", "file to write the gateway configuration to (required)")
 	listenPort := fs.Int("listen-port", defaultListenPort, "port the gateway binds")
 	basePort := fs.Int("processor-base-port", defaultProcessorBasePort, "the i-th server in name order gets processor "+processorHost+":(base+i)")
 	overrides := processorOverrides{}
 	fs.Var(overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable)")
+	secretEnv := fs.String("secret-env", "", "environment variable holding a shared secret (16 to 256 printable ASCII characters) written into every processor entry; the file is then written 0600")
 	pos, err := a.parseArgs(c, fs, args)
 	if err != nil {
 		return err
@@ -79,11 +85,15 @@ func runEmit(a *app, c *command, args []string) error {
 	if err := requireFlag(c, *out, "out", "name the file to write"); err != nil {
 		return err
 	}
-	store, err := a.openStore(false)
+	secret, err := readSecret(c, a.getenv, *secretEnv)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	store, err := a.openStore(openWrite)
+	if err != nil {
+		return err
+	}
+	defer closeStore(store, &err)
 	servers, err := store.Servers(a.ctx)
 	if err != nil {
 		return err
@@ -96,14 +106,18 @@ func runEmit(a *app, c *command, args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := emit.AgentGateway(emitInput(*listenPort, plans))
+	result, err := emit.AgentGateway(emitInput(*listenPort, plans, secret))
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(*out, result.YAML, configFileMode); err != nil {
+	mode := configFileMode
+	if secret != "" {
+		mode = secretConfigFileMode
+	}
+	if err := writeFileAtomic(*out, result.YAML, mode); err != nil {
 		return err
 	}
-	return a.reportEmit(*out, plans, result.Skipped)
+	return a.reportEmit(*out, plans, result, *secretEnv)
 }
 
 // planEmit assigns every server its route, processor address and approved
@@ -133,18 +147,20 @@ func planEmit(c *command, servers []catalog.Server, approved []catalog.ApprovedT
 	return plans, nil
 }
 
-func emitInput(listenPort int, plans []emitPlan) emit.Input {
+func emitInput(listenPort int, plans []emitPlan, secret string) emit.Input {
 	in := emit.Input{ListenPort: listenPort}
 	for _, p := range plans {
-		in.Servers = append(in.Servers, emit.Server{Name: p.name, URL: p.url, ProcessorAddr: p.processor, ApprovedTools: p.tools})
+		in.Servers = append(in.Servers, emit.Server{Name: p.name, URL: p.url, ProcessorAddr: p.processor, Secret: secret, ApprovedTools: p.tools})
 	}
 	return in
 }
 
-// reportEmit prints what was written, warns about approved tools the emitter
-// had to leave hidden, and prints the exact serve command for each server.
-func (a *app) reportEmit(out string, plans []emitPlan, skipped []emit.Skipped) error {
-	fmt.Fprintf(a.stdout, "wrote %s\n", textdiff.Escape(out))
+// reportEmit prints what was written and the body hash the header records (so
+// a canary can compare it later), warns about approved tools the emitter had
+// to leave hidden and about a file that carries the secret, and prints the
+// exact serve command for each server.
+func (a *app) reportEmit(out string, plans []emitPlan, result emit.Output, secretEnv string) error {
+	a.stdout.printf("wrote %s\nbody sha256 %s\n", textdiff.Escape(out), result.BodyHash)
 	t := newTable(a.stdout)
 	t.row("SERVER", "ROUTE", "PROCESSOR", "APPROVED")
 	for _, p := range plans {
@@ -153,28 +169,40 @@ func (a *app) reportEmit(out string, plans []emitPlan, skipped []emit.Skipped) e
 	if err := t.flush(); err != nil {
 		return err
 	}
-	for _, s := range skipped {
-		fmt.Fprintf(a.stderr, "warning: %s/%s is approved but left out of the allow rule and stays hidden: %s\n", cell(s.Server), cell(s.Tool), s.Reason)
+	for _, s := range result.Skipped {
+		a.stderr.printf("warning: %s/%s is approved but left out of the allow rule and stays hidden: %s\n", cell(s.Server), cell(s.Tool), cell(s.Reason))
 	}
-	fmt.Fprintln(a.stdout, "run one processor per server:")
+	if secretEnv != "" {
+		a.stderr.printf("warning: %s contains the processor secret from %s in clear and was written with mode %04o; keep it readable by the gateway's user only\n", textdiff.Escape(out), textdiff.Escape(secretEnv), secretConfigFileMode)
+	}
+	a.stdout.printf("run one processor per server:\n")
 	for _, p := range plans {
-		fmt.Fprintf(a.stdout, "  %s\n", textdiff.Escape(a.serveCommand(p)))
+		a.stdout.printf("  %s\n", textdiff.Escape(a.serveCommand(p, secretEnv)))
 	}
-	return nil
+	return a.stdout.broken()
 }
 
 // serveCommand is the command line that starts the processor for one server,
-// with the database path made absolute so it works from any directory.
-func (a *app) serveCommand(p emitPlan) string {
+// with the database path made absolute so it works from any directory. The
+// target is the server name because that is the backend name the emitted
+// config gives the route; the secret is referenced by variable, never by
+// value.
+func (a *app) serveCommand(p emitPlan, secretEnv string) string {
 	db := a.dbPath()
 	if abs, err := filepath.Abs(db); err == nil {
 		db = abs
 	}
-	return fmt.Sprintf("%s --db %s serve --server %s --listen %s", programName, shellWord(db), shellWord(p.name), shellWord(p.processor))
+	cmd := fmt.Sprintf("%s --db %s serve --server %s --target %s --listen %s", programName, shellWord(db), shellWord(p.name), shellWord(p.name), shellWord(p.processor))
+	if secretEnv != "" {
+		cmd += " --secret-env " + shellWord(secretEnv)
+	}
+	return cmd
 }
 
 // writeFileAtomic replaces path with data through a temporary file in the same
 // directory and a rename, so the gateway never reads a half-written config.
+// The mode is set on the temporary file before the rename, so a file that
+// carries a secret is never readable by others for even an instant.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
 	if err != nil {

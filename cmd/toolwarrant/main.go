@@ -21,7 +21,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
@@ -56,7 +55,7 @@ func main() {
 
 // run executes one command line and returns the exit code. It cancels the
 // command on SIGINT or SIGTERM so that long-running commands (serve, crawl
-// --every) shut down gracefully.
+// --every, verify-gateway --every) shut down gracefully.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -64,10 +63,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 }
 
 // runCtx is run with an explicit context, so tests can bound a command that
-// would otherwise wait for a signal.
+// would otherwise wait for a signal. A command whose stdout or stderr broke
+// exits 1 even when its work succeeded: the output is part of the work, and a
+// closed pipe must not look like success.
 func runCtx(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
-	a := &app{ctx: ctx, stdin: stdin, stdout: stdout, stderr: stderr, getenv: getenv}
-	return a.exitCode(a.dispatch(args))
+	a := &app{ctx: ctx, stdin: stdin, stdout: &stream{w: stdout}, stderr: &stream{w: stderr}, getenv: getenv}
+	return a.checkStreams(a.exitCode(a.dispatch(args)))
 }
 
 // app is the state of one invocation. Everything a command needs comes from
@@ -75,8 +76,8 @@ func runCtx(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 type app struct {
 	ctx     context.Context
 	stdin   io.Reader
-	stdout  io.Writer
-	stderr  io.Writer
+	stdout  *stream
+	stderr  *stream
 	getenv  func(string) string
 	globals globals
 }
@@ -110,21 +111,21 @@ func (e *helpError) Error() string { return "help requested" }
 func commands() []*command {
 	return []*command{
 		{name: "init", synopsis: "init", summary: "create the database (idempotent) and print its path", run: runInit},
-		{name: "server", synopsis: "server add|list ...", summary: "register and list upstream MCP servers", run: runSub, sub: serverCommands()},
-		{name: "crawl", synopsis: "crawl SERVER [--every DURATION] [--bearer-env VAR] [--json]", summary: "fetch the upstream's tools and record what changed; never approves", run: runCrawl},
-		{name: "list", synopsis: "list [SERVER] [--json]", summary: "show every tool with its state and digests; DRIFT marks a live digest that differs from the approved one", run: runList},
-		{name: "show", synopsis: "show SERVER TOOL [--json]", summary: "show one tool and all of its versions", run: runShow},
+		{name: "server", synopsis: "server add|list|pause|resume ...", summary: "register, list, pause and resume upstream MCP servers", run: runSub, sub: serverCommands()},
+		{name: "crawl", synopsis: "crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]", summary: "fetch the upstream's tools and record what changed; never approves", run: runCrawl},
+		{name: "list", synopsis: "list [SERVER] [--json]", summary: "show every tool with its state and digests; flags DRIFT, MISSING and UNUSABLE need a person", run: runList},
+		{name: "show", synopsis: "show SERVER TOOL [--json]", summary: "show one tool and all of its versions with their proposers and digest profile", run: runShow},
 		{name: "diff", synopsis: "diff SERVER TOOL [--from HASH] [--to HASH]", summary: "show what changed between two versions, escaped for the terminal", run: runDiff},
 		{name: "approve", synopsis: "approve SERVER TOOL --hash HASH [--accept-suspicious]", summary: "approve the exact digest you reviewed", run: runApprove},
 		{name: "reject", synopsis: "reject SERVER TOOL --hash HASH", summary: "reject a pending version", run: runReject},
 		{name: "disable", synopsis: "disable SERVER TOOL", summary: "switch a tool off", run: runDisable},
 		{name: "enable", synopsis: "enable SERVER TOOL", summary: "bring a disabled tool back for review", run: runEnable},
 		{name: "rollback", synopsis: "rollback SERVER TOOL --to HASH", summary: "re-approve a version that was approved before", run: runRollback},
-		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--allow-non-loopback]", summary: "run the ExtMCP processor that enforces approvals at the gateway", run: runServe},
-		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--processor-base-port N] [--processor NAME=HOST:PORT ...]", summary: "write the agentgateway configuration for every server", run: runEmit},
+		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--target NAME] [--allow-non-loopback] [--secret-env VAR] [--max-evidence-age DURATION]", summary: "run the ExtMCP processor that enforces approvals at the gateway", run: runServe},
+		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR]", summary: "write the agentgateway configuration for every server", run: runEmit},
 		{name: "export", synopsis: "export --dir DIR [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git", run: runExport},
 		{name: "audit", synopsis: "audit verify|list ...", summary: "verify and read the hash-chained audit log", run: runSub, sub: auditCommands()},
-		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR]", summary: "deploy-time self-test: list through the gateway and compare with the catalog", run: runVerifyGateway},
+		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE] [--every DURATION] [--keep-going]", summary: "deploy-time self-test: list through the gateway and compare with the catalog (LEAK, MISMATCH, MISSING, CONFIG-EDITED)", run: runVerifyGateway},
 		{name: "version", synopsis: "version", summary: "print the version and the pinned gateway version", run: runVersion},
 		{name: "help", synopsis: "help [COMMAND ...]", summary: "print usage", run: runHelp},
 	}
@@ -198,7 +199,7 @@ func runHelp(a *app, c *command, args []string) error {
 
 // runVersion prints the build version and the gateway release it is pinned to.
 func runVersion(a *app, _ *command, _ []string) error {
-	fmt.Fprintf(a.stdout, "%s %s\n%s\n", programName, version, gatewayVersion)
+	a.stdout.printf("%s %s\n%s\n", programName, version, gatewayVersion)
 	return nil
 }
 
@@ -209,21 +210,35 @@ func (a *app) exitCode(err error) int {
 	}
 	var help *helpError
 	if errors.As(err, &help) {
-		fmt.Fprint(a.stdout, help.text)
+		a.stdout.print(help.text)
 		return exitOK
 	}
 	var usage *usageError
 	if errors.As(err, &usage) {
-		fmt.Fprintf(a.stderr, "%s: %s\n", programName, usage.msg)
+		a.stderr.printf("%s: %s\n", programName, usage.msg)
 		if usage.cmd != nil {
-			fmt.Fprintf(a.stderr, "usage: %s [global flags] %s\n", programName, usage.cmd.synopsis)
+			a.stderr.printf("usage: %s [global flags] %s\n", programName, usage.cmd.synopsis)
 		} else {
-			fmt.Fprintf(a.stderr, "run \"%s help\" for usage\n", programName)
+			a.stderr.printf("run \"%s help\" for usage\n", programName)
 		}
 		return exitUsage
 	}
-	fmt.Fprintf(a.stderr, "%s: %s\n", programName, describe(err))
+	a.stderr.printf("%s: %s\n", programName, describe(err))
 	return exitFailure
+}
+
+// checkStreams turns a write failure on either stream into a failing exit
+// code. A broken stdout is reported on stderr; a broken stderr can only be
+// reported through the exit code. A command that already failed keeps its
+// more specific code.
+func (a *app) checkStreams(code int) int {
+	if err := a.stdout.broken(); err != nil {
+		a.stderr.printf("%s: writing to stdout failed: %s\n", programName, textdiff.Escape(err.Error()))
+	}
+	if code == exitOK && (a.stdout.broken() != nil || a.stderr.broken() != nil) {
+		return exitFailure
+	}
+	return code
 }
 
 // fullUsage renders the help for everything.
@@ -236,17 +251,15 @@ func fullUsage() string {
 	fs.SetOutput(&sb)
 	fs.PrintDefaults()
 	sb.WriteString("\ncommands:\n")
-	tw := tabwriter.NewWriter(&sb, 0, 0, tabPadding, ' ', 0)
+	var rows []*command
 	for _, c := range commands() {
 		if len(c.sub) == 0 {
-			fmt.Fprintf(tw, "  %s\t%s\n", c.synopsis, c.summary)
+			rows = append(rows, c)
 			continue
 		}
-		for _, s := range c.sub {
-			fmt.Fprintf(tw, "  %s\t%s\n", s.synopsis, s.summary)
-		}
+		rows = append(rows, c.sub...)
 	}
-	_ = tw.Flush()
+	commandRows(&sb, rows)
 	fmt.Fprintf(&sb, "\nexit codes: 0 success, 1 the operation failed, 2 the command line was wrong.\n")
 	fmt.Fprintf(&sb, "run \"%s help COMMAND\" or \"%s COMMAND -h\" for the flags of one command.\n", programName, programName)
 	return sb.String()
@@ -256,12 +269,21 @@ func fullUsage() string {
 func subUsage(c *command) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "usage: %s [global flags] %s\n\n%s\n\nsubcommands:\n", programName, c.synopsis, c.summary)
-	tw := tabwriter.NewWriter(&sb, 0, 0, tabPadding, ' ', 0)
-	for _, s := range c.sub {
-		fmt.Fprintf(tw, "  %s\t%s\n", s.synopsis, s.summary)
-	}
-	_ = tw.Flush()
+	commandRows(&sb, c.sub)
 	return sb.String()
+}
+
+// commandRows appends one aligned line per command. A strings.Builder cannot
+// fail, so the error branch is unreachable in practice; should it ever run,
+// the text says so instead of a command quietly going missing from the help.
+func commandRows(sb *strings.Builder, cmds []*command) {
+	t := newTable(sb)
+	for _, c := range cmds {
+		t.row("  "+c.synopsis, c.summary)
+	}
+	if err := t.flush(); err != nil {
+		fmt.Fprintf(sb, "  (command list unavailable: %v)\n", err)
+	}
 }
 
 // usage renders the help of one command, including the flags it defined.

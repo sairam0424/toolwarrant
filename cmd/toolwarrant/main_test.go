@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +23,12 @@ import (
 const (
 	testTimeout = 30 * time.Second
 	pollEvery   = 10 * time.Millisecond
+	// sessionHeader is the Streamable HTTP session header; a POST without it
+	// opens a new MCP session (it is the initialize request).
+	sessionHeader = "Mcp-Session-Id"
+	// loopEvery is the smallest interval --every accepts, used by every
+	// scheduled-command test.
+	loopEvery = minEvery
 )
 
 var hexDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -148,6 +156,14 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// brokenPipe fails every write, like a pipe whose reader went away.
+type brokenPipe struct{ writes int }
+
+func (b *brokenPipe) Write([]byte) (int, error) {
+	b.writes++
+	return 0, errors.New("broken pipe")
+}
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(testTimeout)
@@ -157,6 +173,17 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(pollEvery)
 	}
+}
+
+// nonEmptyLines splits output into its lines.
+func nonEmptyLines(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func wantContains(t *testing.T, where, s string, subs ...string) {
@@ -178,10 +205,13 @@ func wantNotContains(t *testing.T, where, s string, subs ...string) {
 }
 
 // upstream is a real go-sdk MCP server over Streamable HTTP whose tools a
-// test can change at will, which is how drift is simulated.
+// test can change at will, which is how drift is simulated. It counts the MCP
+// sessions opened against it, so a test can show that a scheduled check
+// really starts a fresh one every time.
 type upstream struct {
-	server *mcp.Server
-	http   *httptest.Server
+	server   *mcp.Server
+	http     *httptest.Server
+	sessions atomic.Int64
 }
 
 func newUpstream(t *testing.T, tools map[string]string) *upstream {
@@ -192,7 +222,12 @@ func newUpstream(t *testing.T, tools map[string]string) *upstream {
 		u.set(name, desc)
 	}
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
-	u.http = httptest.NewServer(handler)
+	u.http = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.Header.Get(sessionHeader) == "" {
+			u.sessions.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(u.http.Close)
 	return u
 }
@@ -212,7 +247,12 @@ func (u *upstream) remove(name string) { u.server.RemoveTools(name) }
 func TestHelpAndVersion(t *testing.T) {
 	c := newCLI(t)
 	out := c.ok("help")
-	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "audit verify", "exit codes", "-allow-self-approval")
+	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "server pause NAME", "server resume NAME",
+		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
+		"serve --server NAME --listen ADDR [--target NAME] [--allow-non-loopback] [--secret-env VAR] [--max-evidence-age DURATION]",
+		"emit --out FILE [--listen-port N] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR]",
+		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE] [--every DURATION] [--keep-going]",
+		"audit verify", "exit codes", "-allow-self-approval")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
 	r := c.run("-h")
@@ -222,8 +262,12 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "-h", r.stdout, "global flags")
 	out = c.ok("approve", "-h")
 	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious")
+	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback")
+	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going")
+	wantContains(t, "help crawl", c.ok("help", "crawl"), "-strict", "-every")
+	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env")
 	out = c.ok("help", "server")
-	wantContains(t, "help server", out, "server add", "server list")
+	wantContains(t, "help server", out, "server add", "server list", "server pause", "server resume")
 	out = c.ok("help", "server", "add")
 	wantContains(t, "help server add", out, "-allow-private", "-owner")
 	out = c.ok("server", "-h")
@@ -234,6 +278,7 @@ func TestHelpAndVersion(t *testing.T) {
 
 func TestUsageErrors(t *testing.T) {
 	c := newCLI(t)
+	c.env["SHORT_SECRET"] = "short"
 	cases := []struct {
 		name string
 		args []string
@@ -246,15 +291,22 @@ func TestUsageErrors(t *testing.T) {
 		{"approve missing tool", []string{"approve", "s1", "--hash", "deadbeefdead"}, "expected 2 argument(s)"},
 		{"server alone", []string{"server"}, "needs a subcommand"},
 		{"server unknown", []string{"server", "frob"}, "unknown server subcommand"},
+		{"server pause without name", []string{"server", "pause"}, "expected 1 argument(s)"},
+		{"server resume as the system actor", []string{"--as", "crawler", "server", "resume", "s1"}, "system actor"},
 		{"init extra", []string{"init", "extra"}, "expected 0 argument(s)"},
 		{"list two", []string{"list", "a", "b"}, "at most one argument"},
-		{"crawl negative every", []string{"crawl", "s1", "--every", "-1s"}, "--every must be"},
+		{"crawl negative every", []string{"crawl", "s1", "--every", "-1s"}, "--every must be at least"},
+		{"crawl every below the minimum", []string{"crawl", "s1", "--every", "10ms"}, "--every must be at least 1s"},
+		{"verify every below the minimum", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--every", "1ms"}, "--every must be at least 1s"},
 		{"audit negative limit", []string{"audit", "list", "--limit", "-1"}, "must not be negative"},
 		{"rollback without to", []string{"rollback", "s1", "echo"}, "--to is required"},
 		{"reject without hash", []string{"reject", "s1", "echo"}, "--hash is required"},
 		{"serve without flags", []string{"serve"}, "--server is required"},
 		{"serve without listen", []string{"serve", "--server", "s1"}, "--listen is required"},
+		{"serve negative evidence age", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--max-evidence-age", "-1s"}, "must not be negative"},
+		{"serve secret unset", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--secret-env", "UNSET_SECRET"}, "UNSET_SECRET is unset"},
 		{"emit without out", []string{"emit"}, "--out is required"},
+		{"emit secret too short", []string{"emit", "--out", "x", "--secret-env", "SHORT_SECRET"}, "16 to 256 printable ASCII"},
 		{"export without dir", []string{"export"}, "--dir is required"},
 		{"verify without url", []string{"verify-gateway", "--server", "s1"}, "--url is required"},
 		{"unknown subcommand flag", []string{"list", "--nope"}, "nope"},
@@ -290,8 +342,10 @@ func TestInitIsIdempotentAndPrivate(t *testing.T) {
 
 func TestCommandsNeedAnExistingDatabase(t *testing.T) {
 	c := &cli{t: t, db: filepath.Join(t.TempDir(), "missing.db"), env: map[string]string{}}
-	r := c.fail(exitFailure, "list")
-	wantContains(t, "stderr", r.stderr, "does not exist", programName+" init")
+	for _, args := range [][]string{{"list"}, {"audit", "verify"}, {"serve", "--server", "s1", "--listen", "127.0.0.1:0"}} {
+		r := c.fail(exitFailure, args...)
+		wantContains(t, "stderr", r.stderr, "does not exist", programName+" init")
+	}
 	if _, err := os.Stat(c.db); !os.IsNotExist(err) {
 		t.Error("a failed command must not create the database")
 	}
@@ -325,14 +379,41 @@ func TestRunUsesASignalContext(t *testing.T) {
 	}
 }
 
+func TestBrokenStreamsExitOne(t *testing.T) {
+	ctx := context.Background()
+	none := func(string) string { return "" }
+	var errb bytes.Buffer
+	code := runCtx(ctx, []string{"version"}, strings.NewReader(""), &brokenPipe{}, &errb, none)
+	if code != exitFailure {
+		t.Fatalf("version with a broken stdout: exit %d, want %d", code, exitFailure)
+	}
+	wantContains(t, "stderr", errb.String(), "writing to stdout failed", "broken pipe")
+
+	// A broken stderr can only be reported through the exit code; the work
+	// itself was done.
+	c := newCLI(t)
+	u := newUpstream(t, nil)
+	var out bytes.Buffer
+	code = runCtx(ctx, []string{"--db", c.db, "server", "add", "s1", u.url(), "--allow-private"}, strings.NewReader(""), &out, &brokenPipe{}, c.getenv)
+	if code != exitFailure {
+		t.Fatalf("server add with a broken stderr: exit %d, want %d", code, exitFailure)
+	}
+	wantContains(t, "stdout", out.String(), "added server s1")
+
+	// A command that already failed keeps its more specific code.
+	if code = runCtx(ctx, []string{"nope"}, strings.NewReader(""), &out, &brokenPipe{}, none); code != exitUsage {
+		t.Errorf("unknown command with a broken stderr: exit %d, want %d", code, exitUsage)
+	}
+}
+
 func TestActorNamesAreValidatedAndLowerCased(t *testing.T) {
 	c := newCLI(t)
 	u := newUpstream(t, nil)
 	r := c.fail(exitUsage, "--as", "ali ce", "server", "add", "s1", u.url())
 	wantContains(t, "stderr", r.stderr, "must match")
-	r = c.fail(exitUsage, "--as", "ali\u200bce", "server", "add", "s1", u.url())
+	r = c.fail(exitUsage, "--as", "ali"+zeroWidth+"ce", "server", "add", "s1", u.url())
 	wantContains(t, "stderr", r.stderr, `\u{200B}`)
-	wantNotContains(t, "stderr", r.stderr, "\u200b")
+	wantNotContains(t, "stderr", r.stderr, zeroWidth)
 	c.ok("--as", "Alice", "server", "add", "s1", u.url())
 	c.env[envActor] = "BOB"
 	c.ok("server", "add", "s2", u.url())
