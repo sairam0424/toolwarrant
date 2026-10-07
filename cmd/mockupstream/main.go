@@ -112,7 +112,7 @@ func main() {
 		}
 		register(d)
 		log.Printf("[mockupstream] description of %q changed", name)
-		fmt.Fprintf(w, "ok\n")
+		_, _ = fmt.Fprintf(w, "ok\n") // best effort: the admin reply carries no state
 	})
 
 	log.Printf("[mockupstream] listening on http://%s/mcp", *addr)

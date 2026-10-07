@@ -33,7 +33,7 @@ func main() {
 		fmt.Println("CONNECT ERROR:", err)
 		os.Exit(2)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	if *all {
 		var names []string
