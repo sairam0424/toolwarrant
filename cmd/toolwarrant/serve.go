@@ -29,13 +29,16 @@ const (
 // runServe runs the ExtMCP processor for one server until SIGINT or SIGTERM.
 // The catalog is opened read-only: the processor reads policy and must never
 // be able to change it. Only loopback and unix-socket listeners are accepted
-// by default, for the same reason the socket is owner-only.
+// by default, for the same reason the socket is owner-only; a TCP listener
+// other hosts can reach needs --allow-non-loopback and either the shared
+// secret or the operator's explicit --insecure-no-secret.
 func runServe(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	server := fs.String("server", "", "catalog server this processor guards (required)")
-	listen := fs.String("listen", "", "host:port or unix:/path to listen on (required; loopback unless --allow-non-loopback)")
+	listen := fs.String("listen", "", "host:port or unix:/path to listen on (required; a TCP address must be loopback unless --allow-non-loopback)")
 	target := fs.String("target", "", "backend name the gateway reports in service_names for this route (default: the server name, which is what emit writes)")
-	allowNonLoopback := fs.Bool("allow-non-loopback", false, "listen on a non-loopback address; only with --secret-env, on a network nobody but the gateway can reach")
+	allowNonLoopback := fs.Bool("allow-non-loopback", false, "listen on a TCP address other hosts can reach; refused without --secret-env unless --insecure-no-secret is passed as well, and only for a network nobody but the gateway can reach")
+	insecureNoSecret := fs.Bool("insecure-no-secret", false, "with --allow-non-loopback, listen on a TCP address other hosts can reach without a shared secret: anyone who reaches the port then decides what the gateway serves; a --secret-env always wins over this flag")
 	secretEnv := fs.String("secret-env", "", "environment variable holding the shared secret the gateway sends with every hook (the one given to emit --secret-env); never a flag value")
 	maxEvidenceAge := fs.Duration("max-evidence-age", 0, "how long a digest seen in a tools/list counts as evidence for a tools/call (0 means it never expires)")
 	pos, err := a.parseArgs(c, fs, args)
@@ -54,7 +57,8 @@ func runServe(a *app, c *command, args []string) (err error) {
 	if *maxEvidenceAge < 0 {
 		return &usageError{msg: "--max-evidence-age must not be negative", cmd: c}
 	}
-	if err := checkListenAddr(c, *listen, *allowNonLoopback); err != nil {
+	policy := listenPolicy{allowNonLoopback: *allowNonLoopback, hasSecret: *secretEnv != "", insecureNoSecret: *insecureNoSecret}
+	if err := checkListenAddr(c, *listen, policy); err != nil {
 		return err
 	}
 	secret, err := readSecret(c, a.getenv, *secretEnv)
@@ -106,9 +110,23 @@ func secretNote(secret string) string {
 	return " (hooks must carry the shared secret)"
 }
 
+// listenPolicy is what the operator said about a TCP listener that other
+// hosts can reach: whether it is allowed at all, whether the hooks on it will
+// carry the shared secret, and whether running it without one was asked for
+// in so many words.
+type listenPolicy struct {
+	allowNonLoopback bool
+	hasSecret        bool
+	insecureNoSecret bool
+}
+
 // checkListenAddr refuses a TCP address that is not loopback unless the
-// operator said so explicitly.
-func checkListenAddr(c *command, addr string, allowNonLoopback bool) error {
+// operator said so explicitly, and refuses it even then unless the hooks will
+// be authenticated or --insecure-no-secret records that the operator accepts
+// a processor that anyone who reaches it can steer. A unix socket or a
+// loopback address passes whatever the policy says: the flags are
+// permissions, not requests, and change nothing where nothing is exposed.
+func checkListenAddr(c *command, addr string, p listenPolicy) error {
 	if path, ok := strings.CutPrefix(addr, unixPrefix); ok {
 		if path == "" {
 			return &usageError{msg: "--listen unix: needs a socket path", cmd: c}
@@ -119,10 +137,15 @@ func checkListenAddr(c *command, addr string, allowNonLoopback bool) error {
 	if err != nil {
 		return &usageError{msg: fmt.Sprintf("--listen %s is neither host:port nor unix:/path", textdiff.Escape(addr)), cmd: c}
 	}
-	if allowNonLoopback || isLoopbackHost(host) {
+	switch {
+	case isLoopbackHost(host):
 		return nil
+	case !p.allowNonLoopback:
+		return &usageError{msg: fmt.Sprintf("refusing to listen on %s: it is not a loopback address and the ExtMCP protocol has no authentication; pass --allow-non-loopback together with --secret-env, only on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
+	case !p.hasSecret && !p.insecureNoSecret:
+		return &usageError{msg: fmt.Sprintf("refusing to listen on %s without a shared secret: anyone who reaches the processor would decide what the gateway serves; pass --secret-env, or --insecure-no-secret to run unauthenticated anyway on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
 	}
-	return &usageError{msg: fmt.Sprintf("refusing to listen on %s: it is not a loopback address and the ExtMCP protocol has no authentication; pass --allow-non-loopback (with --secret-env) only on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
+	return nil
 }
 
 // isLoopbackHost accepts "localhost" and loopback IP literals. A host name

@@ -130,6 +130,72 @@ func TestEmitWithNoServersFailsAndSkippedToolsAreWarnedAbout(t *testing.T) {
 	wantContains(t, "stdout", r.stdout, "s1")
 }
 
+// The serving port is bound to loopback unless asked otherwise (seam finding
+// F2). A wildcard needs --allow-all-interfaces and is refused without it as a
+// usage error that names the flag; any address other hosts can reach is
+// accepted with the emitter's warning on stderr; an address the emitter cannot
+// write fails the way every other invalid input does; and no refusal touches
+// the file.
+func TestEmitBindsLoopbackUnlessAsked(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	out := filepath.Join(t.TempDir(), "gateway.yaml")
+
+	r := c.run("emit", "--out", out)
+	if r.code != exitOK {
+		t.Fatalf("emit: exit %d: %s", r.code, r.stderr)
+	}
+	wantContains(t, "yaml", readFile(t, out), `bindAddress: "`+emit.DefaultBindAddress+`"`)
+	wantNotContains(t, "stderr", r.stderr, "warning")
+	r = c.run("emit", "--out", out, "--bind-address", "0:0:0:0:0:0:0:1")
+	if r.code != exitOK {
+		t.Fatalf("emit --bind-address: exit %d: %s", r.code, r.stderr)
+	}
+	loopback := readFile(t, out)
+	wantContains(t, "yaml", loopback, `bindAddress: "::1"`)
+	wantNotContains(t, "stderr", r.stderr, "warning")
+
+	r = c.fail(exitUsage, "emit", "--out", out, "--bind-address", "0.0.0.0")
+	wantContains(t, "stderr", r.stderr, "refusing to bind 0.0.0.0", "every interface", "--allow-all-interfaces")
+	c.fail(exitUsage, "emit", "--out", out, "--bind-address", "::")
+	if readFile(t, out) != loopback {
+		t.Error("a refused wildcard must not touch the file")
+	}
+
+	r = c.run("emit", "--out", out, "--bind-address", "0.0.0.0", "--allow-all-interfaces", "--listen-port", "8080")
+	if r.code != exitOK {
+		t.Fatalf("emit --allow-all-interfaces: exit %d: %s", r.code, r.stderr)
+	}
+	yaml := readFile(t, out)
+	wantContains(t, "yaml", yaml, `bindAddress: "0.0.0.0"`, "port: 8080")
+	if _, ok := emit.Verify([]byte(yaml)); !ok {
+		t.Error("the written file does not verify")
+	}
+	wantContains(t, "stderr", r.stderr, "warning: gateway listens on 0.0.0.0:8080, every interface of this host", "seam finding F2", "firewall the port or bind a loopback address")
+
+	// A specific address other hosts can reach needs no permission but gets
+	// the warning, and the permission changes nothing for it.
+	r = c.run("emit", "--out", out, "--bind-address", "203.0.113.7")
+	if r.code != exitOK {
+		t.Fatalf("emit --bind-address 203.0.113.7: exit %d: %s", r.code, r.stderr)
+	}
+	specific := readFile(t, out)
+	wantContains(t, "yaml", specific, `bindAddress: "203.0.113.7"`)
+	wantContains(t, "stderr", r.stderr, "warning: gateway listens on 203.0.113.7:3000, an address other hosts can reach")
+	c.ok("emit", "--out", out, "--bind-address", "203.0.113.7", "--allow-all-interfaces")
+	if readFile(t, out) != specific {
+		t.Error("--allow-all-interfaces must change nothing for a specific address")
+	}
+
+	for _, bad := range []string{"localhost", "127.0.0.1:3000", "fe80::1", "::ffff:127.0.0.1", "nonsense"} {
+		r = c.fail(exitFailure, "emit", "--out", out, "--bind-address", bad)
+		wantContains(t, "stderr for "+bad, r.stderr, "bind address", "emit again")
+	}
+	if readFile(t, out) != specific {
+		t.Error("a bind address the emitter refuses must not touch the file")
+	}
+}
+
 func TestExportWritesFilesAndCommits(t *testing.T) {
 	c, _ := fixture(t)
 	v1 := c.tool("s1", "echo").Pending

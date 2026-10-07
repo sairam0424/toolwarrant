@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,12 +66,17 @@ type emitPlan struct {
 
 // runEmit writes the agentgateway configuration: one route per server, each
 // with an explicit allow rule for its approved tools and the processor that
-// enforces strict mode. With --secret-env every processor entry carries the
-// shared secret and the file is written owner-only.
+// enforces strict mode. The serving port is bound to loopback unless
+// --bind-address says otherwise, and a wildcard address needs
+// --allow-all-interfaces on top (seam finding F2). With --secret-env every
+// processor entry carries the shared secret and the file is written
+// owner-only.
 func runEmit(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	out := fs.String("out", "", "file to write the gateway configuration to (required)")
 	listenPort := fs.Int("listen-port", defaultListenPort, "port the gateway binds")
+	bindAddress := fs.String("bind-address", emit.DefaultBindAddress, "IPv4 or IPv6 literal the gateway binds --listen-port on; an address other hosts can reach exposes every route to the network with the processor as its only guard, and a wildcard (0.0.0.0 or ::) also needs --allow-all-interfaces")
+	allowAllInterfaces := fs.Bool("allow-all-interfaces", false, "permit a wildcard --bind-address; a permission, not a request: with any other address it changes nothing")
 	basePort := fs.Int("processor-base-port", defaultProcessorBasePort, "the i-th server in name order gets processor "+processorHost+":(base+i)")
 	overrides := processorOverrides{}
 	fs.Var(overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable)")
@@ -83,6 +89,9 @@ func runEmit(a *app, c *command, args []string) (err error) {
 		return err
 	}
 	if err := requireFlag(c, *out, "out", "name the file to write"); err != nil {
+		return err
+	}
+	if err := checkBindAddress(c, *bindAddress, *allowAllInterfaces); err != nil {
 		return err
 	}
 	secret, err := readSecret(c, a.getenv, *secretEnv)
@@ -106,7 +115,8 @@ func runEmit(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	result, err := emit.AgentGateway(emitInput(*listenPort, plans, secret))
+	in := emit.Input{ListenPort: *listenPort, BindAddress: *bindAddress, AllowAllInterfaces: *allowAllInterfaces, Servers: emitServers(plans, secret)}
+	result, err := emit.AgentGateway(in)
 	if err != nil {
 		return err
 	}
@@ -118,6 +128,21 @@ func runEmit(a *app, c *command, args []string) (err error) {
 		return err
 	}
 	return a.reportEmit(*out, plans, result, *secretEnv)
+}
+
+// checkBindAddress refuses a wildcard --bind-address unless the operator said
+// so explicitly, as a usage error that names the flag to pass: a wildcard makes
+// every route reachable from the network with the processor as its only guard
+// (seam finding F2), and the fix is a flag. The parser and the predicate are
+// the emitter's own, so an address that passes here as not a wildcard is not a
+// wildcard to the emitter either; everything else about the address (zones,
+// mapped, link-local, multicast) is the emitter's rule and is reported by it.
+func checkBindAddress(c *command, addr string, allowAllInterfaces bool) error {
+	ip, err := netip.ParseAddr(addr)
+	if err != nil || !ip.IsUnspecified() || allowAllInterfaces {
+		return nil
+	}
+	return &usageError{msg: fmt.Sprintf("refusing to bind %s: the gateway would listen on every interface of this host and the toolwarrant processor would be the only guard of every route (seam finding F2); pass --allow-all-interfaces only behind a firewall that admits the gateway's clients alone", textdiff.Escape(addr)), cmd: c}
 }
 
 // planEmit assigns every server its route, processor address and approved
@@ -147,18 +172,22 @@ func planEmit(c *command, servers []catalog.Server, approved []catalog.ApprovedT
 	return plans, nil
 }
 
-func emitInput(listenPort int, plans []emitPlan, secret string) emit.Input {
-	in := emit.Input{ListenPort: listenPort}
+// emitServers is the emitter's view of the plans: one Server per route, every
+// one carrying the same secret.
+func emitServers(plans []emitPlan, secret string) []emit.Server {
+	servers := make([]emit.Server, 0, len(plans))
 	for _, p := range plans {
-		in.Servers = append(in.Servers, emit.Server{Name: p.name, URL: p.url, ProcessorAddr: p.processor, Secret: secret, ApprovedTools: p.tools})
+		servers = append(servers, emit.Server{Name: p.name, URL: p.url, ProcessorAddr: p.processor, Secret: secret, ApprovedTools: p.tools})
 	}
-	return in
+	return servers
 }
 
 // reportEmit prints what was written and the body hash the header records (so
-// a canary can compare it later), warns about approved tools the emitter had
-// to leave hidden and about a file that carries the secret, and prints the
-// exact serve command for each server.
+// a canary can compare it later), warns when the gateway's serving socket is
+// reachable from other hosts, about approved tools the emitter had to leave
+// hidden and about a file that carries the secret, and prints the exact serve
+// command for each server. The bind warning is the emitter's own text: it
+// comes from a validated address, not from the catalog.
 func (a *app) reportEmit(out string, plans []emitPlan, result emit.Output, secretEnv string) error {
 	a.stdout.printf("wrote %s\nbody sha256 %s\n", textdiff.Escape(out), result.BodyHash)
 	t := newTable(a.stdout)
@@ -168,6 +197,9 @@ func (a *app) reportEmit(out string, plans []emitPlan, result emit.Output, secre
 	}
 	if err := t.flush(); err != nil {
 		return err
+	}
+	if result.Warning != "" {
+		a.stderr.printf("warning: %s\n", result.Warning)
 	}
 	for _, s := range result.Skipped {
 		a.stderr.printf("warning: %s/%s is approved but left out of the allow rule and stays hidden: %s\n", cell(s.Server), cell(s.Tool), cell(s.Reason))

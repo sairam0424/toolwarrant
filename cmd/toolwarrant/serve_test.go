@@ -128,9 +128,16 @@ func dial(t *testing.T, addr string) (api.ExtMcpClient, context.Context) {
 func TestServeRefusesNonLoopbackAndBadAddresses(t *testing.T) {
 	c, _ := fixture(t)
 	r := c.fail(exitUsage, "serve", "--server", "s1", "--listen", "0.0.0.0:0")
-	wantContains(t, "stderr", r.stderr, "not a loopback address", "--allow-non-loopback")
+	wantContains(t, "stderr", r.stderr, "not a loopback address", "--allow-non-loopback", "--secret-env")
 	c.fail(exitUsage, "serve", "--server", "s1", "--listen", ":0")
 	c.fail(exitUsage, "serve", "--server", "s1", "--listen", "192.168.1.10:9001")
+	// The permission alone is refused: without a shared secret anyone who
+	// reaches the port decides what the gateway serves, so the operator must
+	// name the secret or say in so many words that there is none.
+	r = c.fail(exitUsage, "serve", "--server", "s1", "--listen", "192.168.1.10:9001", "--allow-non-loopback")
+	wantContains(t, "stderr", r.stderr, "refusing to listen on 192.168.1.10:9001 without a shared secret", "--secret-env", "--insecure-no-secret")
+	r = c.fail(exitUsage, "serve", "--server", "s1", "--listen", "0.0.0.0:0", "--allow-non-loopback", "--secret-env", "UNSET_SECRET")
+	wantContains(t, "stderr", r.stderr, "UNSET_SECRET is unset")
 	c.fail(exitUsage, "serve", "--server", "s1", "--listen", "nonsense")
 	c.fail(exitUsage, "serve", "--server", "s1", "--listen", "unix:")
 	c.fail(exitUsage, "serve", "--server", "s1", "--listen", "127.0.0.1:0", "extra")
@@ -138,6 +145,77 @@ func TestServeRefusesNonLoopbackAndBadAddresses(t *testing.T) {
 	wantContains(t, "stderr", r.stderr, "not found")
 	r = c.fail(exitFailure, "serve", "--server", "s1", "--listen", "unix:"+filepath.Join(t.TempDir(), "missing", "dir", "p.sock"))
 	wantContains(t, "stderr", r.stderr, "unix socket")
+}
+
+// The listen policy without a socket. The flags are permissions, not
+// requests: a unix socket or a loopback address passes whatever they say, and
+// an address other hosts can reach is refused unless --allow-non-loopback is
+// given and either the hooks will carry the secret or --insecure-no-secret
+// asks for an unauthenticated processor in so many words.
+func TestCheckListenAddrPolicy(t *testing.T) {
+	c := &command{name: "serve"}
+	allow := listenPolicy{allowNonLoopback: true}
+	withSecret := listenPolicy{allowNonLoopback: true, hasSecret: true}
+	insecure := listenPolicy{allowNonLoopback: true, insecureNoSecret: true}
+	noPermission := listenPolicy{hasSecret: true, insecureNoSecret: true}
+	cases := []struct {
+		addr   string
+		policy listenPolicy
+		want   string // part of the refusal; "" when the address is accepted
+	}{
+		{"unix:/tmp/p.sock", listenPolicy{}, ""},
+		{"unix:/tmp/p.sock", insecure, ""},
+		{"unix:", withSecret, "needs a socket path"},
+		{"127.0.0.1:9001", listenPolicy{}, ""},
+		{"[::1]:9001", insecure, ""},
+		{"localhost:9001", withSecret, ""},
+		{"10.0.0.7:9001", listenPolicy{}, "not a loopback address"},
+		{"10.0.0.7:9001", noPermission, "not a loopback address"},
+		{"10.0.0.7:9001", allow, "without a shared secret"},
+		{"[2001:db8::7]:9001", allow, "without a shared secret"},
+		{"0.0.0.0:9001", allow, "without a shared secret"},
+		{"10.0.0.7:9001", withSecret, ""},
+		{"10.0.0.7:9001", insecure, ""},
+		{":9001", withSecret, ""},
+		{"nonsense", insecure, "neither host:port nor unix:/path"},
+	}
+	for _, tc := range cases {
+		err := checkListenAddr(c, tc.addr, tc.policy)
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s with %+v: refused: %v", tc.addr, tc.policy, err)
+			}
+			continue
+		}
+		var usage *usageError
+		if err == nil || !errors.As(err, &usage) || usage.cmd != c || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s with %+v: %v, want a serve usage error mentioning %q", tc.addr, tc.policy, err, tc.want)
+		}
+	}
+}
+
+// On a loopback address the two permissions change nothing, so both flags
+// parse, the processor starts, and the listening line still says whether
+// hooks are authenticated.
+func TestServeAcceptsTheExposureFlagsOnLoopback(t *testing.T) {
+	c, _ := fixture(t)
+	out, _, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0", "--allow-non-loopback", "--insecure-no-secret")
+	if addr := waitListening(t, out); !strings.HasPrefix(addr, "127.0.0.1:") {
+		t.Fatalf("listening on %q, want a loopback address", addr)
+	}
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s", code, out.String())
+	}
+	wantContains(t, "stdout", out.String(), "hooks are not authenticated")
+
+	c.env[secretVar] = plant("secret")
+	out, errb, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0", "--allow-non-loopback", "--secret-env", secretVar)
+	waitListening(t, out)
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s", code, out.String())
+	}
+	wantContains(t, "stdout", out.String(), "hooks must carry the shared secret")
+	wantNotContains(t, "output", out.String()+errb.String(), canary)
 }
 
 func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {

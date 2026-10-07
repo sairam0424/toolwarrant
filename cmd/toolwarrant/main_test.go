@@ -249,8 +249,8 @@ func TestHelpAndVersion(t *testing.T) {
 	out := c.ok("help")
 	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "server pause NAME", "server resume NAME",
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
-		"serve --server NAME --listen ADDR [--target NAME] [--allow-non-loopback] [--secret-env VAR] [--max-evidence-age DURATION]",
-		"emit --out FILE [--listen-port N] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR]",
+		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
+		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR]",
 		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE] [--every DURATION] [--keep-going]",
 		"audit verify", "exit codes", "-allow-self-approval")
 	out = c.ok("version")
@@ -262,10 +262,10 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "-h", r.stdout, "global flags")
 	out = c.ok("approve", "-h")
 	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious")
-	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback")
+	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
 	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going")
 	wantContains(t, "help crawl", c.ok("help", "crawl"), "-strict", "-every")
-	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env")
+	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env", "-bind-address", `(default "127.0.0.1")`, "-allow-all-interfaces", "a permission, not a request")
 	out = c.ok("help", "server")
 	wantContains(t, "help server", out, "server add", "server list", "server pause", "server resume")
 	out = c.ok("help", "server", "add")
@@ -305,8 +305,10 @@ func TestUsageErrors(t *testing.T) {
 		{"serve without listen", []string{"serve", "--server", "s1"}, "--listen is required"},
 		{"serve negative evidence age", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--max-evidence-age", "-1s"}, "must not be negative"},
 		{"serve secret unset", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--secret-env", "UNSET_SECRET"}, "UNSET_SECRET is unset"},
+		{"serve non-loopback without a secret", []string{"serve", "--server", "s1", "--listen", "0.0.0.0:0", "--allow-non-loopback"}, "without a shared secret"},
 		{"emit without out", []string{"emit"}, "--out is required"},
 		{"emit secret too short", []string{"emit", "--out", "x", "--secret-env", "SHORT_SECRET"}, "16 to 256 printable ASCII"},
+		{"emit wildcard bind without permission", []string{"emit", "--out", "x", "--bind-address", "0.0.0.0"}, "--allow-all-interfaces"},
 		{"export without dir", []string{"export"}, "--dir is required"},
 		{"verify without url", []string{"verify-gateway", "--server", "s1"}, "--url is required"},
 		{"unknown subcommand flag", []string{"list", "--nope"}, "nope"},
