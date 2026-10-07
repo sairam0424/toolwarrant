@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -53,42 +54,54 @@ func shown(s string) string {
 	return fmt.Sprintf("%q", s)
 }
 
+// validated is the checked input: the servers sorted by name and the address
+// the serving gateway binds, in canonical form.
+type validated struct {
+	servers []Server
+	bind    netip.Addr
+}
+
 // validate checks the whole input and returns a copy of the servers sorted by
-// name. The caller's slice is never modified. Nothing is emitted for input
-// that fails any check, because a half-written gateway config is worse than
-// none: it could leave a route without an authorization rule.
+// name plus the bind address. The caller's slice is never modified. Nothing is
+// emitted for input that fails any check, because a half-written gateway
+// config is worse than none: it could leave a route without an authorization
+// rule.
 //
 // A processor address may appear once: the processor serves exactly one
 // target and denies hooks for any other, so two servers on one address would
 // leave the second one with every tool denied and nothing in the config to
 // say why. The comparison is textual; two spellings of one listener are the
 // operator's problem to avoid.
-func validate(in Input) ([]Server, error) {
+func validate(in Input) (validated, error) {
 	if in.ListenPort < minPort || in.ListenPort > maxPort {
-		return nil, invalid("listen port %d is outside %d-%d", in.ListenPort, minPort, maxPort)
+		return validated{}, invalid("listen port %d is outside %d-%d", in.ListenPort, minPort, maxPort)
+	}
+	bind, err := validateBindAddress(in)
+	if err != nil {
+		return validated{}, err
 	}
 	if len(in.Servers) == 0 {
-		return nil, invalid("no servers: a gateway with no routes would serve nothing")
+		return validated{}, invalid("no servers: a gateway with no routes would serve nothing")
 	}
 	names := make(map[string]struct{}, len(in.Servers))
 	processors := make(map[string]string, len(in.Servers))
 	out := make([]Server, 0, len(in.Servers))
 	for _, s := range in.Servers {
 		if err := validateServer(s); err != nil {
-			return nil, err
+			return validated{}, err
 		}
 		if _, dup := names[s.Name]; dup {
-			return nil, invalid("duplicate server name %s", shown(s.Name))
+			return validated{}, invalid("duplicate server name %s", shown(s.Name))
 		}
 		if other, dup := processors[s.ProcessorAddr]; dup {
-			return nil, invalid("duplicate processor address %s: used by servers %s and %s", shown(s.ProcessorAddr), other, s.Name)
+			return validated{}, invalid("duplicate processor address %s: used by servers %s and %s", shown(s.ProcessorAddr), other, s.Name)
 		}
 		names[s.Name] = struct{}{}
 		processors[s.ProcessorAddr] = s.Name
 		out = append(out, s)
 	}
 	sortServers(out)
-	return out, nil
+	return validated{servers: out, bind: bind}, nil
 }
 
 func validateServer(s Server) error {

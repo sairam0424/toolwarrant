@@ -25,14 +25,17 @@ const (
 	// header plus the hash line.
 	headerLines = 4
 	// secretLinePrefix is the indented metadata line the emitter writes.
-	secretLinePrefix = "              " + SecretMetadataKey + ": "
+	secretLinePrefix = "          " + SecretMetadataKey + ": "
+	// wildcardWarning is the exact Warning for the all_interfaces golden case.
+	wildcardWarning = "gateway listens on 0.0.0.0:3000, every interface of this host: the routes are reachable from the network and the toolwarrant processor is their only guard (seam finding F2); firewall the port or bind a loopback address"
 )
 
-// goldenCase is one named input with its expected skipped tools.
+// goldenCase is one named input with its expected skipped tools and warning.
 type goldenCase struct {
 	name    string
 	input   Input
 	skipped []Skipped
+	warning string
 }
 
 // invalidReason builds the Reason the emitter reports for a name the shared
@@ -119,6 +122,21 @@ func goldenCases() []goldenCase {
 				Secret: fixtureMetadataValue, ApprovedTools: []string{"read_secret"},
 			}}},
 		},
+		{
+			name: "loopback_v6",
+			input: Input{ListenPort: testListenPort, BindAddress: "::1", Servers: []Server{{
+				Name: "github", URL: testUpstreamURL, ProcessorAddr: testProcessorAddr,
+				ApprovedTools: []string{"get_file"},
+			}}},
+		},
+		{
+			name: "all_interfaces",
+			input: Input{ListenPort: testListenPort, BindAddress: "0.0.0.0", AllowAllInterfaces: true, Servers: []Server{{
+				Name: "github", URL: testUpstreamURL, ProcessorAddr: testProcessorAddr,
+				ApprovedTools: []string{"get_file"},
+			}}},
+			warning: wildcardWarning,
+		},
 	}
 }
 
@@ -131,6 +149,9 @@ func TestGolden(t *testing.T) {
 			}
 			if !reflect.DeepEqual(out.Skipped, tc.skipped) {
 				t.Errorf("Skipped mismatch\n got: %#v\nwant: %#v", out.Skipped, tc.skipped)
+			}
+			if out.Warning != tc.warning {
+				t.Errorf("Warning = %q, want %q", out.Warning, tc.warning)
 			}
 			if got, ok := Verify(out.YAML); !ok || got != out.BodyHash {
 				t.Errorf("fresh output does not verify: ok=%v hash=%q BodyHash=%q", ok, got, out.BodyHash)
@@ -199,12 +220,55 @@ func TestConfigPinsAdminListenersToLoopback(t *testing.T) {
 		"  adminAddr: \"127.0.0.1:15000\"\n" +
 		"  statsAddr: \"127.0.0.1:15020\"\n" +
 		"  readinessAddr: \"127.0.0.1:15021\"\n" +
-		"binds:\n"
+		"gateways:\n"
 	if !strings.HasPrefix(body, want) {
 		t.Errorf("body does not start with the loopback config block:\n%s", body)
 	}
 	if strings.Count(string(out.YAML), "Addr: ") != 3 {
 		t.Errorf("want exactly three listener addresses:\n%s", out.YAML)
+	}
+}
+
+// TestGatewayBlockDeclaresLoopbackBind pins the gateways block: one gateway,
+// the listen port and the loopback bind address, followed by the routes, each
+// attached to that gateway by name.
+func TestGatewayBlockDeclaresLoopbackBind(t *testing.T) {
+	out, err := AgentGateway(goldenCases()[0].input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yaml := string(out.YAML)
+	want := "gateways:\n" +
+		"  toolwarrant:\n" +
+		"    port: 3000\n" +
+		"    bindAddress: \"127.0.0.1\"\n" +
+		"routes:\n" +
+		"- name: \"github\"\n" +
+		"  gateways: \"toolwarrant\"\n" +
+		"  matches:\n"
+	if !strings.Contains(yaml, want) {
+		t.Errorf("gateway block or first route not as expected:\n%s", yaml)
+	}
+	if strings.Count(yaml, "bindAddress: ") != 1 || strings.Count(yaml, "gateways:\n") != 1 || strings.Count(yaml, "routes:\n") != 1 {
+		t.Errorf("want exactly one gateways block, one bind address and one routes list:\n%s", yaml)
+	}
+}
+
+// TestEveryRouteAttachesToTheGateway: one attachment line per server, and
+// nothing of the deprecated binds form left over.
+func TestEveryRouteAttachesToTheGateway(t *testing.T) {
+	for _, tc := range goldenCases() {
+		out, err := AgentGateway(tc.input)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		yaml := string(out.YAML)
+		if got := strings.Count(yaml, "\n  gateways: \"toolwarrant\"\n"); got != len(tc.input.Servers) {
+			t.Errorf("%s: %d routes attached, want %d:\n%s", tc.name, got, len(tc.input.Servers), yaml)
+		}
+		if strings.Contains(yaml, "binds:") || strings.Contains(yaml, "listeners:") {
+			t.Errorf("%s: output still carries the binds form:\n%s", tc.name, yaml)
+		}
 	}
 }
 
@@ -233,7 +297,7 @@ func TestSecretWrittenAsCELStringLiteral(t *testing.T) {
 	if err != nil || rest != "" || secret != fixtureMetadataValue {
 		t.Errorf("CEL literal decodes to %q (rest %q, err %v), want %q", secret, rest, err, fixtureMetadataValue)
 	}
-	if !strings.Contains(string(out.YAML), "            metadata:\n"+wantLine+"\n            methods:\n") {
+	if !strings.Contains(string(out.YAML), "        metadata:\n"+wantLine+"\n        methods:\n") {
 		t.Errorf("metadata block is not under the processor entry:\n%s", out.YAML)
 	}
 }
@@ -270,7 +334,7 @@ func TestDeterministic(t *testing.T) {
 		if errA != nil || errB != nil {
 			t.Fatalf("%s: errors %v %v", tc.name, errA, errB)
 		}
-		if !bytes.Equal(a.YAML, b.YAML) || a.BodyHash != b.BodyHash || !reflect.DeepEqual(a.Skipped, b.Skipped) {
+		if !bytes.Equal(a.YAML, b.YAML) || a.BodyHash != b.BodyHash || !reflect.DeepEqual(a.Skipped, b.Skipped) || a.Warning != b.Warning {
 			t.Errorf("%s: two calls differ", tc.name)
 		}
 	}
@@ -301,11 +365,11 @@ func TestInputOrderDoesNotMatter(t *testing.T) {
 }
 
 func TestInputNotMutated(t *testing.T) {
-	in := Input{ListenPort: testListenPort, Servers: []Server{
+	in := Input{ListenPort: testListenPort, BindAddress: "0:0:0:0:0:0:0:1", Servers: []Server{
 		{Name: "b", URL: testUpstreamURL, ProcessorAddr: testProcessorAddr, Secret: fixtureMetadataValue, ApprovedTools: []string{"z", "a", "a"}},
 		{Name: "a", URL: testUpstreamURL, ProcessorAddr: "127.0.0.1:9002", ApprovedTools: []string{"y", "x"}},
 	}}
-	before := Input{ListenPort: in.ListenPort, Servers: []Server{
+	before := Input{ListenPort: in.ListenPort, BindAddress: "0:0:0:0:0:0:0:1", Servers: []Server{
 		{Name: "b", URL: testUpstreamURL, ProcessorAddr: testProcessorAddr, Secret: fixtureMetadataValue, ApprovedTools: []string{"z", "a", "a"}},
 		{Name: "a", URL: testUpstreamURL, ProcessorAddr: "127.0.0.1:9002", ApprovedTools: []string{"y", "x"}},
 	}}

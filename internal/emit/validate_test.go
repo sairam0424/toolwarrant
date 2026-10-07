@@ -202,7 +202,7 @@ func requireInvalid(t *testing.T, in Input) {
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("error does not wrap ErrInvalidInput: %v", err)
 	}
-	if out.YAML != nil || out.BodyHash != "" {
-		t.Errorf("output must be empty on error")
+	if out.YAML != nil || out.BodyHash != "" || out.Skipped != nil || out.Warning != "" {
+		t.Errorf("output must be empty on error, got %#v", out)
 	}
 }

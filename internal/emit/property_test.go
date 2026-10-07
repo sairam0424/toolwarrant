@@ -13,9 +13,13 @@ import (
 	"pgregory.net/rapid"
 )
 
+// allowLinePrefix and routeLinePrefix are the indented line starts of the
+// gateways form: routes are a top-level list, so a route starts at column 0
+// and its allow rule six spaces in. The backend target's "- name:" line is
+// indented, so routeLinePrefix cannot match it.
 const (
-	allowLinePrefix = "          - allow: "
-	routeLinePrefix = "    - name: "
+	allowLinePrefix = "      - allow: "
+	routeLinePrefix = "- name: "
 	maxGenServers   = 5
 	maxGenTools     = 12
 )

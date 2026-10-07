@@ -35,7 +35,8 @@ func gatewayBinary(t *testing.T) string {
 
 // validateWithGateway runs `agentgateway -f file --validate-only` on a copy of
 // yaml under a temp dir. It never starts the gateway as a server, so it proves
-// syntax and schema only; see testdata/README.md for what it cannot prove.
+// syntax, schema and reference resolution only; see testdata/README.md for
+// what it cannot prove.
 func validateWithGateway(t *testing.T, binary string, yaml []byte) (string, error) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -120,6 +121,66 @@ func TestGatewayParsesListenerAddresses(t *testing.T) {
 	for _, bad := range []string{`"nonsense"`, `"127.0.0.1:99999"`, `"http://127.0.0.1:15020"`} {
 		broken := mutate(t, out.YAML, `statsAddr: "127.0.0.1:15020"`, "statsAddr: "+bad)
 		requireRejected(t, binary, broken, "statsAddr "+bad)
+	}
+}
+
+// TestGatewayChecksRouteAttachment proves --validate-only resolves every
+// route's gateways reference: a route that names an undefined gateway, a route
+// without the field (the gateway is not named default, so there is no
+// fallback), and a gateway key no route names are all refused. A typo in
+// gatewayName would therefore fail the golden check instead of producing a
+// file that serves nothing.
+func TestGatewayChecksRouteAttachment(t *testing.T) {
+	binary := gatewayBinary(t)
+	out := freshOutput(t)
+	attach := "  gateways: " + quote(gatewayName) + "\n"
+	requireRejected(t, binary, mutate(t, out.YAML, attach, `  gateways: "nosuch"`+"\n"), "a route attached to an undefined gateway")
+	requireRejected(t, binary, mutate(t, out.YAML, attach, ""), "a route without a gateways field")
+	requireRejected(t, binary, mutate(t, out.YAML, "  "+gatewayName+":\n", "  other:\n"), "a gateway no route names")
+}
+
+// TestGatewayParsesBindAddress proves bindAddress is read as an IP literal by
+// the same binary that accepts every golden file, so the loopback pin cannot
+// silently degrade into an ignored key.
+func TestGatewayParsesBindAddress(t *testing.T) {
+	binary := gatewayBinary(t)
+	out := freshOutput(t)
+	for _, bad := range []string{`"nonsense"`, `"localhost"`, `"127.0.0.1:3000"`, `"[::1]"`, `"fe80::1%en0"`, `""`} {
+		requireRejected(t, binary, mutate(t, out.YAML, `bindAddress: "127.0.0.1"`, "bindAddress: "+bad), "bindAddress "+bad)
+	}
+}
+
+// TestEveryBindAddressClassValidates runs one address of each class the
+// emitter accepts (default, other loopback, IPv6 loopback, private, IPv4
+// link-local, global IPv6, both wildcards) through the real parser.
+func TestEveryBindAddressClassValidates(t *testing.T) {
+	binary := gatewayBinary(t)
+	cases := []struct {
+		addr     string
+		allowAll bool
+	}{
+		{"", false}, {"127.0.0.2", false}, {"::1", false}, {"10.0.0.5", false}, {"169.254.1.1", false}, {"2001:db8::1", false},
+		{"0.0.0.0", true}, {"::", true},
+	}
+	for _, tc := range cases {
+		out, err := AgentGateway(bindInput(tc.addr, tc.allowAll))
+		if err != nil {
+			t.Fatalf("%q: %v", tc.addr, err)
+		}
+		requireValid(t, binary, out.YAML, "bind address "+strconv.Quote(tc.addr))
+	}
+}
+
+// TestEmitterBindRulesAreStricterThanTheGateway: --validate-only accepts
+// addresses the emitter refuses, so those refusals are the emitter's own
+// rules about what can be bound at start-up, not a repeat of the gateway's
+// parser.
+func TestEmitterBindRulesAreStricterThanTheGateway(t *testing.T) {
+	binary := gatewayBinary(t)
+	out := freshOutput(t)
+	for _, addr := range []string{"::ffff:127.0.0.1", "224.0.0.1", "255.255.255.255", "fe80::1"} {
+		requireInvalid(t, bindInput(addr, true))
+		requireValid(t, binary, mutate(t, out.YAML, `bindAddress: "127.0.0.1"`, "bindAddress: "+quote(addr)), "bindAddress "+addr)
 	}
 }
 

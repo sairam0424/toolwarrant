@@ -60,8 +60,8 @@ func TestVerifyFreshOutput(t *testing.T) {
 // processor; Verify is what lets the owner of the file notice.
 func TestVerifyDetectsProcessorRemoval(t *testing.T) {
 	out := freshOutput(t)
-	start := bytes.Index(out.YAML, []byte("        mcpGuardrails:\n"))
-	end := bytes.Index(out.YAML, []byte("      backends:\n"))
+	start := bytes.Index(out.YAML, []byte("    mcpGuardrails:\n"))
+	end := bytes.Index(out.YAML, []byte("  backends:\n"))
 	if start < 0 || end < start {
 		t.Fatal("setup: blocks not found")
 	}
@@ -75,6 +75,8 @@ func TestVerifyDetectsProcessorRemoval(t *testing.T) {
 	}
 }
 
+// TestVerifyDetectsAnyBodyEdit includes the F2 edit: widening bindAddress to
+// a wildcard on disk must fail Verify like every other change.
 func TestVerifyDetectsAnyBodyEdit(t *testing.T) {
 	out := freshOutput(t)
 	edits := map[string]func([]byte) []byte{
@@ -84,6 +86,12 @@ func TestVerifyDetectsAnyBodyEdit(t *testing.T) {
 		},
 		"admin unpinned": func(f []byte) []byte {
 			return bytes.Replace(f, []byte(`adminAddr: "127.0.0.1:15000"`), []byte(`adminAddr: "0.0.0.0:15000"`), 1)
+		},
+		"bind unpinned": func(f []byte) []byte {
+			return bytes.Replace(f, []byte(`bindAddress: "127.0.0.1"`), []byte(`bindAddress: "0.0.0.0"`), 1)
+		},
+		"route detached": func(f []byte) []byte {
+			return bytes.Replace(f, []byte("  gateways: \"toolwarrant\"\n"), nil, 1)
 		},
 		"trailing newline": func(f []byte) []byte { return append(f, '\n') },
 		"truncated":        func(f []byte) []byte { return f[:len(f)-1] },
