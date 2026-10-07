@@ -114,6 +114,27 @@ func BenchmarkCheckResponseDuplicateDenied(b *testing.B) {
 	}
 }
 
+// BenchmarkCheckResponse100ToolsUncached is the same page through a one-entry
+// digest cache, so every tool misses and is canonicalised: the per-page cost
+// before F4, kept as the control the cached number is compared with.
+func BenchmarkCheckResponse100ToolsUncached(b *testing.B) {
+	tools, policies := benchCatalog(b, 100)
+	s := benchServer(policies)
+	s.digests = newDigestCache(1)
+	req := listMsg(listBody("next", tools...))
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(req.McpResponse)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := s.CheckResponse(ctx, req)
+		if err != nil || res.GetMutated() == nil {
+			b.Fatalf("result %v, err %v", res, err)
+		}
+	}
+}
+
 // BenchmarkCheckRequest is the per-call cost on the hot path.
 func BenchmarkCheckRequest(b *testing.B) {
 	d, err := gate.Digest(echoV1)

@@ -172,6 +172,12 @@ type Server struct {
 	obsMu    sync.Mutex
 	observed map[string]observation
 
+	// digests remembers the gate digest of definitions this processor has
+	// already canonicalised, by the SHA-256 of their raw bytes, so a page that
+	// lists an unchanged catalog costs one hash per tool rather than one
+	// canonicalisation. It is bounded and never changes an answer.
+	digests *digestCache
+
 	// slots is the concurrency semaphore: one token per hook doing work.
 	slots chan struct{}
 	// wrongBackendSeen makes the first mismatching service_names value, and
@@ -211,6 +217,7 @@ func New(src Source, cfg Config) *Server {
 		maxAge:      cfg.MaxEvidenceAge,
 		now:         time.Now,
 		observed:    make(map[string]observation),
+		digests:     newDigestCache(digestCacheEntries),
 		slots:       make(chan struct{}, maxConcurrentHooks),
 	}
 }

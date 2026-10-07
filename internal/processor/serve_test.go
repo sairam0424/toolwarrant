@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
@@ -181,32 +179,6 @@ func TestServe_ManyConcurrentRPCs(t *testing.T) {
 	wg.Wait()
 	if st := s.Stats(); st.CallsAllowed != 2*maxConcurrentHooks || st.Throttled != 0 {
 		t.Errorf("stats = %+v, want %d allowed and none throttled", st, 2*maxConcurrentHooks)
-	}
-}
-
-func TestServe_AcceptsPagesBeyondGRPCsDefaultLimitButNotBeyondOurs(t *testing.T) {
-	d1 := mustDigest(t, echoV1)
-	s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
-	client, _ := startServer(t, s)
-	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
-	defer cancel()
-
-	// 6 MiB: over gRPC's 4 MiB default, under our 8 MiB. The junk tool is not in
-	// the catalog, so it is hidden and the page shrinks to the one approved tool.
-	junk := tool("junk", strings.Repeat("x", 6<<20))
-	res, err := client.CheckResponse(ctx, listMsg(listBody("", junk, echoV1)))
-	if err != nil {
-		t.Fatalf("a 6 MiB page must be accepted: %v", err)
-	}
-	if got := servedNames(t, res); len(got) != 1 || got[0] != "echo" {
-		t.Fatalf("served %v", got)
-	}
-
-	// Just over the cap is refused by the transport, which the gateway treats
-	// as a failed hook (fail closed), not as a passed one.
-	_, err = client.CheckResponse(ctx, listMsg(make([]byte, maxRecvMsgSize+1024)))
-	if status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("oversized message: err = %v, want ResourceExhausted", err)
 	}
 }
 

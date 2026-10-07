@@ -136,7 +136,7 @@ func (f *listFilter) decide(name string, tool []byte) bool {
 	}
 	// The failure text goes to the log only, and the name is quoted there, so an
 	// operator can see which tool broke the page without the client learning why.
-	digest, err := toolDigest(tool)
+	digest, err := f.srv.digests.digest(tool)
 	if err != nil {
 		f.record(name, observedConflict)
 		f.failure = fmt.Errorf("tool %s: %w", quoteName(name), err)
@@ -188,7 +188,9 @@ func (s *Server) filterList(ctx context.Context, cur *cachedSnapshot, raw []byte
 
 // toolDigest is the digest of one tool definition exactly as the crawler and
 // the approval step compute it (gate.Digest over the raw bytes), after
-// rejecting definitions that different parsers would read differently.
+// rejecting definitions that different parsers would read differently. It is
+// the slow path behind Server.digests, which remembers its answer per byte
+// string so an unchanged definition is canonicalised once, not once per page.
 func toolDigest(tool []byte) (string, error) {
 	if err := strictjson.Object(tool); err != nil {
 		return "", fmt.Errorf("read tool definition: %w", err)
