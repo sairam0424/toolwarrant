@@ -14,7 +14,13 @@
 // its tool unusable instead of becoming a version, and a tool whose upstream
 // proposes new definitions faster than people decide stops gaining versions
 // (MaxProposalsPerDecision). Nothing is served until a person approves it,
-// and every read path re-hashes the canonical bytes it hands out.
+// and every read path re-hashes the canonical bytes behind the digests it
+// hands out. A Store remembers each row it has verified for RecheckTTL (ten
+// minutes), so the processor's reload after a crawl does not read every
+// approved definition again; the price, stated in full at RecheckTTL, is that
+// a change to the stored bytes of a row this Store verified within the last
+// RecheckTTL is not reported until that time has passed or a Store without
+// the memory reads the row. Decisions always load their tool afresh.
 package catalog
 
 import (

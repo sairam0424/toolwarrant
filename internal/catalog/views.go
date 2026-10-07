@@ -93,8 +93,9 @@ func toolID(ctx context.Context, q queryer, server, tool string) (int64, error) 
 }
 
 // Versions lists a tool's versions oldest first, each with its full proposer
-// history. Each canonical form is re-hashed on the way out and its digest
-// profile checked, so a tampered row is reported, not displayed.
+// history. Each canonical form is re-hashed on the way out, unless this Store
+// verified that row within RecheckTTL, and its digest profile is checked, so
+// a tampered row is reported, not displayed.
 func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionView, error) {
 	out := []VersionView{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -114,7 +115,7 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 		}
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
-			v, err := scanVersionView(rows, proposers)
+			v, err := scanVersionView(rows, proposers, s.verified)
 			if err != nil {
 				return err
 			}
@@ -128,7 +129,7 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 	return out, nil
 }
 
-func scanVersionView(sc rowScanner, proposers map[int64][]string) (VersionView, error) {
+func scanVersionView(sc rowScanner, proposers map[int64][]string, ver *verifier) (VersionView, error) {
 	var (
 		v      VersionView
 		id     int64
@@ -143,7 +144,7 @@ func scanVersionView(sc rowScanner, proposers map[int64][]string) (VersionView, 
 		return VersionView{}, fmt.Errorf("%w: version %d was digested under profile %s, this build uses %s",
 			ErrCorrupt, v.No, quote(v.DigestProfile), gate.DigestProfile)
 	}
-	if gate.DigestOfCanonical(v.Canonical) != v.Digest {
+	if !ver.verify(id, v.Digest, v.Canonical) {
 		return VersionView{}, fmt.Errorf("%w: version %d does not hash to its stored digest", ErrCorrupt, v.No)
 	}
 	names := proposers[id]

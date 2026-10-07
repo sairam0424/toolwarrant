@@ -77,6 +77,9 @@ type Store struct {
 	policy   lifecycle.Policy
 	now      func() time.Time
 	readOnly bool
+	// verified remembers, for RecheckTTL, the version rows whose bytes a read
+	// path re-checked; see verifier. Close drops it.
+	verified *verifier
 }
 
 // Open opens or creates the database at path with the default options: read
@@ -125,7 +128,7 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 		_ = wdb.Close()
 		return nil, err
 	}
-	return &Store{wdb: wdb, rdb: rdb, policy: opts.Policy, now: time.Now}, nil
+	return wireStore(wdb, rdb, opts), nil
 }
 
 // openReadOnly opens an existing WAL database through mode=ro connections only.
@@ -138,11 +141,12 @@ func openReadOnly(abs string, opts OpenOptions, timeout time.Duration) (*Store, 
 		_ = rdb.Close()
 		return nil, err
 	}
-	return &Store{rdb: rdb, policy: opts.Policy, now: time.Now, readOnly: true}, nil
+	return wireStore(nil, rdb, opts), nil
 }
 
-// Close releases the database.
+// Close releases the database and drops the re-check memory.
 func (s *Store) Close() error {
+	s.verified.drop()
 	var errs []error
 	if s.rdb != nil {
 		errs = append(errs, s.rdb.Close())

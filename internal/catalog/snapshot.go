@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
@@ -20,8 +19,11 @@ import (
 // Every approved digest is re-checked against the stored canonical bytes on
 // the way out, and the digest profile against the current one: this is the
 // processor's read path, so a tampered row must fail it (ErrCorrupt) rather
-// than be served. The cost is one SHA-256 per approved tool per reload, which
-// the processor only does when the generation moved.
+// than be served. The first reload reads and hashes every approved tool; the
+// Store then remembers each verified row for RecheckTTL, and a reload within
+// that time neither reads nor hashes its bytes again, which is what keeps a
+// crawl of a large server from costing a full re-read. RecheckTTL states the
+// window this opens.
 func (s *Store) Snapshot(ctx context.Context, server string) (Snapshot, error) {
 	var snap Snapshot
 	err := s.inRead(ctx, func(q queryer) error {
@@ -39,7 +41,7 @@ func (s *Store) Snapshot(ctx context.Context, server string) (Snapshot, error) {
 		}
 		tools := map[string]ToolPolicy{}
 		if !srv.Paused {
-			if tools, err = snapshotTools(ctx, q, srv.ID); err != nil {
+			if tools, err = s.snapshotTools(ctx, q, srv.ID); err != nil {
 				return err
 			}
 		}
@@ -67,64 +69,101 @@ func latestCompleteCrawl(ctx context.Context, q queryer, serverID int64) (time.T
 	return parseTime(started)
 }
 
-const snapshotQuery = `SELECT t.name, t.state, t.approved_version_id, av.id, COALESCE(av.digest, ''),
-		COALESCE(av.digest_profile, ''), av.canonical, t.last_seen_digest
+// snapshotQuery reads the policy rows without the canonical bytes: those are
+// fetched by recheckApproved, and only for rows the verifier does not
+// remember. The version's tool id comes along so that a pointer at another
+// tool's version is caught here.
+const snapshotQuery = `SELECT t.id, t.name, t.state, t.approved_version_id, av.id, av.tool_id,
+		COALESCE(av.digest, ''), COALESCE(av.digest_profile, ''), t.last_seen_digest
 	FROM tools t LEFT JOIN tool_versions av ON av.id = t.approved_version_id
 	WHERE t.server_id = ? AND t.state <> ?`
 
-// snapshotTools maps every non-deprecated tool of a server to its policy. A
-// deprecated tool is left out on purpose: a name missing from the snapshot is
-// not served either.
-func snapshotTools(ctx context.Context, q queryer, serverID int64) (map[string]ToolPolicy, error) {
+// snapshotTools maps every non-deprecated tool of a server to its policy and
+// re-checks the approved versions. A deprecated tool is left out on purpose: a
+// name missing from the snapshot is not served either.
+func (s *Store) snapshotTools(ctx context.Context, q queryer, serverID int64) (map[string]ToolPolicy, error) {
+	tools, refs, err := readPolicyRows(ctx, q, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recheckApproved(ctx, q, refs); err != nil {
+		return nil, err
+	}
+	return tools, nil
+}
+
+// readPolicyRows reads the policy of every non-deprecated tool and collects
+// the approved versions to re-check. Its rows are closed before it returns, so
+// the re-check's own queries never interleave with them.
+func readPolicyRows(ctx context.Context, q queryer, serverID int64) (map[string]ToolPolicy, []approvedRef, error) {
 	rows, err := q.QueryContext(ctx, snapshotQuery, serverID, string(lifecycle.Deprecated))
 	if err != nil {
-		return nil, fmt.Errorf("catalog: read snapshot: %w", err)
+		return nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	tools := make(map[string]ToolPolicy)
+	var refs []approvedRef
 	for rows.Next() {
-		name, p, err := scanPolicy(rows)
+		r, err := scanPolicy(rows)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		tools[name] = p
+		tools[r.name] = r.policy
+		if r.approved.id != 0 {
+			refs = append(refs, r.approved)
+		}
 	}
-	return tools, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
+	}
+	return tools, refs, nil
 }
 
-// scanPolicy reads one tool's policy and verifies its approved version: the
-// pointer must resolve, and the canonical bytes must hash to the digest under
-// the current profile.
-func scanPolicy(sc rowScanner) (string, ToolPolicy, error) {
+// policyRow is one row of snapshotQuery: a tool's policy and, when it has an
+// approved version, the reference the re-check needs.
+type policyRow struct {
+	name     string
+	policy   ToolPolicy
+	approved approvedRef // id is 0 when the tool has no approved version
+}
+
+// scanPolicy reads one tool's policy and checks what needs no bytes: the
+// approved pointer must resolve to a version of this tool, and the digest
+// profile must be the current one. The bytes themselves are left to
+// recheckApproved.
+func scanPolicy(sc rowScanner) (policyRow, error) {
 	var (
-		name, state, profile string
-		pointer, joined      sql.NullInt64
-		canonical            []byte
-		p                    ToolPolicy
+		r                           policyRow
+		toolID                      int64
+		state, profile              string
+		pointer, joined, joinedTool sql.NullInt64
 	)
-	if err := sc.Scan(&name, &state, &pointer, &joined, &p.Approved, &profile, &canonical, &p.LastSeen); err != nil {
-		return "", ToolPolicy{}, fmt.Errorf("catalog: read snapshot: %w", err)
+	if err := sc.Scan(&toolID, &r.name, &state, &pointer, &joined, &joinedTool, &r.policy.Approved, &profile, &r.policy.LastSeen); err != nil {
+		return policyRow{}, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
-	p.State = lifecycle.State(state)
-	if pointer.Valid && !joined.Valid {
-		return "", ToolPolicy{}, fmt.Errorf("%w: tool %s points at a version that does not exist", ErrCorrupt, quote(name))
+	r.policy.State = lifecycle.State(state)
+	if !pointer.Valid {
+		return r, nil
 	}
-	if joined.Valid {
-		if err := verifyApproved(name, p.Approved, profile, canonical); err != nil {
-			return "", ToolPolicy{}, err
-		}
+	if err := checkPointer(r.name, toolID, joined, joinedTool); err != nil {
+		return policyRow{}, err
 	}
-	return name, p, nil
+	if err := checkApprovedProfile(r.name, profile); err != nil {
+		return policyRow{}, err
+	}
+	r.approved = approvedRef{id: joined.Int64, tool: r.name, digest: r.policy.Approved}
+	return r, nil
 }
 
-// verifyApproved re-checks one approved version as read from a joined row.
-func verifyApproved(name, digest, profile string, canonical []byte) error {
-	if profile != gate.DigestProfile {
-		return fmt.Errorf("%w: approved version of %s was digested under profile %s, this build uses %s",
-			ErrCorrupt, quote(name), quote(profile), gate.DigestProfile)
+// checkPointer requires a tool's approved pointer to resolve, and to a version
+// of that tool: another tool's version hashes to its own digest and would pass
+// the re-check while meaning a different definition.
+func checkPointer(name string, toolID int64, joined, joinedTool sql.NullInt64) error {
+	if !joined.Valid {
+		return fmt.Errorf("%w: tool %s points at a version that does not exist", ErrCorrupt, quote(name))
 	}
-	if gate.DigestOfCanonical(canonical) != digest {
-		return fmt.Errorf("%w: approved version of %s does not hash to its digest", ErrCorrupt, quote(name))
+	if !joinedTool.Valid || joinedTool.Int64 != toolID {
+		return fmt.Errorf("%w: tool %s points at a version that is not its own", ErrCorrupt, quote(name))
 	}
 	return nil
 }
@@ -133,9 +172,12 @@ func verifyApproved(name, digest, profile string, canonical []byte) error {
 // changed_pending_reapproval, ordered by server then tool name. The approver
 // and time come from the latest approve or rollback row of that version. A
 // version whose canonical form no longer hashes to its digest, whose digest
-// profile is not the current one, whose pointer dangles, or that has no
-// approval row, is reported as ErrCorrupt rather than exported. Tools of a
-// paused server are included: the export describes approvals, not serving.
+// profile is not the current one, whose pointer dangles or names another
+// tool's version, or that has no approval row, is reported as ErrCorrupt
+// rather than exported. The export carries the bytes, so they are read on
+// every call; only the hash is skipped, for a row this Store verified within
+// RecheckTTL. Tools of a paused server are included: the export describes
+// approvals, not serving.
 func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 	out := []ApprovedTool{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -145,7 +187,7 @@ func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 		}
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
-			a, err := scanApproved(rows)
+			a, err := scanApproved(rows, s.verified)
 			if err != nil {
 				return err
 			}
@@ -159,8 +201,8 @@ func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 	return out, nil
 }
 
-const approvedQuery = `SELECT s.name, t.name, v.id, COALESCE(v.digest, ''), COALESCE(v.digest_profile, ''), v.canonical,
-		COALESCE(v.version_no, 0), a.approver, a.at
+const approvedQuery = `SELECT s.name, t.id, t.name, v.id, v.tool_id, COALESCE(v.digest, ''), COALESCE(v.digest_profile, ''),
+		v.canonical, COALESCE(v.version_no, 0), a.approver, a.at
 	FROM tools t
 	JOIN servers s ON s.id = t.server_id
 	LEFT JOIN tool_versions v ON v.id = t.approved_version_id
@@ -169,25 +211,33 @@ const approvedQuery = `SELECT s.name, t.name, v.id, COALESCE(v.digest, ''), COAL
 	WHERE t.state IN ('enabled', 'changed_pending_reapproval')
 	ORDER BY s.name, t.name`
 
-func scanApproved(sc rowScanner) (ApprovedTool, error) {
+// scanApproved reads one approved tool and re-checks it: the pointer must
+// resolve to the tool's own version, the profile must be the current one, the
+// bytes must hash to the digest unless the verifier remembers the row, and an
+// approval row must exist.
+func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, error) {
 	var (
-		a        ApprovedTool
-		joined   sql.NullInt64
-		profile  string
-		approver sql.NullString
-		at       sql.NullString
+		a                  ApprovedTool
+		toolID             int64
+		joined, joinedTool sql.NullInt64
+		profile            string
+		approver, at       sql.NullString
 	)
-	if err := sc.Scan(&a.Server, &a.Name, &joined, &a.Digest, &profile, &a.Canonical, &a.VersionNo, &approver, &at); err != nil {
+	if err := sc.Scan(&a.Server, &toolID, &a.Name, &joined, &joinedTool, &a.Digest, &profile, &a.Canonical, &a.VersionNo, &approver, &at); err != nil {
 		return ApprovedTool{}, fmt.Errorf("catalog: list approved tools: %w", err)
 	}
-	if !joined.Valid {
-		return ApprovedTool{}, fmt.Errorf("%w: approved version of %s/%s does not exist", ErrCorrupt, quote(a.Server), quote(a.Name))
-	}
-	if err := verifyApproved(a.Server+"/"+a.Name, a.Digest, profile, a.Canonical); err != nil {
+	name := a.Server + "/" + a.Name
+	if err := checkPointer(name, toolID, joined, joinedTool); err != nil {
 		return ApprovedTool{}, err
 	}
+	if err := checkApprovedProfile(name, profile); err != nil {
+		return ApprovedTool{}, err
+	}
+	if !v.verify(joined.Int64, a.Digest, a.Canonical) {
+		return ApprovedTool{}, fmt.Errorf("%w: approved version of %s does not hash to its digest", ErrCorrupt, quote(name))
+	}
 	if !approver.Valid || !at.Valid {
-		return ApprovedTool{}, fmt.Errorf("%w: approved version of %s/%s has no approval record", ErrCorrupt, quote(a.Server), quote(a.Name))
+		return ApprovedTool{}, fmt.Errorf("%w: approved version of %s has no approval record", ErrCorrupt, quote(name))
 	}
 	when, err := parseTime(at.String)
 	if err != nil {
