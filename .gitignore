@@ -3,3 +3,4 @@ bin/
 *.db
 *.db-*
 .DS_Store
+demo/last-run.log
