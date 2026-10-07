@@ -83,12 +83,7 @@ func TestVerifyAudit_PagesThroughLargeLogs(t *testing.T) {
 	}
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
-	tools := make([]CrawledTool, 2600)
-	for i := range tools {
-		name := fmt.Sprintf("tool-%05d", i)
-		tools[i] = CrawledTool{Name: name, Raw: def(name, "v1")}
-	}
-	mustCrawl(t, s, "alpha", tools...)
+	mustCrawl(t, s, "alpha", bigCrawl(2600, "v1")...)
 	sum, err := s.VerifyAudit(bg)
 	if err != nil || sum.Entries != 1+2*2600+1 {
 		t.Fatalf("summary = %+v, %v", sum, err)
@@ -161,6 +156,10 @@ func verifyErr(s *Store) error {
 	return err
 }
 
+// versionInsert is the full INSERT prefix for tool_versions, so a forged row
+// fails on a guard and not on a missing NOT NULL column.
+const versionInsert = `INSERT OR REPLACE INTO tool_versions (tool_id, version_no, digest, digest_profile, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)`
+
 func TestTriggers_RefuseEditsToHistoryThroughOrdinarySQL(t *testing.T) {
 	_, path := seededStore(t)
 	db := rawDB(t, path)
@@ -186,22 +185,28 @@ func TestTriggers_RefuseEditsToHistoryThroughOrdinarySQL(t *testing.T) {
 		"audit insert seq zero":      insertAudit(0),
 		"version delete":             `DELETE FROM tool_versions`,
 		"version digest":             `UPDATE tool_versions SET digest = '` + strings.Repeat("0", 64) + `'`,
+		"version profile":            `UPDATE tool_versions SET digest_profile = 'other'`,
 		"version canonical":          `UPDATE tool_versions SET canonical = x'7b7d'`,
 		"version raw":                `UPDATE tool_versions SET raw = x'7b7d'`,
+		"version proposed_by":        `UPDATE tool_versions SET proposed_by = 'mallory'`,
 		"version tool_id":            fmt.Sprintf(`UPDATE tool_versions SET tool_id = %d`, toolID+1),
 		"version version_no":         `UPDATE tool_versions SET version_no = version_no + 10`,
 		"version first_seen_at":      `UPDATE tool_versions SET first_seen_at = '2000-01-01T00:00:00.000000000Z'`,
 		"version crawl_id":           `UPDATE tool_versions SET crawl_id = 1`,
 		"version id":                 `UPDATE tool_versions SET id = id + 1000`,
-		"version replace by digest": fmt.Sprintf(`INSERT OR REPLACE INTO tool_versions (tool_id, version_no, digest, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
-			VALUES (%d, 77, '%s', x'7b7d', x'7b7d', 'pending', 'x', 0, 't', 1)`, toolID, digest()),
-		"version replace by number": fmt.Sprintf(`INSERT OR REPLACE INTO tool_versions (tool_id, version_no, digest, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
-			VALUES (%d, 1, '%s', x'7b7d', x'7b7d', 'superseded', 'x', 0, 't', 1)`, toolID, strings.Repeat("1", 64)),
-		"version replace by id": fmt.Sprintf(`INSERT OR REPLACE INTO tool_versions (id, tool_id, version_no, digest, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
-			VALUES (%d, %d, 78, '%s', x'7b7d', x'7b7d', 'superseded', 'x', 0, 't', 1)`, versionID(), toolID, strings.Repeat("2", 64)),
+		"version replace by digest": fmt.Sprintf(versionInsert+`
+			VALUES (%d, 77, '%s', 'full-v1', x'7b7d', x'7b7d', 'pending', 'x', 0, 't', 1)`, toolID, digest()),
+		"version replace by number": fmt.Sprintf(versionInsert+`
+			VALUES (%d, 1, '%s', 'full-v1', x'7b7d', x'7b7d', 'superseded', 'x', 0, 't', 1)`, toolID, strings.Repeat("1", 64)),
+		"version replace by id": fmt.Sprintf(`INSERT OR REPLACE INTO tool_versions (id, tool_id, version_no, digest, digest_profile, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
+			VALUES (%d, %d, 78, '%s', 'full-v1', x'7b7d', x'7b7d', 'superseded', 'x', 0, 't', 1)`, versionID(), toolID, strings.Repeat("2", 64)),
 		"approval update":        `UPDATE approvals SET approver = 'mallory'`,
 		"approval delete":        `DELETE FROM approvals`,
 		"approval replace by id": `INSERT OR REPLACE INTO approvals (id, version_id, decision, approver, actor_type, hash_seen, at) SELECT id, version_id, 'approve', 'mallory', 'human', hash_seen, at FROM approvals`,
+		"proposer update":        `UPDATE tool_version_proposers SET actor = 'mallory'`,
+		"proposer delete":        `DELETE FROM tool_version_proposers`,
+		"proposer replace":       fmt.Sprintf(`INSERT OR REPLACE INTO tool_version_proposers (version_id, position, actor) VALUES (%d, 0, 'mallory')`, versionID()),
+		"proposer out of order":  fmt.Sprintf(`INSERT INTO tool_version_proposers (version_id, position, actor) VALUES (%d, 5, 'mallory')`, versionID()),
 	}
 	for name, stmt := range refused {
 		if _, err := db.ExecContext(bg, stmt); err == nil {
@@ -210,12 +215,17 @@ func TestTriggers_RefuseEditsToHistoryThroughOrdinarySQL(t *testing.T) {
 	}
 
 	// The fields that are allowed to move still move; the chain is unaffected by them.
-	mustExec(t, db, `UPDATE tool_versions SET proposed_by = proposed_by WHERE id = ?`, versionID())
+	mustExec(t, db, `UPDATE tool_versions SET status = status, ever_approved = ever_approved WHERE id = ?`, versionID())
+	mustExec(t, db, `UPDATE tool_versions SET proposed_by = proposed_by WHERE id = ?`, versionID()) // same value: no change
 	// And every refusal left the data as it was.
-	for _, s := range []string{`SELECT COUNT(*) FROM audit_log`, `SELECT COUNT(*) FROM tool_versions`, `SELECT COUNT(*) FROM approvals`} {
+	for _, s := range []string{`SELECT COUNT(*) FROM audit_log`, `SELECT COUNT(*) FROM tool_versions`, `SELECT COUNT(*) FROM approvals`,
+		`SELECT COUNT(*) FROM tool_version_proposers`} {
 		if mustCount(t, db, s) == 0 {
 			t.Errorf("%s is empty after refused statements", s)
 		}
+	}
+	if mustCount(t, db, `SELECT COUNT(*) FROM tool_version_proposers WHERE actor = 'mallory'`) != 0 {
+		t.Error("mallory got into the proposers")
 	}
 }
 
@@ -224,6 +234,10 @@ func TestTriggers_StoreOperationsStillWork(t *testing.T) {
 	// history goes through with the triggers in place.
 	s, _ := seededStore(t)
 	mustCrawl(t, s, "alpha", tool("echo", "v3"), tool("sum", "v2"), tool("new", "v1"))
+	if err := s.Enable(bg, "alpha", "echo", bob); err != nil {
+		t.Fatal(err)
+	}
+	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("sum", "v2"), tool("new", "v1")) // v1 re-proposed: proposer appended
 	if _, err := s.VerifyAudit(bg); err != nil {
 		t.Fatal(err)
 	}

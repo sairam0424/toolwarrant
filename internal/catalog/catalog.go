@@ -3,9 +3,18 @@
 // it writes both in the same transaction, so a state change without an audit
 // entry (or the reverse) cannot be committed.
 //
-// Several processes may open the same database file: the CLI writes, the
-// ExtMCP processor reads. Every committed write bumps a generation counter
-// that readers poll to know when to reload.
+// Several processes may open the same database file: the CLI writes through
+// Open, the ExtMCP processor reads through OpenWith with OpenOptions.ReadOnly.
+// Every committed write bumps a generation counter that readers poll to know
+// when to reload.
+//
+// Everything an upstream sends is hostile. A crawl of a registered server is
+// always recorded, whatever it carried: a tool that breaks a rule is
+// quarantined on its own (RecordCrawl), a definition that cannot be used marks
+// its tool unusable instead of becoming a version, and a tool whose upstream
+// proposes new definitions faster than people decide stops gaining versions
+// (MaxProposalsPerDecision). Nothing is served until a person approves it,
+// and every read path re-hashes the canonical bytes it hands out.
 package catalog
 
 import (
@@ -24,8 +33,27 @@ var (
 	ErrExists    = errors.New("catalog: already exists")
 	ErrAmbiguous = errors.New("catalog: digest prefix matches more than one version")
 	ErrInvalid   = errors.New("catalog: invalid input")
-	// ErrSchema means the database was written by a newer, incompatible version.
+	// ErrSchema means the database was not written by this schema version: a
+	// newer build, an older unreleased one, or another application. There is
+	// no migration code; re-initialise the database.
 	ErrSchema = errors.New("catalog: unsupported schema version")
+	// ErrCorrupt means the database contradicts itself: a stored digest does
+	// not hash its canonical form, a pointer dangles, a status disagrees with
+	// the tool row, or a guard object is missing. Someone edited the file
+	// outside this package, or a bug wrote it. Callers must not serve from a
+	// corrupt catalog.
+	ErrCorrupt = errors.New("catalog: database integrity check failed")
+	// ErrReadOnly is returned by every mutating method of a Store opened with
+	// OpenOptions.ReadOnly: the processor reads policy and must never be able
+	// to change it.
+	ErrReadOnly = errors.New("catalog: the store is read-only")
+	// ErrPaused is returned by RecordCrawl for a paused server: an operator
+	// stopped crawling it, so an observation of it must not be recorded.
+	ErrPaused = errors.New("catalog: server is paused")
+	// ErrHumanRequired is returned when a decision (approve, reject, roll
+	// back, disable, enable, pause, resume) is attempted by a system actor.
+	// Only a named person decides; the crawler identity may only observe.
+	ErrHumanRequired = errors.New("catalog: a decision requires a human actor")
 )
 
 // ActorType says whether a principal is a person or an automated process.
@@ -36,7 +64,11 @@ const (
 	ActorSystem ActorType = "system"
 )
 
-// Actor is the principal behind an operation. Name must be non-empty.
+// Actor is the principal behind an operation. Name is normalised by every
+// Store method before it is stored or compared: NFKC, lower-cased, and it must
+// then match ^[a-z0-9][a-z0-9._@-]{0,63}$, so that "Alice", "alice" and a
+// full-width spelling are one identity and the two-person rule cannot be
+// side-stepped with a look-alike.
 type Actor struct {
 	Name string
 	Type ActorType
@@ -60,6 +92,9 @@ type ServerSpec struct {
 type Server struct {
 	ID int64
 	ServerSpec
+	// Paused is set by PauseServer: crawls are refused and the snapshot is
+	// empty until ResumeServer, while decisions keep working.
+	Paused    bool
 	CreatedAt time.Time
 }
 
@@ -69,6 +104,20 @@ type CrawledTool struct {
 	Raw  []byte // the complete tool JSON object, byte for byte
 }
 
+// UnusableTool is a listed tool whose definition the crawler could not use:
+// invalid, over a cap, or a name listed more than once. The catalog marks a
+// known tool of that name unusable (it is never served while the marker
+// stands) and records an unknown name as rejected.
+type UnusableTool struct {
+	// Name may be empty when the crawler could not read one, or when the name
+	// itself broke the shared rule and must not be shown.
+	Name string
+	// Reason is a short class string such as "not-canonical".
+	Reason string
+	// Detail says how in fixed words; it never contains raw upstream text.
+	Detail string
+}
+
 // CrawlInput is the result of one crawl of one server.
 type CrawlInput struct {
 	Server string
@@ -76,9 +125,11 @@ type CrawlInput struct {
 	// incomplete crawl records a failure and changes no tool: a crawl failure is
 	// not a removal.
 	Complete bool
-	// Error describes why the crawl was incomplete.
-	Error string
-	Tools []CrawledTool
+	// Error describes why the crawl was incomplete. Only its class is kept
+	// outside the crawls table.
+	Error    string
+	Tools    []CrawledTool
+	Unusable []UnusableTool
 }
 
 // ChangeKind classifies what a crawl did to one tool.
@@ -86,27 +137,44 @@ type ChangeKind string
 
 const (
 	ChangeNew        ChangeKind = "new"        // first time this tool was seen
-	ChangeChanged    ChangeKind = "changed"    // a new digest was proposed
+	ChangeChanged    ChangeKind = "changed"    // the upstream serves a digest that is not the approved one
 	ChangeUnchanged  ChangeKind = "unchanged"  // nothing to record
 	ChangeReverted   ChangeKind = "reverted"   // upstream is back on the approved digest
 	ChangeMissing    ChangeKind = "missing"    // absent from a successful crawl
 	ChangeDeprecated ChangeKind = "deprecated" // absent for too many crawls
 	ChangeReappeared ChangeKind = "reappeared" // returned after deprecation
+	ChangeUnusable   ChangeKind = "unusable"   // listed with a definition that cannot be used
+	ChangeReturned   ChangeKind = "returned"   // listed again after one or more missed crawls
 )
 
 // ToolChange is one line of a CrawlReport.
 type ToolChange struct {
 	Tool   string
 	Kind   ChangeKind
-	Digest string // the live digest, or "" if absent
+	Digest string // the live digest, or "" if absent or unusable
 	State  lifecycle.State
+	// Reason is the class of an unusable observation, "" otherwise.
+	Reason string
+}
+
+// RejectedTool is a listed entry that no tool row records: its name is not a
+// known tool of the server and its definition or name broke a rule. Name is
+// "" when the name itself was refused, so that a look-alike is never shown.
+type RejectedTool struct {
+	Name   string
+	Reason string
+	Detail string
 }
 
 // CrawlReport summarises one RecordCrawl call. Changes is sorted by tool name.
 type CrawlReport struct {
 	CrawlID  int64
 	Complete bool
+	// Error is the class recorded for a crawl that is not complete: the
+	// caller's class, or the catalog's own reason for refusing the listing.
+	Error    string
 	Changes  []ToolChange
+	Rejected []RejectedTool
 }
 
 // ToolView is a tool as shown to an operator.
@@ -117,21 +185,26 @@ type ToolView struct {
 	State         lifecycle.State
 	Approved      string // digest, or ""
 	Pending       string // digest of the current proposal, or ""
-	LastSeen      string // digest the upstream served in the latest crawl, or ""
+	LastSeen      string // digest the upstream served in the latest crawl, lifecycle.UnusableDigest, or ""
 	Drifted       bool   // LastSeen differs from Approved
+	Unusable      bool   // the upstream lists a definition that cannot be used
 	Versions      int
 	MissingCrawls int
 }
 
 // VersionView is one immutable version of a tool.
 type VersionView struct {
-	No           int // 1-based, in first-seen order
-	Digest       string
-	Status       lifecycle.VersionStatus
-	ProposedBy   string
+	No            int // 1-based, in first-seen order
+	Digest        string
+	DigestProfile string // the rule Digest was computed under, gate.DigestProfile
+	Status        lifecycle.VersionStatus
+	ProposedBy    string
+	// Proposers is every principal whose crawl proposed this version, oldest
+	// first; the first one is ProposedBy. None of them may approve it.
+	Proposers    []string
 	EverApproved bool
 	FirstSeen    time.Time
-	// Canonical is the RFC 8785 form that Digest hashes, volatile keys removed.
+	// Canonical is the RFC 8785 form of the whole definition that Digest hashes.
 	Canonical []byte
 }
 
@@ -139,20 +212,24 @@ type VersionView struct {
 type ToolPolicy struct {
 	State    lifecycle.State
 	Approved string // digest, or ""
-	// LastSeen is the digest the upstream served in the latest crawl, or "" if
-	// the tool was absent. The tools/call hook carries no tool definition, so
-	// this is how the control plane can veto a call for a client that has not
-	// re-listed since the upstream changed.
+	// LastSeen is the digest the upstream served in the latest crawl,
+	// lifecycle.UnusableDigest if it served a definition that cannot be used,
+	// or "" if the tool was absent. The tools/call hook carries no tool
+	// definition, so this is how the control plane can veto a call for a
+	// client that has not re-listed since the upstream changed.
 	LastSeen string
 }
 
 // Snapshot is the serving policy of one server at one generation. Keys are
 // upstream tool names. A name that is not in Tools is not served (a catalog
-// miss fails closed).
+// miss fails closed); a paused server has no tools at all.
 type Snapshot struct {
 	Server     string
 	Generation int64
-	Tools      map[string]ToolPolicy
+	// CrawledAt is the UTC time of the latest complete crawl of the server,
+	// zero if there was none.
+	CrawledAt time.Time
+	Tools     map[string]ToolPolicy
 }
 
 // Serves reports whether the named tool may be served when the upstream

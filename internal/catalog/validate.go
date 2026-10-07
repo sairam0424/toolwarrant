@@ -7,6 +7,10 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
+
+	"github.com/sairam0424/toolwarrant/internal/toolname"
 )
 
 // Limits on everything that crosses the package boundary. They bound memory
@@ -15,9 +19,11 @@ const (
 	maxServerNameLen   = 63
 	maxURLBytes        = 2048
 	maxOwnerGroupBytes = 256
-	maxActorNameBytes  = 256
-	maxToolNameBytes   = 256
+	maxActorNameBytes  = 256 // before normalisation; the normalised form is bounded by the pattern
+	maxActorNameLen    = 64  // ^[a-z0-9][a-z0-9._@-]{0,63}$
 	maxCrawlErrorBytes = 1024
+	maxClassLen        = 64
+	maxDetailBytes     = 256
 	maxQuotedBytes     = 64
 	digestHexLen       = 64
 	minDigestPrefix    = 8
@@ -38,7 +44,7 @@ func invalidf(format string, args ...any) error {
 
 // forbiddenRune reports whether r is a control or invisible character. A plain
 // space is the only whitespace allowed: lookalike spaces, zero-width joiners
-// and bidi overrides let two different names render identically.
+// and bidi overrides let two different strings render identically.
 func forbiddenRune(r rune) bool {
 	if r == ' ' {
 		return false
@@ -63,11 +69,14 @@ func checkText(kind, s string, maxBytes int) error {
 	return nil
 }
 
+// validateToolName delegates to the one rule every component shares
+// (internal/toolname): NFC, visible characters only, no padding or double
+// spaces, at most toolname.MaxBytes. The error never echoes the name.
 func validateToolName(name string) error {
-	if name == "" {
-		return invalidf("tool name is empty")
+	if err := toolname.Validate(name); err != nil {
+		return invalidf("tool name: %v", err)
 	}
-	return checkText("tool name", name, maxToolNameBytes)
+	return nil
 }
 
 // validateServerName enforces ^[a-z0-9][a-z0-9_-]{0,62}$ by hand: the name ends
@@ -79,14 +88,15 @@ func validateServerName(name string) error {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		isAlnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-		if isAlnum || (i > 0 && (c == '_' || c == '-')) {
+		if isLowerAlnum(c) || (i > 0 && (c == '_' || c == '-')) {
 			continue
 		}
 		return invalidf("server name %s must match ^[a-z0-9][a-z0-9_-]{0,62}$", quote(name))
 	}
 	return nil
 }
+
+func isLowerAlnum(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') }
 
 // validateURL accepts only plain http(s) URLs that every parser reads the same
 // way: printable ASCII, no backslashes, no user info, no fragment. A URL that
@@ -134,29 +144,93 @@ func validateServerSpec(spec ServerSpec) error {
 	return checkText("owner group", spec.OwnerGroup, maxOwnerGroupBytes)
 }
 
-// validateActor requires a name that cannot be confused with another one by
-// padding: the self-approval rule compares names exactly, so " alice" must not
-// be accepted as someone other than "alice".
-func validateActor(a Actor) error {
+// normalizeActor returns the actor under its canonical name: NFKC, then
+// lower-cased, then checked against ^[a-z0-9][a-z0-9._@-]{0,63}$. The
+// two-person rule compares names, so "Alice", "alice" and a full-width or
+// ligature spelling must be one identity, and nothing that renders like
+// another name may be accepted. The normalised actor is what is stored.
+func normalizeActor(a Actor) (Actor, error) {
 	if a.Name == "" {
-		return invalidf("actor name is empty")
+		return Actor{}, invalidf("actor name is empty")
 	}
-	if a.Name != strings.TrimSpace(a.Name) {
-		return invalidf("actor name must not start or end with whitespace")
+	if len(a.Name) > maxActorNameBytes {
+		return Actor{}, invalidf("actor name is longer than %d bytes", maxActorNameBytes)
 	}
-	if err := checkText("actor name", a.Name, maxActorNameBytes); err != nil {
-		return err
+	if !utf8.ValidString(a.Name) {
+		return Actor{}, invalidf("actor name is not valid UTF-8")
+	}
+	name := strings.ToLower(norm.NFKC.String(a.Name))
+	if !isActorName(name) {
+		return Actor{}, invalidf("actor name %s must match ^[a-z0-9][a-z0-9._@-]{0,63}$ after NFKC normalisation and lower-casing", quote(a.Name))
 	}
 	if a.Type != ActorHuman && a.Type != ActorSystem {
-		return invalidf("actor type %s is not human or system", quote(string(a.Type)))
+		return Actor{}, invalidf("actor type %s is not human or system", quote(string(a.Type)))
 	}
-	return nil
+	return Actor{Name: name, Type: a.Type}, nil
+}
+
+// isActorName matches ^[a-z0-9][a-z0-9._@-]{0,63}$ by hand, for the same
+// reason as validateServerName.
+func isActorName(name string) bool {
+	if name == "" || len(name) > maxActorNameLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if isLowerAlnum(c) || (i > 0 && (c == '.' || c == '_' || c == '@' || c == '-')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isClassToken reports whether s is a short machine-readable class: one or
+// more lower-case words of letters, digits, '_', '.' and '-' separated by
+// single spaces, such as "timeout", "not-canonical" or "http status 401". It
+// is the only shape of caller text that is stored and printed as it is: it
+// cannot carry an escape sequence, a quote, a URL or an invisible character.
+func isClassToken(s string) bool {
+	if s == "" || len(s) > maxClassLen || !isLowerAlnum(s[0]) || s[len(s)-1] == ' ' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' && s[i-1] != ' ' {
+			continue
+		}
+		if !isLowerAlnum(c) && c != '_' && c != '.' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// auditClass renders a class for an audit detail: bare when it is a single
+// word, quoted when it has spaces, so key=value pairs stay unambiguous.
+func auditClass(class string) string {
+	if strings.Contains(class, " ") {
+		return strconv.Quote(class)
+	}
+	return class
+}
+
+// classOf reduces a caller-supplied reason to a class token. Anything that is
+// not already a token becomes the generic fallback rather than being echoed.
+func classOf(reason, fallback string) string {
+	if r := strings.ToLower(strings.TrimSpace(reason)); isClassToken(r) {
+		return r
+	}
+	return fallback
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 func isHex(s string) bool {
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if !isHexDigit(s[i]) {
 			return false
 		}
 	}

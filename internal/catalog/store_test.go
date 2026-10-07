@@ -28,13 +28,19 @@ func TestOpen_CreatesSchemaAndSettings(t *testing.T) {
 	if err := db.QueryRowContext(bg, `PRAGMA foreign_keys`).Scan(&fk); err != nil || fk != 1 {
 		t.Fatalf("foreign_keys = %d, %v; want 1 on every connection", fk, err)
 	}
-	for _, table := range []string{"meta", "servers", "crawls", "tools", "tool_versions", "approvals", "audit_log"} {
+	for _, table := range []string{"meta", "servers", "crawls", "tools", "tool_versions", "tool_version_proposers", "approvals", "audit_log"} {
 		if n := mustCount(t, db, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table); n != 1 {
 			t.Errorf("table %s missing", table)
 		}
 	}
+	if n := mustCount(t, db, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'`); n != len(guardTriggers()) {
+		t.Errorf("%d triggers, want %d", n, len(guardTriggers()))
+	}
 	if g := mustGeneration(t, s); g != 0 {
 		t.Errorf("fresh generation = %d, want 0", g)
+	}
+	if s.ReadOnly() {
+		t.Error("a store opened with Open is read-only")
 	}
 }
 
@@ -58,16 +64,36 @@ func TestOpen_ReopenKeepsDataAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestOpen_RefusesNewerSchema(t *testing.T) {
-	path := dbPath(t)
-	s, err := Open(path, lifecycle.DefaultPolicy())
-	if err != nil {
-		t.Fatal(err)
+func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
+	for name, version := range map[string]int{"newer": 99, "older unreleased": 1, "negative": -3} {
+		t.Run(name, func(t *testing.T) {
+			path := dbPath(t)
+			s, err := Open(path, lifecycle.DefaultPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = s.Close()
+			mustExec(t, rawDB(t, path), `PRAGMA user_version = `+itoa(int64(version)))
+			_, err = Open(path, lifecycle.DefaultPolicy())
+			if !errors.Is(err, ErrSchema) {
+				t.Fatalf("Open on a version %d database: %v, want ErrSchema", version, err)
+			}
+			if version == 1 && !strings.Contains(err.Error(), "run init again") {
+				t.Errorf("an older database must tell the operator to re-initialise: %v", err)
+			}
+			if _, err := OpenWith(path, OpenOptions{ReadOnly: true}); !errors.Is(err, ErrSchema) {
+				t.Errorf("read-only open on a version %d database: %v, want ErrSchema", version, err)
+			}
+		})
 	}
-	_ = s.Close()
-	mustExec(t, rawDB(t, path), `PRAGMA user_version = 99`)
-	if _, err := Open(path, lifecycle.DefaultPolicy()); !errors.Is(err, ErrSchema) {
-		t.Fatalf("Open on a newer database: %v, want ErrSchema", err)
+}
+
+// makePrivate gives a file the raw SQLite handle created the owner-only mode
+// Open requires, so that the test reaches the check it is about.
+func makePrivate(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -75,24 +101,83 @@ func TestOpen_RefusesForeignDatabases(t *testing.T) {
 	t.Run("another application's tables", func(t *testing.T) {
 		path := dbPath(t)
 		mustExec(t, rawDB(t, path), `CREATE TABLE notes (id INTEGER PRIMARY KEY)`)
+		makePrivate(t, path)
 		if _, err := Open(path, lifecycle.DefaultPolicy()); !errors.Is(err, ErrSchema) {
 			t.Fatalf("Open: %v, want ErrSchema", err)
 		}
 	})
-	t.Run("version 1 without our tables", func(t *testing.T) {
+	t.Run("our version without our tables", func(t *testing.T) {
 		path := dbPath(t)
-		mustExec(t, rawDB(t, path), `PRAGMA user_version = 1`)
+		mustExec(t, rawDB(t, path), `PRAGMA user_version = `+itoa(schemaVersion))
+		makePrivate(t, path)
 		if _, err := Open(path, lifecycle.DefaultPolicy()); !errors.Is(err, ErrSchema) {
 			t.Fatalf("Open: %v, want ErrSchema", err)
 		}
 	})
-	t.Run("negative version", func(t *testing.T) {
-		path := dbPath(t)
-		mustExec(t, rawDB(t, path), `PRAGMA user_version = -3`)
-		if _, err := Open(path, lifecycle.DefaultPolicy()); !errors.Is(err, ErrSchema) {
-			t.Fatalf("Open: %v, want ErrSchema", err)
+}
+
+// A foreign database is refused before its journal mode is touched: pointing
+// toolwarrant at the wrong file must not modify that file.
+func TestOpen_LeavesAForeignDatabaseUntouched(t *testing.T) {
+	path := dbPath(t)
+	db := openRaw(t, "file:"+path+"?_pragma=journal_mode(delete)")
+	mustExec(t, db, `CREATE TABLE theirs (x)`)
+	mustExec(t, db, `INSERT INTO theirs VALUES (1)`)
+	var before string
+	if err := db.QueryRowContext(bg, `PRAGMA journal_mode`).Scan(&before); err != nil || before != "delete" {
+		t.Fatalf("journal_mode before = %q, %v", before, err)
+	}
+	_ = db.Close()
+	makePrivate(t, path)
+	if _, err := Open(path, lifecycle.DefaultPolicy()); !errors.Is(err, ErrSchema) {
+		t.Fatalf("Open on a foreign database: %v, want ErrSchema", err)
+	}
+	db2 := openRaw(t, "file:"+path)
+	var after string
+	if err := db2.QueryRowContext(bg, `PRAGMA journal_mode`).Scan(&after); err != nil || after != "delete" {
+		t.Fatalf("journal_mode after the refused Open = %q, %v; the foreign file was modified", after, err)
+	}
+	if n := mustCount(t, db2, `SELECT COUNT(*) FROM theirs`); n != 1 {
+		t.Errorf("foreign rows = %d", n)
+	}
+}
+
+// A database that has lost a guard object is corrupt, not merely unguarded.
+// Only a forensic open reads it, read-only, so that the tampering can be
+// examined and VerifyAudit can name the broken entry.
+func TestOpen_RefusesADatabaseWithAGuardDropped(t *testing.T) {
+	for _, drop := range []string{`DROP TRIGGER tool_versions_immutable`, `DROP INDEX one_pending_version`, `DROP TRIGGER audit_log_no_update`} {
+		s, path := seededStore(t)
+		_ = s.Close()
+		db := openRaw(t, "file:"+path)
+		mustExec(t, db, drop)
+		_, err := Open(path, lifecycle.DefaultPolicy())
+		if !errors.Is(err, ErrCorrupt) {
+			t.Errorf("after %s: Open = %v, want ErrCorrupt", drop, err)
 		}
-	})
+		if _, err := OpenWith(path, OpenOptions{ReadOnly: true}); !errors.Is(err, ErrCorrupt) {
+			t.Errorf("after %s: read-only Open = %v, want ErrCorrupt", drop, err)
+		}
+		forensic, err := OpenWith(path, OpenOptions{Forensic: true})
+		if err != nil {
+			t.Fatalf("after %s: forensic Open = %v", drop, err)
+		}
+		if !forensic.ReadOnly() {
+			t.Error("a forensic open is not read-only")
+		}
+		if _, err := forensic.AddServer(bg, ServerSpec{Name: "x", URL: "https://x.example.com"}, alice); !errors.Is(err, ErrReadOnly) {
+			t.Errorf("write through a forensic open: %v, want ErrReadOnly", err)
+		}
+		if strings.Contains(drop, "audit_log_no_update") {
+			mustExec(t, db, `UPDATE audit_log SET detail = 'nothing happened' WHERE seq = 2`)
+			if b := brokenAt(t, verifyErr(forensic)); b.Seq != 2 {
+				t.Errorf("forensic VerifyAudit found the break at %d, want 2", b.Seq)
+			}
+		} else if _, err := forensic.VerifyAudit(bg); err != nil {
+			t.Errorf("forensic VerifyAudit: %v", err)
+		}
+		_ = forensic.Close()
+	}
 }
 
 func TestOpen_RejectsBadPaths(t *testing.T) {
@@ -107,7 +192,7 @@ func TestOpen_RejectsBadPaths(t *testing.T) {
 	}{
 		"empty":          {"", ErrInvalid},
 		"memory":         {":memory:", ErrInvalid},
-		"directory":      {dir, nil},
+		"directory":      {dir, ErrInvalid},
 		"missing parent": {filepath.Join(dir, "nope", "x.db"), nil},
 		"garbage file":   {garbage, nil},
 	} {
@@ -129,11 +214,13 @@ func TestOpen_PathWithAwkwardCharacters(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "x y.db")
-	s := openStore(t, path, lifecycle.DefaultPolicy())
-	mustAddServer(t, s, "alpha")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("database not created at the requested path: %v", err)
+	for _, name := range []string{"x y.db", "q?x=1.db", "h#f.db", "p%41.db", "amp&x.db"} {
+		path := filepath.Join(dir, name)
+		s := openStore(t, path, lifecycle.DefaultPolicy())
+		mustAddServer(t, s, "alpha")
+		if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+			t.Fatalf("database not created at the requested path %q: %v", name, err)
+		}
 	}
 }
 
@@ -279,6 +366,7 @@ func TestOperations_RejectAnInvalidActorBeforeTakingTheLock(t *testing.T) {
 		"disable":  s.Disable(bg, "alpha", "echo", bad),
 		"rollback": s.Rollback(bg, "alpha", "echo", strings.Repeat("a", 64), bad),
 		"reject":   s.Reject(bg, "alpha", "echo", strings.Repeat("a", 64), bad),
+		"pause":    s.PauseServer(bg, "alpha", bad),
 	} {
 		if !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s with no actor = %v, want ErrInvalid", name, err)

@@ -6,42 +6,26 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
-
-func entryOf(t *testing.T, s *Store, event string) audit.Entry {
-	t.Helper()
-	entries, err := s.AuditEntries(bg, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].Event == event {
-			return entries[i]
-		}
-	}
-	t.Fatalf("no audit entry with event %s in %v", event, auditEvents(t, s))
-	return audit.Entry{}
-}
 
 func TestRecordCrawl_FirstCrawlDiscoversAndNeverApproves(t *testing.T) {
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 
 	rep := mustCrawl(t, s, "alpha", tool("b", "v1"), tool("a", "v1"))
-	if !rep.Complete || rep.CrawlID <= 0 || len(rep.Changes) != 2 {
+	if !rep.Complete || rep.CrawlID <= 0 || len(rep.Changes) != 2 || len(rep.Rejected) != 0 || rep.Error != "" {
 		t.Fatalf("report = %+v", rep)
 	}
 	for i, want := range []string{"a", "b"} {
 		c := rep.Changes[i]
-		if c.Tool != want || c.Kind != ChangeNew || c.State != lifecycle.PendingReview || c.Digest != digestOf(t, want, "v1") {
+		if c.Tool != want || c.Kind != ChangeNew || c.State != lifecycle.PendingReview || c.Digest != digestOf(t, want, "v1") || c.Reason != "" {
 			t.Errorf("Changes[%d] = %+v", i, c)
 		}
 	}
 	for _, n := range []string{"a", "b"} {
 		v := mustTool(t, s, "alpha", n)
-		if v.Approved != "" || v.Pending != digestOf(t, n, "v1") || v.LastSeen != v.Pending || v.Versions != 1 || v.Drifted {
+		if v.Approved != "" || v.Pending != digestOf(t, n, "v1") || v.LastSeen != v.Pending || v.Versions != 1 || v.Drifted || v.Unusable {
 			t.Errorf("tool %s = %+v", n, v)
 		}
 	}
@@ -50,9 +34,12 @@ func TestRecordCrawl_FirstCrawlDiscoversAndNeverApproves(t *testing.T) {
 	if got := auditEvents(t, s); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("audit events = %v\nwant %v", got, want)
 	}
-	snap, err := s.Snapshot(bg, "alpha")
-	if err != nil || len(snap.Tools) != 2 {
-		t.Fatalf("Snapshot = %+v, %v", snap, err)
+	if e := entryOf(t, s, "crawl.completed"); e.Detail != "crawl="+itoa(rep.CrawlID)+" tools=2 changes=2 rejected=0" {
+		t.Errorf("crawl.completed detail = %q", e.Detail)
+	}
+	snap := mustSnapshot(t, s, "alpha")
+	if len(snap.Tools) != 2 || snap.CrawledAt.IsZero() {
+		t.Fatalf("Snapshot = %+v", snap)
 	}
 	for n, p := range snap.Tools {
 		if p.Approved != "" || snap.Serves(n, p.LastSeen) {
@@ -108,7 +95,7 @@ func TestRecordCrawl_DriftRevertAndStrictMode(t *testing.T) {
 		ev.BeforeHash != d1 || ev.AfterHash != d1 || ev.Subject != "alpha/echo" || ev.Actor != "crawler" || ev.ActorType != "system" {
 		t.Errorf("drift audit entry = %+v", ev)
 	}
-	snap, _ := s.Snapshot(bg, "alpha")
+	snap := mustSnapshot(t, s, "alpha")
 	if snap.Serves("echo", d2) {
 		t.Error("strict mode: the unapproved definition must not be served")
 	}
@@ -151,7 +138,7 @@ func TestRecordCrawl_MissingDeprecatedAndReappeared(t *testing.T) {
 	if v := mustTool(t, s, "alpha", "a"); v.State != lifecycle.Deprecated || v.MissingCrawls != 3 || v.LastSeen != "" {
 		t.Fatalf("deprecated tool = %+v", v)
 	}
-	snap, _ := s.Snapshot(bg, "alpha")
+	snap := mustSnapshot(t, s, "alpha")
 	if _, ok := snap.Tools["a"]; ok || snap.Serves("a", da) {
 		t.Errorf("a deprecated tool must not be in the snapshot: %+v", snap.Tools)
 	}
@@ -172,6 +159,31 @@ func TestRecordCrawl_MissingDeprecatedAndReappeared(t *testing.T) {
 	}
 }
 
+// A tool that comes back after a missed crawl is "returned" (D5: the flip
+// from denied to served gets its own event and its own report line).
+func TestRecordCrawl_ReturnAfterMissIsReportedAndAudited(t *testing.T) {
+	s := newStore(t)
+	mustAddServer(t, s, "alpha")
+	dA := digestOf(t, "echo", "A")
+	mustCrawl(t, s, "alpha", tool("echo", "A"), tool("other", "x"))
+	mustApprove(t, s, "alpha", "echo", dA)
+	if k := kindsOf(mustCrawl(t, s, "alpha", tool("other", "x")))["echo"]; k != ChangeMissing {
+		t.Fatalf("kind after the miss = %s", k)
+	}
+	n0 := auditCount(t, s)
+	rep := mustCrawl(t, s, "alpha", tool("echo", "A"), tool("other", "x"))
+	if c := rep.Changes[0]; c.Kind != ChangeReturned || c.Digest != dA || c.State != lifecycle.Enabled {
+		t.Fatalf("return = %+v", c)
+	}
+	added := auditEvents(t, s)[n0:]
+	if strings.Join(added, ",") != "tool.returned,tool.reverted,crawl.completed" {
+		t.Errorf("audit events added by the return = %v", added)
+	}
+	if v := mustTool(t, s, "alpha", "echo"); v.MissingCrawls != 0 || v.LastSeen != dA {
+		t.Errorf("tool after return = %+v", v)
+	}
+}
+
 func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	db := rawDB(t, path)
@@ -182,6 +194,7 @@ func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
 	tools := mustCount(t, db, `SELECT COUNT(*) FROM tools`)
 	versions := mustCount(t, db, `SELECT COUNT(*) FROM tool_versions`)
 	gen, audits := mustGeneration(t, s), auditCount(t, s)
+	crawledAt := mustSnapshot(t, s, "alpha").CrawledAt
 
 	rep, err := s.RecordCrawl(bg, CrawlInput{
 		Server: "alpha", Complete: false,
@@ -191,7 +204,7 @@ func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Complete || len(rep.Changes) != 0 || rep.CrawlID <= 0 {
+	if rep.Complete || len(rep.Changes) != 0 || rep.CrawlID <= 0 || rep.Error != "error" {
 		t.Fatalf("report = %+v", rep)
 	}
 	if got := mustCount(t, db, `SELECT COUNT(*) FROM tools`); got != tools {
@@ -208,9 +221,12 @@ func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
 	if mustGeneration(t, s) != gen+1 || auditCount(t, s) != audits+1 {
 		t.Errorf("the failure is one committed write with one audit entry")
 	}
+	if snap := mustSnapshot(t, s, "alpha"); !snap.CrawledAt.Equal(crawledAt) {
+		t.Errorf("CrawledAt moved to %v after an incomplete crawl; it names the latest complete one (%v)", snap.CrawledAt, crawledAt)
+	}
 	e := entryOf(t, s, "crawl.failed")
 	if strings.Contains(e.Detail, "SECRET") || strings.Contains(e.Detail, "timeout") || e.Subject != "alpha" ||
-		e.Detail != "crawl="+itoa(rep.CrawlID)+" tools=1 complete=false" {
+		e.Detail != "crawl="+itoa(rep.CrawlID)+" tools=1 complete=false reason=error" {
 		t.Errorf("crawl.failed entry = %+v", e)
 	}
 	var complete, toolCount int
@@ -219,17 +235,34 @@ func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
 		Scan(&complete, &toolCount, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if complete != 0 || toolCount != 1 || stored != "get https://host/mcp?token=SECRET123: timeout line2?" {
+	// The crawls row keeps the class and a quoted, sanitised fragment: a
+	// terminal that prints it sees escapes, never raw bytes.
+	if complete != 0 || toolCount != 1 || stored != `error "get https://host/mcp?token=SECRET123: timeout line2?"` {
 		t.Errorf("crawls row = %d %d %q", complete, toolCount, stored)
 	}
 
-	long, err := s.RecordCrawl(bg, CrawlInput{Server: "alpha", Error: strings.Repeat("é", 5000)}, crawler)
+	long, err := s.RecordCrawl(bg, CrawlInput{Server: "alpha", Error: strings.Repeat(cp(eAcute), 5000)}, crawler)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var n int
-	if err := db.QueryRowContext(bg, `SELECT length(CAST(error AS BLOB)) FROM crawls WHERE id = ?`, long.CrawlID).Scan(&n); err != nil || n > maxCrawlErrorBytes {
-		t.Errorf("stored error is %d bytes (%v), limit %d", n, err, maxCrawlErrorBytes)
+	if err := db.QueryRowContext(bg, `SELECT length(CAST(error AS BLOB)) FROM crawls WHERE id = ?`, long.CrawlID).Scan(&n); err != nil || n > 2*maxCrawlErrorBytes {
+		t.Errorf("stored error is %d bytes (%v), limit %d plus quoting", n, err, maxCrawlErrorBytes)
+	}
+
+	// A class the caller already reduced is kept as it is, in the row and the
+	// log; a phrase with spaces is quoted in the log so key=value stays readable.
+	for class, inLog := range map[string]string{"timeout": "timeout", "http status 401": `"http status 401"`} {
+		classed, err := s.RecordCrawl(bg, CrawlInput{Server: "alpha", Error: class}, crawler)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(bg, `SELECT error FROM crawls WHERE id = ?`, classed.CrawlID).Scan(&stored); err != nil || stored != class {
+			t.Errorf("stored class = %q, %v", stored, err)
+		}
+		if e := entryOf(t, s, "crawl.failed"); !strings.HasSuffix(e.Detail, " reason="+inLog) || classed.Error != class {
+			t.Errorf("classed failure: detail %q, report error %q", e.Detail, classed.Error)
+		}
 	}
 }
 
@@ -266,15 +299,21 @@ func TestRecordCrawl_ProposerCannotApproveOwnCrawl(t *testing.T) {
 	})
 }
 
-func TestRecordCrawl_VolatileMetaDoesNotChangeTheDigest(t *testing.T) {
+// D1: _meta is part of the digest (hosts act on it), so a changed _meta is a
+// new definition that needs its own approval.
+func TestRecordCrawl_ChangedMetaIsANewDefinition(t *testing.T) {
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	withMeta := func(id string) CrawledTool {
-		return CrawledTool{Name: "echo", Raw: []byte(`{"name":"echo","description":"d","_meta":{"requestId":"` + id + `"}}`)}
+		return CrawledTool{Name: "echo", Raw: []byte(`{"name":"echo","description":"d","_meta":{"ui/resourceUri":"ui://` + id + `"}}`)}
 	}
 	mustCrawl(t, s, "alpha", withMeta("one"))
 	rep := mustCrawl(t, s, "alpha", withMeta("two"))
-	if k := kindsOf(rep)["echo"]; k != ChangeUnchanged {
-		t.Fatalf("a changed _meta looked like a new definition: %s", k)
+	if k := kindsOf(rep)["echo"]; k != ChangeChanged {
+		t.Fatalf("a changed _meta must be a new definition, got %s", k)
+	}
+	vs, err := s.Versions(bg, "alpha", "echo")
+	if err != nil || len(vs) != 2 || vs[0].Digest == vs[1].Digest {
+		t.Fatalf("versions = %+v, %v; want two distinct digests", vs, err)
 	}
 }

@@ -29,6 +29,7 @@ func scanToolView(sc rowScanner) (ToolView, error) {
 	}
 	v.State = lifecycle.State(state)
 	v.Drifted = lifecycle.Tool{Approved: v.Approved, LastSeen: v.LastSeen}.Drifted()
+	v.Unusable = v.LastSeen == lifecycle.UnusableDigest
 	return v, nil
 }
 
@@ -41,7 +42,7 @@ func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 		if err != nil {
 			return fmt.Errorf("catalog: list tools: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			v, err := scanToolView(rows)
 			if err != nil {
@@ -91,8 +92,9 @@ func toolID(ctx context.Context, q queryer, server, tool string) (int64, error) 
 	return id, nil
 }
 
-// Versions lists a tool's versions oldest first. Each canonical form is
-// re-hashed on the way out, so a tampered row is reported, not displayed.
+// Versions lists a tool's versions oldest first, each with its full proposer
+// history. Each canonical form is re-hashed on the way out and its digest
+// profile checked, so a tampered row is reported, not displayed.
 func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionView, error) {
 	out := []VersionView{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -100,15 +102,19 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 		if err != nil {
 			return err
 		}
+		proposers, err := loadProposers(ctx, q, proposersOfTool, id)
+		if err != nil {
+			return err
+		}
 		rows, err := q.QueryContext(ctx,
-			`SELECT version_no, digest, status, proposed_by, ever_approved, first_seen_at, canonical
+			`SELECT id, version_no, digest, digest_profile, status, proposed_by, ever_approved, first_seen_at, canonical
 			 FROM tool_versions WHERE tool_id = ? ORDER BY version_no`, id)
 		if err != nil {
 			return fmt.Errorf("catalog: list versions: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
-			v, err := scanVersionView(rows)
+			v, err := scanVersionView(rows, proposers)
 			if err != nil {
 				return err
 			}
@@ -122,24 +128,34 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 	return out, nil
 }
 
-func scanVersionView(sc rowScanner) (VersionView, error) {
+func scanVersionView(sc rowScanner, proposers map[int64][]string) (VersionView, error) {
 	var (
 		v      VersionView
+		id     int64
 		status string
 		ever   int
 		seen   string
 	)
-	if err := sc.Scan(&v.No, &v.Digest, &status, &v.ProposedBy, &ever, &seen, &v.Canonical); err != nil {
+	if err := sc.Scan(&id, &v.No, &v.Digest, &v.DigestProfile, &status, &v.ProposedBy, &ever, &seen, &v.Canonical); err != nil {
 		return VersionView{}, fmt.Errorf("catalog: list versions: %w", err)
+	}
+	if v.DigestProfile != gate.DigestProfile {
+		return VersionView{}, fmt.Errorf("%w: version %d was digested under profile %s, this build uses %s",
+			ErrCorrupt, v.No, quote(v.DigestProfile), gate.DigestProfile)
 	}
 	if gate.DigestOfCanonical(v.Canonical) != v.Digest {
 		return VersionView{}, fmt.Errorf("%w: version %d does not hash to its stored digest", ErrCorrupt, v.No)
+	}
+	names := proposers[id]
+	if len(names) == 0 || names[0] != v.ProposedBy {
+		return VersionView{}, fmt.Errorf("%w: version %d has no proposer list, or its first proposer is not proposed_by", ErrCorrupt, v.No)
 	}
 	at, err := parseTime(seen)
 	if err != nil {
 		return VersionView{}, err
 	}
 	v.Status, v.EverApproved, v.FirstSeen = lifecycle.VersionStatus(status), ever == 1, at
+	v.Proposers = append([]string(nil), names...)
 	return v, nil
 }
 
@@ -163,7 +179,7 @@ func (s *Store) ResolveDigest(ctx context.Context, server, tool, prefix string) 
 		if err != nil {
 			return fmt.Errorf("catalog: resolve digest: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var d string
 			if err := rows.Scan(&d); err != nil {

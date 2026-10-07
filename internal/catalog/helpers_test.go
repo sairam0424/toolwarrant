@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"testing"
 
+	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
@@ -14,6 +16,7 @@ import (
 var (
 	alice   = Actor{Name: "alice", Type: ActorHuman}
 	bob     = Actor{Name: "bob", Type: ActorHuman}
+	carol   = Actor{Name: "carol", Type: ActorHuman}
 	crawler = Actor{Name: "crawler", Type: ActorSystem}
 )
 
@@ -49,7 +52,22 @@ func newStoreAt(t *testing.T, p lifecycle.Policy) (*Store, string) {
 // SQLite shell would reach the data without going through the Store.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open(driverName, dsnFor(path, true))
+	return openRaw(t, dsnFor(path, connWriter, DefaultBusyTimeout))
+}
+
+// rawDBNoFK is rawDB with foreign keys off, the sqlite3 shell's default.
+func rawDBNoFK(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	q := url.Values{}
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", DefaultBusyTimeout.Milliseconds()))
+	q.Add("_pragma", "foreign_keys(0)")
+	u := url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}
+	return openRaw(t, u.String())
+}
+
+func openRaw(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		t.Fatalf("raw open: %v", err)
 	}
@@ -81,6 +99,11 @@ func def(name, desc string) []byte {
 
 func tool(name, desc string) CrawledTool { return CrawledTool{Name: name, Raw: def(name, desc)} }
 
+// unusableOf is an entry the crawler could not use.
+func unusableOf(name, reason string) UnusableTool {
+	return UnusableTool{Name: name, Reason: reason, Detail: "the definition broke a rule"}
+}
+
 func digestOf(t *testing.T, name, desc string) string {
 	t.Helper()
 	d, err := gate.Digest(def(name, desc))
@@ -97,6 +120,24 @@ func mustAddServer(t *testing.T, s *Store, name string) Server {
 		t.Fatalf("AddServer(%s): %v", name, err)
 	}
 	return srv
+}
+
+func crawlOf(tools ...CrawledTool) CrawlInput {
+	return CrawlInput{Server: "alpha", Complete: true, Tools: tools}
+}
+
+func crawlFor(server string, tools ...CrawledTool) CrawlInput {
+	return CrawlInput{Server: server, Complete: true, Tools: tools}
+}
+
+// bigCrawl lists n small tools under numbered names.
+func bigCrawl(n int, variant string) []CrawledTool {
+	tools := make([]CrawledTool, n)
+	for i := range tools {
+		name := fmt.Sprintf("tool-%05d", i)
+		tools[i] = CrawledTool{Name: name, Raw: def(name, variant)}
+	}
+	return tools
 }
 
 func mustCrawl(t *testing.T, s *Store, server string, tools ...CrawledTool) CrawlReport {
@@ -141,6 +182,15 @@ func mustTool(t *testing.T, s *Store, server, toolName string) ToolView {
 	return v
 }
 
+func mustSnapshot(t *testing.T, s *Store, server string) Snapshot {
+	t.Helper()
+	snap, err := s.Snapshot(bg, server)
+	if err != nil {
+		t.Fatalf("Snapshot(%s): %v", server, err)
+	}
+	return snap
+}
+
 func auditEvents(t *testing.T, s *Store) []string {
 	t.Helper()
 	entries, err := s.AuditEntries(bg, 0, 0)
@@ -155,6 +205,33 @@ func auditEvents(t *testing.T, s *Store) []string {
 }
 
 func auditCount(t *testing.T, s *Store) int { return len(auditEvents(t, s)) }
+
+func countEvents(t *testing.T, s *Store, event string) int {
+	t.Helper()
+	n := 0
+	for _, e := range auditEvents(t, s) {
+		if e == event {
+			n++
+		}
+	}
+	return n
+}
+
+// entryOf returns the newest audit entry with this event.
+func entryOf(t *testing.T, s *Store, event string) audit.Entry {
+	t.Helper()
+	entries, err := s.AuditEntries(bg, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Event == event {
+			return entries[i]
+		}
+	}
+	t.Fatalf("no audit entry with event %s in %v", event, auditEvents(t, s))
+	return audit.Entry{}
+}
 
 // stateOf returns the stored state of a tool, failing the test if it is absent.
 func stateOf(t *testing.T, s *Store, server, toolName string) lifecycle.State {

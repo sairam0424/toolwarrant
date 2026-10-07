@@ -19,6 +19,11 @@ type toolRec struct {
 	tool       lifecycle.Tool
 	versionIDs []int64
 	maxNo      int
+	// budget counts the versions added since the last decision on the tool
+	// (tools.proposals_since_decision); see MaxProposalsPerDecision.
+	// storedBudget is the value the row holds, so updateTool knows when to write.
+	budget       int
+	storedBudget int
 }
 
 type toolRow struct {
@@ -29,6 +34,7 @@ type toolRow struct {
 	lastSeen string
 	missing  int
 	approved sql.NullInt64
+	budget   int
 }
 
 type versionRow struct {
@@ -36,6 +42,7 @@ type versionRow struct {
 	toolID     int64
 	no         int
 	digest     string
+	profile    string
 	canonical  []byte
 	status     string
 	proposedBy string
@@ -43,25 +50,33 @@ type versionRow struct {
 }
 
 const (
-	toolCols = `t.id, t.server_id, t.name, t.state, t.last_seen_digest, t.missing_crawls, t.approved_version_id`
+	toolCols = `t.id, t.server_id, t.name, t.state, t.last_seen_digest, t.missing_crawls, t.approved_version_id,
+		t.proposals_since_decision`
 
 	// The first argument switches the canonical bytes on: bulk loads do not
 	// need them, single-tool loads re-check them against the digest.
-	versionCols = `v.id, v.tool_id, v.version_no, v.digest, CASE WHEN ? THEN v.canonical ELSE NULL END,
+	versionCols = `v.id, v.tool_id, v.version_no, v.digest, v.digest_profile, CASE WHEN ? THEN v.canonical ELSE NULL END,
 		v.status, v.proposed_by, v.ever_approved`
 
 	versionsOfTool   = `SELECT ` + versionCols + ` FROM tool_versions v WHERE v.tool_id = ? ORDER BY v.version_no`
 	versionsOfServer = `SELECT ` + versionCols + ` FROM tool_versions v JOIN tools t ON t.id = v.tool_id
 		WHERE t.server_id = ? ORDER BY v.tool_id, v.version_no`
 
+	proposerCols    = `p.version_id, p.position, p.actor`
+	proposersOfTool = `SELECT ` + proposerCols + ` FROM tool_version_proposers p JOIN tool_versions v ON v.id = p.version_id
+		WHERE v.tool_id = ? ORDER BY p.version_id, p.position`
+	proposersOfServer = `SELECT ` + proposerCols + ` FROM tool_version_proposers p JOIN tool_versions v ON v.id = p.version_id
+		JOIN tools t ON t.id = v.tool_id WHERE t.server_id = ? ORDER BY p.version_id, p.position`
+
 	insertVersion = `INSERT INTO tool_versions
-		(tool_id, version_no, digest, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(tool_id, version_no, digest, digest_profile, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertProposer = `INSERT INTO tool_version_proposers (version_id, position, actor) VALUES (?, ?, ?)`
 )
 
 func scanToolRow(sc rowScanner) (toolRow, error) {
 	var r toolRow
-	err := sc.Scan(&r.id, &r.serverID, &r.name, &r.state, &r.lastSeen, &r.missing, &r.approved)
+	err := sc.Scan(&r.id, &r.serverID, &r.name, &r.state, &r.lastSeen, &r.missing, &r.approved, &r.budget)
 	return r, err
 }
 
@@ -70,14 +85,40 @@ func queryVersionRows(ctx context.Context, q queryer, query string, withCanonica
 	if err != nil {
 		return nil, fmt.Errorf("catalog: load versions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []versionRow
 	for rows.Next() {
 		var v versionRow
-		if err := rows.Scan(&v.id, &v.toolID, &v.no, &v.digest, &v.canonical, &v.status, &v.proposedBy, &v.ever); err != nil {
+		if err := rows.Scan(&v.id, &v.toolID, &v.no, &v.digest, &v.profile, &v.canonical, &v.status, &v.proposedBy, &v.ever); err != nil {
 			return nil, fmt.Errorf("catalog: load versions: %w", err)
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// loadProposers returns every version's proposers in position order, keyed by
+// version id. Positions must run 0, 1, 2... per version; a gap is corruption.
+func loadProposers(ctx context.Context, q queryer, query string, id int64) (map[int64][]string, error) {
+	rows, err := q.QueryContext(ctx, query, id)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: load proposers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[int64][]string{}
+	for rows.Next() {
+		var (
+			versionID int64
+			position  int
+			actor     string
+		)
+		if err := rows.Scan(&versionID, &position, &actor); err != nil {
+			return nil, fmt.Errorf("catalog: load proposers: %w", err)
+		}
+		if position != len(out[versionID]) {
+			return nil, fmt.Errorf("%w: proposers of version %d are not in sequence", ErrCorrupt, versionID)
+		}
+		out[versionID] = append(out[versionID], actor)
 	}
 	return out, rows.Err()
 }
@@ -103,32 +144,24 @@ func loadTool(ctx context.Context, q queryer, server, tool string) (*toolRec, er
 			return nil, err
 		}
 	}
-	return newToolRec(row, vrs)
+	proposers, err := loadProposers(ctx, q, proposersOfTool, row.id)
+	if err != nil {
+		return nil, err
+	}
+	return newToolRec(row, vrs, proposers)
 }
 
 // loadServerTools loads every tool of one server, keyed by name.
 func loadServerTools(ctx context.Context, q queryer, serverID int64) (map[string]*toolRec, error) {
-	rows, err := q.QueryContext(ctx, `SELECT `+toolCols+` FROM tools t WHERE t.server_id = ?`, serverID)
+	trs, err := queryToolRows(ctx, q, serverID)
 	if err != nil {
-		return nil, fmt.Errorf("catalog: load tools: %w", err)
-	}
-	var trs []toolRow
-	for rows.Next() {
-		tr, err := scanToolRow(rows)
-		if err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("catalog: load tools: %w", err)
-		}
-		trs = append(trs, tr)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, fmt.Errorf("catalog: load tools: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("catalog: load tools: %w", err)
+		return nil, err
 	}
 	vrs, err := queryVersionRows(ctx, q, versionsOfServer, false, serverID)
+	if err != nil {
+		return nil, err
+	}
+	proposers, err := loadProposers(ctx, q, proposersOfServer, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +171,7 @@ func loadServerTools(ctx context.Context, q queryer, serverID int64) (map[string
 	}
 	out := make(map[string]*toolRec, len(trs))
 	for _, tr := range trs {
-		rec, err := newToolRec(tr, byTool[tr.id])
+		rec, err := newToolRec(tr, byTool[tr.id], proposers)
 		if err != nil {
 			return nil, err
 		}
@@ -147,17 +180,53 @@ func loadServerTools(ctx context.Context, q queryer, serverID int64) (map[string
 	return out, nil
 }
 
+func queryToolRows(ctx context.Context, q queryer, serverID int64) ([]toolRow, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+toolCols+` FROM tools t WHERE t.server_id = ?`, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: load tools: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var trs []toolRow
+	for rows.Next() {
+		tr, err := scanToolRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("catalog: load tools: %w", err)
+		}
+		trs = append(trs, tr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("catalog: load tools: %w", err)
+	}
+	return trs, nil
+}
+
+// checkCanonical re-hashes the stored canonical bytes: they must hash to the
+// stored digest under the current digest profile, or the row is corrupt.
 func checkCanonical(v versionRow) error {
+	if err := checkProfile(v); err != nil {
+		return err
+	}
 	if gate.DigestOfCanonical(v.canonical) != v.digest {
 		return fmt.Errorf("%w: version %d of tool %d does not hash to its stored digest", ErrCorrupt, v.no, v.toolID)
 	}
 	return nil
 }
 
+// checkProfile requires the digest to have been computed under the profile
+// this build uses: an approval made under another rule means another thing.
+func checkProfile(v versionRow) error {
+	if v.profile != gate.DigestProfile {
+		return fmt.Errorf("%w: version %d of tool %d was digested under profile %s, this build uses %s",
+			ErrCorrupt, v.no, v.toolID, quote(v.profile), gate.DigestProfile)
+	}
+	return nil
+}
+
 // newToolRec converts rows into lifecycle types and checks that the approved
-// pointer and the version statuses agree, because lifecycle.Apply relies on it.
-func newToolRec(row toolRow, vrs []versionRow) (*toolRec, error) {
-	rec := &toolRec{id: row.id, serverID: row.serverID, name: row.name}
+// pointer, the version statuses and the proposer lists agree, because
+// lifecycle.Apply relies on them.
+func newToolRec(row toolRow, vrs []versionRow, proposers map[int64][]string) (*toolRec, error) {
+	rec := &toolRec{id: row.id, serverID: row.serverID, name: row.name, budget: row.budget, storedBudget: row.budget}
 	rec.tool = lifecycle.Tool{
 		State:         lifecycle.State(row.state),
 		LastSeen:      row.lastSeen,
@@ -165,10 +234,18 @@ func newToolRec(row toolRow, vrs []versionRow) (*toolRec, error) {
 	}
 	approvedSeen := false
 	for _, v := range vrs {
+		if err := checkProfile(v); err != nil {
+			return nil, err
+		}
+		names := proposers[v.id]
+		if len(names) == 0 || names[0] != v.proposedBy {
+			return nil, fmt.Errorf("%w: version %d of tool %q has no proposer list, or its first proposer is not proposed_by", ErrCorrupt, v.no, row.name)
+		}
 		rec.tool.Versions = append(rec.tool.Versions, lifecycle.Version{
 			Digest:       v.digest,
 			Status:       lifecycle.VersionStatus(v.status),
 			ProposedBy:   v.proposedBy,
+			Proposers:    lifecycle.ProposersOf(names...),
 			EverApproved: v.ever == 1,
 		})
 		rec.versionIDs = append(rec.versionIDs, v.id)
@@ -192,8 +269,8 @@ func newToolRec(row toolRow, vrs []versionRow) (*toolRec, error) {
 // Discovered state that lifecycle.ObserveCrawl moves on from.
 func insertTool(ctx context.Context, t *txn, serverID int64, name string) (*toolRec, error) {
 	id, err := t.insert(ctx,
-		`INSERT INTO tools (server_id, name, state, approved_version_id, last_seen_digest, missing_crawls)
-		 VALUES (?, ?, ?, NULL, '', 0)`, serverID, name, string(lifecycle.Discovered))
+		`INSERT INTO tools (server_id, name, state, approved_version_id, last_seen_digest, missing_crawls, proposals_since_decision)
+		 VALUES (?, ?, ?, NULL, '', 0, 0)`, serverID, name, string(lifecycle.Discovered))
 	if err != nil {
 		return nil, fmt.Errorf("catalog: insert tool: %w", err)
 	}
@@ -208,89 +285,6 @@ func isLive(s lifecycle.VersionStatus) bool {
 	return s == lifecycle.VersionPending || s == lifecycle.VersionApproved
 }
 
-// save writes the difference between the loaded tool and after, then adopts
-// after. mat is the definition of a digest that is new to this tool, if any.
-// Versions already stored are never rewritten except for the three mutable
-// columns; new ones are appended with the next version number.
-func (r *toolRec) save(ctx context.Context, t *txn, after lifecycle.Tool, mat *preparedTool, crawlID int64) error {
-	if err := r.updateVersions(ctx, t, after); err != nil {
-		return err
-	}
-	if err := r.insertVersions(ctx, t, after, mat, crawlID); err != nil {
-		return err
-	}
-	if err := r.updateTool(ctx, t, after); err != nil {
-		return err
-	}
-	r.tool = after
-	return nil
-}
-
-// updateVersions writes status changes in two passes: versions that stop being
-// pending or approved first, so the "one pending, one approved" indexes never
-// see two of either.
-func (r *toolRec) updateVersions(ctx context.Context, t *txn, after lifecycle.Tool) error {
-	if len(after.Versions) < len(r.tool.Versions) {
-		return internalf("lifecycle dropped a version of %q", r.name)
-	}
-	for _, entering := range []bool{false, true} {
-		for i, old := range r.tool.Versions {
-			nv := after.Versions[i]
-			if nv.Digest != old.Digest {
-				return internalf("lifecycle reordered the versions of %q", r.name)
-			}
-			if nv == old || isLive(nv.Status) != entering {
-				continue
-			}
-			if _, err := t.exec(ctx,
-				`UPDATE tool_versions SET status = ?, proposed_by = ?, ever_approved = ? WHERE id = ?`,
-				string(nv.Status), nv.ProposedBy, boolInt(nv.EverApproved), r.versionIDs[i]); err != nil {
-				return fmt.Errorf("catalog: update version: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
-func (r *toolRec) insertVersions(ctx context.Context, t *txn, after lifecycle.Tool, mat *preparedTool, crawlID int64) error {
-	for i := len(r.tool.Versions); i < len(after.Versions); i++ {
-		v := after.Versions[i]
-		if mat == nil || mat.digest != v.Digest {
-			return internalf("no definition supplied for a new version of %q", r.name)
-		}
-		r.maxNo++
-		id, err := t.insert(ctx, insertVersion, r.id, r.maxNo, v.Digest, mat.canonical, mat.raw,
-			string(v.Status), v.ProposedBy, boolInt(v.EverApproved), t.ts, crawlID)
-		if err != nil {
-			return fmt.Errorf("catalog: insert version: %w", err)
-		}
-		r.versionIDs = append(r.versionIDs, id)
-	}
-	return nil
-}
-
-func (r *toolRec) updateTool(ctx context.Context, t *txn, after lifecycle.Tool) error {
-	b := r.tool
-	if b.State == after.State && b.Approved == after.Approved && b.LastSeen == after.LastSeen &&
-		b.MissingCrawls == after.MissingCrawls {
-		return nil
-	}
-	var approved sql.NullInt64
-	if after.Approved != "" {
-		i := indexOfDigest(after.Versions, after.Approved)
-		if i < 0 || i >= len(r.versionIDs) {
-			return internalf("approved digest of %q is not one of its versions", r.name)
-		}
-		approved = sql.NullInt64{Int64: r.versionIDs[i], Valid: true}
-	}
-	if _, err := t.exec(ctx,
-		`UPDATE tools SET state = ?, approved_version_id = ?, last_seen_digest = ?, missing_crawls = ? WHERE id = ?`,
-		string(after.State), approved, after.LastSeen, after.MissingCrawls, r.id); err != nil {
-		return fmt.Errorf("catalog: update tool: %w", err)
-	}
-	return nil
-}
-
 func indexOfDigest(vs []lifecycle.Version, digest string) int {
 	for i, v := range vs {
 		if v.Digest == digest {
@@ -299,6 +293,9 @@ func indexOfDigest(vs []lifecycle.Version, digest string) int {
 	}
 	return -1
 }
+
+// knowsDigest reports whether the tool already has a version with this digest.
+func (r *toolRec) knowsDigest(digest string) bool { return indexOfDigest(r.tool.Versions, digest) >= 0 }
 
 // versionID returns the row id of the version with this digest.
 func (r *toolRec) versionID(digest string) (int64, error) {

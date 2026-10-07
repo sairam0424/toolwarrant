@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,7 @@ func TestRecordCrawl_StoresVersionsImmutablyWithCatalogComputedDigests(t *testin
 			t.Fatal(err)
 		}
 		if v.No != i+1 || v.Digest != gate.DigestOfCanonical(wantCanon) || !bytes.Equal(v.Canonical, wantCanon) ||
-			v.ProposedBy != "crawler" || v.EverApproved || v.FirstSeen.IsZero() {
+			v.ProposedBy != "crawler" || v.EverApproved || v.FirstSeen.IsZero() || v.DigestProfile != gate.DigestProfile {
 			t.Errorf("version %d = %+v", i+1, v)
 		}
 		wantStatus := lifecycle.VersionSuperseded
@@ -76,6 +75,7 @@ func TestRecordCrawl_PreviouslySeenAndRejectedDigests(t *testing.T) {
 	if err := s.Reject(bg, "alpha", "echo", dA, bob); err != nil {
 		t.Fatal(err)
 	}
+	// The upstream still serves the rejected digest: nothing to record.
 	if k := kindsOf(mustCrawl(t, s, "alpha", tool("echo", "A")))["echo"]; k != ChangeUnchanged {
 		t.Errorf("a rejected digest seen again: kind %s, want unchanged", k)
 	}
@@ -84,6 +84,20 @@ func TestRecordCrawl_PreviouslySeenAndRejectedDigests(t *testing.T) {
 	}
 	if v := mustTool(t, s, "alpha", "echo"); v.Pending != dB {
 		t.Errorf("pending = %s, want %s", v.Pending, dB)
+	}
+	// Moving back to the rejected digest is drift to a known digest: reported
+	// as changed (the rule documented on classify), with a drift event and
+	// nothing else (the pending proposal B stays pending).
+	n0 := auditCount(t, s)
+	rep = mustCrawl(t, s, "alpha", tool("echo", "A"))
+	if k := kindsOf(rep)["echo"]; k != ChangeChanged {
+		t.Errorf("drift to the rejected digest: kind %s, want changed", k)
+	}
+	if added := auditEvents(t, s)[n0:]; strings.Join(added, ",") != "tool.drifted,crawl.completed" {
+		t.Errorf("events = %v", added)
+	}
+	if v := mustTool(t, s, "alpha", "echo"); v.Pending != dB || v.LastSeen != dA {
+		t.Errorf("tool = %+v", v)
 	}
 }
 
@@ -104,13 +118,8 @@ func TestRecordCrawl_ManyToolsInOneTransaction(t *testing.T) {
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	const n = 400
-	first := make([]CrawledTool, n)
-	for i := range first {
-		name := fmt.Sprintf("tool-%04d", i)
-		first[i] = CrawledTool{Name: name, Raw: def(name, "v1")}
-	}
 	gen := mustGeneration(t, s)
-	rep := mustCrawl(t, s, "alpha", first...)
+	rep := mustCrawl(t, s, "alpha", bigCrawl(n, "v1")...)
 	if len(rep.Changes) != n || mustGeneration(t, s) != gen+1 {
 		t.Fatalf("changes = %d, generation moved by %d", len(rep.Changes), mustGeneration(t, s)-gen)
 	}
@@ -136,6 +145,10 @@ func TestRecordCrawl_StampsUTCNanosecondTimes(t *testing.T) {
 	if entries[0].TS != "2030-01-02T02:04:05.678901234Z" {
 		t.Errorf("audit ts = %q", entries[0].TS)
 	}
+	mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	if snap := mustSnapshot(t, s, "alpha"); !snap.CrawledAt.Equal(fixed) || snap.CrawledAt.Location() != time.UTC {
+		t.Errorf("CrawledAt = %v", snap.CrawledAt)
+	}
 }
 
 func TestClassify(t *testing.T) {
@@ -150,14 +163,20 @@ func TestClassify(t *testing.T) {
 		events []lifecycle.Event
 		want   ChangeKind
 	}{
-		"none":                 {nil, ChangeUnchanged},
-		"new":                  {ev(lifecycle.EvDiscovered, lifecycle.EvProposed), ChangeNew},
-		"changed":              {ev(lifecycle.EvSuperseded, lifecycle.EvProposed, lifecycle.EvDrifted), ChangeChanged},
-		"proposed only":        {ev(lifecycle.EvProposed), ChangeChanged},
-		"reverted":             {ev(lifecycle.EvSuperseded, lifecycle.EvReverted), ChangeReverted},
-		"missing":              {ev(lifecycle.EvMissing), ChangeMissing},
-		"deprecated":           {ev(lifecycle.EvDeprecated), ChangeDeprecated},
-		"reappeared beats new": {ev(lifecycle.EvReappeared, lifecycle.EvSuperseded, lifecycle.EvProposed), ChangeReappeared},
+		"none":                       {nil, ChangeUnchanged},
+		"new":                        {ev(lifecycle.EvDiscovered, lifecycle.EvProposed), ChangeNew},
+		"changed":                    {ev(lifecycle.EvSuperseded, lifecycle.EvProposed, lifecycle.EvDrifted), ChangeChanged},
+		"proposed only":              {ev(lifecycle.EvProposed), ChangeChanged},
+		"drift to a known digest":    {ev(lifecycle.EvDrifted), ChangeChanged},
+		"reverted":                   {ev(lifecycle.EvSuperseded, lifecycle.EvReverted), ChangeReverted},
+		"missing":                    {ev(lifecycle.EvMissing), ChangeMissing},
+		"deprecated":                 {ev(lifecycle.EvDeprecated), ChangeDeprecated},
+		"unusable":                   {ev(lifecycle.EvUnusable), ChangeUnusable},
+		"unusable after a miss":      {ev(lifecycle.EvReturned, lifecycle.EvUnusable), ChangeUnusable},
+		"returned on the approval":   {ev(lifecycle.EvReturned, lifecycle.EvReverted), ChangeReturned},
+		"returned with a proposal":   {ev(lifecycle.EvReturned, lifecycle.EvSuperseded, lifecycle.EvProposed, lifecycle.EvDrifted), ChangeChanged},
+		"returned drifted but known": {ev(lifecycle.EvReturned, lifecycle.EvDrifted), ChangeReturned},
+		"reappeared beats new":       {ev(lifecycle.EvReappeared, lifecycle.EvSuperseded, lifecycle.EvProposed), ChangeReappeared},
 	} {
 		if got := classify(tc.events); got != tc.want {
 			t.Errorf("%s: classify = %s, want %s", name, got, tc.want)
@@ -219,6 +238,18 @@ func TestSave_RefusesInconsistentLifecycleResults(t *testing.T) {
 		after.State, after.Approved = lifecycle.Enabled, strings.Repeat("c", 64)
 		return after, nil
 	})
+	try("renamed first proposer", func(rec *toolRec) (lifecycle.Tool, *preparedTool) {
+		after := rec.tool
+		after.Versions = append([]lifecycle.Version(nil), rec.tool.Versions...)
+		after.Versions[0].ProposedBy = "mallory"
+		return after, nil
+	})
+	try("rewritten proposer history", func(rec *toolRec) (lifecycle.Tool, *preparedTool) {
+		after := rec.tool
+		after.Versions = append([]lifecycle.Version(nil), rec.tool.Versions...)
+		after.Versions[0].Proposers = lifecycle.ProposersOf("mallory", "crawler")
+		return after, nil
+	})
 	err := s.inTx(bg, func(tx *txn) error {
 		rec, err := loadTool(bg, tx, "alpha", "echo")
 		if err != nil {
@@ -255,13 +286,13 @@ func TestRecordCrawl_DoesNotModifyItsInput(t *testing.T) {
 	mustAddServer(t, s, "alpha")
 	in := CrawlInput{Server: "alpha", Complete: true, Error: "x", Tools: []CrawledTool{
 		{Name: "b", Raw: def("b", "v1")}, {Name: "a", Raw: def("a", "v1")},
-	}}
+	}, Unusable: []UnusableTool{unusableOf("u", "not-canonical")}}
 	wantRaw := [][]byte{bytes.Clone(in.Tools[0].Raw), bytes.Clone(in.Tools[1].Raw)}
 	if _, err := s.RecordCrawl(bg, in, crawler); err != nil {
 		t.Fatal(err)
 	}
-	if in.Tools[0].Name != "b" || in.Tools[1].Name != "a" {
-		t.Errorf("RecordCrawl reordered the caller's tools: %v", in.Tools)
+	if in.Tools[0].Name != "b" || in.Tools[1].Name != "a" || in.Unusable[0].Name != "u" {
+		t.Errorf("RecordCrawl reordered the caller's tools: %v %v", in.Tools, in.Unusable)
 	}
 	for i := range wantRaw {
 		if !bytes.Equal(in.Tools[i].Raw, wantRaw[i]) {

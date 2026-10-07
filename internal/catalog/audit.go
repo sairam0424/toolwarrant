@@ -13,8 +13,15 @@ import (
 // Audit events the catalog adds to the lifecycle's own.
 const (
 	evServerAdded    = "server.added"
+	evServerPaused   = "server.paused"
+	evServerResumed  = "server.resumed"
 	evCrawlCompleted = "crawl.completed"
 	evCrawlFailed    = "crawl.failed"
+	// evToolRejected records a listed entry that no tool row describes: an
+	// unknown name whose definition or name broke a rule. Its detail carries
+	// the reason class and the quoted name, or a marker when the name itself
+	// was refused.
+	evToolRejected = "tool.rejected"
 
 	noDigest    = "-" // the digest field of an event that concerns no version
 	noLimit     = -1  // SQLite: a negative LIMIT means no limit
@@ -68,14 +75,16 @@ func (t *txn) appendAudit(ctx context.Context, by Actor, event, subject, before,
 
 // auditTool writes one entry per lifecycle event. before_hash and after_hash
 // are the approved digest before and after the whole operation; the detail
-// names the digest the event concerns and the state change, never tool text.
-func (t *txn) auditTool(ctx context.Context, by Actor, server, tool string, before, after lifecycle.Tool, events []lifecycle.Event) error {
+// names the digest the event concerns and the state change, followed by note
+// (the reason class of an unusable observation), never tool text.
+func (t *txn) auditTool(ctx context.Context, by Actor, server, tool string, before, after lifecycle.Tool,
+	events []lifecycle.Event, note string) error {
 	for _, ev := range events {
 		digest := ev.Digest
 		if digest == "" {
 			digest = noDigest
 		}
-		detail := fmt.Sprintf("digest=%s state=%s->%s", digest, before.State, after.State)
+		detail := fmt.Sprintf("digest=%s state=%s->%s%s", digest, before.State, after.State, note)
 		if err := t.appendAudit(ctx, by, string(ev.Kind), server+"/"+tool, before.Approved, after.Approved, detail); err != nil {
 			return err
 		}
@@ -89,7 +98,7 @@ func queryAudit(ctx context.Context, q queryer, after int64, limit int) ([]audit
 	if err != nil {
 		return nil, fmt.Errorf("catalog: read audit log: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []audit.Entry{}
 	for rows.Next() {
 		e, err := scanAudit(rows)
@@ -121,6 +130,12 @@ func (s *Store) AuditEntries(ctx context.Context, after int64, limit int) ([]aud
 
 // VerifyAudit reads the whole log and checks the hash chain. A broken chain
 // yields *audit.BrokenError, returned as is so callers can errors.As it.
+//
+// Memory: the log is read in pages but held whole for audit.Verify, so the
+// cost is one Entry (a few hundred bytes; details are short and never carry
+// tool text) per event ever recorded. A catalog of ten thousand tools crawled
+// daily for a year is on the order of a hundred megabytes; an operator
+// verifying a log that large should expect that.
 func (s *Store) VerifyAudit(ctx context.Context) (AuditSummary, error) {
 	var entries []audit.Entry
 	err := s.inRead(ctx, func(q queryer) error {

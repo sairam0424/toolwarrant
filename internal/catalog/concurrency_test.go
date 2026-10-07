@@ -15,7 +15,8 @@ import (
 // Each goroutine owns one server, so the outcome of every operation is known in
 // advance; what is under test is that writes from many goroutines and two
 // handles (standing in for two processes) on one file all succeed, serialise
-// cleanly, and leave one unbroken hash chain.
+// cleanly, and leave one unbroken hash chain. The default busy timeout must
+// carry a loaded machine.
 func TestConcurrency_ManyWritersOnTwoHandles(t *testing.T) {
 	path := dbPath(t)
 	handles := []*Store{
@@ -77,10 +78,6 @@ func TestConcurrency_ManyWritersOnTwoHandles(t *testing.T) {
 	}
 }
 
-func crawlFor(server string, tools ...CrawledTool) CrawlInput {
-	return CrawlInput{Server: server, Complete: true, Tools: tools}
-}
-
 // Exactly one of several simultaneous approvals of the same proposal wins; the
 // rest see the tool already enabled. No interleaving can approve twice.
 func TestConcurrency_OnlyOneApprovalOfAProposalWins(t *testing.T) {
@@ -123,20 +120,10 @@ func TestConcurrency_OnlyOneApprovalOfAProposalWins(t *testing.T) {
 	}
 }
 
-func countEvents(t *testing.T, s *Store, event string) int {
-	t.Helper()
-	n := 0
-	for _, e := range auditEvents(t, s) {
-		if e == event {
-			n++
-		}
-	}
-	return n
-}
-
 // A reader on one handle must always see a snapshot whose policy belongs to
 // its generation, never a generation ahead of or behind its data, while another
-// handle keeps writing.
+// handle keeps writing. The upstream flips between two definitions, so every
+// crawl moves LastSeen without ever adding a third version.
 func TestConcurrency_SnapshotMatchesItsGeneration(t *testing.T) {
 	path := dbPath(t)
 	writer := openStore(t, path, lifecycle.DefaultPolicy())
@@ -144,19 +131,21 @@ func TestConcurrency_SnapshotMatchesItsGeneration(t *testing.T) {
 	mustAddServer(t, writer, "alpha")
 	base := mustGeneration(t, writer) // crawl k leaves the generation at base+k
 	const crawls = 40
+	variant := func(k int64) string { return fmt.Sprintf("v%d", k%2) }
 
 	var writerFailed atomic.Bool
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for k := 1; k <= crawls; k++ {
-			if _, err := writer.RecordCrawl(bg, crawlFor("alpha", tool("echo", fmt.Sprintf("v%d", k))), crawler); err != nil {
+		for k := int64(1); k <= crawls; k++ {
+			if _, err := writer.RecordCrawl(bg, crawlFor("alpha", tool("echo", variant(k))), crawler); err != nil {
 				t.Errorf("crawl %d: %v", k, err)
 				writerFailed.Store(true)
 				return
 			}
 		}
 	}()
+	defer func() { <-done }() // never leave the writer running after the test
 
 	var last int64
 	for {
@@ -169,7 +158,7 @@ func TestConcurrency_SnapshotMatchesItsGeneration(t *testing.T) {
 		}
 		last = snap.Generation
 		if k := snap.Generation - base; k > 0 {
-			if got, want := snap.Tools["echo"].LastSeen, digestOf(t, "echo", fmt.Sprintf("v%d", k)); got != want {
+			if got, want := snap.Tools["echo"].LastSeen, digestOf(t, "echo", variant(k)); got != want {
 				t.Fatalf("snapshot at generation %d (crawl %d) shows another definition", snap.Generation, k)
 			}
 		}
@@ -235,6 +224,43 @@ func TestConcurrency_WaitingForTheWriteLock(t *testing.T) {
 	}
 	if _, err := holder.VerifyAudit(bg); err != nil {
 		t.Error(err)
+	}
+}
+
+// The busy timeout is configurable: a store opened with a short one gives up
+// on a lock another process holds for longer, with SQLITE_BUSY.
+func TestConcurrency_BusyTimeoutIsConfigurable(t *testing.T) {
+	path := dbPath(t)
+	holder := openStore(t, path, lifecycle.DefaultPolicy())
+	impatient, err := OpenWith(path, OpenOptions{Policy: lifecycle.DefaultPolicy(), BusyTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = impatient.Close() })
+	mustAddServer(t, holder, "alpha")
+
+	locked, release := make(chan struct{}), make(chan struct{})
+	var holding sync.WaitGroup
+	holding.Add(1)
+	go func() {
+		defer holding.Done()
+		_ = holder.inTx(bg, func(*txn) error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	began := time.Now()
+	_, err = impatient.AddServer(bg, ServerSpec{Name: "late", URL: "https://l.example.com"}, alice)
+	waited := time.Since(began)
+	close(release)
+	holding.Wait()
+	if err == nil || !isBusy(err) {
+		t.Fatalf("a 50 ms busy timeout against a held lock: %v, want SQLITE_BUSY", err)
+	}
+	if waited > 5*time.Second {
+		t.Errorf("gave up after %v; the short timeout was not applied", waited)
 	}
 }
 

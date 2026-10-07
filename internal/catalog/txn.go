@@ -38,7 +38,7 @@ func (t *txn) exec(ctx context.Context, query string, args ...any) (sql.Result, 
 	st, ok := t.stmts[query]
 	if !ok {
 		var err error
-		if st, err = t.Tx.PrepareContext(ctx, query); err != nil {
+		if st, err = t.PrepareContext(ctx, query); err != nil {
 			return nil, err
 		}
 		t.stmts[query] = st

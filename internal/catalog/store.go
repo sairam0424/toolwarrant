@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,13 +16,16 @@ import (
 )
 
 const (
-	driverName        = "sqlite"
-	busyTimeoutMillis = 5000
-	maxReadConns      = 8
-	dbFileMode        = 0o600
-	memoryPath        = ":memory:"
-	walMode           = "wal"
-	walRetryDelay     = 20 * time.Millisecond
+	driverName = "sqlite"
+	// DefaultBusyTimeout is how long a write waits for another process's lock.
+	// A crawl of many changed tools can hold the lock for seconds; an
+	// operator's approve in another process must wait for it, not fail.
+	DefaultBusyTimeout = 30 * time.Second
+	maxReadConns       = 8
+	dbFileMode         = 0o600
+	memoryPath         = ":memory:"
+	walMode            = "wal"
+	walRetryDelay      = 20 * time.Millisecond
 
 	// Primary SQLite result codes that mean "someone else holds the lock".
 	sqliteBusy   = 5
@@ -34,32 +36,65 @@ const (
 	timeLayout = "2006-01-02T15:04:05.000000000Z"
 )
 
-// ErrCorrupt means the database contradicts itself: a stored digest does not
-// hash its canonical form, a pointer dangles, or a status disagrees with the
-// tool row. Someone edited the file outside this package, or a bug wrote it.
-// Callers must not serve from a corrupt catalog.
-var ErrCorrupt = errors.New("catalog: database integrity check failed")
+// OpenOptions configures OpenWith.
+type OpenOptions struct {
+	// Policy controls the lifecycle rules.
+	Policy lifecycle.Policy
+	// ReadOnly opens the file with SQLite's mode=ro and makes every mutating
+	// method return ErrReadOnly. The database must exist and be in WAL mode
+	// (every Open leaves it so). SQLite still needs the -shm file: it must
+	// exist and be writable, or the directory must allow creating it; a
+	// directory the reader cannot write to needs an existing -shm file.
+	ReadOnly bool
+	// MustExist makes a missing file ErrNotFound instead of creating it, so a
+	// mistyped path cannot quietly become an empty catalog.
+	MustExist bool
+	// BusyTimeout is how long a write waits for another process's lock; zero
+	// means DefaultBusyTimeout.
+	BusyTimeout time.Duration
+	// AllowSharedFile accepts an existing file that is readable by its group
+	// or by others. Off by default: the file holds the approval state and the
+	// audit log, and the WAL and SHM files inherit its mode.
+	AllowSharedFile bool
+	// Forensic opens a database of ours even when its guard triggers or
+	// indexes are missing, which Open otherwise reports as ErrCorrupt. It is
+	// for inspection after tampering: VerifyAudit can then name the broken
+	// entry and the views can show the rows. It implies ReadOnly; nothing is
+	// ever served or written from such an open.
+	Forensic bool
+}
 
-// Store is the catalog. Create one with Open and release it with Close.
+// Store is the catalog. Create one with Open or OpenWith and release it with
+// Close.
 //
 // Writes go through a single connection so writers in one process queue up in
 // the pool instead of fighting over the file lock; writers in other processes
 // are handled by SQLite's busy timeout. Reads use separate read-only
 // connections, so a slow reader never delays a writer (WAL).
 type Store struct {
-	wdb    *sql.DB
-	rdb    *sql.DB
-	policy lifecycle.Policy
-	now    func() time.Time
+	wdb      *sql.DB // nil when the store is read-only
+	rdb      *sql.DB
+	policy   lifecycle.Policy
+	now      func() time.Time
+	readOnly bool
 }
 
-// Open opens or creates the database at path. It enables WAL, foreign keys and
-// a busy timeout, creates the schema, and refuses a database written by a newer
-// schema version (ErrSchema). policy controls the lifecycle rules.
-//
-// A new file is created readable by its owner only: it holds the approval
-// state and the audit log.
+// Open opens or creates the database at path with the default options: read
+// and write, create a missing file, DefaultBusyTimeout. It enables WAL,
+// foreign keys and the busy timeout, creates the schema, and refuses a
+// database written by another schema version (ErrSchema) or by another
+// application. See OpenWith for the rules on the file itself.
 func Open(path string, policy lifecycle.Policy) (*Store, error) {
+	return OpenWith(path, OpenOptions{Policy: policy})
+}
+
+// OpenWith opens the database at path per opts. The file is checked before
+// SQLite touches it: a symbolic link, a non-regular file, or a file readable by
+// group or others (unless AllowSharedFile) is ErrInvalid; a missing file is
+// created owner-only unless MustExist or ReadOnly (ErrNotFound). The schema
+// version is checked before the journal mode is switched, so a foreign
+// database is refused untouched.
+func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" || path == memoryPath {
 		return nil, fmt.Errorf("%w: a database file path is required", ErrInvalid)
 	}
@@ -67,29 +102,59 @@ func Open(path string, policy lifecycle.Policy) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("catalog: resolve database path: %w", err)
 	}
-	if err := createPrivateFile(abs); err != nil {
-		return nil, fmt.Errorf("catalog: create database file: %w", err)
+	if err := prepareDatabaseFile(abs, opts); err != nil {
+		return nil, err
 	}
-	wdb, err := openPool(abs, true, 1)
+	timeout := opts.BusyTimeout
+	if timeout <= 0 {
+		timeout = DefaultBusyTimeout
+	}
+	if opts.ReadOnly || opts.Forensic {
+		return openReadOnly(abs, opts, timeout)
+	}
+	wdb, err := openPool(dsnFor(abs, connWriter, timeout), 1)
 	if err != nil {
 		return nil, err
 	}
-	if err := prepareFile(context.Background(), wdb); err != nil {
+	if err := prepareFile(context.Background(), wdb, timeout); err != nil {
 		_ = wdb.Close()
 		return nil, err
 	}
-	rdb, err := openPool(abs, false, maxReadConns)
+	rdb, err := openPool(dsnFor(abs, connReader, timeout), maxReadConns)
 	if err != nil {
 		_ = wdb.Close()
 		return nil, err
 	}
-	return &Store{wdb: wdb, rdb: rdb, policy: policy, now: time.Now}, nil
+	return &Store{wdb: wdb, rdb: rdb, policy: opts.Policy, now: time.Now}, nil
+}
+
+// openReadOnly opens an existing WAL database through mode=ro connections only.
+func openReadOnly(abs string, opts OpenOptions, timeout time.Duration) (*Store, error) {
+	rdb, err := openPool(dsnFor(abs, connReadOnlyFile, timeout), maxReadConns)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkReadOnlyFile(context.Background(), rdb, !opts.Forensic); err != nil {
+		_ = rdb.Close()
+		return nil, err
+	}
+	return &Store{rdb: rdb, policy: opts.Policy, now: time.Now, readOnly: true}, nil
 }
 
 // Close releases the database.
 func (s *Store) Close() error {
-	return errors.Join(s.rdb.Close(), s.wdb.Close())
+	var errs []error
+	if s.rdb != nil {
+		errs = append(errs, s.rdb.Close())
+	}
+	if s.wdb != nil {
+		errs = append(errs, s.wdb.Close())
+	}
+	return errors.Join(errs...)
 }
+
+// ReadOnly reports whether the store was opened with OpenOptions.ReadOnly.
+func (s *Store) ReadOnly() bool { return s.readOnly }
 
 // Generation returns a counter that increases by at least one with every
 // committed write, from any process. Readers poll it to know when to reload.
@@ -112,8 +177,8 @@ func readGeneration(ctx context.Context, q queryer) (int64, error) {
 	return gen, nil
 }
 
-// queryer is the read half shared by *sql.Tx and txn, so one loader serves both
-// read transactions and write transactions.
+// queryer is the read half shared by *sql.Tx, *sql.DB and txn, so one loader
+// serves read transactions, write transactions and the open-time checks.
 type queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -121,8 +186,11 @@ type queryer interface {
 
 // inTx runs fn in one BEGIN IMMEDIATE transaction. Whatever fn did is committed
 // together with exactly one generation bump, or rolled back if fn (or the bump)
-// fails or panics.
+// fails or panics. A read-only store refuses before touching the database.
 func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
+	if s.readOnly || s.wdb == nil {
+		return ErrReadOnly
+	}
 	sqlTx, err := s.wdb.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("catalog: begin write transaction: %w", err)
@@ -157,8 +225,8 @@ func (s *Store) inRead(ctx context.Context, fn func(q queryer) error) error {
 	return fn(tx)
 }
 
-func openPool(absPath string, writer bool, maxConns int) (*sql.DB, error) {
-	db, err := sql.Open(driverName, dsnFor(absPath, writer))
+func openPool(dsn string, maxConns int) (*sql.DB, error) {
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: open database: %w", err)
 	}
@@ -170,44 +238,104 @@ func openPool(absPath string, writer bool, maxConns int) (*sql.DB, error) {
 	return db, nil
 }
 
-// dsnFor builds the connection string. The writer pool starts every
-// transaction with BEGIN IMMEDIATE so that two processes cannot both read and
-// then fail to upgrade to a write lock; the reader pool cannot write at all.
-func dsnFor(absPath string, writer bool) string {
+// connKind selects the connection string for one pool.
+type connKind int
+
+const (
+	// connWriter starts every transaction with BEGIN IMMEDIATE so that two
+	// processes cannot both read and then fail to upgrade to a write lock.
+	connWriter connKind = iota
+	// connReader cannot write (query_only) but shares the writable file handle
+	// mode, so it can create the -shm file.
+	connReader
+	// connReadOnlyFile opens the file itself read-only (mode=ro) and is also
+	// query_only; it never switches the journal mode or runs the migration.
+	connReadOnlyFile
+)
+
+// dsnFor builds the connection string for one kind of connection.
+func dsnFor(absPath string, kind connKind, timeout time.Duration) string {
 	q := url.Values{}
-	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis))
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", timeout.Milliseconds()))
 	q.Add("_pragma", "foreign_keys(1)")
-	if writer {
+	switch kind {
+	case connWriter:
 		q.Set("_txlock", "immediate")
-	} else {
+	case connReader:
 		q.Add("_pragma", "query_only(1)")
+	case connReadOnlyFile:
+		q.Add("_pragma", "query_only(1)")
+		q.Set("mode", "ro")
 	}
 	u := url.URL{Scheme: "file", Path: absPath, RawQuery: q.Encode()}
 	return u.String()
 }
 
-// prepareFile refuses a newer database before touching it, switches the file
-// to WAL and creates or checks the schema.
-func prepareFile(ctx context.Context, db *sql.DB) error {
-	var version int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		return fmt.Errorf("catalog: read schema version: %w", err)
+// prepareFile decides whether the file is ours before changing anything about
+// it: a foreign database, an empty file carrying other tables, or another
+// schema version is refused with its journal mode untouched. Only then is the
+// file switched to WAL and the schema created or checked.
+func prepareFile(ctx context.Context, db *sql.DB, timeout time.Duration) error {
+	version, err := readUserVersion(ctx, db)
+	if err != nil {
+		return err
 	}
-	if version < 0 || version > schemaVersion {
-		return fmt.Errorf("%w: database is version %d, this build supports %d", ErrSchema, version, schemaVersion)
+	switch version {
+	case 0:
+		objects, err := countObjects(ctx, db)
+		if err != nil {
+			return err
+		}
+		if objects > 0 {
+			return fmt.Errorf("%w: the file holds another application's tables", ErrSchema)
+		}
+	case schemaVersion:
+		if err := checkOurs(ctx, db, true); err != nil {
+			return err
+		}
+	default:
+		return schemaError(version)
 	}
-	if err := enableWAL(ctx, db); err != nil {
+	if err := enableWAL(ctx, db, timeout); err != nil {
 		return err
 	}
 	return migrate(ctx, db)
+}
+
+// checkReadOnlyFile verifies that a read-only open found a complete, WAL-mode
+// database of ours. Nothing can be created or converted on this path. A
+// forensic open skips the guard check (requireGuards false).
+func checkReadOnlyFile(ctx context.Context, db *sql.DB, requireGuards bool) error {
+	version, err := readUserVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	switch version {
+	case 0:
+		return fmt.Errorf("%w: the database is empty; initialise it with a read-write open first", ErrSchema)
+	case schemaVersion:
+		if err := checkOurs(ctx, db, requireGuards); err != nil {
+			return err
+		}
+	default:
+		return schemaError(version)
+	}
+	var mode string
+	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return fmt.Errorf("catalog: read journal mode: %w", err)
+	}
+	if !strings.EqualFold(mode, walMode) {
+		return fmt.Errorf("catalog: a read-only open needs a WAL-mode database, got %q; open it read-write once", mode)
+	}
+	return nil
 }
 
 // enableWAL switches the file to WAL. Converting a new file needs an exclusive
 // lock, and SQLite reports SQLITE_BUSY at once instead of running the busy
 // handler when several processes start on the same new file, so the losers
 // retry until the winner has finished.
-func enableWAL(ctx context.Context, db *sql.DB) error {
-	deadline := time.Now().Add(busyTimeoutMillis * time.Millisecond)
+func enableWAL(ctx context.Context, db *sql.DB, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for {
 		var mode string
 		err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode)
@@ -235,14 +363,6 @@ func isBusy(err error) bool {
 	}
 	code := se.Code() & 0xff // strip the extended result code
 	return code == sqliteBusy || code == sqliteLocked
-}
-
-func createPrivateFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, dbFileMode)
-	if err != nil {
-		return err
-	}
-	return f.Close()
 }
 
 func formatTime(t time.Time) string { return t.UTC().Format(timeLayout) }
