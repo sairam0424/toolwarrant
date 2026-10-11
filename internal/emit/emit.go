@@ -23,7 +23,11 @@
 //     the gateway's own sockets (a loopback, localhost or wildcard host with
 //     the serving port or a listener port, or the very address the input
 //     binds for one of them) is refused: the gateway would dial its own
-//     listener for every hook, and --validate-only does not notice. A
+//     listener for every hook, and --validate-only does not notice. A host
+//     that is not an IP literal is refused with such a port too, because a
+//     name may resolve to this host; the names common resolvers map to
+//     loopback without DNS (localhost and its /etc/hosts aliases,
+//     IsLoopbackName) count as loopback for this rule and for the warning. A
 //     numeric host that is not the canonical dotted quad ("127.1",
 //     "0x7f.0.0.1", "2130706433") is refused as ambiguous: the resolver reads
 //     it as 127.0.0.1 while the rules here could not.

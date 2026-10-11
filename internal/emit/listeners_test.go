@@ -321,11 +321,14 @@ func TestAllowAllInterfacesIsOnlyAPermissionForListeners(t *testing.T) {
 	}
 }
 
-// TestIsLoopbackHost pins the processor-host predicate on its own.
+// TestIsLoopbackHost pins the processor-host predicate on its own: loopback
+// names in any case (localhost and its resolver aliases, IsLoopbackName) and
+// loopback literals; nothing else.
 func TestIsLoopbackHost(t *testing.T) {
 	for host, want := range map[string]bool{
-		"localhost": true, "LOCALHOST": true, "127.0.0.1": true, "127.255.255.254": true, "::1": true,
-		"localhost.": false, "localhost.example": false, "h.example": false, "10.0.0.5": false, "0.0.0.0": false, "": false, "127.1": false,
+		"localhost": true, "LOCALHOST": true, "localhost4": true, "Ip6-Localhost": true, "localhost6.localdomain6": true,
+		"127.0.0.1": true, "127.255.255.254": true, "::1": true,
+		"localhost.": false, "localhost.example": false, "localhost5": false, "h.example": false, "10.0.0.5": false, "0.0.0.0": false, "": false, "127.1": false,
 	} {
 		if got := isLoopbackHost(host); got != want {
 			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)

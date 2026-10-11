@@ -13,9 +13,8 @@ const (
 	reachOtherHosts     = "an address other hosts can reach"
 )
 
-// localhostName is the one host name the processor rules treat as loopback,
-// mirroring the serve command: any other name is not resolved, because a
-// name is not a safe way to say "loopback".
+// localhostName is the one host name every resolver maps to loopback;
+// loopbackNames adds the aliases common /etc/hosts files carry beside it.
 const localhostName = "localhost"
 
 // processorRisk is what a processor reachable from other hosts means.
@@ -60,11 +59,46 @@ func processorHost(addr string) string {
 	return host
 }
 
-// isLoopbackHost reports whether a processor host is "localhost" in any case
-// or a loopback IP literal. Anything else, a specific address or a name, is
-// taken to be reachable from other hosts.
+// loopbackNames are the host names the resolvers of common gateway hosts map
+// to 127.0.0.1 or ::1 from /etc/hosts without any DNS query: localhost, the
+// aliases the RHEL and Fedora family ship ("127.0.0.1 localhost
+// localhost.localdomain localhost4 localhost4.localdomain4" and "::1
+// localhost localhost.localdomain localhost6 localhost6.localdomain6") and
+// the ones Debian and Ubuntu ship ("::1 ip6-localhost ip6-loopback"). A
+// function rather than a package-level slice so that the list cannot be
+// modified at run time.
+func loopbackNames() []string {
+	return []string{
+		localhostName, "localhost.localdomain", "localhost4", "localhost4.localdomain4",
+		"localhost6", "localhost6.localdomain6", "ip6-localhost", "ip6-loopback",
+	}
+}
+
+// IsLoopbackName reports whether host is a name common resolvers map to a
+// loopback address without any DNS query (loopbackNames), compared without
+// regard to case as DNS names are. It is exported so that the serve command's
+// listen rule and the emitter's processor rules read one list (D15 h): the
+// fifth review found the emitter warning that a processor at
+// localhost.localdomain was off loopback, so the printed serve command
+// demanded --allow-non-loopback and a secret for a loopback socket, while the
+// socket rule let the alias reach the gateway's own port. Any other name is
+// not resolved, because a name is not a safe way to say "loopback"; the
+// socket rule treats it as a host that may resolve to this one
+// (refuseGatewaySocket).
+func IsLoopbackName(host string) bool {
+	for _, name := range loopbackNames() {
+		if strings.EqualFold(host, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLoopbackHost reports whether a processor host is a loopback name
+// (IsLoopbackName) or a loopback IP literal. Anything else, a specific
+// address or another name, is taken to be reachable from other hosts.
 func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, localhostName) {
+	if IsLoopbackName(host) {
 		return true
 	}
 	addr, err := netip.ParseAddr(host)

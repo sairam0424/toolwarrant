@@ -97,11 +97,15 @@ type validated struct {
 // port, or the very address the input binds for that socket, is the socket
 // the gateway binds itself, so the gateway would dial its own HTTP listener
 // for every hook (fail closed, every route of that server dark) or, if the
-// processor started first, fail to bind. A numeric host that is not a
+// processor started first, fail to bind. A host that is not an IP literal is
+// refused with such a port as well, because a name may resolve to this host
+// (D15 h; the names common resolvers map to loopback without DNS,
+// IsLoopbackName, are this host like 127.0.0.1). A numeric host that is not a
 // canonical dotted quad ("127.1", "0x7f.0.0.1") is refused before that rule,
 // because the resolver reads it as an address the rule cannot see
-// (refuseAmbiguousHost). --validate-only accepts the collision and the
-// spellings alike (TestGatewayAcceptsAProcessorOnItsOwnSocket,
+// (refuseAmbiguousHost). --validate-only accepts the collision, the names and
+// the spellings alike (TestGatewayAcceptsAProcessorOnItsOwnSocket,
+// TestGatewayAcceptsAProcessorNamedForItsOwnSocket,
 // TestGatewayAcceptsAmbiguousProcessorSpellings), so these checks are the
 // only ones between emit and the reload.
 func validate(in Input) (validated, error) {

@@ -91,13 +91,16 @@ func TestProcessorSocketRuleFollowsTheListenerInputs(t *testing.T) {
 }
 
 // TestProcessorOnAnotherHostMayShareAGatewayPort: the rule is about this
-// host. A processor on a specific address or a name may use any port, with
-// the usual off-loopback warning; the emitter cannot know whether a specific
-// address the input does not bind is this host, so it does not pretend to
-// (one the input does bind is recognised:
-// TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused).
+// host. A processor on a specific address the input does not bind may use
+// any port, with the usual off-loopback warning; the emitter cannot know
+// whether such an address is this host, so it does not pretend to (one the
+// input does bind is recognised:
+// TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused). A name is not
+// among the accepted hosts any more: since D15 (h) a name on a gateway port
+// is refused because it may resolve to this host
+// (TestProcessorNameOnAGatewayPortIsRefused).
 func TestProcessorOnAnotherHostMayShareAGatewayPort(t *testing.T) {
-	for _, addr := range []string{"10.0.0.5:15000", "h.example:" + strconv.Itoa(testListenPort), "192.168.1.20:15020", "processor.svc:15021"} {
+	for _, addr := range []string{"10.0.0.5:15000", "10.0.0.6:" + strconv.Itoa(testListenPort), "192.168.1.20:15020", "172.16.0.9:15021"} {
 		s := validServer("a")
 		s.ProcessorAddr = addr
 		out, err := AgentGateway(Input{ListenPort: testListenPort, Servers: []Server{s}})
@@ -140,14 +143,15 @@ func TestProcessorSocketRuleLeavesOtherRefusalsAlone(t *testing.T) {
 	}
 }
 
-// TestIsThisHost pins the predicate: loopback and localhost as isLoopbackHost
-// has them, plus both wildcards in any spelling; names, specific addresses,
-// a bracketed host and malformed hosts are not this host.
+// TestIsThisHost pins the predicate: loopback literals and loopback names as
+// isLoopbackHost has them (localhost and its resolver aliases, D15 h), plus
+// both wildcards in any spelling; other names, specific addresses, a
+// bracketed host and malformed hosts are not this host.
 func TestIsThisHost(t *testing.T) {
 	for host, want := range map[string]bool{
 		"127.0.0.1": true, "127.0.0.2": true, "::1": true, "0:0:0:0:0:0:0:1": true, "localhost": true, "LocalHost": true,
-		"0.0.0.0": true, "::": true, "0:0:0:0:0:0:0:0": true,
-		"10.0.0.5": false, "h.example": false, "localhost.": false, "": false, "127.1": false, "0.0.0.0.0": false, "[::1]": false,
+		"localhost.localdomain": true, "IP6-LOOPBACK": true, "0.0.0.0": true, "::": true, "0:0:0:0:0:0:0:0": true,
+		"10.0.0.5": false, "h.example": false, "localhost.": false, "localhost.example": false, "": false, "127.1": false, "0.0.0.0.0": false, "[::1]": false,
 	} {
 		if got := isThisHost(host); got != want {
 			t.Errorf("isThisHost(%q) = %v, want %v", host, got, want)

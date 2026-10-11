@@ -75,26 +75,48 @@ func isDigits(s string) bool {
 }
 
 // refuseGatewaySocket is the rule that keeps a processor off the gateway's
-// own listeners: a processor host that is this host (isThisHost) or the very
-// address a socket binds (isGatewayHost), with that socket's port, is the
-// socket the gateway binds itself. A port the port rule will refuse is left to
-// it. The class comparison stays deliberately coarse, like the listeners'
-// distinct-port rule: "127.0.0.2" with the admin port is refused although the
-// admin API binds 127.0.0.1, because two loopback spellings are not worth
-// telling apart here. A specific address of this host that the input does not
-// bind cannot be recognised and is not refused, and a wildcard listener is not
-// expanded to every specific address, because a processor on another host may
-// legitimately use that port.
+// own listeners. With a port the gateway binds for itself (reserved), a
+// processor host that is this host (isThisHost) or the very address the
+// socket binds (isGatewayHost) is the socket the gateway binds itself, and a
+// host that is not an IP literal is refused as well (D15 h): a name may
+// resolve to this host, through /etc/hosts or DNS, and the emitter has no
+// safe way to tell, so the only hosts that may share a gateway port are IP
+// literals the emitter can see are not this host. The fifth review reached
+// the gateway's own socket with the resolver aliases of localhost
+// (localhost.localdomain, ip6-localhost and their kin, now loopbackNames);
+// with this rule no name at all reaches it. A port the port rule will refuse
+// is left to it. The class comparison stays deliberately coarse, like the
+// listeners' distinct-port rule: "127.0.0.2" with the admin port is refused
+// although the admin API binds 127.0.0.1, because two loopback spellings are
+// not worth telling apart here. A specific address of this host that the
+// input does not bind cannot be recognised and is not refused, and a wildcard
+// listener is not expanded to every specific address, because a processor on
+// another host may legitimately use that port.
 func refuseGatewaySocket(addr, host, portText string, reserved map[int]gatewaySocket) error {
 	port, ok := parsePort(portText)
 	if !ok {
 		return nil
 	}
 	socket, taken := reserved[port]
-	if !taken || !isGatewayHost(host, socket.addr) {
+	if !taken {
 		return nil
 	}
-	return fmt.Errorf("processor address %s is the gateway's own %s socket (port %d): the gateway would dial its own listener for every hook; use a port the gateway does not bind", shown(addr), socket.name, port)
+	if isGatewayHost(host, socket.addr) {
+		return fmt.Errorf("processor address %s is the gateway's own %s socket (port %d): the gateway would dial its own listener for every hook; use a port the gateway does not bind", shown(addr), socket.name, port)
+	}
+	if !isIPLiteral(host) {
+		return fmt.Errorf("processor address %s has a host that is not an IP literal and may resolve to this host, so it may be the gateway's own %s socket (port %d): the gateway would dial its own listener for every hook; write the processor's IP address or use a port the gateway does not bind", shown(addr), socket.name, port)
+	}
+	return nil
+}
+
+// isIPLiteral reports whether host is an address netip.ParseAddr accepts. Only
+// canonical spellings reach the socket rule, so a numeric host that is not a
+// literal has already been refused by refuseAmbiguousHost; what is left when
+// this is false is a name, an empty host or a shape the host rule refuses.
+func isIPLiteral(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err == nil
 }
 
 // isGatewayHost reports whether a processor host collides with the socket
@@ -112,10 +134,11 @@ func isGatewayHost(host string, bound netip.Addr) bool {
 }
 
 // isThisHost reports whether a processor host names the gateway's own host
-// for the socket rule: "localhost" in any case or a loopback literal (see
-// isLoopbackHost), or a wildcard address, which connects to loopback when it
-// is dialled. Only canonical spellings reach it: refuseAmbiguousHost has
-// already refused the resolver's shorthand forms.
+// for the socket rule: a loopback name in any case (IsLoopbackName: localhost
+// and the aliases common resolvers map to loopback without DNS) or a loopback
+// literal (see isLoopbackHost), or a wildcard address, which connects to
+// loopback when it is dialled. Only canonical spellings reach it:
+// refuseAmbiguousHost has already refused the resolver's shorthand forms.
 func isThisHost(host string) bool {
 	if isLoopbackHost(host) {
 		return true
