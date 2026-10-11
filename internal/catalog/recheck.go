@@ -10,18 +10,19 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
 
-// wireStore assembles a Store from its pools, with its clock and verifiers. A
-// forensic open remembers no re-check: it exists to look at a database someone
-// edited and must report what the rows hold now.
+// wireStore assembles a Store from its pools, with its clock, its verifier and
+// its memory of the audit chain. A forensic open remembers no re-check of
+// version bytes: it exists to look at a database someone edited and must
+// report what the rows hold now.
 func wireStore(wdb, rdb *sql.DB, path string, opts OpenOptions) *Store {
 	s := &Store{wdb: wdb, rdb: rdb, path: path, policy: opts.Policy, now: time.Now,
-		readOnly: opts.ReadOnly || opts.Forensic, forensic: opts.Forensic, caps: defaultServerCaps()}
+		readOnly: opts.ReadOnly || opts.Forensic, forensic: opts.Forensic, caps: defaultServerCaps(),
+		chain: newChainMemory()}
 	bound := recheckCacheEntries
 	if opts.Forensic {
 		bound = 0
 	}
 	s.verified = newVerifier(s.clock, bound)
-	s.sealed = newVerifier(s.clock, bound)
 	return s
 }
 

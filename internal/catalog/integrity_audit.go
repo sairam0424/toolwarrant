@@ -58,20 +58,52 @@ func isDecisionEvent(event string) bool {
 	return event == string(lifecycle.EvApproved) || event == string(lifecycle.EvRejected) || event == string(lifecycle.EvRolledBack)
 }
 
-// readLog streams the whole log in pages, oldest first, and notes every entry.
+// readLog streams the whole log in pages, oldest first, verifies every entry's
+// seal and its link to the entry before it (checkLink, D15 c) and notes what
+// every entry says.
 func (c *integrityCheck) readLog() error {
+	var prev audit.Entry
 	for after := int64(0); ; {
 		page, err := queryAudit(c.ctx, c.q, after, auditPage)
 		if err != nil {
 			return err
 		}
 		for _, e := range page {
+			c.checkLink(prev, e)
+			prev = e
 			c.noteEntry(e)
 		}
 		if len(page) < auditPage {
 			return nil
 		}
 		after = page[len(page)-1].Seq
+	}
+}
+
+// checkLink verifies one entry against the entry before it (the zero Entry
+// before the first) and reports each break on its own line: a seq that does
+// not follow means deleted entries; a prev_hash that is not the predecessor's
+// hash means the entry was re-chained or its predecessor rewritten; a hash
+// that is not the hash of the entry's fields means the entry was rewritten in
+// place. Integrity does not stop at a break, as VerifyAudit does, so one
+// report names every one; the cross-checks that follow then rest on entries
+// this pass has verified.
+func (c *integrityCheck) checkLink(prev, e audit.Entry) {
+	if e.Seq != prev.Seq+1 {
+		c.problem("audit entry %d follows entry %d: the sequence has a gap, entries were deleted", e.Seq, prev.Seq)
+		c.rep.ChainBreaks++
+	}
+	want := prev.Hash
+	if prev.Seq == 0 {
+		want = audit.Genesis
+	}
+	if e.PrevHash != want {
+		c.problem("audit entry %d does not continue the chain from entry %d: its prev_hash is not that entry's hash", e.Seq, prev.Seq)
+		c.rep.ChainBreaks++
+	}
+	if h, err := audit.HashOf(e); err != nil || h != e.Hash {
+		c.problem("audit entry %d does not re-seal: its hash is not the hash of its fields; the entry was rewritten in place", e.Seq)
+		c.rep.ChainBreaks++
 	}
 }
 

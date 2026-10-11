@@ -4,25 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// The chain anchor of an approval (D14 a). The newest-decision rule reads the
-// approvals table, which whoever can drop and re-create a guard trigger can
-// rewrite together with the version (the fourth review rewrote canonical, raw,
-// digest and hash_seen under byte-identical re-created triggers and was
-// served). The audit log is the one table whose rows prove themselves: every
-// entry's hash covers its fields and its predecessor's hash. So every read that
-// hands out or acts on an approval also reads the newest version.approved or
+// The chain anchor of an approval (D14 a, D15 b). The newest-decision rule
+// reads the approvals table, which whoever can drop and re-create a guard
+// trigger can rewrite together with the version (the fourth review rewrote
+// canonical, raw, digest and hash_seen under byte-identical re-created
+// triggers and was served). The audit log is the one table whose rows prove
+// themselves, but only as a chain: the fifth review rewrote the approval
+// entry in place, re-sealed from its real predecessor, and the check of that
+// one entry against its predecessor passed. So every read that hands out or
+// acts on an approval also reads the newest version.approved or
 // version.rolled_back entry about the tool, requires its after_hash to be the
-// approved digest, and requires the entry to re-seal from its predecessor. A
-// forger must now rewrite that entry and re-chain every entry after it, which
-// the head the operator records outside the file betrays (the limit D14
-// states). The Store remembers each entry it re-sealed for RecheckTTL
-// (Store.sealed), so a reload hashes an entry at most once per RecheckTTL.
+// approved digest, and requires the entry to be part of the chain the Store
+// verified (chainMemory.verify: the hash computed from its fields now equals
+// the one the verified walk recorded). A forger must rewrite every entry from
+// that one to the head, which the head a running Store pinned and the head
+// the operator recorded betray.
 
 // The SQL that selects the seq of the newest version.approved or
 // version.rolled_back entry about a subject, NULL when there is none. It rests
@@ -53,7 +56,7 @@ func newestDecisionEntry(ctx context.Context, q queryer, subject string) (sql.Nu
 // anchorOne is anchorApproved for the paths that load one tool: it looks the
 // newest approval entry about the tool up and checks the approved version
 // against it. A tool without an approval needs nothing.
-func anchorOne(ctx context.Context, q queryer, sealed *verifier, subject string, versionID int64, digest string) error {
+func anchorOne(ctx context.Context, q queryer, chain *chainMemory, subject string, versionID int64, digest string) error {
 	if digest == "" {
 		return nil
 	}
@@ -61,21 +64,74 @@ func anchorOne(ctx context.Context, q queryer, sealed *verifier, subject string,
 	if err != nil {
 		return err
 	}
-	return anchorApproved(ctx, q, sealed, []approvedRef{{id: versionID, tool: subject, digest: digest, entry: entry}})
+	return anchorApproved(ctx, q, chain, []approvedRef{{id: versionID, tool: subject, digest: digest, entry: entry}})
 }
 
-// anchoredEntry is one decision entry as read for the anchor check, with the
-// hash of the entry before it ("" for the first entry of the log).
-type anchoredEntry struct {
-	entry    audit.Entry
-	prevHash string
+// anchorKnownTools is anchorApproved for a crawl: every loaded tool of the
+// server that has an approved version is anchored, with the newest decision
+// entries looked up in one query per chunk of subjects, so a crawl never
+// records an observation against an approval the log does not back.
+func anchorKnownTools(ctx context.Context, q queryer, chain *chainMemory, server string, known map[string]*toolRec) error {
+	var refs []approvedRef
+	for name, rec := range known {
+		if rec.tool.Approved == "" {
+			continue
+		}
+		id, err := rec.versionID(rec.tool.Approved)
+		if err != nil {
+			return err
+		}
+		refs = append(refs, approvedRef{id: id, tool: server + "/" + name, digest: rec.tool.Approved})
+	}
+	slices.SortFunc(refs, func(a, b approvedRef) int { return strings.Compare(a.tool, b.tool) })
+	for chunk := range chunks(refs) {
+		if err := findDecisionEntries(ctx, q, chunk); err != nil {
+			return err
+		}
+	}
+	return anchorApproved(ctx, q, chain, refs)
+}
+
+// findDecisionEntries fills in the seq of the newest decision entry about each
+// reference's tool, leaving the entry NULL where the log has none.
+func findDecisionEntries(ctx context.Context, q queryer, refs []approvedRef) error {
+	subjects := make([]string, len(refs))
+	for i, r := range refs {
+		subjects[i] = r.tool
+	}
+	rows, err := q.QueryContext(ctx, `SELECT subject, MAX(seq) FROM audit_log WHERE event IN (`+decisionEvents+`)
+		AND subject IN (`+placeholders(len(subjects))+`) GROUP BY subject`, stringArgs(subjects)...)
+	if err != nil {
+		return fmt.Errorf("catalog: find approval entries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	newest := make(map[string]int64, len(refs))
+	for rows.Next() {
+		var (
+			subject string
+			seq     int64
+		)
+		if err := rows.Scan(&subject, &seq); err != nil {
+			return fmt.Errorf("catalog: find approval entries: %w", err)
+		}
+		newest[subject] = seq
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("catalog: find approval entries: %w", err)
+	}
+	for i := range refs {
+		if seq, ok := newest[refs[i].tool]; ok {
+			refs[i].entry = sql.NullInt64{Int64: seq, Valid: true}
+		}
+	}
+	return nil
 }
 
 // anchorApproved requires, for every approved version in refs, the newest
 // decision entry about its tool to exist, to have recorded the approved digest
-// as after_hash, and to re-seal from its predecessor; sealed is the Store's
-// memory of entries already verified. Any failure is ErrCorrupt.
-func anchorApproved(ctx context.Context, q queryer, sealed *verifier, refs []approvedRef) error {
+// as after_hash, and to be part of the chain the Store verified. Any failure
+// is ErrCorrupt.
+func anchorApproved(ctx context.Context, q queryer, chain *chainMemory, refs []approvedRef) error {
 	var seqs []int64
 	for _, r := range refs {
 		if !r.entry.Valid {
@@ -83,36 +139,33 @@ func anchorApproved(ctx context.Context, q queryer, sealed *verifier, refs []app
 		}
 		seqs = append(seqs, r.entry.Int64)
 	}
-	entries := make(map[int64]anchoredEntry, len(seqs))
+	entries := make(map[int64]audit.Entry, len(seqs))
 	for chunk := range chunks(seqs) {
-		if err := readAnchoredEntries(ctx, q, chunk, entries); err != nil {
+		if err := readEntries(ctx, q, chunk, entries); err != nil {
 			return err
 		}
 	}
 	for _, r := range refs {
-		if err := checkAnchor(sealed, r, entries); err != nil {
+		if err := checkAnchor(chain, r, entries); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// readAnchoredEntries reads the entries with the given seqs and the hash of
-// each one's predecessor into out.
-func readAnchoredEntries(ctx context.Context, q queryer, seqs []int64, out map[int64]anchoredEntry) error {
-	rows, err := q.QueryContext(ctx, `SELECT `+auditCols+`, COALESCE((SELECT p.hash FROM audit_log p WHERE p.seq = audit_log.seq - 1), '')
-		FROM audit_log WHERE seq IN (?`+strings.Repeat(",?", len(seqs)-1)+`)`, int64Args(seqs)...)
+// readEntries reads the entries with the given seqs into out.
+func readEntries(ctx context.Context, q queryer, seqs []int64, out map[int64]audit.Entry) error {
+	rows, err := q.QueryContext(ctx, `SELECT `+auditCols+` FROM audit_log WHERE seq IN (`+placeholders(len(seqs))+`)`, int64Args(seqs)...)
 	if err != nil {
 		return fmt.Errorf("catalog: read approval entries: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var a anchoredEntry
-		if err := rows.Scan(&a.entry.Seq, &a.entry.TS, &a.entry.Actor, &a.entry.ActorType, &a.entry.Event, &a.entry.Subject,
-			&a.entry.BeforeHash, &a.entry.AfterHash, &a.entry.Detail, &a.entry.PrevHash, &a.entry.Hash, &a.prevHash); err != nil {
+		e, err := scanAudit(rows)
+		if err != nil {
 			return fmt.Errorf("catalog: read approval entries: %w", err)
 		}
-		out[a.entry.Seq] = a
+		out[e.Seq] = e
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("catalog: read approval entries: %w", err)
@@ -120,27 +173,19 @@ func readAnchoredEntries(ctx context.Context, q queryer, seqs []int64, out map[i
 	return nil
 }
 
-// checkAnchor applies the anchor rule to one approved version.
-func checkAnchor(sealed *verifier, r approvedRef, entries map[int64]anchoredEntry) error {
-	a, ok := entries[r.entry.Int64]
+// checkAnchor applies the anchor rule to one approved version: the entry must
+// be about the tool, be an approval, name the digest, and be the entry the
+// verified chain holds at its seq.
+func checkAnchor(chain *chainMemory, r approvedRef, entries map[int64]audit.Entry) error {
+	e, ok := entries[r.entry.Int64]
 	if !ok {
 		return fmt.Errorf("%w: audit entry %d about %s vanished within one read", ErrCorrupt, r.entry.Int64, quote(r.tool))
 	}
-	e := a.entry
 	if e.Subject != r.tool || (e.Event != string(lifecycle.EvApproved) && e.Event != string(lifecycle.EvRolledBack)) {
 		return fmt.Errorf("%w: audit entry %d is not an approval entry about %s", ErrCorrupt, e.Seq, quote(r.tool))
 	}
 	if e.AfterHash != r.digest {
 		return fmt.Errorf("%w: approved digest of %s is not the one its newest approval entry (seq %d) recorded", ErrCorrupt, quote(r.tool), e.Seq)
 	}
-	if !sealed.verifySeal(e, a.prevHash) {
-		return errEntryRewritten(e.Seq, r.tool)
-	}
-	return nil
-}
-
-// errEntryRewritten is the ErrCorrupt for an audit entry whose hash no longer
-// covers its fields and its predecessor: the log was rewritten.
-func errEntryRewritten(seq int64, subject string) error {
-	return fmt.Errorf("%w: audit entry %d about %s does not re-seal from its predecessor; the log was rewritten", ErrCorrupt, seq, quote(subject))
+	return chain.verify(e)
 }

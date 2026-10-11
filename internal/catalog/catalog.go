@@ -19,19 +19,22 @@
 // the canonical bytes behind the digests it hands out, and serves an approval
 // only when the tool's newest approve or rollback record names that exact
 // version and digest and the newest version.approved or version.rolled_back
-// audit entry about the tool recorded that digest and still re-seals from its
-// predecessor (D14: a forger must re-chain the log, which the head the operator
-// records outside the file betrays). A Store remembers each row and each entry
-// it has verified for RecheckTTL (ten minutes), so the processor's reload after
-// a crawl does not read every approved definition again; the price, stated in
-// full at RecheckTTL, is that a change to the stored bytes of a row this Store
+// audit entry about the tool recorded that digest and is part of the chain
+// the Store verified (D15: a Store verifies the whole chain once at open and
+// the suffix on every reload, keeps the hash of every decision entry it
+// walked, and trusts an entry only when its fields hash to that value; a
+// forger must rewrite every entry from the forged one to the head, which the
+// head a running Store pinned and the head the operator records outside the
+// file betray). A Store remembers each version row it has verified for
+// RecheckTTL (ten minutes), so the processor's reload after a crawl does not
+// read every approved definition again; the price, stated in full at
+// RecheckTTL, is that a change to the stored bytes of a row this Store
 // verified within the last RecheckTTL is not reported until that time has
 // passed or a Store without the memory reads the row. Decisions always load
-// their tool afresh. A Store also pins the newest audit entry it has verified
-// and, on every Snapshot, requires that entry to be unchanged and everything
-// appended since to continue its chain, so history cannot change under a
-// running reader; and it remembers the catalog identity and the file it opened,
-// so Generation reports ErrReplaced once the file at the path is another one.
+// their tool afresh and require its proposer lists to be what the verified
+// version.proposed entries name. A Store also remembers the catalog identity
+// and the file it opened, so every read reports ErrReplaced once the file at
+// the path is another one.
 //
 // The servers and tools tables are the current policy and have no update
 // guard: their columns must change with every crawl and decision; nothing is
@@ -71,12 +74,14 @@ var (
 	// not hash its canonical form, a pointer dangles, a status disagrees with
 	// the tool row, an approved version is not the one the tool's newest
 	// decision names or the one its newest approval entry recorded, an audit
-	// entry no longer re-seals from its predecessor, an entry this Store had
-	// verified is gone or rewritten, a write failed a constraint the schema
-	// does not have, a guard object is missing or redefined, or a trigger,
-	// view or unique index exists that the schema did not create. Someone
-	// edited the file outside this package, or a bug wrote it. Callers must
-	// not serve from a corrupt catalog.
+	// entry is not the one this Store verified in the chain, the chain does
+	// not verify at open, an entry this Store had verified is gone or
+	// rewritten, a proposer list is not what the log names, a write failed a
+	// constraint the schema does not have, a guard object or table is missing
+	// or redefined, or a table, trigger, view, unique index or automatic index
+	// exists that the schema did not create. Someone edited the file outside
+	// this package, or a bug wrote it. Callers must not serve from a corrupt
+	// catalog.
 	ErrCorrupt = errors.New("catalog: database integrity check failed")
 	// ErrReplaced is returned by Generation when the file at the path the Store
 	// opened is no longer the file it opened (another device and inode, or

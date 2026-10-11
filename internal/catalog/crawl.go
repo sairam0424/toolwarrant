@@ -42,6 +42,12 @@ import (
 // first crawl that does not list a marked deprecated tool clears the marker
 // (one missing line) and then leaves it alone.
 //
+// Every approved version of the server's loaded tools is anchored to the
+// verified audit chain before the crawl is applied (anchorKnownTools, D15 b),
+// so a crawl never records drift or a revert against an approval the log does
+// not back; the proposer lists are left to the decisions, which are what they
+// bear on.
+//
 // All digesting and validation happen before the transaction begins; inside
 // it there are only inserts and updates, so the write lock is held briefly.
 // The only inputs that leave no record are an invalid actor (the audit entry
@@ -83,6 +89,9 @@ func (s *Store) crawlTx(ctx context.Context, t *txn, in CrawlInput, ls *listing,
 	}
 	known, err := loadCrawlTools(ctx, t, srv.ID, ls.names())
 	if err != nil {
+		return CrawlReport{}, err
+	}
+	if err := anchorKnownTools(ctx, t, s.chain, srv.Name, known); err != nil {
 		return CrawlReport{}, err
 	}
 	if ls.rejectedCount(known) > MaxRejectedPerCrawl {

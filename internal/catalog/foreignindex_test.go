@@ -35,9 +35,6 @@ func TestOpen_ForeignUniqueIndexIsCorrupt(t *testing.T) {
 		t.Errorf("state after the refused writes = %q, %v; want enabled: nothing may commit into the file", state, err)
 	}
 	for p, err := range allPaths(s, "alpha", "echo") {
-		if p == "Versions" {
-			continue
-		}
 		if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "unexpected index one_event_only") {
 			t.Errorf("%s = %v, want ErrCorrupt naming the index", p, err)
 		}

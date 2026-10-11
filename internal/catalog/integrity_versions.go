@@ -67,9 +67,7 @@ func (c *integrityCheck) noteVersionEvent(e audit.Entry) {
 	switch e.Event {
 	case string(lifecycle.EvProposed):
 		t.status = lifecycle.VersionPending
-		if !isEnableReproposal(e.Detail) && !slices.Contains(t.proposers, e.Actor) {
-			t.proposers = append(t.proposers, e.Actor)
-		}
+		t.proposers = addProposer(t.proposers, e)
 	case string(lifecycle.EvSuperseded):
 		t.status = lifecycle.VersionSuperseded
 	case string(lifecycle.EvRejected):

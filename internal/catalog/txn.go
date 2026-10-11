@@ -10,16 +10,18 @@ import (
 )
 
 // txn is one write transaction. Every row written in it carries the same
-// timestamp, and audit entries are chained from the last entry read inside the
-// transaction, which holds the write lock, so no other writer can slip an
-// entry in between.
+// timestamp, and audit entries are chained from the head of the chain the
+// Store verified at the start of the transaction (chainFrom), which holds the
+// write lock, so no other writer can slip an entry in between and no hash is
+// read back from the file to chain from.
 type txn struct {
 	*sql.Tx
-	stamp   time.Time
-	ts      string
-	stmts   map[string]*sql.Stmt
-	last    audit.Entry
-	hasLast bool
+	stamp time.Time
+	ts    string
+	stmts map[string]*sql.Stmt
+	// last is the entry the next appended entry chains from: the verified
+	// head at first, then each entry appended here.
+	last audit.Entry
 }
 
 func newTxn(tx *sql.Tx, now time.Time) *txn {
@@ -30,6 +32,13 @@ func newTxn(tx *sql.Tx, now time.Time) *txn {
 		stamp = now.UTC()
 	}
 	return &txn{Tx: tx, stamp: stamp, ts: ts, stmts: make(map[string]*sql.Stmt)}
+}
+
+// chainFrom sets the entry the first appended audit entry chains from: the
+// head of the verified chain (the zero pin for an empty log, which Seal reads
+// as the genesis).
+func (t *txn) chainFrom(head chainPin) {
+	t.last = audit.Entry{Seq: head.seq, Hash: head.hash}
 }
 
 // exec runs a statement, preparing it once per transaction: a crawl of many

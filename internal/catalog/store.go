@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sync"
 	"time"
 
 	sqlite "modernc.org/sqlite" // the pure-Go SQLite driver, registered as "sqlite"
@@ -31,7 +30,6 @@ const (
 	sqliteBusy       = 5
 	sqliteLocked     = 6
 	sqliteConstraint = 19
-
 	// timeLayout is RFC 3339 in UTC with a fixed nine-digit fraction, so stored
 	// timestamps sort lexically and round-trip exactly.
 	timeLayout = "2006-01-02T15:04:05.000000000Z"
@@ -87,10 +85,14 @@ type Store struct {
 	// that Open skipped, and the verifiers remember nothing.
 	forensic bool
 	// verified remembers, for RecheckTTL, the version rows whose bytes a read
-	// path re-checked, and sealed the audit entries a read path re-sealed; see
-	// verifier. Close drops both.
+	// path re-checked; see verifier. Close drops it.
 	verified *verifier
-	sealed   *verifier
+	// chain is what this Store knows about the audit chain it verified: the
+	// head it pinned and the hash of every decision entry it walked (chain.go,
+	// D15). Every serving-path read and every write transaction extends it to
+	// the current head and trusts an audit entry only through it. Close drops
+	// it.
+	chain *chainMemory
 	// caps are the per-server growth limits RecordCrawl enforces: the
 	// constants MaxToolsPerServer and MaxServerBytes, except in tests.
 	caps serverCaps
@@ -100,11 +102,6 @@ type Store struct {
 	path     string
 	identity string
 	file     fileID
-	// pin is the newest audit entry this Store has verified; every Snapshot
-	// requires it to be unchanged and the entries after it to continue its
-	// chain, then moves it forward (pin.go). pinMu guards it.
-	pinMu sync.Mutex
-	pin   chainPin
 }
 
 // Open opens or creates the database at path with the default options: read
@@ -123,7 +120,9 @@ func Open(path string, policy lifecycle.Policy) (*Store, error) {
 // version is checked before the journal mode is switched, so a foreign
 // database is refused untouched. The Store records the catalog identity and
 // the file it opened, so that Generation can tell when the path names another
-// file (ErrReplaced).
+// file (ErrReplaced), and then verifies the whole audit chain once and pins
+// its head (D15 a): a broken chain is ErrCorrupt at open, except on a forensic
+// open, which exists to inspect such a file and verifies lazily on the views.
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" || path == memoryPath {
 		return nil, fmt.Errorf("%w: a database file path is required", ErrInvalid)
@@ -143,9 +142,16 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.adoptIdentity(context.Background(), opts.Forensic); err != nil {
+	ctx := context.Background()
+	if err := s.adoptIdentity(ctx, opts.Forensic); err != nil {
 		_ = s.Close()
 		return nil, err
+	}
+	if !opts.Forensic {
+		if err := s.inRead(ctx, func(q queryer) error { return s.verifyChain(ctx, q) }); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -171,10 +177,10 @@ func openPools(abs string, opts OpenOptions, timeout time.Duration) (*Store, err
 	return wireStore(wdb, rdb, abs, opts), nil
 }
 
-// Close releases the database and drops the re-check memory.
+// Close releases the database and drops the re-check memory and the chain.
 func (s *Store) Close() error {
 	s.verified.drop()
-	s.sealed.drop()
+	s.chain.drop()
 	var errs []error
 	if s.rdb != nil {
 		errs = append(errs, s.rdb.Close())
@@ -231,17 +237,22 @@ type queryer interface {
 // together with exactly one generation bump, or rolled back if fn (or the bump)
 // fails or panics. A read-only store refuses before touching the database.
 //
-// The guard objects are verified before the commit (verifyGuards): a crawl
+// The audit chain is verified first (verifyChain, D15): the suffix appended
+// since this Store last looked must continue the chain it verified, the memory
+// is extended to the head, and the entries fn appends are chained from that
+// verified head rather than from a hash column read back from the file. The
+// guard objects are verified before the commit (verifyGuards): a crawl
 // scheduled every minute must not keep writing crawls, tool state and audit
 // entries into a file whose immutability triggers were dropped after it
 // opened, and a trigger of someone else's making must not get to rewrite the
 // policy inside the catalog's own transaction. The write lock is held from
-// the first statement, so what the check sees at the end is what the file held
-// throughout, and nothing commits into a file the check refuses. A constraint
+// the first statement, so what the checks see is what the file held
+// throughout, and nothing commits into a file a check refuses. A constraint
 // failure inside fn is ErrCorrupt: the Store validates everything before it
 // writes, so a constraint that still fires is one the schema does not have (a
-// unique index someone added) or a guard refusing a row, never a condition a
-// retry or a later crawl could meet (D14).
+// unique index someone added, a table re-created with another constraint) or
+// a guard refusing a row, never a condition a retry or a later crawl could
+// meet (D14); the error names the table and constraint SQLite reports.
 func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 	if s.readOnly || s.wdb == nil {
 		return ErrReadOnly
@@ -257,6 +268,10 @@ func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 		}
 	}()
 	t := newTxn(sqlTx, s.now())
+	if err := s.verifyChain(ctx, t); err != nil {
+		return err
+	}
+	t.chainFrom(s.chain.pin())
 	if err := fn(t); err != nil {
 		return corruptIfConstraint(err)
 	}
@@ -317,7 +332,7 @@ func corruptIfConstraint(err error) error {
 	if errors.Is(err, ErrCorrupt) || sqliteCode(err) != sqliteConstraint {
 		return err
 	}
-	return fmt.Errorf("%w: a write failed a constraint the schema does not have, or a guard refused it (%v); the file was edited outside toolwarrant", ErrCorrupt, err)
+	return fmt.Errorf("%w: %s; the file was edited outside toolwarrant", ErrCorrupt, describeConstraint(err))
 }
 
 func formatTime(t time.Time) string { return t.UTC().Format(timeLayout) }

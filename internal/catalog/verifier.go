@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
 
@@ -29,7 +28,11 @@ import (
 // one. Nothing else is covered by it: a changed digest column, a changed
 // digest profile, a dangling or foreign approved pointer, a missing approval
 // or proposer row, and a row that failed its check are all reported at once,
-// and a decision loads its tool afresh and always re-hashes it.
+// and a decision loads its tool afresh and always re-hashes it. No audit
+// entry is covered by it either: the fifth review edited an approval entry in
+// place while a memory keyed by its stored hash column vouched for it, so an
+// entry is now hashed on every read and compared with the chain the Store
+// verified (chain.go, D15).
 const RecheckTTL = 10 * time.Minute
 
 // recheckCacheEntries bounds the rows one Store remembers: a few servers at
@@ -105,26 +108,6 @@ func (v *verifier) check(id int64, digest string, canonical []byte) bool {
 // with this digest within RecheckTTL.
 func (v *verifier) verify(id int64, digest string, canonical []byte) bool {
 	return v.remembered(id, digest) || v.check(id, digest, canonical)
-}
-
-// verifySeal reports whether audit entry e re-seals from a predecessor whose
-// hash is prevHash (Genesis when ""): its prev_hash must be that hash and its
-// hash must be what audit.Seal computes over its fields. The memory is keyed by
-// seq with the entry's hash as the digest, so a hit vouches only for the exact
-// entry that was verified; a rewritten entry has another hash and misses. The
-// Store keeps a separate verifier for entries (Store.sealed), so a version
-// row id and an entry seq can never share a key.
-func (v *verifier) verifySeal(e audit.Entry, prevHash string) bool {
-	if v.remembered(e.Seq, e.Hash) {
-		return true
-	}
-	v.hashes.Add(1)
-	sealed, err := audit.Seal(audit.Entry{Hash: prevHash}, e)
-	if err != nil || sealed.Hash != e.Hash || sealed.PrevHash != e.PrevHash {
-		return false
-	}
-	v.remember(e.Seq, e.Hash)
-	return true
 }
 
 // remember records a successful check of row id. When the memory is full a

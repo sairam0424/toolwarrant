@@ -110,12 +110,12 @@ func (s *Store) readToolViews(ctx context.Context, q queryer, server string, out
 }
 
 // checkApprovedRefs re-hashes the approved versions the verifier does not
-// remember and anchors each to the audit chain.
+// remember and anchors each to the verified audit chain.
 func (s *Store) checkApprovedRefs(ctx context.Context, q queryer, refs []approvedRef) error {
 	if err := s.recheckApproved(ctx, q, refs); err != nil {
 		return err
 	}
-	return anchorApproved(ctx, q, s.sealed, refs)
+	return anchorApproved(ctx, q, s.chain, refs)
 }
 
 // Tool returns one tool, or ErrNotFound; its approval is checked as in Tools.
@@ -167,15 +167,21 @@ const versionViewQuery = `SELECT v.id, v.version_no, v.digest, v.digest_profile,
 	FROM tool_versions v WHERE v.tool_id = ? ORDER BY v.version_no`
 
 // Versions lists a tool's versions oldest first, each with its full proposer
-// history. Each canonical form is re-hashed on the way out, unless this Store
-// verified that row within RecheckTTL, its digest profile is checked, a
+// history. The file is checked first as on every serving-path read
+// (checkFile). Each canonical form is re-hashed on the way out, unless this
+// Store verified that row within RecheckTTL, its digest profile is checked, a
 // version in status approved or marked ever approved must have an approve or
-// rollback record behind it, and the version in status approved must be the
+// rollback record behind it, the proposers shown must be the ones the verified
+// version.proposed entries about the tool name (verifyProposers: an approver
+// decides on this history), and the version in status approved must be the
 // one the tool's newest decision names and the one its newest approval entry
 // recorded (anchorApproved), so a tampered row is reported, not displayed.
 func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionView, error) {
 	out := []VersionView{}
 	err := s.inRead(ctx, func(q queryer) error {
+		if err := s.checkFile(ctx, q); err != nil {
+			return err
+		}
 		id, err := toolID(ctx, q, server, tool)
 		if err != nil {
 			return err
@@ -188,12 +194,25 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 		if err != nil {
 			return err
 		}
-		return anchorOne(ctx, q, s.sealed, server+"/"+tool, approvedID, approved)
+		subject := server + "/" + tool
+		if err := anchorOne(ctx, q, s.chain, subject, approvedID, approved); err != nil {
+			return err
+		}
+		return verifyProposers(ctx, q, s.chain, subject, viewedProposers(out))
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// viewedProposers lists the versions of a view with the proposers it shows.
+func viewedProposers(views []VersionView) []versionProposers {
+	out := make([]versionProposers, 0, len(views))
+	for _, v := range views {
+		out = append(out, versionProposers{digest: v.Digest, names: v.Proposers})
+	}
+	return out
 }
 
 // readVersionViews runs versionViewQuery, appends the views to out and

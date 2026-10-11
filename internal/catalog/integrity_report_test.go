@@ -136,13 +136,13 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 			func(t *testing.T, _ *Store, path, d string) {
 				mustExec(t, rawDB(t, path), forgedAuditEntry, d, d, "digest=- state=enabled->enabled")
 			},
-			want{IntegrityReport{}, []string{"audit entry", `"alpha/echo"`, "has no last_seen field"}},
+			want{IntegrityReport{ChainBreaks: 2}, []string{"audit entry", `"alpha/echo"`, "has no last_seen field", "does not continue the chain from entry", "does not re-seal"}},
 		},
 		"audit entry forged with a value that is no digest": {
 			func(t *testing.T, _ *Store, path, d string) {
 				mustExec(t, rawDB(t, path), forgedAuditEntry, d, d, "digest=- state=enabled->enabled last_seen=bogus proposals=0->0")
 			},
-			want{IntegrityReport{StaleLastSeen: 1}, []string{`"alpha/echo"`, "last_seen_digest is ", `recorded "bogus"`}},
+			want{IntegrityReport{ChainBreaks: 2, StaleLastSeen: 1}, []string{`"alpha/echo"`, "last_seen_digest is ", `recorded "bogus"`, "does not re-seal"}},
 		},
 		"approver rewritten": {
 			func(t *testing.T, _ *Store, path, _ string) {
@@ -191,7 +191,7 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 			func(t *testing.T, _ *Store, path, d string) {
 				mustExec(t, rawDB(t, path), forgedAuditEntry, d, d, "digest=- state=enabled->enabled last_seen="+d)
 			},
-			want{IntegrityReport{}, []string{"audit entry", `"alpha/echo"`, "has no proposals field"}},
+			want{IntegrityReport{ChainBreaks: 2}, []string{"audit entry", `"alpha/echo"`, "has no proposals field", "does not re-seal"}},
 		},
 		"server paused flag rewritten": {
 			func(t *testing.T, _ *Store, path, _ string) {
@@ -229,19 +229,19 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 			func(t *testing.T, _ *Store, path, _ string) {
 				mustExec(t, rawDB(t, path), forgedServerEntry, "server.paused", "paused=maybe")
 			},
-			want{IntegrityReport{}, []string{"audit entry", `server "alpha"`, "has no paused field"}},
+			want{IntegrityReport{ChainBreaks: 2}, []string{"audit entry", `server "alpha"`, "has no paused field", "does not re-seal"}},
 		},
 		"server.added entry forged without a url hash": {
 			func(t *testing.T, _ *Store, path, _ string) {
 				mustExec(t, rawDB(t, path), forgedServerEntry, "server.added", "allow_private=false url_sha256=short")
 			},
-			want{IntegrityReport{}, []string{"audit entry", `server "alpha"`, "has no url_sha256 field"}},
+			want{IntegrityReport{ChainBreaks: 2}, []string{"audit entry", `server "alpha"`, "has no url_sha256 field", "does not re-seal"}},
 		},
 		"server.added entry forged without a policy flag": {
 			func(t *testing.T, _ *Store, path, _ string) {
 				mustExec(t, rawDB(t, path), forgedServerEntry, "server.added", "url_sha256="+urlSHA256("https://alpha.example.com/mcp"))
 			},
-			want{IntegrityReport{}, []string{"audit entry", `server "alpha"`, "has no allow_private field"}},
+			want{IntegrityReport{ChainBreaks: 2}, []string{"audit entry", `server "alpha"`, "has no allow_private field", "does not re-seal"}},
 		},
 		"foreign trigger": {
 			func(t *testing.T, _ *Store, path, _ string) {
@@ -332,7 +332,8 @@ const forgedServerEntry = `INSERT INTO audit_log (seq, ts, actor, actor_type, ev
 // forgedAuditEntry appends one entry about alpha/echo past the chain's head
 // (the sequential guard only insists on the next number); its before_hash,
 // after_hash and detail are the arguments. VerifyAudit would refuse the chain;
-// Integrity reads the entries as they are and must not be fooled by one.
+// Integrity reports the two breaks (the entry neither links nor re-seals, D15
+// c) and still reads the entry as it is, so a forged field cannot fool it.
 const forgedAuditEntry = `INSERT INTO audit_log (seq, ts, actor, actor_type, event, subject, before_hash, after_hash, detail, prev_hash, hash)
 	VALUES ((SELECT MAX(seq) + 1 FROM audit_log), 't', 'mallory', 'human', 'tool.drifted', 'alpha/echo', ?, ?, ?, 'p', 'h')`
 

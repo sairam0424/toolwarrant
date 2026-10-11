@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/gate"
@@ -170,13 +169,15 @@ func TestSnapshot_AppendedApprovalRowIsCaughtByTheChainAnchor(t *testing.T) {
 	}
 }
 
-// The anchor accepts every approval the Store itself writes, and remembers the
-// entry it re-sealed for RecheckTTL: a reload within that time hashes no
-// entry again, a reload after it hashes each once more.
+// The anchor accepts every approval the Store itself writes, and the Store
+// remembers every decision entry of the chain it verified (D15 a): after a
+// reload the memory holds the hash of each version.proposed, version.superseded,
+// version.rejected, version.approved and version.rolled_back entry of the log
+// and pins its head, and a reload hashes each approval entry once more rather
+// than trusting a memory of it (the fifth review's in-place edit under a warm
+// memory).
 func TestSnapshot_AnchorAcceptsStoreWrittenHistoryAndRemembersEntries(t *testing.T) {
-	s, _ := newStoreAt(t, lifecycle.DefaultPolicy())
-	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("sum", "v1"))
 	d1 := digestOf(t, "echo", "v1")
@@ -198,15 +199,27 @@ func TestSnapshot_AnchorAcceptsStoreWrittenHistoryAndRemembersEntries(t *testing
 			t.Errorf("%s on a Store-written history = %v", p, err)
 		}
 	}
-	before := s.sealed.hashCount()
-	mustSnapshot(t, s, "alpha")
-	if got := s.sealed.hashCount(); got != before {
-		t.Errorf("a second Snapshot within RecheckTTL re-sealed %d entries, want none", got-before)
+	entries := rawEntries(t, rawDB(t, path))
+	decisions := 0
+	for _, e := range entries {
+		if isChainRecordedEvent(e.Event) {
+			decisions++
+		}
 	}
-	now = now.Add(RecheckTTL + time.Second)
-	mustSnapshot(t, s, "alpha")
-	if got := s.sealed.hashCount(); got <= before {
-		t.Errorf("a Snapshot after RecheckTTL re-sealed nothing; the memory must lapse")
+	if got := s.chain.decisions(); got != decisions {
+		t.Errorf("the memory holds %d decision entries, the log has %d", got, decisions)
+	}
+	if head := entries[len(entries)-1]; s.loadPin() != (chainPin{seq: head.Seq, hash: head.Hash}) {
+		t.Errorf("pin = %+v, want the head (seq %d)", s.loadPin(), head.Seq)
+	}
+	// A fresh Store walks the whole chain at open and knows the same entries.
+	ro, err := OpenWith(path, OpenOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ro.Close() }()
+	if ro.chain.decisions() != decisions || ro.loadPin() != s.loadPin() {
+		t.Errorf("a fresh Store remembers %d entries and pins %+v; the long-lived one %d and %+v", ro.chain.decisions(), ro.loadPin(), decisions, s.loadPin())
 	}
 	mustBeClean(t, s, "at the end")
 }
@@ -272,9 +285,6 @@ func TestSnapshot_ReChainedLogIsCaughtByThePinAndTheRecordedHead(t *testing.T) {
 	rechainFrom(t, db, crawled.Seq)
 
 	for p, err := range allPaths(s, "alpha", "echo") {
-		if p == "Versions" {
-			continue // the one view without the pin: it anchors the approval only
-		}
 		if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "was rewritten") {
 			t.Errorf("%s on the pinned Store after the re-chain = %v, want ErrCorrupt naming the pinned entry", p, err)
 		}

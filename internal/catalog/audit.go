@@ -3,9 +3,7 @@ package catalog
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -49,26 +47,11 @@ func scanAudit(sc rowScanner) (audit.Entry, error) {
 	return e, err
 }
 
-// lastEntry reads the newest audit entry inside this transaction. The write
-// lock is already held, so no other writer can append until we commit.
-func (t *txn) lastEntry(ctx context.Context) (audit.Entry, error) {
-	if t.hasLast {
-		return t.last, nil
-	}
-	e, err := scanAudit(t.QueryRowContext(ctx, `SELECT `+auditCols+` FROM audit_log ORDER BY seq DESC LIMIT 1`))
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return audit.Entry{}, fmt.Errorf("catalog: read audit head: %w", err)
-	}
-	t.last, t.hasLast = e, true
-	return e, nil
-}
-
-// appendAudit seals and stores one entry chained to the previous one.
+// appendAudit seals and stores one entry chained to the previous one: the
+// verified head of the chain at the start of the transaction, or the entry
+// appended before it.
 func (t *txn) appendAudit(ctx context.Context, by Actor, event, subject, before, after, detail string) error {
-	prev, err := t.lastEntry(ctx)
-	if err != nil {
-		return err
-	}
+	prev := t.last
 	sealed, err := audit.Seal(prev, audit.Entry{
 		Seq: prev.Seq + 1, TS: t.ts, Actor: by.Name, ActorType: string(by.Type),
 		Event: event, Subject: subject, BeforeHash: before, AfterHash: after, Detail: detail,
@@ -247,33 +230,27 @@ func (s *Store) AuditEntries(ctx context.Context, after int64, limit int) ([]aud
 }
 
 // VerifyAudit reads the whole log and checks the hash chain. A broken chain
-// yields *audit.BrokenError, returned as is so callers can errors.As it.
-//
-// Memory: the log is read in pages but held whole for audit.Verify, so the
-// cost is one Entry (a few hundred bytes; details are short and never carry
-// tool text) per event ever recorded. A catalog of ten thousand tools crawled
-// daily for a year is on the order of a hundred megabytes; an operator
-// verifying a log that large should expect that.
+// yields *audit.BrokenError, returned as is so callers can errors.As it. The
+// log is streamed in pages and verified page by page (walkChain, the same walk
+// a Store makes when it opens), so the cost in memory is one page, whatever
+// the size of the log. The Store's own memory of the chain is not consulted:
+// this is the operator's check of the file as it is.
 func (s *Store) VerifyAudit(ctx context.Context) (AuditSummary, error) {
-	var entries []audit.Entry
+	var (
+		head   chainPin
+		walked int
+	)
 	err := s.inRead(ctx, func(q queryer) error {
-		for after := int64(0); ; {
-			page, err := queryAudit(ctx, q, after, auditPage)
-			if err != nil {
-				return err
-			}
-			entries = append(entries, page...)
-			if len(page) < auditPage {
-				return nil
-			}
-			after = page[len(page)-1].Seq
-		}
+		var err error
+		head, walked, err = walkChain(ctx, q, chainPin{}, nil)
+		return err
 	})
 	if err != nil {
 		return AuditSummary{}, err
 	}
-	if err := audit.Verify(entries); err != nil {
-		return AuditSummary{}, err
+	hash := head.hash
+	if head.seq == 0 {
+		hash = audit.Genesis
 	}
-	return AuditSummary{Entries: len(entries), Head: audit.Head(entries)}, nil
+	return AuditSummary{Entries: walked, Head: hash}, nil
 }

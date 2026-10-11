@@ -20,17 +20,27 @@ import (
 // edited outside toolwarrant, or a bug wrote it, and nothing should be served
 // from it.
 type IntegrityReport struct {
-	// GuardsMissing and GuardsRedefined label the guard objects ("trigger X",
-	// "index X") that are absent, or present under a definition that differs
-	// from the schema's. Either leaves history tables editable.
+	// GuardsMissing and GuardsRedefined label the schema's objects ("trigger
+	// X", "index X", "table X") that are absent, or present under a definition
+	// that differs from the schema's. A missing or redefined guard leaves
+	// history tables editable; a redefined table carries a constraint the
+	// schema does not have (D15 e).
 	GuardsMissing, GuardsRedefined []string
-	// ForeignObjects labels the triggers, views and unique indexes ("trigger
-	// X", "view X", "index X") that the schema did not create. A trigger on
-	// the tools table can undo every decision inside the catalog's own
-	// transaction while the log records the decision, and a unique index makes
-	// every write that repeats its value fail; nothing of someone else's making
-	// may exist.
+	// ForeignObjects labels the tables, triggers, views, unique indexes and
+	// automatic indexes ("table X", "trigger X", "view X", "index X") that the
+	// schema did not create. A trigger on the tools table can undo every
+	// decision inside the catalog's own transaction while the log records the
+	// decision, and a unique or automatic index makes every write that repeats
+	// its value fail; nothing of someone else's making may exist.
 	ForeignObjects []string
+	// ChainBreaks counts the audit entries that do not re-seal (the hash of
+	// their fields is not their stored hash: rewritten in place), do not link
+	// to their predecessor (prev_hash is not its hash: re-chained, or the
+	// predecessor rewritten), or do not follow it in sequence (deleted
+	// entries). Integrity verifies every entry as it streams the log (D15 c),
+	// so its cross-checks against the log stand on their own; VerifyAudit
+	// stops at the first break, this counts every one.
+	ChainBreaks int
 	// ApprovalsWithoutRecord counts versions in status approved, or marked
 	// ever approved, with no approve or rollback row in the approvals table:
 	// the status columns are mutable, the approvals table is not.
@@ -94,8 +104,10 @@ type IntegrityReport struct {
 
 // Integrity checks the database against itself and reports every
 // disagreement; see IntegrityReport. VerifyAudit proves that the log was not
-// edited; Integrity proves that the current policy is what the log says it
-// should be, which the chain alone cannot: the servers and tools tables and
+// edited and stops at the first break; Integrity verifies every entry's seal
+// and link as it streams the log and reports each break, then proves that the
+// current policy is what the log says it should be, which the chain alone
+// cannot: the servers and tools tables and
 // the status columns of tool_versions are mutable by design, so a forged
 // approval, a tool switched back on, a server un-paused, a rewritten
 // last_seen_digest or a replaced guard trigger leaves the chain intact and the
@@ -183,14 +195,8 @@ func (c *integrityCheck) checkGuardObjects() error {
 		return err
 	}
 	c.rep.GuardsMissing, c.rep.GuardsRedefined, c.rep.ForeignObjects = g.missing, g.redefined, g.foreign
-	for _, label := range g.missing {
-		c.problem("guard %s is missing", label)
-	}
-	for _, label := range g.redefined {
-		c.problem("guard %s was redefined", label)
-	}
-	for _, label := range g.foreign {
-		c.problem("unexpected %s: the schema did not create it", label)
+	for _, line := range g.describe(": the schema did not create it") {
+		c.problem("%s", line)
 	}
 	return nil
 }

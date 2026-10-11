@@ -159,10 +159,9 @@ func loadProposers(ctx context.Context, q queryer, out map[int64][]string, query
 }
 
 // loadTool loads one tool and re-checks every stored digest against its
-// canonical form, and its approval against the audit chain (anchorOne, with
-// sealed as the Store's memory of verified entries), before any decision is
-// based on it.
-func loadTool(ctx context.Context, q queryer, sealed *verifier, server, tool string) (*toolRec, error) {
+// canonical form, and its proposer lists and its approval against the chain
+// the Store verified (checkToolEvidence), before any decision is based on it.
+func loadTool(ctx context.Context, q queryer, chain *chainMemory, server, tool string) (*toolRec, error) {
 	row, err := scanToolRow(q.QueryRowContext(ctx,
 		`SELECT `+toolCols+` FROM tools t JOIN servers s ON s.id = t.server_id WHERE s.name = ? AND t.name = ?`,
 		server, tool))
@@ -189,17 +188,29 @@ func loadTool(ctx context.Context, q queryer, sealed *verifier, server, tool str
 	if err != nil {
 		return nil, err
 	}
-	if rec.tool.Approved == "" {
-		return rec, nil
-	}
-	versionID, err := rec.versionID(rec.tool.Approved)
-	if err != nil {
-		return nil, err
-	}
-	if err := anchorOne(ctx, q, sealed, server+"/"+tool, versionID, rec.tool.Approved); err != nil {
+	if err := checkToolEvidence(ctx, q, chain, server+"/"+tool, rec); err != nil {
 		return nil, err
 	}
 	return rec, nil
+}
+
+// checkToolEvidence requires what a decision consults about a tool to be what
+// the verified chain says (D15 b): the approved version, if any, is the one
+// the newest approval entry recorded (anchorOne, checked first so that a
+// rewritten approval is named as such), and the proposers of every version
+// are the actors of the version.proposed entries about the tool
+// (verifyProposers).
+func checkToolEvidence(ctx context.Context, q queryer, chain *chainMemory, subject string, rec *toolRec) error {
+	if rec.tool.Approved != "" {
+		versionID, err := rec.versionID(rec.tool.Approved)
+		if err != nil {
+			return err
+		}
+		if err := anchorOne(ctx, q, chain, subject, versionID, rec.tool.Approved); err != nil {
+			return err
+		}
+	}
+	return verifyProposers(ctx, q, chain, subject, recordedProposers(rec))
 }
 
 // checkCanonical re-hashes the stored canonical bytes: they must hash to the

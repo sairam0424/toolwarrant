@@ -22,17 +22,18 @@ import (
 // rollback row must name the approved version and carry its digest as
 // hash_seen, newestDecisionNames, joined in the same query) and against the
 // audit chain (the newest version.approved or version.rolled_back entry about
-// the tool must have recorded the digest and must re-seal from its
-// predecessor, anchorApproved). This is the processor's read path, so a
-// tampered row must fail it (ErrCorrupt) rather than be served. The guard
-// objects are verified on every load too, so a trigger replaced or added after
-// the file was opened is caught at the next reload, and so is the pinned audit
-// entry and the chain appended since (checkFile). The first reload reads and
-// hashes every approved tool and its approval entry; the Store then remembers
-// each verified row and entry for RecheckTTL, and a reload within that time
+// the tool must have recorded the digest and must be the entry the Store
+// verified in the chain, anchorApproved, D15). This is the processor's read
+// path, so a tampered row must fail it (ErrCorrupt) rather than be served. The
+// file is checked on every load too (checkFile): the identity and the guard
+// objects, so a trigger or table replaced after the file was opened is caught
+// at the next reload, and the pinned audit entry and the chain appended since.
+// The first reload reads and hashes every approved tool; the Store then
+// remembers each verified row for RecheckTTL, and a reload within that time
 // neither reads nor hashes the bytes again, which is what keeps a crawl of a
-// large server from costing a full re-read. RecheckTTL states the window this
-// opens.
+// large server from costing a full re-read (RecheckTTL states the window this
+// opens). The approval entries are hashed on every load: one hash of a few
+// hundred bytes per approved tool, with no memory standing in for it.
 func (s *Store) Snapshot(ctx context.Context, server string) (Snapshot, error) {
 	var snap Snapshot
 	err := s.inRead(ctx, func(q queryer) error {
@@ -107,7 +108,7 @@ func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[s
 	if err := s.recheckApproved(ctx, q, refs); err != nil {
 		return nil, err
 	}
-	if err := anchorApproved(ctx, q, s.sealed, refs); err != nil {
+	if err := anchorApproved(ctx, q, s.chain, refs); err != nil {
 		return nil, err
 	}
 	return tools, nil

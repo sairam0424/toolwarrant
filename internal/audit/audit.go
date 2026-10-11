@@ -103,6 +103,14 @@ func compute(e Entry) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// HashOf returns the hash of e computed from its fields alone, ignoring the
+// Hash field it carries: the value Seal stores in Hash for an entry with these
+// fields. It exists so that a reader can identify an entry by what its fields
+// say rather than by the hash column it was stored with, which whoever can
+// write the log can write too (the catalog's verified chain, D15). Verify and
+// VerifyFrom keep their behaviour; this is the same computation exposed.
+func HashOf(e Entry) (string, error) { return compute(e) }
+
 // Seal fills in PrevHash and Hash for the entry that follows prev. Pass the
 // zero Entry (Hash "") for the first entry.
 func Seal(prev Entry, e Entry) (Entry, error) {

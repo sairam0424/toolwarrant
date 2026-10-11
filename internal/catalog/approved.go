@@ -11,7 +11,7 @@ import (
 // and time come from the tool's newest approve or rollback row, which must
 // name the approved version and carry its digest as hash_seen, and the newest
 // version.approved or version.rolled_back audit entry about the tool must have
-// recorded the digest and re-seal from its predecessor (anchorApproved). A
+// recorded the digest and be part of the verified chain (anchorApproved). A
 // version whose canonical form no longer hashes to its digest, whose digest
 // profile is not the current one, whose pointer dangles or names another
 // tool's version, or that the newest decision or the newest approval entry
@@ -30,7 +30,7 @@ func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 		if err != nil {
 			return err
 		}
-		return anchorApproved(ctx, q, s.sealed, refs)
+		return anchorApproved(ctx, q, s.chain, refs)
 	})
 	if err != nil {
 		return nil, err

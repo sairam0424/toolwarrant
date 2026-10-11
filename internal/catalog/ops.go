@@ -112,7 +112,7 @@ func prepareDecision(digest string, by Actor) (Actor, string, error) {
 // decision (approve, reject, rollback) also resets the tool's proposal budget.
 func (s *Store) transition(ctx context.Context, server, tool string, c change, by Actor) error {
 	return s.inTx(ctx, func(t *txn) error {
-		rec, err := loadTool(ctx, t, s.sealed, server, tool)
+		rec, err := loadTool(ctx, t, s.chain, server, tool)
 		if err != nil {
 			return err
 		}
@@ -168,7 +168,7 @@ func (s *Store) ResetProposalBudget(ctx context.Context, server, tool string, by
 		return err
 	}
 	return s.inTx(ctx, func(t *txn) error {
-		rec, err := loadTool(ctx, t, s.sealed, server, tool)
+		rec, err := loadTool(ctx, t, s.chain, server, tool)
 		if err != nil {
 			return err
 		}

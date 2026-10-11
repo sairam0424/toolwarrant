@@ -67,12 +67,8 @@ func prepareFile(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 	}
 	switch version {
 	case 0:
-		objects, err := countObjects(ctx, db)
-		if err != nil {
+		if err := checkEmptyFile(ctx, db); err != nil {
 			return err
-		}
-		if objects > 0 {
-			return fmt.Errorf("%w: the file holds another application's tables", ErrSchema)
 		}
 	case schemaVersion:
 		if err := checkOurs(ctx, db, true); err != nil {
@@ -85,6 +81,26 @@ func prepareFile(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 		return err
 	}
 	return migrate(ctx, db)
+}
+
+// checkEmptyFile accepts a file at version 0 only when it holds no object at
+// all. Several processes may open one new file together, and another opener
+// can commit the schema between the two reads, so a file that gained objects
+// is re-read: at our version it is ours and checked as such, at any other it
+// holds another application's tables.
+func checkEmptyFile(ctx context.Context, db *sql.DB) error {
+	objects, err := countObjects(ctx, db)
+	if err != nil || objects == 0 {
+		return err
+	}
+	version, err := readUserVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	if version != schemaVersion {
+		return fmt.Errorf("%w: the file holds another application's tables", ErrSchema)
+	}
+	return checkOurs(ctx, db, true)
 }
 
 // openReadOnly opens an existing database through mode=ro connections only. A

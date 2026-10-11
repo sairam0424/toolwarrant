@@ -206,7 +206,7 @@ func TestSave_RefusesInconsistentLifecycleResults(t *testing.T) {
 	try := func(name string, mutate func(rec *toolRec) (lifecycle.Tool, *preparedTool)) {
 		t.Helper()
 		err := s.inTx(bg, func(tx *txn) error {
-			rec, err := loadTool(bg, tx, s.sealed, "alpha", "echo")
+			rec, err := loadTool(bg, tx, s.chain, "alpha", "echo")
 			if err != nil {
 				return err
 			}
@@ -251,7 +251,7 @@ func TestSave_RefusesInconsistentLifecycleResults(t *testing.T) {
 		return after, nil
 	})
 	err := s.inTx(bg, func(tx *txn) error {
-		rec, err := loadTool(bg, tx, s.sealed, "alpha", "echo")
+		rec, err := loadTool(bg, tx, s.chain, "alpha", "echo")
 		if err != nil {
 			return err
 		}

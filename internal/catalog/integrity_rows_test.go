@@ -63,11 +63,12 @@ func TestIntegrity_DeletedToolRowIsRefusedAndReported(t *testing.T) {
 	if kindsOf(rep2)["echo"] != ChangeNew {
 		t.Fatalf("crawl after the deletion = %+v, want echo discovered afresh", rep2.Changes)
 	}
-	if err := s.Approve(bg, "alpha", "echo", d1, alice); err != nil {
-		t.Fatalf("Approve after the laundering = %v; the serving path cannot see a re-discovery, Integrity must", err)
+	// The fresh row's version carries the crawler alone while the verified
+	// version.proposed entries about the digest name alice first, so the
+	// decision path refuses the laundered list (D15 b) and Integrity names it.
+	if err := s.Approve(bg, "alpha", "echo", d1, alice); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "proposer history was rewritten") {
+		t.Fatalf("Approve after the laundering = %v, want ErrCorrupt naming the proposers", err)
 	}
-	// The fresh row's version carries the crawler alone while the log's
-	// version.proposed entries about the digest name alice first.
 	rep = mustIntegrity(t, s)
 	if rep.DiscoveryMismatches != 1 || rep.RowsMissing != 1 || rep.ProposerMismatches != 1 {
 		t.Errorf("Integrity after the re-discovery = %+v, want the second tool.discovered, the orphaned version row and the proposer mismatch", rep)
@@ -105,11 +106,13 @@ func TestIntegrity_ProposerHistoryRewrittenUnderRecreatedGuardsIsReported(t *tes
 		t.Errorf("Integrity after the rewrite = %+v, want the proposer mismatch", rep)
 	}
 	problemMentioning(t, rep, `"alpha/echo"`, `proposers are ["crawler"]`, `name ["alice"]`)
-	if err := s.Approve(bg, "alpha", "echo", d1, alice); err != nil {
-		t.Fatalf("Approve after the rewrite = %v; the serving path reads the rewritten table, Integrity must name it", err)
+	// D15 (b): the decision reads the proposers from the verified chain, so the
+	// rewritten table is refused rather than laundering alice's approval.
+	if err := s.Approve(bg, "alpha", "echo", d1, alice); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "proposer history was rewritten") {
+		t.Fatalf("Approve after the rewrite = %v, want ErrCorrupt naming the proposers", err)
 	}
 	if rep := mustIntegrity(t, s); rep.ProposerMismatches != 1 {
-		t.Errorf("Integrity after the laundered approval = %+v, want the proposer mismatch still reported", rep)
+		t.Errorf("Integrity after the refused approval = %+v, want the proposer mismatch still reported", rep)
 	}
 }
 
