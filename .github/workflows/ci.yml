@@ -19,6 +19,9 @@
 # placeholder on purpose, nothing here was invented.
 name: ci
 
+# Triggers: every pull request, every push to main and a manual dispatch; the
+# e2e job runs on dispatch only. README.md and SECURITY.md state the triggers
+# in these words.
 on:
   push:
     branches: [main]

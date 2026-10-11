@@ -391,3 +391,79 @@ items the 2026-10-11 watch lists (the `processors[]` shape after #3711, `_meta`
 merged back into `params` for request-phase processors, CEL header semantics
 after #3778, gRPC status mapping after #3793).
 
+
+### Corrections after the third review (2026-10-11)
+
+The third hostile review ran against d28e0e3 and 9cc8f28, the tree the week-2
+decision above describes; its fixes are the fourth round, recorded as decision
+D13 in docs/decisions.md. Every statement above was true of the tree it names.
+What the round changed in the statements of this file:
+
+- "Still open at 20e32b4" as corrected above, was: "the serving snapshot
+  requires an approve or rollback record for every approved version". Is: the
+  serving path requires the newest decision about the tool: among all versions
+  of a tool, the approvals row with the highest id whose decision is approve or
+  rollback must point at the approved version and carry hash_seen equal to its
+  digest (D13 a). The third review had flipped a tools row back to a
+  superseded version with plain UPDATE statements, and rewritten an approved
+  definition after dropping and re-creating a guard trigger with its original
+  DDL; both were served by Snapshot and Approved because some historic approve
+  row about the version existed, and only Store.Integrity named them.
+- Same bullet, was: "Store.Integrity cross-checks the registry against the
+  approvals table and the audit log". Is: it compares every mutable column the
+  log describes (approved digest, last-seen digest, tools.state,
+  proposals_since_decision, servers.paused, servers.allow_private and a hash of
+  servers.url) with the latest entry about the subject, and any trigger or view
+  in sqlite_master that the schema did not create is ErrCorrupt at Open and on
+  every Snapshot and Approved load (D13 b; the audit detail format gained
+  fields, so the schema version is 4). The third review had re-enabled a
+  disabled tool and un-paused a server with one UPDATE each, and installed a
+  foreign trigger that undid every later disable, with Integrity clean.
+- Week-2 decision, "What the technical evidence does not cover", second
+  bullet, was: the canary "prints LIVE-CONFIG-MISMATCH against a byte-identical
+  copy of the emitted file". Still true, and insufficient: at 75ab299 the
+  comparison read the one route named after the server, so a route added
+  through the admin API that owned the client's path, a second route on
+  another path and a second gateway on 0.0.0.0:3001 all compared healthy, and
+  each loaded in --validate-only. Is: the comparison covers the whole document
+  (every emitted gateway and route present exactly once with the same fields
+  and match path, nothing extra, no path twice, the --url path on the emitted
+  route; D13 e).
+- Same section, last bullet, was: "operators pass --no-probe once they have
+  recorded the limit". Is: the documents now say so in the places that
+  promised an OK line the pinned gateway cannot print with the probe on (README
+  step 7, the SECURITY.md canary item, the operations guide's example); the
+  probe also gained PROBE-INCONCLUSIVE for a 2xx answer with a body that is not
+  a plain 202 (D13 h), since any JSON-RPC error in such an answer had counted
+  as the gateway's own refusal, whoever produced it.
+- The canary's exit under --keep-going, stated as "exited 1 on SIGTERM after
+  reporting both" for scenario F: the third review stopped a run while the
+  admin fetch that followed a LEAK was in flight and got exit 0, because the
+  check was not tallied once the stop signal was set. Is: every check is
+  tallied before the stop signal is looked at, verdict lines are printed before
+  the network calls that follow the listing, and a run that printed any
+  failing verdict line exits 1 (D13 f). crawl --every gained the matching rule
+  (stop on a catalog error; exit 1 when no crawl completed or any was refused).
+- The emitted file: was 0644 unless it carried a secret or a query string; is
+  always 0600, with the operator making it readable by the gateway's user (D13
+  g). Processor addresses are stable across re-emits (an existing emitted file
+  is read first; a new server takes the next free port; changes are printed),
+  a processor address on one of the gateway's own sockets is refused, and
+  verify-gateway --expect-body-hash HEX compares the body hash emit printed,
+  which closes the "unkeyed hash, record it elsewhere" statement of the F3
+  correction with a command that does the comparison (README limit L19).
+- The processor-level rule of D3 as the third round stated it, "a denied page
+  leaves the conflict marker on every catalog tool it listed, whatever denied
+  it": the third review placed an unreadable decoy in front of a changed tool
+  and the collector stopped at the decoy, so the changed tool kept its older
+  evidence. Is: a page the processor cannot read through to the end marks
+  every catalog tool of the snapshot, and the observed-evidence table is sized
+  from the snapshot, records only servable catalog tools and never evicts a
+  contradiction (D13 d). README limit L6, "it cannot grow the database", was
+  false for an upstream that lists fresh names on every crawl; per-server caps
+  on tool rows and stored bytes bound it now (D13 c).
+- Decisions added since: D13, in docs/decisions.md, with the document
+  corrections of the round (D9 no longer says that what is listed is exactly
+  what is callable; CLAUDE.md names schema v4; the CI trigger is stated as
+  every pull request and every push to main; .golangci.yml names golangci-lint
+  v2.14.0).

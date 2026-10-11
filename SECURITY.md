@@ -57,8 +57,12 @@ In scope:
 - The agentgateway configuration that `toolwarrant emit` writes, and the
   processor behaviour of `toolwarrant serve` against agentgateway v1.6.0.
 - The canary (`toolwarrant verify-gateway`): a served tool it does not report as
-  LEAK, a replaced live configuration it does not report with `--admin`, an
-  id-less `tools/call` the probe does not detect.
+  LEAK, a live configuration that differs from the emitted file in any gateway
+  or route (an added route, a route moved to another path, a processor removed)
+  that it does not report with `--admin`, a body hash that differs from the
+  recorded one that it does not report with `--expect-body-hash`, an id-less
+  `tools/call` the probe does not detect or calls healthy without the gateway's
+  own refusal.
 - The scripts under `scripts/`, the CI workflow, and this documentation where it
   describes a control that does not hold.
 
@@ -70,14 +74,16 @@ the system actor or by a proposer of the version (a rollback by a proposer is
 permitted by design: the target was approved by someone before, see decision D4
 and `internal/lifecycle/decide.go`); the crawler reaching an address or scheme
 the egress policy forbids; an edit to the database that the catalog's integrity
-checks do not report (the digest re-check, the approval-record requirement and
-the guard definitions, all applied at open and on every snapshot load, the audit
-chain, and `Store.Integrity`'s cross-check of the registry against the approvals
-table and the log, which `audit verify` runs after the chain check);
-upstream text reaching a terminal, a log line or a file name unescaped; a
-bearer token, shared secret or credential-bearing URL printed, stored, logged or
-written into a file that is not owner-only; anything under `internal/export`
-writing outside its directory or running a program during `Commit`.
+checks do not report (the digest re-check, the newest-decision rule for every
+approved version, the guard definitions and the absence of foreign triggers and
+views, all applied at open and on every snapshot load, the audit chain, and
+`Store.Integrity`'s cross-check of every mutable column the log describes
+against the approvals table and the log, which `audit verify` runs after the
+chain check); upstream text reaching a terminal, a log line or a file name
+unescaped; a bearer token, shared secret or credential-bearing URL printed,
+stored, logged or written into a file that is not owner-only; anything under
+`internal/export` writing outside its directory or running a program during
+`Commit`.
 
 Out of scope:
 
@@ -111,7 +117,7 @@ Out of scope:
 The threat model, with the control that exists in code for each threat and the
 test or seam result that proves it, is in [docs/threat-model.md](docs/threat-model.md).
 Its second table lists the residual risks and what an operator can do about
-each. The spike findings F1 to F5 and the design decisions D1 to D12 are
+each. The spike findings F1 to F5 and the design decisions D1 to D13 are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md).
 
 ## Operator hardening checklist
@@ -126,7 +132,12 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   `--allow-non-loopback` is given, and with that flag refuses to listen without
   `--secret-env` unless `--insecure-no-secret` is passed as well; the pairing
   is enforced, not advised. Use it only on a network nobody but the gateway can
-  reach. The ExtMCP protocol has no authentication of its own.
+  reach. The ExtMCP protocol has no authentication of its own, and the link is
+  plaintext gRPC; every processor entry `emit` writes carries the gateway's
+  `requestHeaders` filter (only the `:method` pseudo-header allowed;
+  `authorization`, `cookie` and `proxy-authorization` denied by name as well),
+  so a client's credentials do not ride each hook to the processor, which reads
+  no header (decision D13, known limit L11).
 - Set a shared secret: `emit --secret-env VAR` and `serve --secret-env VAR`
   with the same value, 16 to 256 printable ASCII characters. The processor then
   refuses, in constant time, every hook that does not carry it; the gateway
@@ -143,8 +154,11 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   (`POST /api/config`), which the gateway applies and writes back to the
   watched file. Run the gateway on a dedicated host, in a container or in its
   own network namespace when other local users exist, and run the canary with
-  `--admin` so a replaced configuration is reported as LIVE-CONFIG-MISMATCH;
-  or turn the admin API off (`emit --disable-admin`, the gateway's own
+  `--admin` so a replaced configuration is reported as LIVE-CONFIG-MISMATCH:
+  the comparison covers the whole document, so an added route or gateway, a
+  route moved to another path, a removed processor or a changed allow rule is
+  reported, not only a change inside the named route (decision D13); or turn
+  the admin API off (`emit --disable-admin`, the gateway's own
   `adminAddr: off`) and accept that the live comparison then has nothing to
   query. Rotate the secret whenever another user could have reached
   loopback while the admin API was on (known limit L18).
@@ -157,12 +171,17 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   them: run one ordinary command as the owner after `init` (any `list` does) in
   a directory the owner can write, so the files exist before the processor
   starts. Never share one database file between operators.
-- Keep the emitted configuration readable by the gateway only when it carries
-  a credential: a shared secret is written into the file in clear, and so is
-  every upstream URL, query string included. `emit` writes the file 0600 and
-  prints a warning when it carries a secret or when any server URL has a query
-  string, which is where credentials live; otherwise the file holds only
-  upstream URLs and tool names and is written 0644.
+- Keep the emitted configuration readable by the gateway's user only. `emit`
+  writes the file 0600 whatever it carries (decision D13; before the fourth
+  round a file without a secret and without a query string was written 0644,
+  and a credential in a URL path went into a world-readable file in silence,
+  because the only credential heuristic looks at query strings). Make the file
+  readable by the user the gateway runs as and by nobody else: `chown` it to
+  that user, or grant that user a read ACL. The shared secret is written into
+  the file in clear, and so is every upstream URL, path and query string
+  included; `emit` still prints a warning when the file carries a secret or
+  when a server URL has a query string, which is where credentials usually
+  live, and the mode no longer depends on that heuristic being right.
 - No crawl route on the serving gateway. The control plane crawls upstreams
   directly, so the emitted configuration contains only guarded routes. Never add
   an unguarded route or a second bind by hand: any unguarded path is a complete
@@ -170,17 +189,25 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
 - Run `verify-gateway` as a canary, not once at deploy time. It opens a new MCP
   session on every run, which is the only way to see a processor that a reload
   dropped (sessions that already exist keep the old chain; seam test 14 as
-  corrected). Pass `--config FILE` and `--admin ADDR`, keep the probe on, use
-  `--every DURATION`, and treat exit code 1 (LEAK, CONFIG-EDITED,
-  LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS) and every `check failed` line as an
-  incident. Exit 0 is OK or MISSING only; MISMATCH is a sub-label of a LEAK
-  line, never a verdict that passes (decision D12).
+  corrected). Pass `--config FILE` with `--expect-body-hash HEX` (the
+  `body sha256` line `emit` printed, recorded off the gateway host, the way the
+  audit head is), pass `--admin ADDR`, use `--every DURATION`, and treat exit
+  code 1 (LEAK, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS,
+  PROBE-INCONCLUSIVE) and every `check failed` line as an incident. On
+  agentgateway v1.6.0 the unhooked-call probe reports UNHOOKED-CALLS on every
+  check (known limit L17): run it once, record the limit, and pass `--no-probe`
+  until the pin moves to a gateway that refuses the shape, because a canary that
+  fails on every run trains its readers to ignore it; re-run the probe on every
+  move of the pin. Exit 0 is OK or MISSING only; MISMATCH and UNVERIFIED are
+  sub-labels of a LEAK line, never a verdict that passes (decisions D12 and
+  D13).
 - Record the audit head outside the database after every `audit verify`, and
   verify with `audit verify --expect-head HASH`. The chain proves that nothing
   inside it was altered; only a head recorded elsewhere proves that the whole
   log was not replaced. `audit log ok` in forensic mode means the chain is
   consistent, not that the file is intact; every other command refuses a file
-  whose guard objects are missing or redefined.
+  whose guard objects are missing or redefined, or that holds a trigger or view
+  the schema did not create.
 - Keep upstreams unreachable except from the gateway and the control plane
   host. The emitted file binds the gateway's serving port to 127.0.0.1 by
   default (e2e scenario I); a non-loopback `emit --bind-address` is an explicit
@@ -188,11 +215,16 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
 - One owner for the configuration file: regenerate it with `emit`, never edit
   it by hand. The header records the SHA-256 of the body and `emit.Verify`
   fails on any edit that leaves the header alone. The hash is unkeyed, so it is
-  tamper-evidence, not proof (known limit L19); the canary's listing and its
-  live-configuration comparison are the controls against an edit that
-  recomputes it. Pass `emit --gateway-binary PATH` so a file the gateway would
-  refuse fails `emit` instead of freezing every server's configuration on the
-  next reload.
+  tamper-evidence, not proof (known limit L19): record the `body sha256` line
+  `emit` prints outside the gateway host and pass it to the canary as
+  `--expect-body-hash HEX`, which reports CONFIG-EDITED when the body hashes to
+  anything else, header recomputed or not (decision D13); the canary's listing
+  and its live-configuration comparison are the controls against an edit the
+  recorded hash cannot see. Pass `emit --gateway-binary PATH` so a file the
+  gateway would refuse fails `emit` instead of freezing every server's
+  configuration on the next reload. Re-emitting keeps every server's processor
+  address, so a re-emit after adding a server does not darken the others
+  (decision D13).
 - Run crawls under the system actor (no `--as`, no `TOOLWARRANT_ACTOR`) in
   automation, and decide as yourself. A person whose crawl proposed a digest
   cannot approve it.
@@ -203,9 +235,10 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   `GOFLAGS=-mod=readonly`. The Go toolchain is pinned (`go 1.27`,
   `toolchain go1.27.2`).
 - `govulncheck ./...` runs as the `govulncheck` job of
-  [.github/workflows/ci.yml](.github/workflows/ci.yml) on every push and pull
-  request once the repository is on GitHub, and before every release. The last
-  recorded run by hand (2026-10-07) found no vulnerabilities.
+  [.github/workflows/ci.yml](.github/workflows/ci.yml) on every pull request
+  and every push to main once the repository is on GitHub, and before every
+  release. The last recorded run by hand (2026-10-11) found no vulnerabilities
+  after the move to go1.27.2 and golang.org/x/net v0.60.0.
 - grpc is pinned to v1.86.0-dev because of GO-2026-6443, a server panic in grpc
   v1.84.0 on requests without authority or Host headers. The processor runs a
   gRPC server with `failureMode: failClosed`, so a crash there denies every
@@ -226,8 +259,10 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
 - agentgateway is pinned to v1.6.0. A move of the pin requires re-running the
   emitter's binary validation tests and the end-to-end test against the new
   release before the pin changes; scenario L re-derives which keys the gateway
-  strips and the canary probe re-checks whether id-less calls are still
-  forwarded.
+  strips, and the canary probe re-checks whether id-less calls are still
+  forwarded and whether the shapes the probe calls healthy are still the
+  gateway's own refusals (a 2xx answer with a body that is not a plain 202 is
+  PROBE-INCONCLUSIVE, decision D13).
 
 ## Release integrity plan
 

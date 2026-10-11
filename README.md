@@ -86,12 +86,15 @@ Strict mode: a tool is served only while the definition the upstream serves
 right now equals the approved digest, so a changed tool is hidden and its calls
 are denied, and the processor denies anything it cannot verify. Nothing is served
 until a named person has approved an exact digest; a catalog miss, an unreadable
-page, an unreachable catalog or a hook from another backend all deny. A crawl
-never approves anything: it records proposals, drift, reverts, absences and
-unusable definitions, and the person who ran the crawl that proposed a version
-cannot approve that version. Whoever can reach the processor without the shared
-secret, or the gateway's admin listener, decides what is served; both are inside
-the trusted computing base ([docs/threat-model.md](docs/threat-model.md)).
+page, an unreachable catalog or a hook from another backend all deny. The catalog
+hands out an approval only when the newest approve or rollback decision about
+the tool, in the append-only approvals table, names that exact version and
+digest (decision D13). A crawl never approves anything: it records proposals,
+drift, reverts, absences and unusable definitions, and the person who ran the
+crawl that proposed a version cannot approve that version. Whoever can reach the
+processor without the shared secret, or the gateway's admin listener, decides
+what is served; both are inside the trusted computing base
+([docs/threat-model.md](docs/threat-model.md)).
 
 ## Quickstart
 
@@ -146,10 +149,16 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 # wipe_database stays pending_review and is never served.
 
 # 5. Write the gateway configuration and start the processor it names.
-#    emit gives the i-th server in name order the processor 127.0.0.1:9001+i,
-#    puts the route at /<server>/mcp on port 3000 bound to 127.0.0.1, and
-#    prints the exact serve command for each server. --gateway-binary PATH
-#    makes emit validate the file with the gateway before reporting success.
+#    The first emit gives the i-th server in name order the processor
+#    127.0.0.1:9001+i; a later emit reads the file it wrote before and keeps
+#    every server's address, so adding a server never moves the others (a new
+#    server takes the next free port and emit prints every address that
+#    changed). The route is /<server>/mcp on port 3000 bound to 127.0.0.1.
+#    The file is always written 0600: make it readable by the user the
+#    gateway runs as (chown, or a read ACL) and by nobody else. Record the
+#    "body sha256" line emit prints; the canary compares the file with it.
+#    --gateway-binary PATH makes emit validate the file with the gateway
+#    before reporting success.
 ./bin/toolwarrant emit --out gateway.yaml --gateway-binary .cache/agentgateway-darwin-arm64
 ./bin/toolwarrant serve --server mock --listen 127.0.0.1:9001 &
 
@@ -161,12 +170,19 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 .cache/agentgateway-darwin-arm64 -f gateway.yaml &
 
 # 7. Canary: open a fresh MCP session through the gateway, list the tools,
-#    compare each one with the catalog, check the file on disk and the live
-#    configuration, and probe for unhooked calls. Expect the line
-#    "OK: the gateway serves 2 tool(s), 2 approved and current". Exit code 1
-#    means LEAK, CONFIG-EDITED, LIVE-CONFIG-MISMATCH or UNHOOKED-CALLS.
+#    compare each one with the catalog, check the file on disk against the
+#    body hash you recorded, and compare the live configuration with the
+#    file. On agentgateway v1.6.0 the unhooked-call probe reports
+#    UNHOOKED-CALLS with exit 1 on every check (known limit L17): run it once
+#    without --no-probe to see the verdict, record the limit, and pass
+#    --no-probe until the gateway pin moves. Expect the line, as printed:
+#    "OK: the gateway serves 2 tool(s), 2 approved and current; live
+#    configuration matches the emitted file; unhooked-call probe skipped
+#    (--no-probe)". Exit code 1 means LEAK, CONFIG-EDITED,
+#    LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS or PROBE-INCONCLUSIVE.
 ./bin/toolwarrant verify-gateway --server mock --url http://127.0.0.1:3000/mock/mcp \
-  --config gateway.yaml --admin 127.0.0.1:15000
+  --config gateway.yaml --expect-body-hash BODY_SHA256_PRINTED_BY_EMIT \
+  --admin 127.0.0.1:15000 --no-probe
 ```
 
 Now change a definition behind the gateway's back, the way a poisoned upstream
@@ -234,13 +250,18 @@ pinned gateway version.
   `deprecated` and never served. A failed crawl is not a removal. A tool whose
   live definition cannot be used (invalid, or a name listed twice) is marked
   `UNUSABLE`: it is neither listed nor callable, even when the gateway shows
-  the approved bytes, until a clean crawl records the approved digest. A tool
-  that gains more than 20 new digests between decisions is marked unusable too,
-  until someone decides (known limit L6).
+  the approved bytes, until a clean crawl records the approved digest. The
+  canary applies the same rule: such a tool served by a route is a LEAK with
+  the sub-label UNVERIFIED, and it is not counted MISSING while a working
+  processor hides it (decision D13). A tool that gains more than 20 new digests
+  between decisions is marked unusable too, until someone decides (known limit
+  L6).
 - Re-emit. Approvals change which names the explicit allow rule carries, so
   run `emit` again after changes and let the gateway reload the file (266 to
-  373 ms in every observation of the end-to-end test). The processor needs no
-  restart: it reads the catalog's generation on every hook.
+  373 ms in every observation of the end-to-end test). A re-emit reads the file
+  it wrote before and keeps every server's processor address (a new server
+  takes the next free port, and every changed address is printed), so the
+  processors need no restart: they read the catalog's generation on every hook.
 
 ## The audit log
 
@@ -250,17 +271,27 @@ the previous entry's hash, as RFC 8785 canonical JSON, so changing, deleting,
 reordering or inserting any row breaks `audit verify` from that row on.
 Triggers in the database refuse ordinary SQL updates and deletes on the history
 tables, and the catalog checks the file before it trusts it: guard objects must
-be present with the definition `init` wrote (compared by their DDL text at open
-and on every snapshot load, so a same-named no-op trigger is corruption), and
-every approved version it hands out is re-hashed and must have an approve or
-rollback record in the append-only approvals table. A file that fails any of
-these is reported as corrupt and nothing is served from it. `Store.Integrity`
-in `internal/catalog` goes further and cross-checks the mutable registry
-(approved digests, approval rows, last-seen digests) against the approvals
-table and the audit log, listing every disagreement; `audit verify` runs it
-after the chain check and prints `integrity ok: guard objects intact, every
-approval recorded in the log`, or one `integrity problem:` line per
-disagreement and exits 1.
+be present with the definition `init` wrote (compared by their DDL text at open,
+on every snapshot load and at the end of every write transaction, so a
+same-named no-op trigger is corruption and a long-running crawl schedule cannot
+keep writing into a file whose trigger was dropped); no
+trigger or view the schema did not create may exist (a foreign trigger can undo
+a decision inside the operator's own transaction, so one is corruption too,
+decision D13); and every approved version it hands out is re-hashed and must be
+what the newest decision about the tool says: among all versions of the tool,
+the approve or rollback row with the highest id in the append-only approvals
+table must point at the approved version and carry `hash_seen` equal to its
+digest (decision D13; before the fourth round any historic approve row about the
+version counted, so a pointer flipped back to a superseded version, or a
+definition rewritten under a dropped and re-created guard trigger, reached the
+serving path). A file that fails any of these is reported as corrupt and nothing
+is served from it. `Store.Integrity` in `internal/catalog` goes further and
+cross-checks every mutable column the log describes (the approved digest, the
+last-seen digest, the state and the proposal budget of every tool; the paused
+flag, the allow-private flag and a hash of the URL of every server; every
+approval row) against the approvals table and the audit log, listing every
+disagreement; `audit verify` runs it after the chain check and prints
+`integrity ok`, or one `integrity problem:` line per disagreement and exits 1.
 
 The one operational rule: record the head hash outside the database. The chain
 proves that nothing inside it was altered since the first entry; it cannot
@@ -269,11 +300,12 @@ prove that the whole log was not replaced by a shorter, internally valid one.
 `audit verify --expect-head HASH` fails unless the head equals the one you
 recorded. `audit list [--after N] [--limit N] [--json]` prints entries in
 sequence order. Both commands open the database in forensic mode, which reads a
-file whose guard objects were dropped or redefined so that the broken entry can
-be named; nothing is ever served or written from such an open, and `audit log
-ok` in that mode means the chain is consistent, not that the guards are intact
-(every other command refuses such a file; `audit verify` prints the integrity
-problems itself and exits 1 when there are any).
+file whose guard objects were dropped or redefined, or that holds a foreign
+trigger or view, so that the broken entry can be named; nothing is ever served
+or written from such an open, and `audit log ok` in that mode means the chain is
+consistent, not that the guards are intact (every other command refuses such a
+file; `audit verify` prints the integrity problems itself and exits 1 when
+there are any).
 
 ## Non-goals
 
@@ -305,11 +337,20 @@ until a later version says otherwise.
   upstream until either source is refreshed (seam test 4, finding F1; e2e
   scenario C measured both paths: denied 1.5 ms after another session listed
   the drifted definition, and otherwise as soon as the crawl recorded it). A
-  page the processor denies as a whole (a repeated name, a tool it cannot
-  hash, or more than 10000 tools) leaves a conflict marker on every catalog
-  tool it listed, so a decoy placed next to a changed tool cannot keep that
-  tool's older evidence alive: its calls are denied until a clean page shows
-  the approved digest.
+  page the processor reads but denies as a whole (a repeated name, a tool it
+  cannot hash, or more than 10000 tools) leaves a conflict marker on every
+  catalog tool it listed, and a page it cannot read through to the end (an
+  entry without a string name, a `tools` member that is not an array) is
+  evidence about nothing, so every servable catalog tool of the server gets
+  the marker (decision D13; the third review placed an unreadable decoy in front of a
+  changed tool and the changed tool kept its older evidence). So a decoy in any
+  position cannot keep a changed tool's older evidence alive: its calls are
+  denied until a clean page shows the approved digest. The table that holds
+  this evidence is sized from the catalog snapshot, records only tools the
+  catalog could serve, and when full evicts an entry that agrees with its
+  approval, never a contradiction; when no agreeing entry is left the new
+  evidence is dropped and counted (`Stats.EvidenceDropped`), and a servable
+  tool with no listing evidence is then denied until a listing records it.
 - L2. agentgateway v1.6.0 re-serialises tool definitions before the ExtMCP hook
   and drops keys it does not know. The end-to-end scenario L records what the
   pinned binary dropped from a tool that carried an unknown top-level key, an
@@ -351,13 +392,26 @@ until a later version says otherwise.
   definition), the explicit reset decision `toolwarrant budget reset SERVER
   TOOL [--by NAME]` (`Store.ResetProposalBudget` in `internal/catalog`) is the
   way out: a human decision with one audit entry. A hostile upstream can keep
-  its own tool hidden this way; it cannot grow the database.
+  its own tool hidden this way. It cannot grow the database without bound
+  either, but the bound is a cap, not the budget: besides the per-crawl caps,
+  the catalog holds a fixed cap on tool rows per server
+  (`catalog.MaxToolsPerServer`, 50000, five full crawls of fresh names) and on
+  stored canonical bytes per server (`catalog.MaxServerBytes`, 1 GiB,
+  thirty-two crawls at the per-crawl cap), and a crawl that would exceed
+  either is recorded as failed under its own class (`server-tools-cap`,
+  `server-bytes-cap`) and adds no rows (decision D13; the third review listed
+  1500 fresh names on every crawl, grew the file by 18 MB in six crawls and
+  made every later crawl slower, while this item said the upstream could not
+  grow the database). Deprecated rows are not loaded on every crawl, so crawl
+  cost follows the live set. There is no prune in v0.1: the recovery from a
+  server that hit a cap is `server pause`, then a fresh `init` and a re-crawl
+  ([docs/operations.md](docs/operations.md)).
 - L7. agentgateway is pinned to v1.6.0. The project ships breaking changes about
   every five weeks, its config schema is unversioned and the ExtMCP protocol is
   young. Every other release of the gateway must be re-qualified against the
   tests in `internal/emit` and the end-to-end test before the pin moves;
   scenario L re-derives what the gateway strips and the canary probe re-checks
-  the unhooked-call shape (L17).
+  the unhooked-call shape and the shapes it may call healthy (L17).
 - L8. Single tenant, no high availability. One SQLite file, one processor per
   upstream, one operator.
 - L9. Digests change for any `_meta` change, because hosts act on `_meta`
@@ -379,7 +433,20 @@ until a later version says otherwise.
   host:port; TLS to a processor is a separate `backendTLS` block this version
   does not write), so the processor must run on loopback with the shared
   secret, or on a network nobody but the gateway can reach; `serve` refuses an
-  exposed listener without a secret unless told otherwise.
+  exposed listener without a secret unless told otherwise. What travels on that
+  link is more than the hook: the ExtMCP request carries the client's HTTP
+  request headers after the gateway's own filtering, and agentgateway v1.6.0
+  forwards every header, Authorization and Cookie included, when the processor
+  entry carries no `requestHeaders` filter (the vendored module source and the
+  protocol definition say so; the third review did not observe the wire). The
+  processor reads none of them, so since the fourth round every processor
+  entry `emit` writes carries the filter: only the `:method` pseudo-header is
+  allowed through (an empty allow list would mean everything), and
+  `authorization`, `cookie` and `proxy-authorization` are denied by name as
+  well, so the file says what must never cross even to a reader who does not
+  know what an allow list means to the gateway (decision D13; the pinned
+  binary loads the filter). What the gateway puts on the wire with the filter
+  in place was not observed in this tree.
 - L12. The added latency is measured on a 3-tool page only. The end-to-end
   scenario M (loopback, 100 list and call pairs per mode, `toolwarrant serve`
   against the CEL rule alone) recorded in `demo/last-run.log` that the
@@ -403,10 +470,16 @@ until a later version says otherwise.
   cannot judge a message the gateway never shows it. The control is the
   canary's probe: every `verify-gateway` check sends such a call for a name no
   catalog can hold and reports UNHOOKED-CALLS, exit 1, when the gateway answers
-  202 instead of rejecting it (`--no-probe` disables the probe, which reaches
-  the upstream when the gateway is unhooked). The report to the agentgateway
-  project is the owner's pending action ([SECURITY.md](SECURITY.md)); the probe
-  is re-run on every move of the gateway pin.
+  202 instead of rejecting it; HTTP 400 is the healthy answer, and any other
+  2xx answer with a body is PROBE-INCONCLUSIVE, exit 1, because a JSON-RPC
+  error in such an answer may have come from the upstream through a forwarding
+  gateway rather than from the gateway's own refusal (decision D13). On the
+  pinned gateway the probe therefore fails every check: run it once, record the
+  limit, pass `--no-probe` until the pin moves, and re-run the probe on every
+  move of the pin (the probe reaches the upstream when the gateway is
+  unhooked, which is why it can be switched off). The report to the
+  agentgateway project is the owner's pending action
+  ([SECURITY.md](SECURITY.md)).
 - L18. The gateway's admin API is unauthenticated and bound to loopback
   (127.0.0.1:15000 in the emitted file). Any local user of the gateway host
   can read the loaded configuration, shared secret included
@@ -420,17 +493,26 @@ until a later version says otherwise.
   where they are (`emit --admin-addr`, `--stats-addr`, `--readiness-addr`),
   and the admin API can be turned off (`emit --disable-admin`, the gateway's
   own `adminAddr: off`) at the price of the live-configuration comparison;
-  `verify-gateway --admin` (with `--config`) compares the live
-  configuration with the emitted file (LIVE-CONFIG-MISMATCH); rotate the
+  `verify-gateway --admin` (with `--config`) compares the whole live
+  configuration with the emitted file: every emitted gateway and route must be
+  present exactly once with the same fields and match path, nothing the file
+  does not carry may exist, no path may appear twice, and the `--url` path
+  must be the emitted route's match (LIVE-CONFIG-MISMATCH; decision D13, after
+  the third review added a route that owned the path and a second gateway and
+  the comparison of the named route alone called both healthy); rotate the
   secret whenever another user could have reached loopback while the admin
   API was on.
 - L19. The configuration file's header hash is an unkeyed SHA-256 of the body.
   `emit.Verify` and CONFIG-EDITED catch every edit that leaves the header
   alone, including a removed processor, and every accidental edit; an edit that
   recomputes the hash passes both `Verify` and the gateway's `--validate-only`.
-  The controls against such an edit are the canary's listing in a fresh
-  session (LEAK) and its live-configuration comparison (LIVE-CONFIG-MISMATCH
-  with `--admin`); one owner for the file remains an operator duty.
+  The control is the hash you recorded: `emit` prints the body hash, and
+  `verify-gateway --expect-body-hash HEX` reports CONFIG-EDITED, exit 1, when
+  the body hashes to anything else, header recomputed or not, the way
+  `audit verify --expect-head` guards the log (decision D13). The canary's
+  listing in a fresh session (LEAK) and its live-configuration comparison
+  (LIVE-CONFIG-MISMATCH with `--admin`) remain the controls behind it; one
+  owner for the file remains an operator duty.
 
 The residual-risk table in [docs/threat-model.md](docs/threat-model.md) says what
 an operator can do about each of these.
@@ -446,13 +528,13 @@ Actions workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs
 lint, vet and build, the short test suite under `-race`, the full Unicode walk
 of `internal/textdiff` and the slow catalog tests, govulncheck, gitleaks, the
 third-party notices check and the documentation checks (every cited test name
-and every relative link must exist) on every push and pull request, and the
-end-to-end job on manual dispatch once the owner has recorded the checksum of
-the linux gateway binary; it has not run yet because the repository has not
-been pushed. The security policy, including how to report a problem once the
-repository is public and the owner's pending report to the agentgateway
+and every relative link must exist) on every pull request and every push to
+main, and the end-to-end job on manual dispatch once the owner has recorded the
+checksum of the linux gateway binary; it has not run yet because the repository
+has not been pushed. The security policy, including how to report a problem once
+the repository is public and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D12 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D13 are in
 [docs/decisions.md](docs/decisions.md).
 
 ## Licence

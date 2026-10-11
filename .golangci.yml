@@ -1,5 +1,5 @@
-# golangci-lint configuration (v2 format; the repository uses golangci-lint 2.13).
-#
+# golangci-lint configuration (v2 format; the repository uses golangci-lint v2.14.0,
+# the version CLAUDE.md and the lint job of .github/workflows/ci.yml pin).
 # Why this file exists: the default set is what reviewers already run by hand,
 # and writing it down makes "lint clean" mean the same thing on every machine.
 # No exclusions: an ignored error is written out as `_ = x.Close()` so that the

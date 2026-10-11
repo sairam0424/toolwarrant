@@ -29,7 +29,7 @@ seam/run.sh guarded; seam/day5.sh; seam/day34-paging-latency.sh; seam/day34-sess
 
 The seam scripts and the end-to-end test need the v1.6.0 release binary at `.cache/agentgateway-darwin-arm64` (gitignored; `TOOLWARRANT_GATEWAY_BIN` overrides the path) and the seam scripts need the four seam binaries in `bin/`. Outside the seam scripts and `make e2e` (which starts the gateway on loopback ports it picks itself and stops it) the gateway binary may only be run with `--validate-only`. The e2e scenarios share one stack and depend on each other's end state, so run the whole `TestEndToEnd`, not one subtest. Anything over two minutes runs in the background with output to a file.
 
-The CI workflow is `.github/workflows/ci.yml`: lint, vet and build, the short test suite under `-race`, the full textdiff walk and the slow catalog tests, govulncheck, gitleaks, the notices check, and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only and needs the owner to record the checksum of the linux gateway binary. Run the documentation checks by hand with:
+The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint, vet and build, the short test suite under `-race`, the full textdiff walk and the slow catalog tests, govulncheck, gitleaks, the notices check, and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only and needs the owner to record the checksum of the linux gateway binary. Run the documentation checks by hand with:
 
 ```sh
 for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sort -u); do grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.cache --exclude-dir=.git . || echo "missing test: $n"; done
@@ -39,14 +39,14 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 
 - `cmd/toolwarrant`: operator CLI, a thin client of the internal packages; `run()` is driven in-process by tests, `main` only exits.
 - `cmd/mockupstream`, `cmd/seamclient`, `cmd/seamgate`, `cmd/seamprocessor`: spike scaffolding for the seam tests and the e2e test; never deployed.
-- `internal/catalog`: SQLite registry (schema v2); the only writer of lifecycle state and the audit log, in one transaction; caps, quarantine, proposal budget and its reset, integrity checks (guard DDL, approval records, audit cross-check).
-- `internal/lifecycle`: pure state machine (states, commands, events, `Serves`); property-tested invariants.
+- `internal/catalog`: SQLite registry (schema v4; a v2 or v3 file from an unreleased build is refused with `ErrSchema` and must be re-initialised, there is no migration); the only writer of lifecycle state and the audit log, in one transaction; per-crawl and per-server caps, quarantine, proposal budget and its reset, integrity checks (guard DDL and the absence of foreign triggers and views, the newest-decision rule for every approved version, the audit cross-check of every mutable column the log describes).
+- `internal/lifecycle`: pure state machine (states, commands, events, `Serves`) and the exported digest-shape rule (`IsDigest`, `LastSeenVerifiable`) that the processor and the canary share; property-tested invariants.
 - `internal/gate`: RFC 8785 canonicalisation and SHA-256 digest, profile `full-v1`; refuses inexact numbers and non-UTF-8.
 - `internal/audit`: hash chain over audit entries (`Seal`, `Verify`, `Head`).
 - `internal/crawl`: raw MCP Streamable HTTP `tools/list` client; vets every tool, quarantines, never approves.
 - `internal/fetch`: the only egress path; SSRF-hardened dialer (connect-time address checks, DNS pinning, caps).
-- `internal/processor`: ExtMCP gRPC processor; list filtering, call rule, caps, shared secret, digest cache.
-- `internal/emit`: agentgateway v1.6.0 config emitter; gateways form with a loopback bind, listener inputs, explicit allow rules, failClosed, sha256 header, `Verify`, validation with the gateway binary.
+- `internal/processor`: ExtMCP gRPC processor; list filtering, call rule, caps, shared secret, digest cache, observed-evidence table sized from the snapshot.
+- `internal/emit`: agentgateway v1.6.0 config emitter; gateways form with a loopback bind, listener inputs, explicit allow rules, failClosed, sha256 header, `Verify`, validation with the gateway binary, the request-header filter on every processor entry, refusal of a processor address on one of the gateway's own sockets.
 - `internal/export`: write-only mirror of approved definitions into a directory and git; crash-safe manifest.
 - `internal/textdiff`: escaped diff renderer and invisible-character findings for approvers.
 - `internal/toolname`: the one tool-name rule shared by crawler, catalog, processor and emitter.
@@ -56,7 +56,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
-- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D12), `docs/operations.md`.
+- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D13), `docs/operations.md`.
 - `.github/workflows/ci.yml`: the CI workflow.
 
 ## Rules
@@ -66,7 +66,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - Nothing is pushed, tagged, published or registered without the owner.
 - Keep "MCP" out of the product name; "toolwarrant for MCP" is the permitted form.
 - Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
-- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D12 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`.
+- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D13 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.
 - Test files must not contain literal invisible or format characters: build them at run time or use `\u` escapes, then check with `grep -P`.
