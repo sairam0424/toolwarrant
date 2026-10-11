@@ -327,3 +327,67 @@ processor against 1.11 ms with the CEL rule alone (+0.95 ms), p95 7.08 against
 p50 from other runs; p95 on a shared laptop is noise. The table at the top of
 this file remains the spike's measurement with cmd/seamgate and is read as
 history; pages of 100 tools and more are still not measured (README limit L12).
+
+## Week-2 decision (2026-10-11 22:51 IST)
+
+Written at the end of the two-week spike against the six-condition rule of the
+plan (report section 7.4). Code tree: commit 75ab299 on main (local, not pushed;
+the commits after it on 2026-10-11 touch documents only). Evidence: the seam
+results above, the end-to-end harness (`make e2e`, scenarios A to P on the real
+agentgateway v1.6.0 binary), the unattended demo (`demo/run.sh`) and the two
+competitor-watch logs in the workspace scratch-pad (2026-10-07 and 2026-10-11).
+A third hostile review of 75ab299 starts right after this section is written;
+v0.1 is published only after its findings are triaged.
+
+| # | Condition | Result | Evidence |
+|---|---|---|---|
+| 1 | List filtering, call denial and drift hide work on the pinned gateway | HOLDS | seam tests 1 to 3 (day 5); e2e A (nothing approved serves nothing), B (approve serves exactly), C (drift hides and denies), J (two servers, duplicate-name page, service_names check), K (CEL rule alone); `make e2e` on 75ab299: 16.0 s, exit 0 |
+| 2 | A rollback takes effect within the next request | HOLDS | seam test 5; e2e D (re-approve and rollback: listed again on the next tools/list; tools/call allowed again once the next crawl records the revert, D9) |
+| 3 | Added p95 latency at most 50 ms | HOLDS | seam: worst added p95 6.3 ms (5-tool page, 300 pairs); e2e M on 75ab299 (3-tool page, 100 list+call pairs, loopback): added p50 +0.23 ms list, +0.18 ms call; added p95 +0.46 ms list, +0.26 ms call. The same scenario on 21164fd under a loaded machine measured +3.83 and +3.35 ms p95, still far inside the budget |
+| 4 | The demo runs unattended twice | HOLDS | `demo/run.sh` by the maintainer on 75ab299: run 1 exit 0 in 25 s, run 2 exit 0 in 22 s (2026-10-11); before that, five green harness runs and one demo run by the e2e builder on the same scenarios, and four runs on 21164fd |
+| 5 | Hours worked at most 90 h (1.5 x the 60 h plan) | OWNER'S CALL | the time log is the owner's; this file records no hours |
+| 6 | No competing open-source project shipped K4 (i), (ii) or (iii) | HOLDS | competitor-watch-2026-10-07.md (baseline 2026-10-05) and competitor-watch-2026-10-11.md: K4 not tripped; nearest miss LiteLLM PR #44245 (open); LiteLLM's admin pin and drift alert, GA in v1.105.0, is none of the three clauses |
+
+**Decision on the technical conditions: GO to v0.1.** Conditions 1, 2, 3, 4
+and 6 hold on evidence in this repository and the two watch logs. Condition 5
+is decided by the owner's time log, not here; if it fails, the plan's own rule
+applies and this GO does not override it.
+
+**What the technical evidence does not cover.**
+
+- agentgateway v1.6.0 forwards a `tools/call` sent without a JSON-RPC id to
+  the upstream without running the ExtMCP processor or the mcpAuthorization
+  rule. e2e scenario O records it on every run (HTTP 202, the probe arrives in
+  the hostile upstream's request log, `verify-gateway` prints UNHOOKED-CALLS
+  and exits 1). The control is the canary's probe; the fix is upstream, and the
+  upstream report is the owner's hand-written action. The 2026-10-11 watch
+  found no existing public report of it (eleven searches), so the report would
+  be new.
+- The gateway's admin API on the loopback admin listener accepts
+  `POST /api/config` without authentication, applies the document and rewrites
+  the watched file (header lines kept). e2e scenario P records it: the canary
+  prints LIVE-CONFIG-MISMATCH against a byte-identical copy of the emitted file
+  and CONFIG-EDITED against the rewritten file. The emitter can move or disable
+  the admin listener; the host remains part of the trusted computing base (D12,
+  threat model rows 19 and 26).
+- The call-time window for a client that never re-lists is bounded by the crawl
+  cadence (F1, L1). e2e scenario C on 75ab299: such a session was denied 3.7 ms
+  after the drift when another session listed the drifted definition, and
+  21.7 ms after a second drift that no session listed, when the crawl recorded
+  it; in production the second case is the crawl interval.
+- Everything was measured on one Mac, loopback, mock upstreams, pages of three
+  to twenty-six tools. Pages of realistic size are not measured.
+- On v1.6.0 the probe fails every canary run by design; operators pass
+  `--no-probe` once they have recorded the limit, as the harness does for every
+  scenario but O.
+
+**What changes with GO.** The publish gate stays in front of v0.1: project name
+and registration, SBOM and signing (syft, goreleaser, cosign), the first push
+and CI run (the action SHAs in `.github/workflows/ci.yml` and the linux gateway
+asset checksum are the owner's to verify and fill in), the hand-written
+upstream report, the SECURITY.md contact. Stay pinned at agentgateway v1.6.0;
+before the first move to a newer tag run the contract tests and re-check the
+items the 2026-10-11 watch lists (the `processors[]` shape after #3711, `_meta`
+merged back into `params` for request-phase processors, CEL header semantics
+after #3778, gRPC status mapping after #3793).
+
