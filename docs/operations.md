@@ -70,8 +70,9 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
 - On SIGINT or SIGTERM the processor stops gracefully, prints its counters and
   exits 0; an error that stops it exits 1. The stats line is:
   `stats: lists served=N denied=N, tools hidden=N (mismatched=N unapproved=N
-  oversized=N), calls allowed=N denied=N, wrong backend=N, unauthenticated=N,
-  throttled=N, source errors=N` (scenario N). Tools the catalog has never heard
+  oversized=N unverified=N), calls allowed=N denied=N, wrong backend=N,
+  unauthenticated=N, throttled=N, source errors=N` (scenario N; pinned by
+  `TestWriteStatsPinsTheLine`). Tools the catalog has never heard
   of are `hidden` minus the named categories. Since the third round the
   processor also counts tools hidden because the latest crawl left the
   unusable marker in the catalog while the gateway showed the approved bytes
@@ -286,6 +287,33 @@ untouched; point `--db` at the right path.
 database read-only (the processor's mode); the CLI adds "the database was
 opened read-only, so nothing can be changed through it". Decisions are made with
 the CLI's normal open.
+
+## Resetting a tool's proposal budget
+
+A tool stops gaining versions after twenty proposals without a decision (D6),
+and an upstream that then goes back to the approved definition leaves nothing
+to approve, reject or roll back (limit L6). The decision that is always
+available is
+
+```sh
+toolwarrant budget reset SERVER TOOL [--by NAME]
+```
+
+It forgets the proposals the tool gained since its last decision, so the next
+crawl may store a new digest; nothing else changes and nothing is approved. It
+is a human decision: `--by` names the person (default: the global `--as`,
+`TOOLWARRANT_ACTOR` or the OS user) and the system actor is refused as a usage
+error. It writes exactly one audit entry, `tool.budget_reset`, and prints it:
+
+```
+reset the proposal budget of SERVER/TOOL by NAME; the next crawl may store a new digest
+audit entry 42: tool.budget_reset SERVER/TOOL by NAME (human) at 2026-10-11T17:20:00Z, detail digest=- state=enabled->enabled last_seen=unusable proposals=20->0, hash <hex>
+```
+
+A budget that is already at zero is refused (nothing to reset), as is a
+read-only or missing database. Covered by `TestBudgetResetUnblocksATool` and
+`TestBudgetResetNeedsAWritableDatabase` in `cmd/toolwarrant`, and by the
+catalog's `TestReview_BudgetDeadlockAfterRevertLeavesNoDecisionToResetIt`.
 
 ## Pausing a server
 
