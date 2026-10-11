@@ -20,11 +20,15 @@ const (
 	unavailableMarker = "catalog unavailable, denying"
 	// shortDigest is how many hex digits of an audit head a note shows.
 	shortDigest = 12
+	// auditOKPrefix starts the line audit verify prints for an intact chain:
+	// "audit log ok: N entries, head H".
+	auditOKPrefix = "audit log ok:"
 )
 
 // scenarioN: the processors keep serving across several legitimate crawls and
 // approvals (the chain pin of decision D14 b advances and never denies); a
-// catalog deleted and initialised again under running processors makes every
+// processor restarted on that log walks the whole chain when its store opens
+// and serves exactly what it served before (decision D15 a); a catalog deleted and initialised again under running processors makes every
 // one of them deny with a source error on its next hook instead of serving
 // the deleted file's approvals (decision D14 e; before the fifth round a
 // processor read the deleted file through its open handle for as long as it
@@ -37,6 +41,7 @@ const (
 // the file before deleting it and start them after init.
 func scenarioN(t *testing.T, s *stack) {
 	scenarioNPinning(t, s)
+	scenarioNRestart(t, s)
 	scenarioNReinit(t, s)
 	scenarioNShutdown(t, s)
 	scenarioNRecover(t, s)
@@ -81,12 +86,74 @@ func (s *stack) pendingDigest(t *testing.T, server, tool string) string {
 // auditHead returns the audit head audit verify prints.
 func (s *stack) auditHead(t *testing.T) string {
 	t.Helper()
-	out := s.twOK(t, "audit", "verify")
-	head := lastField(lastLineWith(out, "audit log ok:"))
-	if len(head) != hexDigestLen {
-		t.Fatalf("audit verify printed no head:\n%s", out)
-	}
+	head, _ := s.auditSummary(t)
 	return head
+}
+
+// auditSummary returns the head and the entry count audit verify prints for
+// an intact chain.
+func (s *stack) auditSummary(t *testing.T) (head string, entries int) {
+	t.Helper()
+	out := s.twOK(t, "audit", "verify")
+	line := lastLineWith(out, auditOKPrefix)
+	if _, err := fmt.Sscanf(line, auditOKPrefix+" %d entries, head %s", &entries, &head); err != nil || len(head) != hexDigestLen {
+		t.Fatalf("audit verify printed no %q line with a count and a head (%v):\n%s", auditOKPrefix, err, out)
+	}
+	return head, entries
+}
+
+// scenarioNRestart stops mock's processor and starts it again on the same
+// port after the decisions of scenarioNPinning. A store verifies the whole
+// audit chain when it opens (decision D15 a), so the fresh processor walks a
+// log of crawls, proposals, approvals and a rollback before it serves; it
+// must serve exactly what the stopped one served, log no source error, and
+// the restart must append nothing to the log.
+func scenarioNRestart(t *testing.T, s *stack) {
+	head, entries := s.auditSummary(t)
+	before := s.servedDescriptions(t, "mock", "add", "echo")
+	stopped := s.stopProcessor(t, "mock")
+	// The counters end with this process: scenario J pointed mockb's route
+	// at mock's processor, so its wrong-backend count is checked here, before
+	// the restart starts them from zero.
+	if n := statValue(t, lastLineWith(stopped, "stats:"), "wrong backend"); n == 0 {
+		t.Errorf("mock's processor counted no wrong-backend hooks before its restart although scenario J pointed mockb's route at it")
+	}
+	t0 := time.Now()
+	s.startProcessor(t, "mock", nil)
+	after := s.servedDescriptions(t, "mock", "add", "echo")
+	elapsed := since(t0)
+	for name, desc := range before {
+		if after[name] != desc {
+			t.Errorf("after the restart %s is served as %q, before it was %q", name, after[name], desc)
+		}
+	}
+	cs := s.eventuallyServes(t, "mock", "add", "echo")
+	s.expectAllowed(t, cs, "echo", "hello")
+	s.expectDenied(t, cs, "wipe_database")
+	proc := s.servers["mock"].processor
+	if n := countIn(proc.stderr, unavailableMarker); n != 0 {
+		t.Errorf("the restarted processor logged %d source error(s) on a legitimate history:\n%s", n, proc.output(proc.stderr))
+	}
+	if h, e := s.auditSummary(t); h != head || e != entries {
+		t.Errorf("the restart changed the audit log: %d entries with head %s, before %d with head %s", e, h[:shortDigest], entries, head[:shortDigest])
+	}
+	s.note(t, "N: mock's processor restarted on a log of %d entries (head %s) served add and echo with the same definitions %s after its start, logged no source error and appended nothing: the open-time chain walk accepts a legitimate history (decision D15 a)", entries, head[:shortDigest], elapsed)
+}
+
+// servedDescriptions waits until the route of server lists exactly the given
+// names and returns each name's served description.
+func (s *stack) servedDescriptions(t *testing.T, server string, names ...string) map[string]string {
+	t.Helper()
+	cs := s.eventuallyServes(t, server, names...)
+	tools, err := listTools(cs)
+	if err != nil {
+		t.Fatalf("tools/list on %s: %v", server, err)
+	}
+	out := map[string]string{}
+	for _, tool := range tools {
+		out[tool.Name] = tool.Description
+	}
+	return out
 }
 
 // scenarioNReinit deletes the catalog and its SQLite side files and runs init
@@ -139,10 +206,6 @@ func scenarioNShutdown(t *testing.T, s *stack) {
 		}
 		s.note(t, "N: processor %s on SIGTERM: %s", name, stats)
 		switch name {
-		case "mock":
-			if n := statValue(t, stats, "wrong backend"); n == 0 {
-				t.Errorf("mock's processor counted no wrong-backend hooks although scenario J pointed mockb's route at it")
-			}
 		case "hostile":
 			if n := statValue(t, stats, "mismatched"); n == 0 {
 				t.Errorf("hostile's processor counted no mismatched tools although scenario L served vendor_tool")

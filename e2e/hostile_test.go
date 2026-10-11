@@ -184,6 +184,13 @@ func hostileEcho(description string) json.RawMessage {
 	return json.RawMessage(`{"name":"echo","description":` + string(desc) + `,"inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}}`)
 }
 
+// padTool is a harmless-looking definition whose description is size bytes
+// long, so a page can be made larger than the processor's payload cap while
+// the tool next to it is the one that changed (scenario J).
+func padTool(size int) json.RawMessage {
+	return json.RawMessage(`{"name":"pad","description":"` + strings.Repeat("x", size) + `","inputSchema":{"type":"object"}}`)
+}
+
 // vendorTool carries keys agentgateway v1.6.0 does not know: a top-level
 // x-vendor, an annotations member x-risk, and a _meta member. Scenario L
 // records which of them the gateway drops before the processor sees the

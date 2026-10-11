@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -60,12 +61,16 @@ type liveLab struct {
 // removed from mock's processor entry (findings cli-docs-4 and
 // processor-emit-7), with a top-level binds section carrying a listener on
 // another port and a processor-less allow-all route to the upstream (finding
-// cli-docs-1 of the fourth review) and, if the gateway accepts it, with a
-// top-level mcp shortcut. Against a byte-identical copy of the file emit
-// wrote every replacement is LIVE-CONFIG-MISMATCH, exit 1, naming what the
-// file does not carry. The original document is posted back after each step,
-// the emitted bytes are put back on disk if the gateway rewrote them, and the
-// check is healthy again, so later scenarios start from the emitted state.
+// cli-docs-1 of the fourth review), with a requestMirror policy added to
+// mock's route and with a second backend next to its mcp backend (finding
+// cli-docs-1 of the fifth review; what the running gateway does with each is
+// recorded against a mirror target the scenario runs) and, if the gateway
+// accepts it, with a top-level mcp shortcut. Against a byte-identical copy of
+// the file emit wrote every replacement is LIVE-CONFIG-MISMATCH, exit 1,
+// naming what the file does not carry. The original document is posted back
+// after each step, the emitted bytes are put back on disk if the gateway
+// rewrote them, and the check is healthy again, so later scenarios start from
+// the emitted state.
 func scenarioP(t *testing.T, s *stack) {
 	s.expectLiveHealthy(t, "with the gateway running the emitted file")
 	original := s.config(t)
@@ -84,6 +89,7 @@ func scenarioP(t *testing.T, s *stack) {
 	scenarioPExtraRoute(t, s, lab)
 	scenarioPShadowRoute(t, s, lab)
 	scenarioPHeaderFilter(t, s, lab)
+	scenarioPRouteExtras(t, s, lab)
 	scenarioPBinds(t, s, lab)
 	scenarioPMcp(t, s, lab)
 	s.eventuallyServes(t, "mock", "add", "echo")
@@ -209,7 +215,38 @@ func (s *stack) restoreLive(t *testing.T, lab liveLab, when string) {
 	if !bytes.Equal(s.config(t), lab.original) {
 		s.writeConfig(t, lab.original)
 	}
+	s.awaitRouteListing(t, "mock", lab.copyPath)
 	s.expectLiveHealthy(t, when+", with the original document posted back")
+}
+
+const (
+	// routeRebuildWait bounds how long a restore waits for the route to serve
+	// the canary's own listing again; routeRebuildPoll is the interval.
+	routeRebuildWait = 15 * time.Second
+	routeRebuildPoll = 250 * time.Millisecond
+)
+
+// awaitRouteListing waits until the canary's own listing through the route
+// succeeds again after a configuration change: the gateway rebuilds a route a
+// moment after the admin API reports the new document (sixth round, observed
+// after a posted requestMirror policy was removed). A route that never serves
+// again within routeRebuildWait fails the scenario with the canary's output.
+func (s *stack) awaitRouteListing(t *testing.T, server, config string) {
+	t.Helper()
+	deadline := time.Now().Add(routeRebuildWait)
+	for attempt := 1; ; attempt++ {
+		r := s.tw(t, nil, s.canaryArgs(server, false, config)...)
+		if r.code == exitOK {
+			if attempt > 1 {
+				s.note(t, "P: the route served the canary's listing again on attempt %d", attempt)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the route never served the canary's listing again within %s after the restore: exit %d\nstdout: %s\nstderr: %s", routeRebuildWait, r.code, r.stdout, r.stderr)
+		}
+		time.Sleep(routeRebuildPoll)
+	}
 }
 
 // replaceLive replaces the running configuration through the admin API and

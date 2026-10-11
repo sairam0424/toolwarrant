@@ -4,9 +4,28 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+const (
+	// oversizedPadBytes is the description length that puts the hostile page
+	// past the processor's payload cap (8 MiB, maxPayloadBytes in
+	// internal/processor, which is also its gRPC receive limit) with a margin.
+	oversizedPadBytes = 9 << 20
+	// largePadBytes stays under the processor's cap, so a page of this size
+	// records whether the gateway forwards a large page to the hook at all.
+	largePadBytes = 6 << 20
+	// noteLinesCap is how many new log lines a note quotes in full.
+	noteLinesCap = 6
+	// noteLineCap is how many characters of a quoted log line a note shows.
+	noteLineCap = 300
 )
 
 // scenarioJ: two upstreams, two servers, two processors. echo is approved on
@@ -15,7 +34,10 @@ import (
 // edited to do it anyway still has mockb's echo denied, by the processor's
 // service_names check (D2). A hostile upstream whose page lists echo twice has
 // the page denied as a whole and the following call denied until a clean
-// page is listed (D3). A side file emitted without --processor as mockb and
+// page is listed (D3); a page padded past the payload cap next to a changed
+// echo is refused for size before the hook runs, the listing fails closed and
+// the session that listed the clean page is denied on its next call, until a
+// clean page is listed (decision D15 f). A side file emitted without --processor as mockb and
 // then hostile are added shows that no existing server's processor address
 // moves (hostile sorts before mock, so name order would have renumbered both
 // mocks; decision D13) and that every address is the catalog's; the closing
@@ -81,7 +103,77 @@ func scenarioJ(t *testing.T, s *stack) {
 	hostile.hostile.setPage(hostileEcho(echoV1))
 	cs = s.eventuallyServes(t, "hostile", "echo")
 	s.expectAllowed(t, cs, "echo", hostileReply)
+	scenarioJOversizedPage(t, s, hostile, cs)
 	scenarioJAddresses(t, s)
+}
+
+// scenarioJOversizedPage: after the clean listing on cs, the hostile upstream
+// changes echo and pads the next page, first past the processor's payload cap
+// and then to a size under it. What the shipped runtime does is recorded, not
+// assumed: agentgateway v1.6.0 answers the client with an error of its own for
+// the page over the cap before the ExtMCP hook runs, so the processor sees
+// nothing and cannot mark it (decision D15 f marks a page the transport
+// refuses only when the gateway forwards it), the listing fails closed and the
+// call window stays bounded by the crawl cadence (limit L1). The smaller page
+// records whether the gateway forwards a large page to the hook at all. What
+// each listing did, what the processor and the gateway logged and what the
+// earlier session's next call got are all noted for the documents; the only
+// assertion is that no page carrying the changed echo is ever served. A clean
+// page restores service.
+func scenarioJOversizedPage(t *testing.T, s *stack, u *upstream, cs *mcp.ClientSession) {
+	proc := u.processor
+	for _, pad := range []int{oversizedPadBytes, largePadBytes} {
+		procLines, gwOut, gwErr := lineCount(proc.stderr), lineCount(s.gateway.stdout), lineCount(s.gateway.stderr)
+		u.hostile.setPage(hostileEcho(echoV2), padTool(pad))
+		cs1 := s.connect(t, "hostile")
+		t0 := time.Now()
+		names, err := listNames(cs1)
+		s.note(t, "J: page with a %d-byte description next to the changed echo, tools/list through the gateway -> names %v, err %v after %s", pad, names, err, since(t0))
+		s.note(t, "J: during that listing the processor logged %s; the gateway logged %s on stdout and %s on stderr",
+			describeAllNewLines(proc.stderr, procLines), describeAllNewLines(s.gateway.stdout, gwOut), describeAllNewLines(s.gateway.stderr, gwErr))
+		if err == nil && slices.Contains(names, "echo") {
+			t.Fatalf("a page carrying the changed echo (%d-byte padding) was served instead of failing closed: %v\n%s", pad, names, s.logHints())
+		}
+		s.note(t, "J: the session that listed the clean page before the change then got tools/call echo -> %s", callTool(cs, "echo"))
+		_ = cs1.Close()
+	}
+	u.hostile.setPage(hostileEcho(echoV1))
+	cs = s.eventuallyServes(t, "hostile", "echo")
+	s.expectAllowed(t, cs, "echo", hostileReply)
+}
+
+// lineCount is how many lines the file at path holds right now; a file that
+// cannot be read counts as empty.
+func lineCount(path string) int {
+	return len(newLines(path, 0))
+}
+
+// newLines returns the lines of the file at path beyond the first before.
+func newLines(path string, before int) []string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if before >= len(lines) {
+		return nil
+	}
+	return lines[before:]
+}
+
+// describeAllNewLines quotes up to noteLinesCap new lines of a log file, so
+// a note can carry everything the gateway or the processor said about one
+// listing.
+func describeAllNewLines(path string, before int) string {
+	lines := newLines(path, before)
+	if len(lines) == 0 {
+		return "no line"
+	}
+	quoted := make([]string, 0, min(len(lines), noteLinesCap))
+	for _, l := range lines[:min(len(lines), noteLinesCap)] {
+		quoted = append(quoted, fmt.Sprintf("%.*q", noteLineCap, l))
+	}
+	return fmt.Sprintf("%d line(s): %s", len(lines), strings.Join(quoted, " | "))
 }
 
 // scenarioK: the emitted allow rule alone, with every processor block
