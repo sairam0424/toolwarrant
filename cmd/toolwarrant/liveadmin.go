@@ -27,16 +27,50 @@ const (
 	nonExactPath = "(not an exact path)"
 )
 
-// liveConfigDoc is the pinned subset of GET /api/config: the gateways with
-// their bind and port, and every route with its matches, policies and
-// backends. Fields the comparison does not read are left out; an unknown
-// field in the answer is ignored, a missing one compares as empty.
+// knownSections are the top-level sections the emitted file carries and the
+// comparison reads. agentgateway v1.6.0 loads eleven more (binds,
+// frontendPolicies, policies, workloads, services, backends, routeGroups,
+// tcpRoutes, llm, mcp, ui); any of them in the live document may bind ports
+// and routes the comparison cannot see, so each is a difference of its own
+// (D14 i). A list, not a map, so the package holds no mutable state.
+func knownSections() []string { return []string{sectionConfig, sectionGateways, sectionRoutes} }
+
+// liveConfigDoc is the pinned subset of GET /api/config: the config block
+// with the gateway's own listeners, the gateways with their bind and port,
+// every route with its matches, policies and backends, and the names of the
+// other top-level sections that are not empty. A field the comparison does
+// not read inside a known section is ignored, a missing one compares as
+// empty.
 type liveConfigDoc struct {
+	Config struct {
+		AdminAddr     string `json:"adminAddr"`
+		StatsAddr     string `json:"statsAddr"`
+		ReadinessAddr string `json:"readinessAddr"`
+	} `json:"config"`
 	Gateways map[string]struct {
 		Port        int    `json:"port"`
 		BindAddress string `json:"bindAddress"`
 	} `json:"gateways"`
 	Routes []liveRouteDoc `json:"routes"`
+	// extraSections are the top-level keys other than the known ones whose
+	// value is not empty, in document order of first appearance.
+	extraSections []string
+}
+
+// liveProcessorDoc is one mcpGuardrails processor of a live route. The
+// request-header filter is a pointer so that an entry without one stays nil,
+// and the metadata is kept raw so that its values are hashed, never decoded
+// into a message.
+type liveProcessorDoc struct {
+	Host           string            `json:"host"`
+	Kind           string            `json:"kind"`
+	FailureMode    string            `json:"failureMode"`
+	Methods        map[string]string `json:"methods"`
+	RequestHeaders *struct {
+		Allowed    []string `json:"allowed"`
+		Disallowed []string `json:"disallowed"`
+	} `json:"requestHeaders"`
+	Metadata map[string]json.RawMessage `json:"metadata"`
 }
 
 // liveRouteDoc is one route of the live configuration.
@@ -55,12 +89,7 @@ type liveRouteDoc struct {
 			} `json:"rules"`
 		} `json:"mcpAuthorization"`
 		McpGuardrails *struct {
-			Processors []struct {
-				Host        string            `json:"host"`
-				Kind        string            `json:"kind"`
-				FailureMode string            `json:"failureMode"`
-				Methods     map[string]string `json:"methods"`
-			} `json:"processors"`
+			Processors []liveProcessorDoc `json:"processors"`
 		} `json:"mcpGuardrails"`
 	} `json:"policies"`
 	Backends []struct {
@@ -98,18 +127,62 @@ func fetchLiveConfig(ctx context.Context, client *http.Client, admin string) (li
 	if len(body) > adminMaxBody {
 		return liveConfigDoc{}, errors.New("admin api: the configuration is larger than the cap")
 	}
+	return decodeLiveConfig(body)
+}
+
+// decodeLiveConfig reads the whole document twice: once generically, to see
+// every top-level section the gateway loaded, and once into the pinned shape.
+// A document that is not a JSON object is refused as a whole.
+func decodeLiveConfig(body []byte) (liveConfigDoc, error) {
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(body, &sections); err != nil || sections == nil {
+		return liveConfigDoc{}, errors.New("admin api: the answer is not the configuration JSON")
+	}
 	var doc liveConfigDoc
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return liveConfigDoc{}, errors.New("admin api: the answer is not the configuration JSON")
 	}
+	known := map[string]bool{}
+	for _, name := range knownSections() {
+		known[name] = true
+	}
+	for _, name := range sortedKeys(sections) {
+		if !known[name] && sectionHasContent(sections[name]) {
+			doc.extraSections = append(doc.extraSections, name)
+		}
+	}
 	return doc, nil
 }
 
+// sectionHasContent reports whether a top-level section carries anything: a
+// null, an empty object or an empty array binds nothing and is not reported;
+// everything else is.
+func sectionHasContent(raw json.RawMessage) bool {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return true
+	}
+	switch x := v.(type) {
+	case nil:
+		return false
+	case map[string]any:
+		return len(x) > 0
+	case []any:
+		return len(x) > 0
+	}
+	return true
+}
+
 // config reduces the live document to the shape the comparison works on:
-// every gateway and every route, in document order, nothing dropped. A port
-// of zero means the gateway declared none.
+// the listeners, every gateway and every route, in document order, nothing
+// dropped, plus the names of the sections the file does not carry. A port of
+// zero means the gateway declared none.
 func (d liveConfigDoc) config() configDoc {
-	out := configDoc{gateways: map[string]gatewayConfig{}}
+	out := configDoc{
+		listeners:     listenerConfig{adminAddr: d.Config.AdminAddr, statsAddr: d.Config.StatsAddr, readinessAddr: d.Config.ReadinessAddr},
+		gateways:      map[string]gatewayConfig{},
+		extraSections: d.extraSections,
+	}
 	for name, gw := range d.Gateways {
 		port := ""
 		if gw.Port != 0 {
@@ -140,7 +213,7 @@ func (r liveRouteDoc) config() routeConfig {
 	}
 	if r.Policies.McpGuardrails != nil {
 		for _, p := range r.Policies.McpGuardrails.Processors {
-			rc.processors = append(rc.processors, processorConfig{host: p.Host, kind: p.Kind, failureMode: p.FailureMode, methods: p.Methods})
+			rc.processors = append(rc.processors, p.config())
 		}
 	}
 	for _, b := range r.Backends {
@@ -149,4 +222,27 @@ func (r liveRouteDoc) config() routeConfig {
 		}
 	}
 	return rc
+}
+
+// config reduces one live processor to the compared fields. The header lists
+// stay nil when the entry carries no filter; a metadata value that is a JSON
+// string is hashed as that string (the emitted file writes each value as a
+// quoted scalar, which the gateway renders back as a string), anything else
+// as its compact JSON text.
+func (p liveProcessorDoc) config() processorConfig {
+	pc := processorConfig{host: p.Host, kind: p.Kind, failureMode: p.FailureMode, methods: p.Methods}
+	if p.RequestHeaders != nil {
+		pc.allowed = append([]string{}, p.RequestHeaders.Allowed...)
+		pc.disallowed = append([]string{}, p.RequestHeaders.Disallowed...)
+	}
+	meta := map[string]string{}
+	for k, raw := range p.Metadata {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			s = string(raw)
+		}
+		meta[k] = s
+	}
+	pc.metadataHash = metadataDigest(meta)
+	return pc
 }

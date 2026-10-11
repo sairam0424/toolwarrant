@@ -44,7 +44,11 @@ func describe(err error) string {
 	case errors.Is(err, lifecycle.ErrNotRollbackTarget):
 		return msg + "; only a version that was approved before can be rolled back to"
 	case errors.As(err, &broken):
-		return fmt.Sprintf("the audit log is broken at entry %d (%s); the database was changed outside toolwarrant", broken.Seq, textdiff.Escape(broken.Reason))
+		s := fmt.Sprintf("the audit log is broken at entry %d (%s); the database was changed outside toolwarrant", broken.Seq, textdiff.Escape(broken.Reason))
+		if integrity, ok := joinedCorrupt(err); ok {
+			s += "; " + integrity
+		}
+		return s
 	case errors.Is(err, emit.ErrInvalidInput):
 		return msg + "; fix the catalog or the flags and run emit again"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -54,6 +58,23 @@ func describe(err error) string {
 		return msg + "; " + advice
 	}
 	return describeFetch(err, msg)
+}
+
+// joinedCorrupt finds the integrity failure that audit verify joins to a
+// broken chain (D14 i: the report runs even when the chain is broken) and
+// renders it with its advice, so the one line on stderr names both findings
+// instead of the broken entry alone.
+func joinedCorrupt(err error) (string, bool) {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return "", false
+	}
+	for _, e := range joined.Unwrap() {
+		if errors.Is(e, catalog.ErrCorrupt) {
+			return textdiff.Escape(e.Error()) + "; " + adviceCorrupt, true
+		}
+	}
+	return "", false
 }
 
 // describeCatalog adds advice for the catalog's own refusals. The order

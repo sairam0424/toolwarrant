@@ -65,10 +65,12 @@ func isFatalCheckError(err error) bool {
 // interrupted still fails the run. A listing failure (the gateway is down for
 // a while) is printed, counted and does not stop the schedule; a catalog error
 // or an unknown server stops it at once; a failed check stops it unless
-// keepGoing, and a file --config cannot read stops it even then, whether or
-// not the listing of that check succeeded. The run as a whole fails at the end
-// if any check failed, any failing verdict line was printed, or none
-// completed.
+// keepGoing, whatever error a later step of that check returned (the fourth
+// review found a LEAK whose probe then errored repeated on every tick of an
+// un-flagged run, cli-docs-5), and a file --config cannot read stops it even
+// with keepGoing, whether or not the listing of that check succeeded. The run
+// as a whole fails at the end if any check failed, any failing verdict line
+// was printed, or none completed.
 func (v *verifier) loop(ctx context.Context, every time.Duration, keepGoing bool) error {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
@@ -81,18 +83,16 @@ func (v *verifier) loop(ctx context.Context, every time.Duration, keepGoing bool
 			break
 		}
 		stamp := time.Now().UTC().Format(time.RFC3339)
-		switch {
-		case err != nil:
+		if err != nil {
 			v.a.stdout.printf("%s %s: check failed: %s\n", stamp, cell(v.server), describe(err))
 			if isFatalCheckError(err) {
 				return fmt.Errorf("stopping the canary: %w", err)
 			}
-			if res.configReason != "" {
-				return v.conclude(res)
-			}
+		}
+		switch {
 		case res.failed() && (!keepGoing || res.configReason != ""):
 			return v.conclude(res)
-		default:
+		case err == nil:
 			v.a.stdout.printf("%s %s: %s\n", stamp, cell(v.server), res.summary())
 		}
 		if werr := v.a.stdout.broken(); werr != nil {

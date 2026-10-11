@@ -35,11 +35,12 @@ const (
 // by itself, which is the healthy answer; the other modes imitate agentgateway
 // v1.6.0 (202, the call forwarded) and the other shapes the probe classifies.
 const (
-	probeModeRefuse   int32 = iota // let the go-sdk answer: 400
-	probeModeForward               // 202 Accepted: the unhooked gateway
-	probeModeRPCError              // 200 with a JSON-RPC error object
-	probeModeSSEError              // 200 text/event-stream carrying a JSON-RPC error
-	probeModeSilent                // 200 with a result and no error: unknown
+	probeModeRefuse      int32 = iota // let the go-sdk answer: 400
+	probeModeForward                  // 202 Accepted: the unhooked gateway
+	probeModeRPCError                 // 200 with a JSON-RPC error object
+	probeModeSSEError                 // 200 text/event-stream carrying a JSON-RPC error
+	probeModeSilent                   // 200 with a result and no error: unknown
+	probeModeRPCError400              // 400 with a JSON-RPC error object: an upstream's own refusal (D14 i)
 )
 
 var hexDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -335,6 +336,10 @@ func (u *upstream) answerProbe(w http.ResponseWriter, r *http.Request) bool {
 		w.WriteHeader(http.StatusAccepted)
 	case probeModeRPCError:
 		w.Header().Set("Content-Type", mediaJSON)
+		_, _ = io.WriteString(w, rpcError)
+	case probeModeRPCError400:
+		w.Header().Set("Content-Type", mediaJSON)
+		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, rpcError)
 	case probeModeSSEError:
 		w.Header().Set("Content-Type", mediaSSE)

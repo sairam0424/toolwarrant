@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,22 +10,77 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
+// metadataWithheld closes every metadata difference line: the block carries
+// the processor secret, so neither side's value, nor a hash an attacker could
+// test guesses against, is ever shown.
+const metadataWithheld = " (values withheld: the metadata carries the processor secret)"
+
+// metadataDigest is the SHA-256 of a processor's metadata in canonical form
+// (keys in order, each key and value terminated by a NUL byte), or "" when
+// there is none, so an absent block and an empty one compare equal and two
+// equal blocks hash the same whatever order they were written in. Both sides
+// of the comparison reduce their metadata to it and keep nothing else.
+func metadataDigest(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, k := range sortedKeys(m) {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		h.Write([]byte(m[k]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // compareDocuments names every way in which the configuration the gateway is
-// running differs from the emitted file, over the whole document (D13 e):
-// every emitted gateway and route must be present exactly once with the same
-// fields and match path, nothing the file does not carry may exist, no path
-// may appear twice, and the path of --url must be the emitted route's match
-// for --server. The third review showed why one route is not enough: a live
-// document that keeps the server's route intact, parks it on another path and
-// adds a processor-less route owning the client's path compared as a match.
-// Every value shown is escaped; backend hosts are never shown, because an
-// upstream URL may carry a credential.
+// running differs from the emitted file, over the whole document (D13 e,
+// D14 i): no top-level section the file does not carry may be present, the
+// config block must declare the same listeners, every emitted gateway and
+// route must be present exactly once with the same fields and match path,
+// nothing the file does not carry may exist, no path may appear twice, and
+// the path of --url must be the emitted route's match for --server. The third
+// review showed why one route is not enough: a live document that keeps the
+// server's route intact, parks it on another path and adds a processor-less
+// route owning the client's path compared as a match; the fourth showed a
+// binds section with a listener on another port that the comparison never
+// read. Every value shown is escaped; backend hosts and processor metadata
+// are never shown, because an upstream URL may carry a credential and the
+// metadata carries the secret.
 func compareDocuments(emitted, live configDoc, server, urlPath string) []string {
 	var diffs []string
+	diffs = append(diffs, extraSections(live.extraSections)...)
+	diffs = append(diffs, compareListeners(emitted.listeners, live.listeners)...)
 	diffs = append(diffs, compareGateways(emitted.gateways, live.gateways)...)
 	diffs = append(diffs, compareRouteSets(emitted, live, server)...)
 	diffs = append(diffs, duplicatePaths(live.routes)...)
 	diffs = append(diffs, compareURLPath(emitted, server, urlPath)...)
+	return diffs
+}
+
+// extraSections names every top-level section of the live document that the
+// emitted file does not carry. agentgateway loads the binds form, a top-level
+// mcp shortcut and more next to the gateways form, so such a section may
+// bind a port and route clients to the upstream with no processor and no
+// allow rule in a place the rest of the comparison cannot see.
+func extraSections(names []string) []string {
+	var diffs []string
+	for _, name := range names {
+		diffs = append(diffs, fmt.Sprintf("section %s: not in the emitted file; it may bind ports and routes the comparison cannot see", cell(name)))
+	}
+	return diffs
+}
+
+// compareListeners requires the gateway's own listeners to be where the file
+// put them: a moved admin API is one verify-gateway --admin no longer watches,
+// and a stats or readiness listener on another address may be one every host
+// can reach.
+func compareListeners(emitted, live listenerConfig) []string {
+	var diffs []string
+	diffs = appendDiff(diffs, "config "+keyAdminAddr, emitted.adminAddr, live.adminAddr)
+	diffs = appendDiff(diffs, "config "+keyStatsAddr, emitted.statsAddr, live.statsAddr)
+	diffs = appendDiff(diffs, "config "+keyReadinessAddr, emitted.readinessAddr, live.readinessAddr)
 	return diffs
 }
 
@@ -177,8 +234,12 @@ func compareRules(emitted, live []string) []string {
 	return diffs
 }
 
-// compareProcessors compares the processors; a live route without one is the
-// F3 case the canary exists for.
+// compareProcessors compares the processors field by field; a live route
+// without one is the F3 case the canary exists for. The request-header filter
+// is compared list by list (fourth review cli-docs-4, processor-emit-7): an
+// entry stripped of it forwards every client header, bearer tokens and
+// cookies included, to the processor again (limit L11). The metadata is
+// compared by the hash of its canonical form and never shown.
 func compareProcessors(emitted, live []processorConfig) []string {
 	switch {
 	case len(live) == 0 && len(emitted) > 0:
@@ -192,8 +253,26 @@ func compareProcessors(emitted, live []processorConfig) []string {
 		diffs = appendDiff(diffs, "processor kind", emitted[i].kind, live[i].kind)
 		diffs = appendDiff(diffs, "processor failureMode", emitted[i].failureMode, live[i].failureMode)
 		diffs = appendDiff(diffs, "processor methods", describeMethods(emitted[i].methods), describeMethods(live[i].methods))
+		diffs = appendDiff(diffs, "processor requestHeaders allowed", describeList(emitted[i].allowed), describeList(live[i].allowed))
+		diffs = appendDiff(diffs, "processor requestHeaders disallowed", describeList(emitted[i].disallowed), describeList(live[i].disallowed))
+		diffs = append(diffs, compareMetadata(emitted[i].metadataHash, live[i].metadataHash)...)
 	}
 	return diffs
+}
+
+// compareMetadata reports a metadata block that differs between the two sides
+// without showing either: which side has one, or that both have one and they
+// are not the same.
+func compareMetadata(emitted, live string) []string {
+	switch {
+	case emitted == live:
+		return nil
+	case live == "":
+		return []string{"processor metadata: the live processor has none while the emitted file carries it" + metadataWithheld}
+	case emitted == "":
+		return []string{"processor metadata: the live processor carries metadata the emitted file does not" + metadataWithheld}
+	}
+	return []string{"processor metadata: the live metadata differs from the emitted file" + metadataWithheld}
 }
 
 // compareHosts compares the backend hosts without showing them.
@@ -221,4 +300,14 @@ func describeMethods(m map[string]string) string {
 		parts = append(parts, k+"="+m[k])
 	}
 	return strings.Join(parts, ",")
+}
+
+// describeList renders a header list in file order for a difference line; a
+// nil list (no filter at all) and an empty one both read as none, because the
+// gateway forwards everything in either case.
+func describeList(items []string) string {
+	if len(items) == 0 {
+		return noneShown
+	}
+	return strings.Join(items, ",")
 }

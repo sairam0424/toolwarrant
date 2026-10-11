@@ -10,21 +10,24 @@ import (
 func serverCommands() []*command {
 	return []*command{
 		{name: "add", synopsis: "server add NAME URL [--owner GROUP] [--allow-private]", summary: "register an upstream MCP server (URLs with user info are refused)", run: runServerAdd},
-		{name: "list", synopsis: "server list [--json]", summary: "list the registered upstreams; PAUSED marks a server that is neither crawled nor served", run: runServerList},
+		{name: "list", synopsis: "server list [--json]", summary: "list the registered upstreams; PAUSED marks a server that is neither crawled nor served, PROCESSOR is the processor address emit recorded for it (- before the first emit)", run: runServerList},
 		{name: "pause", synopsis: "server pause NAME", summary: "stop crawling a server and serve nothing of it until resume (the remedy against a misbehaving upstream)", run: runServerPause},
 		{name: "resume", synopsis: "server resume NAME", summary: "let crawls and serving of a paused server continue", run: runServerResume},
 	}
 }
 
 // serverJSON is one server in machine-readable output. The URL is reduced to
-// scheme://host[:port]/path like everywhere else.
+// scheme://host[:port]/path like everywhere else; processor_addr is the
+// address emit recorded in the catalog for the server's processor (D14 i), ""
+// before the first emit.
 type serverJSON struct {
-	Name         string    `json:"name"`
-	URL          string    `json:"url"`
-	OwnerGroup   string    `json:"owner_group"`
-	AllowPrivate bool      `json:"allow_private"`
-	Paused       bool      `json:"paused"`
-	CreatedAt    time.Time `json:"created_at"`
+	Name          string    `json:"name"`
+	URL           string    `json:"url"`
+	OwnerGroup    string    `json:"owner_group"`
+	AllowPrivate  bool      `json:"allow_private"`
+	Paused        bool      `json:"paused"`
+	ProcessorAddr string    `json:"processor_addr"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // runServerAdd registers an upstream. --allow-private is recorded on the server
@@ -86,9 +89,9 @@ func runServerList(a *app, c *command, args []string) (err error) {
 		return writeJSON(a.stdout, serversJSON(servers))
 	}
 	t := newTable(a.stdout)
-	t.row("NAME", "URL", "OWNER", "PRIVATE", "PAUSED", "CREATED")
+	t.row("NAME", "URL", "OWNER", "PRIVATE", "PAUSED", "PROCESSOR", "CREATED")
 	for _, s := range servers {
-		t.row(cell(s.Name), displayURL(s.URL), cell(s.OwnerGroup), boolCell(s.AllowPrivate), boolCell(s.Paused), s.CreatedAt.UTC().Format(time.RFC3339))
+		t.row(cell(s.Name), displayURL(s.URL), cell(s.OwnerGroup), boolCell(s.AllowPrivate), boolCell(s.Paused), cell(s.ProcessorAddr), s.CreatedAt.UTC().Format(time.RFC3339))
 	}
 	return t.flush()
 }
@@ -104,7 +107,7 @@ func boolCell(b bool) string {
 func serversJSON(servers []catalog.Server) []serverJSON {
 	out := make([]serverJSON, 0, len(servers))
 	for _, s := range servers {
-		out = append(out, serverJSON{Name: s.Name, URL: safeURL(s.URL), OwnerGroup: s.OwnerGroup, AllowPrivate: s.AllowPrivate, Paused: s.Paused, CreatedAt: s.CreatedAt.UTC()})
+		out = append(out, serverJSON{Name: s.Name, URL: safeURL(s.URL), OwnerGroup: s.OwnerGroup, AllowPrivate: s.AllowPrivate, Paused: s.Paused, ProcessorAddr: s.ProcessorAddr, CreatedAt: s.CreatedAt.UTC()})
 	}
 	return out
 }

@@ -112,21 +112,45 @@ func probeToolName() (string, error) {
 }
 
 // classifyProbe turns the gateway's answer to the id-less tools/call into a
-// verdict (D13 h): 202 forwarded it, 400 refused it, and any other 2xx that
-// carries a body is inconclusive, because a gateway that forwarded the call
-// and relayed the upstream's answer looks exactly like a gateway that refused
-// it with a JSON-RPC error of its own; a 2xx without a body and every other
-// status is an error, since the probe then proved nothing either way.
+// verdict (D13 h, D14 i): 202 forwarded it; 400 refused it, unless the body
+// is a JSON-RPC error, which a forwarding gateway relays from an upstream that
+// refused the shape itself (fourth review cli-docs-7); any other 2xx that
+// carries a body is inconclusive for the same reason, because a gateway that
+// forwarded the call and relayed the upstream's answer looks exactly like a
+// gateway that refused it with a JSON-RPC error of its own; a 2xx without a
+// body and every other status is an error, since the probe then proved nothing
+// either way, and the error says whether the answer carried a body.
 func classifyProbe(resp rawResponse) (probeOutcome, error) {
 	switch {
 	case resp.status == http.StatusAccepted:
 		return probeUnhooked, nil
-	case resp.status == http.StatusBadRequest:
+	case resp.status == http.StatusBadRequest && !resp.carriesRPCError():
 		return probeHealthy, nil
-	case resp.status/100 == 2 && len(resp.body) > 0:
+	case resp.status == http.StatusBadRequest, resp.status/100 == 2 && len(resp.body) > 0:
 		return probeInconclusive, nil
 	}
-	return probeSkipped, fmt.Errorf("unhooked-call probe: the gateway answered http status %d without a body, so whether it forwards id-less calls is unknown", resp.status)
+	return probeSkipped, fmt.Errorf("unhooked-call probe: the gateway answered http status %d %s, so whether it forwards id-less calls is unknown", resp.status, resp.bodyPhrase())
+}
+
+// bodyPhrase says whether and how large a body the answer carried, for an
+// error line; the body itself is never shown.
+func (r rawResponse) bodyPhrase() string {
+	if len(r.body) == 0 {
+		return "without a body"
+	}
+	return fmt.Sprintf("with a body of %d bytes", len(r.body))
+}
+
+// carriesRPCError reports whether any JSON-RPC message in the answer (the
+// body, or the data lines of an event stream) carries an error member.
+func (r rawResponse) carriesRPCError() bool {
+	for _, m := range r.messages() {
+		var env rpcEnvelope
+		if json.Unmarshal(m, &env) == nil && len(env.Error) > 0 && string(bytes.TrimSpace(env.Error)) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // initialize opens the session and records the negotiated protocol version

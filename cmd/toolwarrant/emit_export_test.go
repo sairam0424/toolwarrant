@@ -60,8 +60,8 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 		"run one processor per server", programName+" --db "+abs+" serve --server s1 --target s1 --listen 127.0.0.1:9002")
 	wantNotContains(t, "stdout", stdout, u.url()+"?", "--secret-env")
 
-	// A re-emit to the same file keeps every server's processor address
-	// (D13 g): the override moves s1, s0 stays where its processor listens
+	// A re-emit keeps every server's recorded processor address (D13 g,
+	// D14 i): the override moves s1, s0 stays where its processor listens
 	// whatever the base port says, and the move is printed.
 	stdout = c.ok("emit", "--out", out, "--processor", "s1=127.0.0.1:9100", "--listen-port", "8080", "--processor-base-port", "7000")
 	yaml = readFile(t, out)
@@ -69,10 +69,13 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 	wantNotContains(t, "yaml", yaml, `host: "127.0.0.1:9002"`, `host: "127.0.0.1:7000"`)
 	wantContains(t, "stdout", stdout, "processor address of server s1 changed from 127.0.0.1:9002 to 127.0.0.1:9100; restart its processor on the new address")
 	wantNotContains(t, "stdout", stdout, "server s0 changed", "is new")
-	// A first emit to another file numbers from the base port.
+	// An emit to another file gets the recorded addresses too: they live in
+	// the catalog, not in the file, so the base port applies only to a server
+	// that has none yet (D14 i).
 	fresh := filepath.Join(t.TempDir(), "fresh.yaml")
 	stdout = c.ok("emit", "--out", fresh, "--processor", "s1=127.0.0.1:9100", "--processor-base-port", "7000")
-	wantContains(t, "yaml", readFile(t, fresh), `host: "127.0.0.1:9100"`, `host: "127.0.0.1:7000"`)
+	wantContains(t, "yaml", readFile(t, fresh), `host: "127.0.0.1:9100"`, `host: "127.0.0.1:9001"`)
+	wantNotContains(t, "yaml", readFile(t, fresh), `host: "127.0.0.1:7000"`)
 	wantNotContains(t, "stdout", stdout, "processor address of server")
 
 	r := c.fail(exitUsage, "emit", "--out", out, "--processor", "nope=127.0.0.1:1")

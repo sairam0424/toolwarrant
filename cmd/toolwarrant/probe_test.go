@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,9 +48,9 @@ func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 	for name, mode := range map[string]int32{"json-rpc error": probeModeRPCError, "event stream error": probeModeSSEError, "result without error": probeModeSilent} {
 		g.probeMode.Store(mode)
 		r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
-		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the gateway answered a tools/call without an id with a 2xx status and a body instead of HTTP 400", "the gateway or the upstream may have written that answer")
+		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON-RPC error in the body, instead of a bare HTTP 400", "the gateway or the upstream may have written that answer")
 		wantNotContains(t, name+" stdout", r.stdout, okLine, verdictUnhooked, verdictLeak)
-		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until it answers HTTP 400")
+		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until it answers HTTP 400 without a JSON-RPC error")
 	}
 	g.probeMode.Store(probeModeForward)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
@@ -243,7 +244,12 @@ func TestProbeHelpers(t *testing.T) {
 		{rawResponse{status: http.StatusAccepted}, probeUnhooked, false},
 		{rawResponse{status: http.StatusAccepted, body: []byte("{}")}, probeUnhooked, false},
 		{rawResponse{status: http.StatusBadRequest}, probeHealthy, false},
-		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":{"code":1}}`)}, probeHealthy, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte("Bad Request: id required")}, probeHealthy, false},
+		// D14 (i): a 400 whose body is a JSON-RPC error may be an upstream's
+		// refusal relayed by a forwarding gateway (fourth review cli-docs-7).
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":{"code":1}}`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("data: {\"error\":{\"code\":1}}\n\n")}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":null}`)}, probeHealthy, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"error":{"code":1}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"result":{}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaSSE, body: []byte("data: {\"error\":{\"code\":1}}\n\n")}, probeInconclusive, false},
@@ -257,5 +263,55 @@ func TestProbeHelpers(t *testing.T) {
 		if got != tc.want || (err != nil) != tc.err {
 			t.Errorf("classifyProbe(%d, %d bytes) = %d, %v", tc.resp.status, len(tc.resp.body), got, err)
 		}
+	}
+}
+
+// Fourth review (cli-docs-7, D14 i): the probe called every HTTP 400 healthy,
+// whoever produced it, so a forwarding stand-in in front of an upstream that
+// refuses the id-less tools/call with 400 and a JSON-RPC error relayed that
+// answer, the probe name reached the upstream, and the canary printed "rejected
+// by the gateway" with exit 0. A 400 whose body is a JSON-RPC error is now
+// PROBE-INCONCLUSIVE; a 400 with a plain-text body or none stays healthy, which
+// is what the go-sdk upstream answers and what the pinned gateway's own
+// refusal would look like.
+func TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	up := newUpstream(t, map[string]string{"echo": echoV1})
+	up.probeMode.Store(probeModeRPCError400)
+	gw := forwardingGateway(t, up.url(), nil)
+	before := len(up.probeNames())
+	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw.URL)
+	names := up.probeNames()
+	if len(names) != before+1 || !strings.HasPrefix(names[len(names)-1], probeToolPrefix) {
+		t.Fatalf("the probe did not reach the upstream through the forwarding stand-in: %q", names)
+	}
+	wantContains(t, "stdout", r.stdout, verdictInconclusive+" s1: ", "HTTP 400 and a JSON-RPC error in the body")
+	wantNotContains(t, "stdout", r.stdout, verdictOK, "rejected by the gateway")
+	wantContains(t, "stderr", r.stderr, "HTTP 400 and a JSON-RPC error in the body", "treat the gateway as unhooked until it answers HTTP 400 without a JSON-RPC error")
+
+	// The go-sdk's own refusal, a 400 with a plain-text body, relayed by the
+	// same stand-in, is healthy: the decision narrows the rule to JSON-RPC
+	// error bodies.
+	up.probeMode.Store(probeModeRefuse)
+	out := c.ok("verify-gateway", "--server", "s1", "--url", gw.URL)
+	wantContains(t, "stdout", out, verdictOK, "id-less tools/call rejected by the gateway")
+}
+
+// The error for a status the probe cannot classify says whether the answer
+// carried a body (fourth review cli-docs-7: it said "without a body" for a 500
+// that had one).
+func TestProbeErrorSaysWhetherTheAnswerHadABody(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"boom"}}`)
+	_, err := classifyProbe(rawResponse{status: http.StatusInternalServerError, contentType: mediaJSON, body: body})
+	if err == nil || !strings.Contains(err.Error(), "http status 500 with a body of "+strconv.Itoa(len(body))+" bytes") || strings.Contains(err.Error(), "boom") {
+		t.Errorf("500 with a body: %v", err)
+	}
+	_, err = classifyProbe(rawResponse{status: http.StatusInternalServerError})
+	if err == nil || !strings.Contains(err.Error(), "http status 500 without a body") {
+		t.Errorf("500 without a body: %v", err)
+	}
+	if (rawResponse{status: http.StatusBadRequest, body: []byte("not json")}).carriesRPCError() {
+		t.Error("plain text counted as a JSON-RPC error")
 	}
 }

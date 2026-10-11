@@ -60,8 +60,8 @@ func (p processorOverrides) Set(v string) error {
 }
 
 // emitPlan is what one server contributes to the gateway config. previous is
-// the processor address the file at --out gave the server before this emit,
-// "" when the file had none.
+// the processor address the catalog recorded for the server before this emit,
+// "" when it had none (D14 i).
 type emitPlan struct {
 	name      string
 	url       string
@@ -80,19 +80,18 @@ type emitOptions struct {
 	overrides                                                                       processorOverrides
 }
 
-// emitOutcome is what reportEmit prints: the plans, the emitter's output, the
-// servers whose URL carries a query string, and what the previous file said.
+// emitOutcome is what reportEmit prints: the plans, the emitter's output and
+// the servers whose URL carries a query string.
 type emitOutcome struct {
 	plans        []emitPlan
 	result       emit.Output
 	credentialed []string
-	previous     previousFile
 }
 
 // bindEmitFlags registers the flags of emit.
 func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 	o := &emitOptions{overrides: processorOverrides{}}
-	fs.StringVar(&o.out, "out", "", "file to write the gateway configuration to (required); always written with mode 0600, so chown it to the gateway's user")
+	fs.StringVar(&o.out, "out", "", "file to write the gateway configuration to (required); it must be absent or a regular file (a symbolic link, directory, device, socket or named pipe is refused before anything is opened) and is never read, since processor addresses come from the catalog; always written with mode 0600, so chown it to the gateway's user")
 	fs.IntVar(&o.listenPort, "listen-port", defaultListenPort, "port the gateway binds")
 	fs.StringVar(&o.bindAddress, "bind-address", emit.DefaultBindAddress, "IPv4 or IPv6 literal the gateway binds --listen-port on; an address other hosts can reach exposes every route to the network with the processor as its only guard, and a wildcard (0.0.0.0 or ::) also needs --allow-all-interfaces")
 	fs.BoolVar(&o.allowAllInterfaces, "allow-all-interfaces", false, "permit a wildcard --bind-address and a listener address other hosts can reach; a permission, not a request: with loopback addresses it changes nothing")
@@ -100,8 +99,8 @@ func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 	fs.BoolVar(&o.disableAdmin, "disable-admin", false, "turn the gateway's admin API off (config.adminAddr off) instead of binding it; verify-gateway --admin then has nothing to ask")
 	fs.StringVar(&o.statsAddr, "stats-addr", "", "host:port of the gateway's metrics listener, config.statsAddr (default "+emit.DefaultStatsAddr+")")
 	fs.StringVar(&o.readinessAddr, "readiness-addr", "", "host:port of the gateway's readiness probe, config.readinessAddr (default "+emit.DefaultReadinessAddr+")")
-	fs.IntVar(&o.basePort, "processor-base-port", defaultProcessorBasePort, "on a first emit the i-th server in name order gets processor "+processorHost+":(base+i); a later emit to the same --out keeps every server's processor address as the file has it and gives a new server the next free port above the ones in use, so adding a server moves nobody")
-	fs.Var(o.overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable); it wins over the address kept from the existing file; a host other than loopback is warned about, and the printed serve command then carries "+allowNonLoopbackFlag+", which serve accepts only together with --secret-env")
+	fs.IntVar(&o.basePort, "processor-base-port", defaultProcessorBasePort, "on a first emit the i-th server in name order gets processor "+processorHost+":(base+i); every address is recorded in the catalog (server list shows it, audit entry server.processor_set) and every later emit keeps it, giving a new server the next free port above the recorded ones, so adding a server moves nobody; the file at --out is never read for addresses")
+	fs.Var(o.overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable); it replaces the address the catalog records for that server and is kept by later emits; a host other than loopback is warned about, and the printed serve command then carries "+allowNonLoopbackFlag+", which serve accepts only together with --secret-env")
 	fs.StringVar(&o.secretEnv, "secret-env", "", "environment variable holding a shared secret (16 to 256 printable ASCII characters) written into every processor entry")
 	fs.StringVar(&o.gatewayBinary, "gateway-binary", getenv(envGatewayBinary), "agentgateway binary (env "+envGatewayBinary+"); when set, the file is staged under a temporary name, checked with <binary> -f FILE "+validateOnlyFlag+" and renamed into place only if the gateway accepts it; a refusal exits 1, prints the gateway's message and leaves no file")
 	return o
@@ -109,14 +108,19 @@ func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 
 // check validates the flags that are usage errors naming the fix, before
 // anything is read or written: the required output path and the wildcard
-// bind permission. Everything else about the input, an admin address given
-// together with --disable-admin included, is the emitter's rule and is
-// reported by it.
+// bind permission, then that --out is absent or a regular file (Lstat, before
+// any open: a named pipe planted there blocked emit for ever, fourth review
+// cli-docs-2, and a symbolic link would make it replace a file elsewhere).
+// Everything else about the input, an admin address given together with
+// --disable-admin included, is the emitter's rule and is reported by it.
 func (o *emitOptions) check(c *command) error {
 	if err := requireFlag(c, o.out, "out", "name the file to write"); err != nil {
 		return err
 	}
-	return checkBindAddress(c, o.bindAddress, o.allowAllInterfaces)
+	if err := checkBindAddress(c, o.bindAddress, o.allowAllInterfaces); err != nil {
+		return err
+	}
+	return refuseIrregularFile(o.out, "--out")
 }
 
 // input is the emitter's view of the flags and the plans.
@@ -131,8 +135,9 @@ func (o *emitOptions) input(plans []emitPlan, secret string) emit.Input {
 // enforces strict mode. The serving port is bound to loopback unless
 // --bind-address says otherwise, and a wildcard address needs
 // --allow-all-interfaces on top (seam finding F2). The file is always written
-// owner-only (D13 g). A file already at --out that emit wrote is read first,
-// so every server keeps its processor address across re-emits (D13 g).
+// owner-only (D13 g). Every server's processor address comes from the catalog
+// and goes back into it when it is new or changed (D14 i); the file at --out
+// is never read and must be absent or a regular file.
 func runEmit(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	o := bindEmitFlags(fs, a.getenv)
@@ -163,11 +168,7 @@ func runEmit(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	previous, err := readPreviousFile(o.out)
-	if err != nil {
-		return err
-	}
-	plans, err := planEmit(c, servers, approved, o.basePort, o.overrides, previous.processors)
+	plans, err := planEmit(c, servers, approved, o.basePort, o.overrides)
 	if err != nil {
 		return err
 	}
@@ -175,10 +176,13 @@ func runEmit(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := recordProcessorAddrs(a, store, plans); err != nil {
+		return err
+	}
 	if err := writeValidated(a.ctx, o.out, result.YAML, configFileMode, o.gatewayBinary); err != nil {
 		return err
 	}
-	return a.reportEmit(o, emitOutcome{plans: plans, result: result, credentialed: serversWithQuery(servers), previous: previous})
+	return a.reportEmit(o, emitOutcome{plans: plans, result: result, credentialed: serversWithQuery(servers)})
 }
 
 // checkBindAddress refuses a wildcard --bind-address unless the operator said
@@ -226,8 +230,8 @@ func serversWithQuery(servers []catalog.Server) []string {
 // reportEmit prints what was written and the body hash the header records (so
 // a canary can compare it later with --expect-body-hash), the table of routes,
 // one line per server whose processor address is new or changed since the
-// previous file, every warning the emitter raised, the file warnings and the
-// exact serve command for each server.
+// catalog last recorded it, every warning the emitter raised, the file
+// warnings and the exact serve command for each server.
 func (a *app) reportEmit(o *emitOptions, out emitOutcome) error {
 	a.stdout.printf("wrote %s\nbody sha256 %s\n", textdiff.Escape(o.out), out.result.BodyHash)
 	if o.gatewayBinary != "" {
@@ -241,9 +245,7 @@ func (a *app) reportEmit(o *emitOptions, out emitOutcome) error {
 	if err := t.flush(); err != nil {
 		return err
 	}
-	if out.previous.read {
-		a.printProcessorChanges(out.plans)
-	}
+	a.printProcessorChanges(out.plans)
 	a.printEmitWarnings(o, out)
 	a.stdout.printf("run one processor per server:\n")
 	for _, p := range out.plans {
@@ -253,9 +255,10 @@ func (a *app) reportEmit(o *emitOptions, out emitOutcome) error {
 }
 
 // printProcessorChanges names every server whose processor address is not the
-// one the previous file gave it: a changed address means the processor that
-// is running must be restarted on the new one before the gateway reloads, or
-// its route fails closed (D13 g).
+// one the catalog recorded before this emit: a new address on a first emit, or
+// a changed one, which means the processor that is running must be restarted
+// on the new address before the gateway reloads, or its route fails closed
+// (D13 g, D14 i). With no such line the running processors are untouched.
 func (a *app) printProcessorChanges(plans []emitPlan) {
 	for _, p := range plans {
 		switch {
@@ -269,10 +272,9 @@ func (a *app) printProcessorChanges(plans []emitPlan) {
 
 // printEmitWarnings writes every warning on stderr: the emitter's own lines
 // (a serving socket, a listener or a processor other hosts can reach), the
-// approved tools it had to leave hidden, an existing file whose addresses
-// could not be kept, and the two reasons the owner-only file holds a
-// credential. The emitter's text comes from validated addresses and names,
-// not from the catalog.
+// approved tools it had to leave hidden, and the two reasons the owner-only
+// file holds a credential. The emitter's text comes from validated addresses
+// and names, not from the catalog.
 func (a *app) printEmitWarnings(o *emitOptions, out emitOutcome) {
 	for _, line := range strings.Split(out.result.Warning, "\n") {
 		if line != "" {
@@ -281,9 +283,6 @@ func (a *app) printEmitWarnings(o *emitOptions, out emitOutcome) {
 	}
 	for _, s := range out.result.Skipped {
 		a.stderr.printf("warning: %s/%s is approved but left out of the allow rule and stays hidden: %s\n", cell(s.Server), cell(s.Tool), cell(s.Reason))
-	}
-	if out.previous.warning != "" {
-		a.stderr.printf("warning: %s\n", out.previous.warning)
 	}
 	if o.secretEnv != "" {
 		a.stderr.printf("warning: %s contains the processor secret from %s in clear and was written with mode %04o; keep it readable by the gateway's user only\n", textdiff.Escape(o.out), textdiff.Escape(o.secretEnv), configFileMode)

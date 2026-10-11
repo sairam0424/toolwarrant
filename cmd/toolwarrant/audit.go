@@ -27,10 +27,12 @@ func auditCommands() []*command {
 
 // runAuditVerify checks the whole chain, then, when asked, that the head is
 // the one the operator recorded, then the registry against the log. The
-// integrity report runs even when the head does not match, because a head
-// that moved is exactly when an operator wants to know which rows disagree
-// with the log (third review); both findings are reported together, and the
-// head reminder is withheld when either fails.
+// integrity report runs even when the chain is broken or the head does not
+// match, because that is exactly when an operator wants to know which rows
+// disagree with the log and which foreign objects exist (third and fourth
+// review); the findings are reported together, and the head reminder is
+// withheld when any of them fails. A broken chain makes the head meaningless,
+// so --expect-head is not compared against it.
 func runAuditVerify(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	expect := fs.String("expect-head", "", "fail unless the head equals this hash you recorded earlier")
@@ -46,14 +48,16 @@ func runAuditVerify(a *app, c *command, args []string) (err error) {
 		return err
 	}
 	defer closeStore(store, &err)
-	summary, err := store.VerifyAudit(a.ctx)
-	if err != nil {
-		return err
-	}
-	a.stdout.printf("audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)
+	summary, chainErr := store.VerifyAudit(a.ctx)
 	var headErr error
-	if *expect != "" && !strings.EqualFold(*expect, summary.Head) {
+	switch {
+	case chainErr != nil:
+		headErr = chainErr
+	case *expect != "" && !strings.EqualFold(*expect, summary.Head):
 		headErr = fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", textdiff.Escape(*expect), summary.Head)
+	}
+	if chainErr == nil {
+		a.stdout.printf("audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)
 	}
 	integrityErr := a.reportIntegrity(store)
 	switch {

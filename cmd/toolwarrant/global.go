@@ -263,7 +263,8 @@ func isPrintableASCII(s string) bool {
 
 // runInit creates the database if it is absent and prints its absolute path.
 // The file is created owner-only before the catalog opens it, so the mode never
-// depends on another package's defaults.
+// depends on another package's defaults. The directory is checked for a
+// planted link first (D14 i), then the final component.
 func runInit(a *app, c *command, args []string) error {
 	fs := newFlagSet(c.name)
 	pos, err := a.parseArgs(c, fs, args)
@@ -274,6 +275,9 @@ func runInit(a *app, c *command, args []string) error {
 		return err
 	}
 	path := a.dbPath()
+	if err := refuseLinkedDirectory(path); err != nil {
+		return err
+	}
 	if err := refuseSymlink(path); err != nil {
 		return err
 	}

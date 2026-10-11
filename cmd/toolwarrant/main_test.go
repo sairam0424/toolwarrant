@@ -31,11 +31,14 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
 	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going", "-admin", "-no-probe", "GET "+adminConfigPath, verdictLiveConfig,
 		probeToolPrefix, "HTTP 202", verdictUnhooked, "the probe reaches the upstream exactly when the gateway behaves this way", "L17",
-		"-expect-body-hash", "L19", verdictInconclusive, "HTTP 400 is healthy", "as a whole document", "the path of --url must be the emitted route's match", "printed a verdict line")
+		"-expect-body-hash", "L19", verdictInconclusive, "HTTP 400 without a JSON-RPC error in the body is healthy", "as a whole document", "the path of --url must be the emitted route's match", "printed a verdict line",
+		"no top-level section other than config, gateways and routes", "requestHeaders allowed and disallowed lists", "metadata compared by a hash of its canonical form and never shown",
+		"is not a regular file", "a listing failure alone is printed, counted and does not stop the run")
 	wantContains(t, "help crawl", c.ok("help", "crawl"), "-strict", "-every")
 	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env", "-bind-address", `(default "127.0.0.1")`, "-allow-all-interfaces", "a permission, not a request",
 		"-admin-addr", "-disable-admin", "-stats-addr", "-readiness-addr", "-gateway-binary", envGatewayBinary, validateOnlyFlag,
-		"always written with mode 0600", "keeps every server's processor address", "wins over the address kept from the existing file")
+		"always written with mode 0600", "recorded in the catalog", "server.processor_set", "the file at --out is never read for addresses", "replaces the address the catalog records")
+	wantContains(t, "help server", c.ok("help", "server"), "PROCESSOR is the processor address emit recorded")
 	wantContains(t, "help budget", c.ok("help", "budget"), "subcommands", "budget reset SERVER TOOL [--by NAME]")
 	wantContains(t, "help budget reset", c.ok("help", "budget", "reset"), "-by", systemActorName)
 	wantContains(t, "help audit verify", c.ok("help", "audit", "verify"), "-expect-head")

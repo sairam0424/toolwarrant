@@ -122,3 +122,22 @@ func TestAuditVerifyReportsIntegrityWhenTheHeadMismatches(t *testing.T) {
 		t.Errorf("both findings must be one error line, got %d:\n%s", n, r.stderr)
 	}
 }
+
+// Fourth review (cli-docs-6): with a broken chain runAuditVerify returned at
+// the chain error, so the one run the recovery procedure prescribes named the
+// broken entry and nothing about the dropped guard or a planted trigger. The
+// integrity report now runs after a broken chain as well and both findings are
+// reported together; the head is not compared, since a broken chain has none
+// worth comparing.
+func TestAuditVerifyReportsIntegrityWhenTheChainIsBroken(t *testing.T) {
+	c, _ := fixture(t)
+	execSQL(t, c.db,
+		"DROP TRIGGER audit_log_no_update",
+		"UPDATE audit_log SET detail = 'nothing happened' WHERE seq = 2",
+		"CREATE TRIGGER review_foreign AFTER UPDATE OF state ON tools BEGIN SELECT 1; END")
+	r := c.fail(exitFailure, "audit", "verify", "--expect-head", strings.Repeat("0", 64))
+	wantContains(t, "stderr", r.stderr, "audit log is broken at entry 2", "problem(s) listed above")
+	wantNotContains(t, "stderr", r.stderr, "audit head mismatch")
+	wantContains(t, "stdout", r.stdout, "integrity problem: ", "audit_log_no_update", "review_foreign")
+	wantNotContains(t, "stdout", r.stdout, "audit log ok", "integrity ok", headReminder)
+}

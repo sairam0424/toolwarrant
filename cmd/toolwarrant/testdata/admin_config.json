@@ -35,6 +35,16 @@
               "host": "127.0.0.1:63941",
               "kind": "remote",
               "failureMode": "failClosed",
+              "requestHeaders": {
+                "allowed": [
+                  ":method"
+                ],
+                "disallowed": [
+                  "authorization",
+                  "cookie",
+                  "proxy-authorization"
+                ]
+              },
               "methods": {
                 "tools/call": "request",
                 "tools/list": "response"

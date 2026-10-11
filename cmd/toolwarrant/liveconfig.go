@@ -15,27 +15,43 @@ import (
 // constants are the ones internal/emit writes with; a change there must
 // change these, which the test against a freshly emitted file catches.
 const (
-	indentGatewayName = 2
-	indentGatewayKey  = 4
-	indentRouteField  = 2
-	indentRouteItem   = 6
-	indentProcessor   = 8
-	indentProcessorKV = 10
-	sectionGateways   = "gateways"
-	sectionRoutes     = "routes"
-	keyPort           = "port"
-	keyBindAddress    = "bindAddress"
-	keyKind           = "kind"
-	keyFailureMode    = "failureMode"
-	keyMethods        = "methods:"
-	routeItemPrefix   = "- name: "
-	gatewayRefPrefix  = "gateways: "
-	exactPathPrefix   = "exact: "
-	allowItemPrefix   = "- allow: "
-	hostItemPrefix    = "- host: "
-	hostKeyPrefix     = "host: "
-	keyValueSep       = ": "
-	noRoute           = -1
+	indentConfigKey    = 2
+	indentGatewayName  = 2
+	indentGatewayKey   = 4
+	indentRouteField   = 2
+	indentRouteItem    = 6
+	indentProcessor    = 8
+	indentProcessorKV  = 10
+	sectionConfig      = "config"
+	sectionGateways    = "gateways"
+	sectionRoutes      = "routes"
+	keyPort            = "port"
+	keyBindAddress     = "bindAddress"
+	keyAdminAddr       = "adminAddr"
+	keyStatsAddr       = "statsAddr"
+	keyReadinessAddr   = "readinessAddr"
+	keyKind            = "kind"
+	keyFailureMode     = "failureMode"
+	keyMethods         = "methods:"
+	keyRequestHeaders  = "requestHeaders:"
+	keyMetadata        = "metadata:"
+	keyAllowed         = "allowed:"
+	keyDisallowed      = "disallowed:"
+	routeItemPrefix    = "- name: "
+	gatewayRefPrefix   = "gateways: "
+	exactPathPrefix    = "exact: "
+	allowItemPrefix    = "- allow: "
+	hostItemPrefix     = "- host: "
+	hostKeyPrefix      = "host: "
+	listItemPrefix     = "- "
+	keyValueSep        = ": "
+	noRoute            = -1
+	procSectionNone    = ""
+	procSectionMethods = "methods"
+	procSectionHeaders = "requestHeaders"
+	procSectionAllowed = "allowed"
+	procSectionDenied  = "disallowed"
+	procSectionMeta    = "metadata"
 )
 
 // gatewayConfig is one gateway of the configuration: where it listens.
@@ -43,10 +59,24 @@ type gatewayConfig struct {
 	bindAddress, port string
 }
 
-// processorConfig is one mcpGuardrails processor of a route.
+// listenerConfig is the config block: the gateway's own process-level
+// listeners. A live document that moved the admin API or opened the stats
+// port on every interface differs from the file in a place no route shows.
+type listenerConfig struct {
+	adminAddr, statsAddr, readinessAddr string
+}
+
+// processorConfig is one mcpGuardrails processor of a route. The request
+// header lists are nil when the entry carries no filter at all, which is how
+// a live entry stripped of it differs from the emitted one (fourth review
+// cli-docs-4, processor-emit-7). The metadata is kept only as the SHA-256 of
+// its canonical form, because it carries the processor secret: the two sides
+// are compared for equality and no value is ever shown.
 type processorConfig struct {
 	host, kind, failureMode string
 	methods                 map[string]string
+	allowed, disallowed     []string
+	metadataHash            string
 }
 
 // routeConfig is one route of the gateway configuration reduced to the fields
@@ -63,14 +93,18 @@ type routeConfig struct {
 	backendHosts  []string
 }
 
-// configDoc is a whole gateway configuration as the canary compares it: every
-// gateway by name and every route in document order. The comparison is over
-// the whole document (D13 e), because a route or a gateway the file does not
-// carry serves clients without the emitted guards however intact the
-// server's own route is.
+// configDoc is a whole gateway configuration as the canary compares it: the
+// listeners of the config block, every gateway by name, every route in
+// document order, and the names of every other top-level section the live
+// document carries (always empty for the emitted file, which has three). The
+// comparison is over the whole document (D13 e, D14 i), because a route, a
+// gateway or a section the file does not carry serves clients without the
+// emitted guards however intact the server's own route is.
 type configDoc struct {
-	gateways map[string]gatewayConfig
-	routes   []routeConfig
+	listeners     listenerConfig
+	gateways      map[string]gatewayConfig
+	routes        []routeConfig
+	extraSections []string
 }
 
 // route returns the route named name and how many routes carry that name; a
@@ -90,12 +124,13 @@ func (d configDoc) route(name string) (routeConfig, int) {
 
 // emittedParser walks the lines of an emitted file.
 type emittedParser struct {
-	doc       configDoc
-	section   string
-	gateway   string // the gateway whose keys are being read, in the gateways section
-	route     int    // index of the route being read, noRoute outside one
-	proc      *processorConfig
-	inMethods bool
+	doc         configDoc
+	section     string
+	gateway     string // the gateway whose keys are being read, in the gateways section
+	route       int    // index of the route being read, noRoute outside one
+	proc        *processorConfig
+	procSection string            // which indent-10 block of the processor is open
+	meta        map[string]string // the metadata of the open processor, hashed when it closes
 }
 
 // emittedConfig reads every gateway and route of an emitted file. A file that
@@ -113,6 +148,8 @@ func emittedConfig(file []byte) (configDoc, error) {
 		switch {
 		case indent == 0:
 			err = p.topLevel(line)
+		case p.section == sectionConfig:
+			p.configLine(indent, line)
 		case p.section == sectionGateways:
 			err = p.gatewayLine(indent, line)
 		case p.route != noRoute:
@@ -122,12 +159,23 @@ func emittedConfig(file []byte) (configDoc, error) {
 			return configDoc{}, err
 		}
 	}
+	p.closeProcessor()
 	return p.doc, nil
+}
+
+// closeProcessor seals the metadata of the processor being read, if any, and
+// forgets it: the hash is what the comparison keeps, never the values.
+func (p *emittedParser) closeProcessor() {
+	if p.proc != nil {
+		p.proc.metadataHash = metadataDigest(p.meta)
+	}
+	p.proc, p.procSection, p.meta = nil, procSectionNone, nil
 }
 
 // topLevel handles a section key or a route item.
 func (p *emittedParser) topLevel(line string) error {
-	p.proc, p.inMethods, p.gateway = nil, false, ""
+	p.closeProcessor()
+	p.gateway = ""
 	if !strings.HasPrefix(line, routeItemPrefix) {
 		p.section, p.route = strings.TrimSuffix(line, ":"), noRoute
 		return nil
@@ -145,6 +193,28 @@ func (p *emittedParser) topLevel(line string) error {
 	p.doc.routes = append(p.doc.routes, routeConfig{name: name})
 	p.route = len(p.doc.routes) - 1
 	return nil
+}
+
+// configLine reads one listener of the config block. The values are quoted
+// scalars; one that does not unquote is kept as written, so that a difference
+// line shows what the file holds instead of the comparison failing.
+func (p *emittedParser) configLine(indent int, line string) {
+	if indent != indentConfigKey {
+		return
+	}
+	key, value, _ := strings.Cut(line, keyValueSep)
+	v, err := unquoteScalar(value)
+	if err != nil {
+		v = value
+	}
+	switch key {
+	case keyAdminAddr:
+		p.doc.listeners.adminAddr = v
+	case keyStatsAddr:
+		p.doc.listeners.statsAddr = v
+	case keyReadinessAddr:
+		p.doc.listeners.readinessAddr = v
+	}
 }
 
 // gatewayLine reads a gateway's name, then its serving port and bind address.
@@ -180,55 +250,99 @@ func (p *emittedParser) gatewayLine(indent int, line string) error {
 
 // routeLine reads one line inside the current route: the gateway it attaches
 // to, the exact path, the allow rule, a processor and its fields, or the
-// backend host. The secret, when present, sits under metadata at the same
-// indentation as the methods and is neither read nor compared.
+// backend host. The secret, when present, sits under metadata and is read
+// into the hash the comparison keeps, never into a value.
 func (p *emittedParser) routeLine(indent int, line string) error {
 	rc := &p.doc.routes[p.route]
 	switch {
 	case indent == indentRouteField && strings.HasPrefix(line, gatewayRefPrefix):
-		p.proc, p.inMethods = nil, false
+		p.closeProcessor()
 		return setQuoted(&rc.gateway, strings.TrimPrefix(line, gatewayRefPrefix))
 	case indent == indentRouteItem && strings.HasPrefix(line, exactPathPrefix):
 		return appendQuoted(&rc.paths, strings.TrimPrefix(line, exactPathPrefix))
 	case indent == indentRouteItem && strings.HasPrefix(line, allowItemPrefix):
 		return appendQuoted(&rc.rules, strings.TrimPrefix(line, allowItemPrefix))
 	case indent == indentRouteItem && strings.HasPrefix(line, hostItemPrefix):
+		p.closeProcessor()
 		host, err := unquoteScalar(strings.TrimPrefix(line, hostItemPrefix))
 		if err != nil {
 			return err
 		}
 		rc.processors = append(rc.processors, processorConfig{host: host, methods: map[string]string{}})
-		p.proc, p.inMethods = &rc.processors[len(rc.processors)-1], false
+		p.proc, p.meta = &rc.processors[len(rc.processors)-1], map[string]string{}
 	case indent == indentProcessor && p.proc != nil:
 		return p.processorLine(line)
-	case indent == indentProcessorKV && p.inMethods && p.proc != nil:
-		key, value, _ := strings.Cut(line, keyValueSep)
-		v, err := unquoteScalar(value)
-		if err != nil {
-			return err
-		}
-		p.proc.methods[key] = v
+	case indent == indentProcessorKV && p.proc != nil && p.procSection != procSectionNone:
+		return p.processorBlockLine(line)
 	case indent == indentProcessorKV && strings.HasPrefix(line, hostKeyPrefix):
 		return appendQuoted(&rc.backendHosts, strings.TrimPrefix(line, hostKeyPrefix))
 	case indent < indentProcessor:
-		p.proc, p.inMethods = nil, false
+		p.closeProcessor()
 	}
 	return nil
 }
 
-// processorLine reads one field of the current processor.
+// processorLine reads one field of the current processor at indent 8: a
+// block opener (methods, requestHeaders, metadata) or a scalar field.
 func (p *emittedParser) processorLine(line string) error {
-	if line == keyMethods {
-		p.inMethods = true
+	switch line {
+	case keyMethods:
+		p.procSection = procSectionMethods
+		return nil
+	case keyRequestHeaders:
+		// The two lists open at indent 10; until one does, nothing is read.
+		p.procSection = procSectionHeaders
+		return nil
+	case keyMetadata:
+		p.procSection = procSectionMeta
 		return nil
 	}
-	p.inMethods = false
+	p.procSection = procSectionNone
 	key, value, _ := strings.Cut(line, keyValueSep)
 	switch key {
 	case keyKind:
 		return setQuoted(&p.proc.kind, value)
 	case keyFailureMode:
 		return setQuoted(&p.proc.failureMode, value)
+	}
+	return nil
+}
+
+// processorBlockLine reads one indent-10 line of the open block: a method
+// mapping, a header list opener or item, or a metadata entry.
+func (p *emittedParser) processorBlockLine(line string) error {
+	switch {
+	case line == keyAllowed:
+		p.procSection, p.proc.allowed = procSectionAllowed, []string{}
+		return nil
+	case line == keyDisallowed:
+		p.procSection, p.proc.disallowed = procSectionDenied, []string{}
+		return nil
+	case strings.HasPrefix(line, listItemPrefix):
+		return p.headerItem(strings.TrimPrefix(line, listItemPrefix))
+	case p.procSection != procSectionMethods && p.procSection != procSectionMeta:
+		return nil
+	}
+	key, value, _ := strings.Cut(line, keyValueSep)
+	v, err := unquoteScalar(value)
+	if err != nil {
+		return err
+	}
+	if p.procSection == procSectionMethods {
+		p.proc.methods[key] = v
+		return nil
+	}
+	p.meta[key] = v
+	return nil
+}
+
+// headerItem appends one header name to the open list of the filter.
+func (p *emittedParser) headerItem(quoted string) error {
+	switch p.procSection {
+	case procSectionAllowed:
+		return appendQuoted(&p.proc.allowed, quoted)
+	case procSectionDenied:
+		return appendQuoted(&p.proc.disallowed, quoted)
 	}
 	return nil
 }
