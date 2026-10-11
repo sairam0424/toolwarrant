@@ -10,16 +10,18 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
 
-// wireStore assembles a Store from its pools, with its clock and verifier. A forensic
-// open remembers no re-check: it exists to look at a database someone edited
-// and must report what the rows hold now.
-func wireStore(wdb, rdb *sql.DB, opts OpenOptions) *Store {
-	s := &Store{wdb: wdb, rdb: rdb, policy: opts.Policy, now: time.Now, readOnly: opts.ReadOnly || opts.Forensic, caps: defaultServerCaps()}
+// wireStore assembles a Store from its pools, with its clock and verifiers. A
+// forensic open remembers no re-check: it exists to look at a database someone
+// edited and must report what the rows hold now.
+func wireStore(wdb, rdb *sql.DB, path string, opts OpenOptions) *Store {
+	s := &Store{wdb: wdb, rdb: rdb, path: path, policy: opts.Policy, now: time.Now,
+		readOnly: opts.ReadOnly || opts.Forensic, forensic: opts.Forensic, caps: defaultServerCaps()}
 	bound := recheckCacheEntries
 	if opts.Forensic {
 		bound = 0
 	}
 	s.verified = newVerifier(s.clock, bound)
+	s.sealed = newVerifier(s.clock, bound)
 	return s
 }
 
@@ -29,11 +31,15 @@ func (s *Store) clock() time.Time { return s.now() }
 
 // approvedRef names one approved version row so that its bytes can be
 // re-checked after the policy rows have been read, and only if the verifier
-// does not remember it: a remembered row is neither read nor hashed.
+// does not remember it: a remembered row is neither read nor hashed. tool is
+// the audit subject (server/tool) and entry the seq of the newest
+// version.approved or version.rolled_back entry about it, NULL when the log
+// has none; anchorApproved checks both.
 type approvedRef struct {
 	id     int64
 	tool   string
 	digest string
+	entry  sql.NullInt64
 }
 
 // canonicalChunk is how many rows one re-check query fetches. The rows stream

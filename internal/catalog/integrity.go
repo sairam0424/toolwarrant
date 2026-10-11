@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
+	"slices"
 
-	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
@@ -23,10 +24,12 @@ type IntegrityReport struct {
 	// "index X") that are absent, or present under a definition that differs
 	// from the schema's. Either leaves history tables editable.
 	GuardsMissing, GuardsRedefined []string
-	// ForeignObjects labels the triggers and views ("trigger X", "view X")
-	// that the schema did not create. A trigger on the unguarded tools table
-	// can undo every decision inside the catalog's own transaction while the
-	// log records the decision; nothing of someone else's making may exist.
+	// ForeignObjects labels the triggers, views and unique indexes ("trigger
+	// X", "view X", "index X") that the schema did not create. A trigger on
+	// the tools table can undo every decision inside the catalog's own
+	// transaction while the log records the decision, and a unique index makes
+	// every write that repeats its value fail; nothing of someone else's making
+	// may exist.
 	ForeignObjects []string
 	// ApprovalsWithoutRecord counts versions in status approved, or marked
 	// ever approved, with no approve or rollback row in the approvals table:
@@ -59,9 +62,32 @@ type IntegrityReport struct {
 	// ServersMismatched counts servers whose row disagrees with the log: the
 	// paused flag against the newest server.paused or server.resumed entry (or
 	// server.added, which registers a running server), allow_private and the
-	// SHA-256 of the URL against the server.added detail, a row the log never
-	// registered, and a registration whose row is gone.
+	// SHA-256 of the URL against the server.added detail, the processor
+	// address against the newest server.processor_set entry, a row the log
+	// never registered, and a registration whose row is gone.
 	ServersMismatched int
+	// RowsMissing counts what the history describes but the registry has lost:
+	// a tool the log mentions with no tools row, a version the log proposed
+	// with no tool_versions row, and a tool_versions row whose tool row is
+	// gone. The catalog never deletes a row, so each is an edit of history
+	// (D14): deleting a tool row lets the next crawl discover the name afresh
+	// with a fresh proposer history, which launders the two-person rule.
+	RowsMissing int
+	// DiscoveryMismatches counts tools rows with no tool.discovered entry and
+	// tool.discovered entries about a subject an earlier entry already
+	// discovered; the catalog writes exactly one per tool it ever creates.
+	DiscoveryMismatches int
+	// VersionStatusMismatches counts versions whose status or ever_approved
+	// column differs from what the log's version.proposed, version.superseded,
+	// version.rejected, version.approved and version.rolled_back entries leave
+	// behind, and versions the log never proposed: a rejected definition put
+	// back to pending by hand becomes approvable again.
+	VersionStatusMismatches int
+	// ProposerMismatches counts versions whose proposer list is not the
+	// sequence of actors of the version.proposed entries about them (an
+	// Enable re-proposes without adding anybody): a proposer rewritten out of
+	// the history under a re-created guard may then approve their own bytes.
+	ProposerMismatches int
 	// Problems lists every finding in one line each, in table order.
 	Problems []string
 }
@@ -79,10 +105,10 @@ type IntegrityReport struct {
 //
 // Everything is read in one read transaction, so the report describes one
 // consistent state. The log is streamed in pages and reduced to one small
-// record per tool, one per server and one per decision ever made, so memory
-// grows with the catalog and the decisions, not with the crawl history. The
-// error is non-nil only when the check itself could not run; otherwise the
-// report is complete and Problems is the verdict.
+// record per tool, one per server, one per version ever proposed and one per
+// decision ever made, so memory grows with the catalog and the decisions, not
+// with the crawl history. The error is non-nil only when the check itself
+// could not run; otherwise the report is complete and Problems is the verdict.
 func (s *Store) Integrity(ctx context.Context) (IntegrityReport, error) {
 	var rep IntegrityReport
 	err := s.inRead(ctx, func(q queryer) error {
@@ -96,21 +122,27 @@ func (s *Store) Integrity(ctx context.Context) (IntegrityReport, error) {
 }
 
 // integrityCheck is the state of one Integrity run: what the audit log says
-// about every tool, every server and every decision, gathered in one pass over
-// the log, and the report being filled.
+// about every tool, every server, every version and every decision, gathered
+// in one pass over the log, and the report being filled.
 type integrityCheck struct {
 	ctx context.Context
 	q   queryer
 	rep *IntegrityReport
 	// latest is, per tool subject, what the newest entry about the tool left
 	// behind; latestApproval the newest version.approved or version.rolled_back
-	// entry; servers what the log says about each server; decisions the
-	// multiset of decision entries, by key, with their sequence numbers, which
-	// checkApprovals consumes.
+	// entry; discovered the seq of the tool.discovered entry per subject;
+	// versions what the log says about each version, by subject and digest;
+	// servers what the log says about each server; decisions the multiset of
+	// decision entries, by key, with their sequence numbers, which
+	// checkApprovals consumes; seen the tool subjects that have a row, which
+	// checkTools fills for checkLogSubjects.
 	latest         map[string]toolTrace
 	latestApproval map[string]decisionTrace
+	discovered     map[string]int64
+	versions       map[versionKey]*versionTrace
 	servers        map[string]*serverTrace
 	decisions      map[decisionKey][]int64
+	seen           map[string]bool
 }
 
 func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport) *integrityCheck {
@@ -118,33 +150,27 @@ func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport) *in
 		ctx: ctx, q: q, rep: rep,
 		latest:         map[string]toolTrace{},
 		latestApproval: map[string]decisionTrace{},
+		discovered:     map[string]int64{},
+		versions:       map[versionKey]*versionTrace{},
 		servers:        map[string]*serverTrace{},
 		decisions:      map[decisionKey][]int64{},
+		seen:           map[string]bool{},
 	}
 }
 
 // run performs the passes in dependency order: the log first, because the
-// tool, server and approval passes compare against what it recorded.
+// tool, server, version and approval passes compare against what it recorded.
 func (c *integrityCheck) run() error {
-	if err := c.checkGuardObjects(); err != nil {
-		return err
+	steps := []func() error{
+		c.checkGuardObjects, c.readLog, c.checkServers, c.checkTools, c.checkLogSubjects,
+		c.checkVersions, c.checkVersionHistory, c.checkOrphanVersions, c.checkApprovedBytes, c.checkApprovals,
 	}
-	if err := c.readLog(); err != nil {
-		return err
+	for _, step := range steps {
+		if err := step(); err != nil {
+			return err
+		}
 	}
-	if err := c.checkServers(); err != nil {
-		return err
-	}
-	if err := c.checkTools(); err != nil {
-		return err
-	}
-	if err := c.checkVersions(); err != nil {
-		return err
-	}
-	if err := c.checkApprovedBytes(); err != nil {
-		return err
-	}
-	return c.checkApprovals()
+	return nil
 }
 
 func (c *integrityCheck) problem(format string, args ...any) {
@@ -211,12 +237,17 @@ func (c *integrityCheck) checkTools() error {
 // checkTool compares one tools row with what the log recorded about it. A
 // tool counts once under ApprovedDigestMismatches however many ways its
 // approval disagrees with the log, and once under each of StaleLastSeen,
-// StateMismatches and BudgetMismatches.
+// StateMismatches, BudgetMismatches and DiscoveryMismatches.
 func (c *integrityCheck) checkTool(r integrityTool) {
 	subject := r.server.String + "/" + r.name
 	shown := quote(subject)
+	c.seen[subject] = true
 	if !r.server.Valid {
 		c.problem("tool %s belongs to a server that does not exist", shown)
+	}
+	if _, ok := c.discovered[subject]; !ok {
+		c.problem("tool %s: the audit log has no tool.discovered entry about it", shown)
+		c.rep.DiscoveryMismatches++
 	}
 	approved, sound := c.registryApproval(r, shown)
 	mismatch := !sound
@@ -300,73 +331,15 @@ func (c *integrityCheck) approvalEntryNames(subject, digest, shown string) bool 
 	return false
 }
 
-// integrityVersionsQuery reads every version that claims to have been approved
-// at some point, with whether the approvals table agrees.
-const integrityVersionsQuery = `SELECT s.name, t.name, v.version_no, v.status, v.ever_approved, ` + approvalRecorded + `
-	FROM tool_versions v JOIN tools t ON t.id = v.tool_id JOIN servers s ON s.id = t.server_id
-	WHERE v.status = 'approved' OR v.ever_approved = 1
-	ORDER BY s.name, t.name, v.version_no`
-
-// checkVersions requires an approve or rollback row behind every version that
-// is, or was ever, approved.
-func (c *integrityCheck) checkVersions() error {
-	rows, err := c.q.QueryContext(c.ctx, integrityVersionsQuery)
-	if err != nil {
-		return fmt.Errorf("catalog: read versions: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var (
-			server, tool, status string
-			no, ever, recorded   int
-		)
-		if err := rows.Scan(&server, &tool, &no, &status, &ever, &recorded); err != nil {
-			return fmt.Errorf("catalog: read versions: %w", err)
+// checkLogSubjects reports every tool the log describes whose row is gone.
+// The catalog never deletes a tools row, and the next crawl would discover the
+// name afresh with a fresh proposer history (D14).
+func (c *integrityCheck) checkLogSubjects() error {
+	for _, subject := range slices.Sorted(maps.Keys(c.latest)) {
+		if !c.seen[subject] {
+			c.problem("tool %s: the audit log describes it (latest entry seq %d) but no tools row exists", quote(subject), c.latest[subject].seq)
+			c.rep.RowsMissing++
 		}
-		if recorded == 0 {
-			c.rep.ApprovalsWithoutRecord++
-			c.problem("version %d of tool %s is marked approved (status %s, ever_approved %d) but has no approval record",
-				no, quote(server+"/"+tool), status, ever)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("catalog: read versions: %w", err)
-	}
-	return nil
-}
-
-// integrityBytesQuery streams the bytes of every approved version.
-const integrityBytesQuery = `SELECT s.name, t.name, v.digest, v.digest_profile, v.canonical
-	FROM tool_versions v JOIN tools t ON t.id = v.tool_id JOIN servers s ON s.id = t.server_id
-	WHERE v.status = 'approved' ORDER BY s.name, t.name`
-
-// checkApprovedBytes re-hashes every approved definition against its digest
-// and checks its profile, as the read paths do, but without the Store's
-// memory of earlier checks: a report must say what the rows hold now.
-func (c *integrityCheck) checkApprovedBytes() error {
-	rows, err := c.q.QueryContext(c.ctx, integrityBytesQuery)
-	if err != nil {
-		return fmt.Errorf("catalog: read approved versions: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var (
-			server, tool, digest, profile string
-			canonical                     []byte
-		)
-		if err := rows.Scan(&server, &tool, &digest, &profile, &canonical); err != nil {
-			return fmt.Errorf("catalog: read approved versions: %w", err)
-		}
-		shown := quote(server + "/" + tool)
-		if profile != gate.DigestProfile {
-			c.problem("approved version of tool %s was digested under profile %s, this build uses %s", shown, quote(profile), gate.DigestProfile)
-		}
-		if gate.DigestOfCanonical(canonical) != digest {
-			c.problem("approved version of tool %s does not hash to its digest %s", shown, shownDigest(digest))
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("catalog: read approved versions: %w", err)
 	}
 	return nil
 }

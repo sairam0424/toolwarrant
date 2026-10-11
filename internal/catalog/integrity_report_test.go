@@ -111,7 +111,9 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 			func(t *testing.T, _ *Store, path, d string) {
 				mustExec(t, rawDB(t, path), `UPDATE tool_versions SET status = 'superseded' WHERE digest = ?`, d)
 			},
-			want{IntegrityReport{ApprovedDigestMismatches: 1}, []string{`"alpha/echo"`, `status is "superseded", not approved`}},
+			// D14 (c): the status is also compared with what the log leaves behind.
+			want{IntegrityReport{ApprovedDigestMismatches: 1, VersionStatusMismatches: 1},
+				[]string{`"alpha/echo"`, `status is "superseded", not approved`, "the audit log (latest entry seq", "leaves it approved"}},
 		},
 		"digest profile rewritten": {
 			func(t *testing.T, _ *Store, path, d string) {
@@ -127,7 +129,8 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 				mustExec(t, rawDBNoFK(t, path), `INSERT INTO tools (server_id, name, state, approved_version_id, last_seen_digest, missing_crawls, proposals_since_decision)
 					VALUES (999, 'orphan', 'pending_review', NULL, '', 0, 0)`)
 			},
-			want{IntegrityReport{StaleLastSeen: 1}, []string{`"/orphan"`, "server that does not exist", "no entry about it"}},
+			// D14 (c): a row the log never discovered is reported as such too.
+			want{IntegrityReport{StaleLastSeen: 1, DiscoveryMismatches: 1}, []string{`"/orphan"`, "server that does not exist", "no entry about it", "no tool.discovered entry"}},
 		},
 		"audit entry forged without a last_seen field": {
 			func(t *testing.T, _ *Store, path, d string) {
@@ -276,7 +279,7 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 				mustExec(t, rawDB(t, path), `INSERT INTO tools (server_id, name, state, approved_version_id, last_seen_digest, missing_crawls, proposals_since_decision)
 					VALUES ((SELECT id FROM servers), 'ghost', 'pending_review', NULL, '', 0, 0)`)
 			},
-			want{IntegrityReport{StaleLastSeen: 1}, []string{`"alpha/ghost"`, "no entry about it"}},
+			want{IntegrityReport{StaleLastSeen: 1, DiscoveryMismatches: 1}, []string{`"alpha/ghost"`, "no entry about it", "no tool.discovered entry"}},
 		},
 		"guard dropped": {
 			func(t *testing.T, _ *Store, path, _ string) {
@@ -389,8 +392,11 @@ func TestIntegrity_RehashesApprovedBytesAndReadsGuardsOnEveryLoad(t *testing.T) 
 			t.Errorf("%s with a redefined guard = %v, want ErrCorrupt naming it", name, err)
 		}
 	}
-	if _, err := s.Tools(bg, ""); err != nil {
-		t.Errorf("Tools (a view, for inspection) = %v", err)
+	// D14 (f): the list view applies the same checks as the serving path, so
+	// it refuses the file as well; inspection of such a file is a forensic
+	// open's job.
+	if _, err := s.Tools(bg, ""); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "trigger audit_log_no_update was redefined") {
+		t.Errorf("Tools with a redefined guard = %v, want ErrCorrupt naming it", err)
 	}
 	// A guard re-created from the schema's own statement, however it is laid
 	// out, is the same guard: whitespace is not a redefinition.

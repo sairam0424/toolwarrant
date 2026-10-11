@@ -78,8 +78,8 @@ func TestToolDetail_FieldsRoundTrip(t *testing.T) {
 		"audit_log_no_update", "audit_log_no_delete", "audit_log_sequential",
 		"tool_versions_no_delete", "tool_versions_immutable", "tool_versions_no_replace",
 		"proposers_no_update", "proposers_no_delete", "proposers_append_only",
-		"approvals_no_update", "approvals_no_delete", "approvals_no_replace",
-	}) || !slices.Equal(guardIndexes(), []string{"one_pending_version", "one_approved_version", "approvals_by_version"}) {
+		"approvals_no_update", "approvals_no_delete", "approvals_no_replace", "tools_no_delete",
+	}) || !slices.Equal(guardIndexes(), []string{"one_pending_version", "one_approved_version", "approvals_by_version", "audit_log_by_subject"}) {
 		t.Errorf("guard names parsed from the DDL = %v, %v", guardTriggers(), guardIndexes())
 	}
 }

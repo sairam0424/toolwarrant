@@ -30,6 +30,16 @@ const (
 	// so a hostile upstream that changes every crawl cannot grow the file
 	// without bound, while the tool is still hidden until someone decides.
 	MaxProposalsPerDecision = 20
+	// MaxRejectedPerCrawl bounds the listed entries one crawl may reject: names
+	// no tool row records whose definition or name broke a rule. Each costs one
+	// tool.rejected audit entry and nothing else, so neither the per-crawl nor
+	// the per-server caps on rows and bytes ever saw them, and an upstream that
+	// listed fresh unusable names on every crawl grew the log by megabytes per
+	// crawl for as long as the schedule ran (D14). A crawl over this cap is
+	// recorded as failed under its own class and adds no tool.rejected entry.
+	// A tenth of MaxToolsPerCrawl: a real server has a handful of bad entries,
+	// never a thousand fresh ones.
+	MaxRejectedPerCrawl = 1000
 )
 
 // Reason classes the catalog attaches to a listed tool it cannot use. They

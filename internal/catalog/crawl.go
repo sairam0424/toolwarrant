@@ -17,14 +17,17 @@ import (
 // Every crawl of a registered server is recorded: a crawls row plus a
 // crawl.completed or crawl.failed entry. If in.Complete is false, or the
 // listing as a whole breaks a cap (MaxToolsPerCrawl, MaxCrawlBytes), or it
-// would push the server over MaxToolsPerServer or MaxServerBytes, only the
-// failure is recorded, under a class, and no tool changes: a crawl failure is
-// not a removal. One bad tool never fails a crawl (D3): a listed tool whose
-// name breaks the shared rule, whose definition cannot be used, or whose name
-// is listed more than once is quarantined on its own. If it is a known tool
-// it is observed as unusable (lifecycle.UnusableDigest: hidden, nothing
-// stored); otherwise it is reported in CrawlReport.Rejected with a
-// tool.rejected audit entry, and no tool row is created for it.
+// would push the server over MaxToolsPerServer or MaxServerBytes, or it would
+// reject more than MaxRejectedPerCrawl entries, only the failure is recorded,
+// under a class, and no tool changes: a crawl failure is not a removal. One
+// bad tool never fails a crawl (D3): a listed tool whose name breaks the
+// shared rule, whose definition cannot be used, or whose name is listed more
+// than once is quarantined on its own. If it is a known tool it is observed
+// as unusable (lifecycle.UnusableDigest: hidden, nothing stored); otherwise it
+// is reported in CrawlReport.Rejected with a tool.rejected audit entry, and no
+// tool row is created for it. The caps bound rows and bytes; the log grows
+// with every observed change, bounded by the crawl cadence and the cap on
+// rejected entries (D14).
 //
 // Proposal budget (D6): once a tool has gained MaxProposalsPerDecision
 // versions without a decision, a crawl that brings yet another new digest
@@ -81,6 +84,10 @@ func (s *Store) crawlTx(ctx context.Context, t *txn, in CrawlInput, ls *listing,
 	known, err := loadCrawlTools(ctx, t, srv.ID, ls.names())
 	if err != nil {
 		return CrawlReport{}, err
+	}
+	if ls.rejectedCount(known) > MaxRejectedPerCrawl {
+		ls.failure = failureRejectedCap
+		return t.recordFailedCrawl(ctx, srv, in.Error, ls, by)
 	}
 	class, err := s.caps.check(ctx, t, srv.ID, known, ls)
 	if err != nil {

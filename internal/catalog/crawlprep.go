@@ -14,6 +14,9 @@ import (
 const (
 	failureTooManyTools = "too-many-tools"
 	failureTooLarge     = "too-large"
+	// failureRejectedCap is the class of a listing with more entries to reject
+	// than MaxRejectedPerCrawl allows.
+	failureRejectedCap = "rejected-cap"
 	// failureError is the class of caller text that is not itself a class.
 	failureError = "error"
 )
@@ -141,6 +144,20 @@ func (ls *listing) names() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// rejectedCount counts the entries the crawl would record as rejected: every
+// nameless entry and every unusable name that no tool row of the server
+// describes (known holds the server's loaded tools). A known tool listed with
+// an unusable definition is observed, not rejected, and is not counted.
+func (ls *listing) rejectedCount(known map[string]*toolRec) int {
+	n := len(ls.nameless)
+	for name := range ls.unusable {
+		if known[name] == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // usableByName returns the prepared definition listed under name, if any.

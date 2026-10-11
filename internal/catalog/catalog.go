@@ -18,26 +18,38 @@
 // Nothing is served until a person approves it, and every read path re-hashes
 // the canonical bytes behind the digests it hands out, and serves an approval
 // only when the tool's newest approve or rollback record names that exact
-// version and digest. A Store remembers each row it has verified for RecheckTTL (ten
-// minutes), so the processor's reload after a crawl does not read every
-// approved definition again; the price, stated in full at RecheckTTL, is that
-// a change to the stored bytes of a row this Store verified within the last
-// RecheckTTL is not reported until that time has passed or a Store without
-// the memory reads the row. Decisions always load their tool afresh.
+// version and digest and the newest version.approved or version.rolled_back
+// audit entry about the tool recorded that digest and still re-seals from its
+// predecessor (D14: a forger must re-chain the log, which the head the operator
+// records outside the file betrays). A Store remembers each row and each entry
+// it has verified for RecheckTTL (ten minutes), so the processor's reload after
+// a crawl does not read every approved definition again; the price, stated in
+// full at RecheckTTL, is that a change to the stored bytes of a row this Store
+// verified within the last RecheckTTL is not reported until that time has
+// passed or a Store without the memory reads the row. Decisions always load
+// their tool afresh. A Store also pins the newest audit entry it has verified
+// and, on every Snapshot, requires that entry to be unchanged and everything
+// appended since to continue its chain, so history cannot change under a
+// running reader; and it remembers the catalog identity and the file it opened,
+// so Generation reports ErrReplaced once the file at the path is another one.
 //
-// The servers and tools tables are the current policy and have no guard
-// trigger: their columns must change with every crawl and decision. What binds
-// them to the append-only history (versions, approvals, the audit log) is
-// Integrity, which cross-checks every mutable column the log describes against
-// the latest entry about its subject and names every row that disagrees; audit
-// verify prints its report. Open, every Snapshot and Approved load and every
-// write transaction refuse a file whose guard objects are missing or redefined
-// or that holds a trigger or view the schema did not create.
+// The servers and tools tables are the current policy and have no update
+// guard: their columns must change with every crawl and decision; nothing is
+// ever deleted from them. What binds them to the append-only history
+// (versions, approvals, the audit log) is Integrity, which cross-checks every
+// mutable column the log describes against the latest entry about its
+// subject, reconstructs every version's status and proposers from the log, and
+// names every row that disagrees, is missing or was never recorded; audit
+// verify prints its report. Open, every Snapshot, Approved and view load and
+// every write transaction refuse a file whose guard objects are missing or
+// redefined or that holds a trigger, view or unique index the schema did not
+// create.
 package catalog
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
@@ -58,11 +70,22 @@ var (
 	// ErrCorrupt means the database contradicts itself: a stored digest does
 	// not hash its canonical form, a pointer dangles, a status disagrees with
 	// the tool row, an approved version is not the one the tool's newest
-	// decision names, a guard object is missing or redefined, or a trigger or
-	// view exists that the schema did not create. Someone edited the file
-	// outside this package, or a bug wrote it. Callers must not serve from a
-	// corrupt catalog.
+	// decision names or the one its newest approval entry recorded, an audit
+	// entry no longer re-seals from its predecessor, an entry this Store had
+	// verified is gone or rewritten, a write failed a constraint the schema
+	// does not have, a guard object is missing or redefined, or a trigger,
+	// view or unique index exists that the schema did not create. Someone
+	// edited the file outside this package, or a bug wrote it. Callers must
+	// not serve from a corrupt catalog.
 	ErrCorrupt = errors.New("catalog: database integrity check failed")
+	// ErrReplaced is returned by Generation when the file at the path the Store
+	// opened is no longer the file it opened (another device and inode, or
+	// gone) or no longer carries the catalog identity it read at open: the
+	// operator deleted and re-initialised the catalog, or restored another
+	// one, under a running reader. It wraps ErrCorrupt, so a caller that denies
+	// on ErrCorrupt denies on this too; the processor turns it into a source
+	// error and serves nothing until it is restarted on the new file.
+	ErrReplaced = fmt.Errorf("%w: the database file was replaced or removed", ErrCorrupt)
 	// ErrReadOnly is returned by every mutating method of a Store opened with
 	// OpenOptions.ReadOnly: the processor reads policy and must never be able
 	// to change it.
@@ -118,8 +141,13 @@ type Server struct {
 	ServerSpec
 	// Paused is set by PauseServer: crawls are refused and the snapshot is
 	// empty until ResumeServer, while decisions keep working.
-	Paused    bool
-	CreatedAt time.Time
+	Paused bool
+	// ProcessorAddr is the host:port the server's processor listens on, as
+	// emit last wrote it (SetProcessorAddr), or "" before the first emit. It
+	// lives here, in the catalog, so that a re-emit never takes the address
+	// from a file at --out that someone else may have written (D14).
+	ProcessorAddr string
+	CreatedAt     time.Time
 }
 
 // CrawledTool is one tool exactly as the upstream sent it.

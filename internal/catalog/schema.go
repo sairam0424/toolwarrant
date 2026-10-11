@@ -23,8 +23,14 @@ import (
 // field to the server.added detail (D13): Integrity compares every mutable
 // column the log describes (state, proposal budget, paused flag, allow_private
 // and the URL) with the latest entry about its subject, which a version 3 log
-// does not carry. The tables themselves did not change.
-const schemaVersion = 4
+// does not carry. Version 5 (D14) added the catalog identity in meta (a random
+// value init writes once, so that a reader can tell a re-initialised file from
+// the one it opened), servers.processor_addr and the server.processor_set
+// event (the processor address lives in the catalog, not in the emitted
+// file), the tools_no_delete guard (the catalog never deletes a row, so a
+// delete is an edit of history) and the audit_log_by_subject index that the
+// serving path's read of the newest approval entry about a tool rests on.
+const schemaVersion = 5
 
 // migrate creates the schema in an empty database, or checks that an existing
 // one is ours. It runs in one immediate transaction, so two processes opening
@@ -96,6 +102,9 @@ func countObjects(ctx context.Context, q queryer) (int, error) {
 	return objects, nil
 }
 
+// createSchema writes the schema into an empty file and gives the catalog its
+// identity: a random value no other init ever wrote, which a Store reads at
+// open and Generation compares (see identity.go).
 func createSchema(ctx context.Context, tx *sql.Tx) error {
 	objects, err := countObjects(ctx, tx)
 	if err != nil {
@@ -108,6 +117,13 @@ func createSchema(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("catalog: create schema: %w", err)
 		}
+	}
+	identity, err := newIdentity()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta (key, value) VALUES (?, ?)`, metaIdentity, identity); err != nil {
+		return fmt.Errorf("catalog: write catalog identity: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
 		return fmt.Errorf("catalog: set schema version: %w", err)
@@ -124,31 +140,40 @@ const (
 // the triggers that make the database refuse edits to history through ordinary
 // SQL. Triggers do not stop someone who can drop a trigger, which is why Open
 // checks that every guard object still exists (verifyGuards), VerifyAudit
-// checks the hash chain, and every read of a definition re-hashes its
-// canonical bytes against the stored digest (loadTool, Versions, Snapshot and
-// Approved, see checkCanonical and scanPolicy). Nothing guards the tools
-// table: its columns are the current policy and must change. Only Integrity
-// binds them to the append-only history.
+// checks the hash chain, every read of a definition re-hashes its canonical
+// bytes against the stored digest (loadTool, Versions, Snapshot and Approved,
+// see checkCanonical and scanPolicy) and anchors the approval to the chain
+// (anchorApproved). The servers and tools tables carry the current policy and
+// have no update guard: their columns must change. Nothing is ever deleted
+// from them, so a delete is refused like an edit of history (tools_no_delete),
+// and Integrity binds their columns to the append-only history.
 func schemaStatements() []string {
 	return slices.Concat(catalogTables(), historyTables(), guardIndexStatements(), guardStatements())
 }
 
-// catalogTables holds the mutable registry: servers, crawls and tools.
+// catalogTables holds the mutable registry: servers, crawls and tools. The meta
+// table carries the generation counter and the catalog identity, an integer
+// and a hex string, so its value column declares no type (BLOB affinity):
+// under INTEGER affinity SQLite would turn an identity that happens to read as
+// a number into one, and the stored value would no longer compare equal.
 func catalogTables() []string {
 	return []string{
 		`CREATE TABLE meta (
 			key   TEXT PRIMARY KEY,
-			value INTEGER NOT NULL
+			value NOT NULL
 		) WITHOUT ROWID`,
 		`INSERT INTO meta (key, value) VALUES ('generation', 0)`,
+		// processor_addr is the host:port emit assigned to the server's
+		// processor, "" until the first emit (SetProcessorAddr).
 		`CREATE TABLE servers (
-			id            INTEGER PRIMARY KEY,
-			name          TEXT NOT NULL UNIQUE,
-			url           TEXT NOT NULL,
-			owner_group   TEXT NOT NULL,
-			allow_private INTEGER NOT NULL CHECK (allow_private IN (0, 1)),
-			paused        INTEGER NOT NULL CHECK (paused IN (0, 1)),
-			created_at    TEXT NOT NULL
+			id             INTEGER PRIMARY KEY,
+			name           TEXT NOT NULL UNIQUE,
+			url            TEXT NOT NULL,
+			owner_group    TEXT NOT NULL,
+			allow_private  INTEGER NOT NULL CHECK (allow_private IN (0, 1)),
+			paused         INTEGER NOT NULL CHECK (paused IN (0, 1)),
+			processor_addr TEXT NOT NULL DEFAULT '',
+			created_at     TEXT NOT NULL
 		)`,
 		// error holds a class token, optionally followed by a quoted fragment
 		// of the caller's text (see crawlErrorRecord); never raw text.

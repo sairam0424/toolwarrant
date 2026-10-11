@@ -130,14 +130,25 @@ func (b *BrokenError) Error() string {
 
 // Verify checks that entries, in order, form an unbroken chain starting at
 // sequence 1. It returns *BrokenError on the first problem.
-func Verify(entries []Entry) error {
-	prev := Genesis
+func Verify(entries []Entry) error { return VerifyFrom(Entry{}, entries) }
+
+// VerifyFrom checks that entries, in order, continue the chain after prev: the
+// first entry must carry prev.Seq+1 and prev.Hash as its PrevHash (Genesis when
+// prev is the zero Entry), and every entry must re-seal from the one before.
+// It exists so that a reader which has already verified the log up to prev can
+// verify only what was appended since, instead of reading the whole log again;
+// it returns *BrokenError on the first problem, as Verify does.
+func VerifyFrom(prev Entry, entries []Entry) error {
+	prevHash := prev.Hash
+	if prevHash == "" {
+		prevHash = Genesis
+	}
 	for i, e := range entries {
-		want := int64(i + 1)
+		want := prev.Seq + int64(i+1)
 		if e.Seq != want {
 			return &BrokenError{Seq: e.Seq, Reason: fmt.Sprintf("expected seq %d (gap or reorder)", want)}
 		}
-		if e.PrevHash != prev {
+		if e.PrevHash != prevHash {
 			return &BrokenError{Seq: e.Seq, Reason: "prev_hash does not match the previous entry"}
 		}
 		h, err := compute(e)
@@ -147,7 +158,7 @@ func Verify(entries []Entry) error {
 		if h != e.Hash {
 			return &BrokenError{Seq: e.Seq, Reason: "hash does not match the entry contents"}
 		}
-		prev = e.Hash
+		prevHash = e.Hash
 	}
 	return nil
 }

@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-const serverCols = `id, name, url, owner_group, allow_private, paused, created_at`
+const serverCols = `id, name, url, owner_group, allow_private, paused, processor_addr, created_at`
 
 // rowScanner is the Scan half of *sql.Row and *sql.Rows.
 type rowScanner interface {
@@ -21,7 +21,7 @@ func scanServer(sc rowScanner) (Server, error) {
 		paused  int
 		created string
 	)
-	if err := sc.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.OwnerGroup, &private, &paused, &created); err != nil {
+	if err := sc.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.OwnerGroup, &private, &paused, &srv.ProcessorAddr, &created); err != nil {
 		return Server{}, err
 	}
 	at, err := parseTime(created)

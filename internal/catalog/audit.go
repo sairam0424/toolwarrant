@@ -16,11 +16,15 @@ import (
 
 // Audit events the catalog adds to the lifecycle's own.
 const (
-	evServerAdded    = "server.added"
-	evServerPaused   = "server.paused"
-	evServerResumed  = "server.resumed"
-	evCrawlCompleted = "crawl.completed"
-	evCrawlFailed    = "crawl.failed"
+	evServerAdded   = "server.added"
+	evServerPaused  = "server.paused"
+	evServerResumed = "server.resumed"
+	// evServerProcessorSet records SetProcessorAddr: the processor address
+	// emit assigned to the server. Its detail carries the address, so that
+	// Integrity can compare servers.processor_addr with the log (D14).
+	evServerProcessorSet = "server.processor_set"
+	evCrawlCompleted     = "crawl.completed"
+	evCrawlFailed        = "crawl.failed"
 	// evToolRejected records a listed entry that no tool row describes: an
 	// unknown name whose definition or name broke a rule. Its detail carries
 	// the reason class and the quoted name, or a marker when the name itself
@@ -131,12 +135,15 @@ const (
 
 // The fields of a server detail: server.added carries the policy flag and a
 // SHA-256 of the URL (never the URL, which can hold a credential in its query
-// string), server.paused and server.resumed carry the paused flag. Integrity
-// compares the servers row with them.
+// string), server.paused and server.resumed carry the paused flag, and
+// server.processor_set carries the processor address (a host:port with no
+// space in it, so it is one token). Integrity compares the servers row with
+// them.
 const (
-	fieldAllowPrivate = "allow_private"
-	fieldURLSHA256    = "url_sha256"
-	fieldPaused       = "paused"
+	fieldAllowPrivate  = "allow_private"
+	fieldURLSHA256     = "url_sha256"
+	fieldPaused        = "paused"
+	fieldProcessorAddr = "processor_addr"
 )
 
 // toolDetail renders the detail of one entry about a tool; see the field
@@ -165,6 +172,9 @@ func serverAddedDetail(spec ServerSpec) string {
 
 // pausedDetail renders the detail of a server.paused or server.resumed entry.
 func pausedDetail(paused bool) string { return fmt.Sprintf("%s=%t", fieldPaused, paused) }
+
+// processorDetail renders the detail of a server.processor_set entry.
+func processorDetail(addr string) string { return fmt.Sprintf("%s=%s", fieldProcessorAddr, addr) }
 
 // urlSHA256 is how the log records a server URL: a hash that a rewritten URL
 // no longer matches, which never discloses a credential the URL may carry.

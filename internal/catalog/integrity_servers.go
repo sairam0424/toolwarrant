@@ -26,6 +26,10 @@ type serverTrace struct {
 	// server.resumed entry; pausedSeq is that entry.
 	paused    bool
 	pausedSeq int64
+	// processorAddr is the address the newest server.processor_set entry
+	// recorded, "" when there is none; processorSeq is that entry (D14).
+	processorAddr string
+	processorSeq  int64
 }
 
 // noteServerEntry records what a server entry says. A detail that lacks a
@@ -51,6 +55,13 @@ func (c *integrityCheck) noteServerEntry(e audit.Entry) {
 		}
 		trace.seq, trace.allowPrivate, trace.urlSHA = e.Seq, private, sha
 		trace.paused, trace.pausedSeq = false, e.Seq
+	case evServerProcessorSet:
+		addr, ok := detailField(e.Detail, fieldProcessorAddr)
+		if !ok || validateProcessorAddr(addr) != nil {
+			c.problem("audit entry %d about server %s has no %s field", e.Seq, quote(e.Subject), fieldProcessorAddr)
+			return
+		}
+		trace.processorAddr, trace.processorSeq = addr, e.Seq
 	default:
 		paused, ok := detailBool(e.Detail, fieldPaused)
 		if !ok {
@@ -69,16 +80,16 @@ func detailBool(detail, key string) (value, ok bool) {
 
 // serverRow is what the servers table claims about one server.
 type serverRow struct {
-	name, url string
-	private   bool
-	paused    bool
+	name, url, processorAddr string
+	private                  bool
+	paused                   bool
 }
 
 // checkServers compares every servers row with the log and then reports the
 // registrations whose row is gone. A server counts once under
 // ServersMismatched however many columns disagree.
 func (c *integrityCheck) checkServers() error {
-	rows, err := c.q.QueryContext(c.ctx, `SELECT name, url, allow_private, paused FROM servers ORDER BY name`)
+	rows, err := c.q.QueryContext(c.ctx, `SELECT name, url, allow_private, paused, processor_addr FROM servers ORDER BY name`)
 	if err != nil {
 		return fmt.Errorf("catalog: read servers: %w", err)
 	}
@@ -89,7 +100,7 @@ func (c *integrityCheck) checkServers() error {
 			r               serverRow
 			private, paused int
 		)
-		if err := rows.Scan(&r.name, &r.url, &private, &paused); err != nil {
+		if err := rows.Scan(&r.name, &r.url, &private, &paused, &r.processorAddr); err != nil {
 			return fmt.Errorf("catalog: read servers: %w", err)
 		}
 		r.private, r.paused = private == 1, paused == 1
@@ -131,7 +142,22 @@ func (c *integrityCheck) checkServer(r serverRow) {
 		c.problem("server %s: the URL is not the one the server.added entry (seq %d) recorded (its hash differs)", shown, trace.seq)
 		mismatch = true
 	}
+	if trace.processorAddr != r.processorAddr {
+		c.reportProcessorAddr(r, trace, shown)
+		mismatch = true
+	}
 	if mismatch {
 		c.rep.ServersMismatched++
 	}
+}
+
+// reportProcessorAddr names a processor address the log did not record. The
+// column is quoted: a row someone edited by hand may hold anything.
+func (c *integrityCheck) reportProcessorAddr(r serverRow, trace *serverTrace, shown string) {
+	if trace.processorSeq == 0 {
+		c.problem("server %s: processor_addr is %s but the audit log has no server.processor_set entry about it", shown, quote(r.processorAddr))
+		return
+	}
+	c.problem("server %s: processor_addr is %s but the latest server.processor_set entry (seq %d) recorded %s",
+		shown, quote(r.processorAddr), trace.processorSeq, quote(trace.processorAddr))
 }

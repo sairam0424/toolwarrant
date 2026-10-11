@@ -10,27 +10,33 @@ import (
 )
 
 // The guard objects: the triggers that make history append-only and the
-// indexes the uniqueness rules rest on. Open, Snapshot, Approved and every
-// write transaction refuse a database that has lost any of them, holds one
-// under another definition, or holds a trigger or view the schema never
-// created (ErrCorrupt). A dropped trigger would silently turn history tables
-// mutable; a same-named trigger that never fires would do the same while a
-// check of names alone still passed, which is why the stored DDL text is
-// compared and not the name; and a trigger of someone else's making on the
-// unguarded tools table can rewrite the current policy inside the catalog's
-// own transaction while the log records the opposite (D13), which is why
-// nothing the schema did not create may exist.
+// indexes the uniqueness rules and the serving path's reads rest on. Open,
+// Snapshot, Approved, the views and every write transaction refuse a database
+// that has lost any of them, holds one under another definition, or holds a
+// trigger, view or unique index the schema never created (ErrCorrupt). A
+// dropped trigger would silently turn history tables mutable; a same-named
+// trigger that never fires would do the same while a check of names alone
+// still passed, which is why the stored DDL text is compared and not the name;
+// a trigger of someone else's making on the tools table can rewrite the
+// current policy inside the catalog's own transaction while the log records
+// the opposite (D13), which is why nothing the schema did not create may
+// exist; and a unique index of someone else's making changes what a write
+// does (every write that repeats the indexed value fails, D14), so it counts
+// as foreign too, while a plain index only speeds a query up and is ignored.
 
 // guardIndexStatements creates the indexes the uniqueness rules rest on. The
 // two partial unique indexes enforce "one pending, one approved version per
 // tool"; they stay partial on purpose (a full index on (tool_id, status) would
 // forbid two superseded versions), and the REPLACE path they open is closed by
-// the tool_versions_no_replace trigger.
+// the tool_versions_no_replace trigger. audit_log_by_subject is what makes the
+// serving path's read of the newest approval entry about each tool one index
+// probe instead of a scan of the log (anchorApproved, D14).
 func guardIndexStatements() []string {
 	return []string{
 		`CREATE UNIQUE INDEX one_pending_version ON tool_versions (tool_id) WHERE status = 'pending'`,
 		`CREATE UNIQUE INDEX one_approved_version ON tool_versions (tool_id) WHERE status = 'approved'`,
 		`CREATE INDEX approvals_by_version ON approvals (version_id, id)`,
+		`CREATE INDEX audit_log_by_subject ON audit_log (subject, event, seq)`,
 	}
 }
 
@@ -71,6 +77,10 @@ func guardStatements() []string {
 		triggerAbort("approvals_no_delete", "BEFORE DELETE ON approvals", "", "approvals are append-only"),
 		triggerAbort("approvals_no_replace", "BEFORE INSERT ON approvals",
 			"WHEN EXISTS (SELECT 1 FROM approvals WHERE id = NEW.id)", "approvals cannot be replaced"),
+		// The catalog never deletes a tool row: a deleted row orphans the
+		// tool's versions and lets the next crawl discover the name afresh
+		// with a fresh proposer history (D14), so a delete is an edit of history.
+		triggerAbort("tools_no_delete", "BEFORE DELETE ON tools", "", "tools are never deleted"),
 	}
 }
 
@@ -141,13 +151,17 @@ func guardNames(kind string) []string {
 }
 
 // The kinds of object sqlite_master lists that the checks look at. Tables are
-// checked by the schema version; an index someone adds can only speed a query
-// up, so foreign indexes are left alone; a trigger or a view can rewrite or
-// misrepresent rows, so a foreign one is corruption.
+// checked by the schema version; a plain index someone adds can only speed a
+// query up, so it is left alone; a trigger or a view can rewrite or
+// misrepresent rows, and a unique index can make every later write fail, so a
+// foreign one of those is corruption.
 const (
 	kindTrigger = "trigger"
 	kindIndex   = "index"
 	kindView    = "view"
+	// uniqueIndexPrefix starts the stored DDL of every unique index that was
+	// created by a statement; an index SQLite made for a constraint has no DDL.
+	uniqueIndexPrefix = "CREATE UNIQUE INDEX "
 )
 
 // guardCheck is what checkGuards found in the file: the guard objects that are
@@ -158,11 +172,12 @@ type guardCheck struct {
 }
 
 // verifyGuards requires every guard object to exist and to be defined exactly
-// as the schema defines it, and no trigger or view to exist that the schema did
-// not create. It runs at Open, on every Snapshot and Approved read, and at the
-// end of every write transaction: a reload or a write costs one scan of
-// sqlite_master, the processor must never serve from a file whose guards were
-// replaced after it opened, and a long-lived writer must never commit into one.
+// as the schema defines it, and no trigger, view or unique index to exist that
+// the schema did not create. It runs at Open, on every Snapshot, Approved and
+// view read, and at the end of every write transaction: a reload or a write
+// costs one scan of sqlite_master, the processor must never serve from a file
+// whose guards were replaced after it opened, and a long-lived writer must
+// never commit into one.
 func verifyGuards(ctx context.Context, q queryer) error {
 	c, err := checkGuards(ctx, q)
 	if err != nil {
@@ -187,8 +202,9 @@ func verifyGuards(ctx context.Context, q queryer) error {
 // checkGuards compares the triggers, indexes and views the file holds with the
 // schema's: a guard that is absent is missing, one whose stored statement
 // differs from the schema's once whitespace is normalised is redefined, and a
-// trigger or view that is not a guard is foreign. Indexes that are not guards
-// are ignored: an index cannot change what a query returns.
+// trigger, view or unique index that is not a guard is foreign. Plain indexes
+// that are not guards are ignored: an index cannot change what a query
+// returns, but a unique one changes what a write does.
 func checkGuards(ctx context.Context, q queryer) (guardCheck, error) {
 	stored, err := storedObjectDDL(ctx, q)
 	if err != nil {
@@ -209,11 +225,18 @@ func checkGuards(ctx context.Context, q queryer) (guardCheck, error) {
 	}
 	for _, key := range slices.Sorted(maps.Keys(stored)) {
 		kind, name, _ := strings.Cut(key, "/")
-		if kind != kindIndex && !expected[key] {
-			c.foreign = append(c.foreign, kind+" "+name)
+		if expected[key] || (kind == kindIndex && !isUniqueIndexDDL(stored[key])) {
+			continue
 		}
+		c.foreign = append(c.foreign, kind+" "+name)
 	}
 	return c, nil
+}
+
+// isUniqueIndexDDL reports whether a stored index statement creates a unique
+// index, however it is cased or laid out.
+func isUniqueIndexDDL(ddl string) bool {
+	return strings.HasPrefix(strings.ToUpper(normalizeDDL(ddl)), uniqueIndexPrefix)
 }
 
 // storedObjectDDL reads the statement behind every trigger, index and view in

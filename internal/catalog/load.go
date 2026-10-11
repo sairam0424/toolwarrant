@@ -159,8 +159,10 @@ func loadProposers(ctx context.Context, q queryer, out map[int64][]string, query
 }
 
 // loadTool loads one tool and re-checks every stored digest against its
-// canonical form before any decision is based on it.
-func loadTool(ctx context.Context, q queryer, server, tool string) (*toolRec, error) {
+// canonical form, and its approval against the audit chain (anchorOne, with
+// sealed as the Store's memory of verified entries), before any decision is
+// based on it.
+func loadTool(ctx context.Context, q queryer, sealed *verifier, server, tool string) (*toolRec, error) {
 	row, err := scanToolRow(q.QueryRowContext(ctx,
 		`SELECT `+toolCols+` FROM tools t JOIN servers s ON s.id = t.server_id WHERE s.name = ? AND t.name = ?`,
 		server, tool))
@@ -183,7 +185,21 @@ func loadTool(ctx context.Context, q queryer, server, tool string) (*toolRec, er
 	if err != nil {
 		return nil, err
 	}
-	return newToolRec(row, vrs, proposers)
+	rec, err := newToolRec(row, vrs, proposers)
+	if err != nil {
+		return nil, err
+	}
+	if rec.tool.Approved == "" {
+		return rec, nil
+	}
+	versionID, err := rec.versionID(rec.tool.Approved)
+	if err != nil {
+		return nil, err
+	}
+	if err := anchorOne(ctx, q, sealed, server+"/"+tool, versionID, rec.tool.Approved); err != nil {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // checkCanonical re-hashes the stored canonical bytes: they must hash to the

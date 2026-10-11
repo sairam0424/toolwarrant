@@ -5,9 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
-	"strings"
+	"sync"
 	"time"
 
 	sqlite "modernc.org/sqlite" // the pure-Go SQLite driver, registered as "sqlite"
@@ -27,9 +26,11 @@ const (
 	walMode            = "wal"
 	walRetryDelay      = 20 * time.Millisecond
 
-	// Primary SQLite result codes that mean "someone else holds the lock".
-	sqliteBusy   = 5
-	sqliteLocked = 6
+	// Primary SQLite result codes that mean "someone else holds the lock", and
+	// the one that means a constraint or a guard trigger refused a write.
+	sqliteBusy       = 5
+	sqliteLocked     = 6
+	sqliteConstraint = 19
 
 	// timeLayout is RFC 3339 in UTC with a fixed nine-digit fraction, so stored
 	// timestamps sort lexically and round-trip exactly.
@@ -57,11 +58,15 @@ type OpenOptions struct {
 	// audit log, and the WAL and SHM files inherit its mode.
 	AllowSharedFile bool
 	// Forensic opens a database of ours even when its guard triggers or
-	// indexes are missing, which Open otherwise reports as ErrCorrupt. It is
-	// for inspection after tampering: VerifyAudit can then name the broken
-	// entry, Integrity can list every disagreement and the views can show the
-	// rows. It implies ReadOnly and MustExist (a missing file is ErrNotFound,
-	// never created); nothing is ever served or written from such an open.
+	// indexes are missing, which Open otherwise reports as ErrCorrupt, and
+	// even when its journal mode is no longer WAL (then with immutable=1, so
+	// SQLite needs neither a lock nor a journal). It is for inspection after
+	// tampering: VerifyAudit can then name the broken entry, Integrity can
+	// list every disagreement, AuditEntries can show the log, and the views
+	// read past the guard check too, while still refusing a row whose
+	// approval evidence fails. It implies ReadOnly and MustExist (a missing
+	// file is ErrNotFound, never created); nothing is ever served or written
+	// from such an open.
 	Forensic bool
 }
 
@@ -78,12 +83,28 @@ type Store struct {
 	policy   lifecycle.Policy
 	now      func() time.Time
 	readOnly bool
+	// forensic is set by OpenOptions.Forensic: the reads skip the guard check
+	// that Open skipped, and the verifiers remember nothing.
+	forensic bool
 	// verified remembers, for RecheckTTL, the version rows whose bytes a read
-	// path re-checked; see verifier. Close drops it.
+	// path re-checked, and sealed the audit entries a read path re-sealed; see
+	// verifier. Close drops both.
 	verified *verifier
+	sealed   *verifier
 	// caps are the per-server growth limits RecordCrawl enforces: the
 	// constants MaxToolsPerServer and MaxServerBytes, except in tests.
 	caps serverCaps
+	// path, identity and file say which catalog this Store opened: the
+	// absolute path, the identity meta value read at open and the device and
+	// inode of the file. Generation compares them with the path (identity.go).
+	path     string
+	identity string
+	file     fileID
+	// pin is the newest audit entry this Store has verified; every Snapshot
+	// requires it to be unchanged and the entries after it to continue its
+	// chain, then moves it forward (pin.go). pinMu guards it.
+	pinMu sync.Mutex
+	pin   chainPin
 }
 
 // Open opens or creates the database at path with the default options: read
@@ -100,7 +121,9 @@ func Open(path string, policy lifecycle.Policy) (*Store, error) {
 // group or others (unless AllowSharedFile) is ErrInvalid; a missing file is
 // created owner-only unless MustExist, ReadOnly or Forensic (ErrNotFound). The schema
 // version is checked before the journal mode is switched, so a foreign
-// database is refused untouched.
+// database is refused untouched. The Store records the catalog identity and
+// the file it opened, so that Generation can tell when the path names another
+// file (ErrReplaced).
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" || path == memoryPath {
 		return nil, fmt.Errorf("%w: a database file path is required", ErrInvalid)
@@ -116,6 +139,19 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if timeout <= 0 {
 		timeout = DefaultBusyTimeout
 	}
+	s, err := openPools(abs, opts, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.adoptIdentity(context.Background(), opts.Forensic); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// openPools opens the connection pools for the requested mode and wires the Store.
+func openPools(abs string, opts OpenOptions, timeout time.Duration) (*Store, error) {
 	if opts.ReadOnly || opts.Forensic {
 		return openReadOnly(abs, opts, timeout)
 	}
@@ -132,25 +168,13 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 		_ = wdb.Close()
 		return nil, err
 	}
-	return wireStore(wdb, rdb, opts), nil
-}
-
-// openReadOnly opens an existing WAL database through mode=ro connections only.
-func openReadOnly(abs string, opts OpenOptions, timeout time.Duration) (*Store, error) {
-	rdb, err := openPool(dsnFor(abs, connReadOnlyFile, timeout), maxReadConns)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkReadOnlyFile(context.Background(), rdb, !opts.Forensic); err != nil {
-		_ = rdb.Close()
-		return nil, err
-	}
-	return wireStore(nil, rdb, opts), nil
+	return wireStore(wdb, rdb, abs, opts), nil
 }
 
 // Close releases the database and drops the re-check memory.
 func (s *Store) Close() error {
 	s.verified.drop()
+	s.sealed.drop()
 	var errs []error
 	if s.rdb != nil {
 		errs = append(errs, s.rdb.Close())
@@ -166,9 +190,20 @@ func (s *Store) ReadOnly() bool { return s.readOnly }
 
 // Generation returns a counter that increases by at least one with every
 // committed write, from any process. Readers poll it to know when to reload.
+// Before the counter is read, the file at the Store's path must still be the
+// file it opened and carry the identity it read at open: a reader whose file
+// was deleted and re-initialised, or replaced by another catalog, would
+// otherwise keep serving the old file's approvals from its open descriptor
+// (ErrReplaced, D14).
 func (s *Store) Generation(ctx context.Context) (int64, error) {
+	if err := s.checkFileIdentity(); err != nil {
+		return 0, err
+	}
 	var gen int64
 	err := s.inRead(ctx, func(q queryer) error {
+		if err := s.checkStoredIdentity(ctx, q); err != nil {
+			return err
+		}
 		var err error
 		gen, err = readGeneration(ctx, q)
 		return err
@@ -178,7 +213,7 @@ func (s *Store) Generation(ctx context.Context) (int64, error) {
 
 func readGeneration(ctx context.Context, q queryer) (int64, error) {
 	var gen int64
-	err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'generation'`).Scan(&gen)
+	err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaGeneration).Scan(&gen)
 	if err != nil {
 		return 0, fmt.Errorf("%w: read generation: %v", ErrCorrupt, err)
 	}
@@ -202,7 +237,11 @@ type queryer interface {
 // opened, and a trigger of someone else's making must not get to rewrite the
 // policy inside the catalog's own transaction. The write lock is held from
 // the first statement, so what the check sees at the end is what the file held
-// throughout, and nothing commits into a file the check refuses.
+// throughout, and nothing commits into a file the check refuses. A constraint
+// failure inside fn is ErrCorrupt: the Store validates everything before it
+// writes, so a constraint that still fires is one the schema does not have (a
+// unique index someone added) or a guard refusing a row, never a condition a
+// retry or a later crawl could meet (D14).
 func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 	if s.readOnly || s.wdb == nil {
 		return ErrReadOnly
@@ -219,7 +258,7 @@ func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 	}()
 	t := newTxn(sqlTx, s.now())
 	if err := fn(t); err != nil {
-		return err
+		return corruptIfConstraint(err)
 	}
 	if err := verifyGuards(ctx, t); err != nil {
 		return err
@@ -257,131 +296,28 @@ func openPool(dsn string, maxConns int) (*sql.DB, error) {
 	return db, nil
 }
 
-// connKind selects the connection string for one pool.
-type connKind int
-
-const (
-	// connWriter starts every transaction with BEGIN IMMEDIATE so that two
-	// processes cannot both read and then fail to upgrade to a write lock.
-	connWriter connKind = iota
-	// connReader cannot write (query_only) but shares the writable file handle
-	// mode, so it can create the -shm file.
-	connReader
-	// connReadOnlyFile opens the file itself read-only (mode=ro) and is also
-	// query_only; it never switches the journal mode or runs the migration.
-	connReadOnlyFile
-)
-
-// dsnFor builds the connection string for one kind of connection.
-func dsnFor(absPath string, kind connKind, timeout time.Duration) string {
-	q := url.Values{}
-	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", timeout.Milliseconds()))
-	q.Add("_pragma", "foreign_keys(1)")
-	switch kind {
-	case connWriter:
-		q.Set("_txlock", "immediate")
-	case connReader:
-		q.Add("_pragma", "query_only(1)")
-	case connReadOnlyFile:
-		q.Add("_pragma", "query_only(1)")
-		q.Set("mode", "ro")
+// sqliteCode returns the primary result code of a SQLite error, or -1 when err
+// is not one.
+func sqliteCode(err error) int {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return -1
 	}
-	u := url.URL{Scheme: "file", Path: absPath, RawQuery: q.Encode()}
-	return u.String()
-}
-
-// prepareFile decides whether the file is ours before changing anything about
-// it: a foreign database, an empty file carrying other tables, or another
-// schema version is refused with its journal mode untouched. Only then is the
-// file switched to WAL and the schema created or checked.
-func prepareFile(ctx context.Context, db *sql.DB, timeout time.Duration) error {
-	version, err := readUserVersion(ctx, db)
-	if err != nil {
-		return err
-	}
-	switch version {
-	case 0:
-		objects, err := countObjects(ctx, db)
-		if err != nil {
-			return err
-		}
-		if objects > 0 {
-			return fmt.Errorf("%w: the file holds another application's tables", ErrSchema)
-		}
-	case schemaVersion:
-		if err := checkOurs(ctx, db, true); err != nil {
-			return err
-		}
-	default:
-		return schemaError(version)
-	}
-	if err := enableWAL(ctx, db, timeout); err != nil {
-		return err
-	}
-	return migrate(ctx, db)
-}
-
-// checkReadOnlyFile verifies that a read-only open found a complete, WAL-mode
-// database of ours. Nothing can be created or converted on this path. A
-// forensic open skips the guard check (requireGuards false).
-func checkReadOnlyFile(ctx context.Context, db *sql.DB, requireGuards bool) error {
-	version, err := readUserVersion(ctx, db)
-	if err != nil {
-		return err
-	}
-	switch version {
-	case 0:
-		return fmt.Errorf("%w: the database is empty; initialise it with a read-write open first", ErrSchema)
-	case schemaVersion:
-		if err := checkOurs(ctx, db, requireGuards); err != nil {
-			return err
-		}
-	default:
-		return schemaError(version)
-	}
-	var mode string
-	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
-		return fmt.Errorf("catalog: read journal mode: %w", err)
-	}
-	if !strings.EqualFold(mode, walMode) {
-		return fmt.Errorf("catalog: a read-only open needs a WAL-mode database, got %q; open it read-write once", mode)
-	}
-	return nil
-}
-
-// enableWAL switches the file to WAL. Converting a new file needs an exclusive
-// lock, and SQLite reports SQLITE_BUSY at once instead of running the busy
-// handler when several processes start on the same new file, so the losers
-// retry until the winner has finished.
-func enableWAL(ctx context.Context, db *sql.DB, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		var mode string
-		err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode)
-		if err == nil {
-			if !strings.EqualFold(mode, walMode) {
-				return fmt.Errorf("catalog: the database must run in WAL mode to be shared, got %q", mode)
-			}
-			return nil
-		}
-		if !isBusy(err) || time.Now().After(deadline) {
-			return fmt.Errorf("catalog: enable WAL: %w", err)
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("catalog: enable WAL: %w", ctx.Err())
-		case <-time.After(walRetryDelay):
-		}
-	}
+	return se.Code() & 0xff // strip the extended result code
 }
 
 func isBusy(err error) bool {
-	var se *sqlite.Error
-	if !errors.As(err, &se) {
-		return false
-	}
-	code := se.Code() & 0xff // strip the extended result code
+	code := sqliteCode(err)
 	return code == sqliteBusy || code == sqliteLocked
+}
+
+// corruptIfConstraint turns a constraint failure into ErrCorrupt (see inTx);
+// every other error, and an error that already is ErrCorrupt, passes through.
+func corruptIfConstraint(err error) error {
+	if errors.Is(err, ErrCorrupt) || sqliteCode(err) != sqliteConstraint {
+		return err
+	}
+	return fmt.Errorf("%w: a write failed a constraint the schema does not have, or a guard refused it (%v); the file was edited outside toolwarrant", ErrCorrupt, err)
 }
 
 func formatTime(t time.Time) string { return t.UTC().Format(timeLayout) }

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
 
@@ -104,6 +105,26 @@ func (v *verifier) check(id int64, digest string, canonical []byte) bool {
 // with this digest within RecheckTTL.
 func (v *verifier) verify(id int64, digest string, canonical []byte) bool {
 	return v.remembered(id, digest) || v.check(id, digest, canonical)
+}
+
+// verifySeal reports whether audit entry e re-seals from a predecessor whose
+// hash is prevHash (Genesis when ""): its prev_hash must be that hash and its
+// hash must be what audit.Seal computes over its fields. The memory is keyed by
+// seq with the entry's hash as the digest, so a hit vouches only for the exact
+// entry that was verified; a rewritten entry has another hash and misses. The
+// Store keeps a separate verifier for entries (Store.sealed), so a version
+// row id and an entry seq can never share a key.
+func (v *verifier) verifySeal(e audit.Entry, prevHash string) bool {
+	if v.remembered(e.Seq, e.Hash) {
+		return true
+	}
+	v.hashes.Add(1)
+	sealed, err := audit.Seal(audit.Entry{Hash: prevHash}, e)
+	if err != nil || sealed.Hash != e.Hash || sealed.PrevHash != e.PrevHash {
+		return false
+	}
+	v.remember(e.Seq, e.Hash)
+	return true
 }
 
 // remember records a successful check of row id. When the memory is full a

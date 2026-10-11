@@ -87,7 +87,7 @@ func (c *integrityCheck) noteEntry(e audit.Entry) {
 		}
 	}
 	switch e.Event {
-	case evServerAdded, evServerPaused, evServerResumed:
+	case evServerAdded, evServerPaused, evServerResumed, evServerProcessorSet:
 		c.noteServerEntry(e)
 		return
 	}
@@ -100,6 +100,24 @@ func (c *integrityCheck) noteEntry(e audit.Entry) {
 		return
 	}
 	c.latest[e.Subject] = trace
+	if e.Event == string(lifecycle.EvDiscovered) {
+		c.noteDiscovered(e)
+	}
+	if isVersionEvent(e.Event) {
+		c.noteVersionEvent(e)
+	}
+}
+
+// noteDiscovered records the one tool.discovered entry a subject may have. The
+// catalog writes it when it creates the row and never deletes a row, so a
+// second one means the row was deleted and the name discovered afresh (D14).
+func (c *integrityCheck) noteDiscovered(e audit.Entry) {
+	if first, ok := c.discovered[e.Subject]; ok {
+		c.problem("audit entry %d discovers tool %s a second time (entry %d discovered it first); its row was deleted and re-created", e.Seq, quote(e.Subject), first)
+		c.rep.DiscoveryMismatches++
+		return
+	}
+	c.discovered[e.Subject] = e.Seq
 }
 
 // parseToolTrace reads the fields of a tool detail Integrity compares with the
