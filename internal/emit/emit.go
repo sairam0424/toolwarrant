@@ -21,8 +21,12 @@
 //     one processor address belongs to exactly one server, so a processor can
 //     refuse hooks that name any other target. A processor address on one of
 //     the gateway's own sockets (a loopback, localhost or wildcard host with
-//     the serving port or a listener port) is refused: the gateway would dial
-//     its own listener for every hook, and --validate-only does not notice.
+//     the serving port or a listener port, or the very address the input
+//     binds for one of them) is refused: the gateway would dial its own
+//     listener for every hook, and --validate-only does not notice. A
+//     numeric host that is not the canonical dotted quad ("127.1",
+//     "0x7f.0.0.1", "2130706433") is refused as ambiguous: the resolver reads
+//     it as 127.0.0.1 while the rules here could not.
 //   - Every processor entry carries the gateway's request-header filter
 //     (requestHeaders): of the client's HTTP headers that ride each hook to
 //     the processor only the :method pseudo-header is forwarded, and
@@ -195,8 +199,13 @@ type Server struct {
 	// because a processor serves exactly one target and denies the rest, and
 	// none may be one of the gateway's own sockets: a loopback, localhost or
 	// wildcard host with Input.ListenPort or with the admin, stats or
-	// readiness port is refused. A host that is not "localhost" or a loopback
-	// literal adds a line to Output.Warning: the hooks then cross the network.
+	// readiness port is refused, and so is the very address and port the
+	// input binds for one of those sockets (BindAddress 10.0.0.5 with a
+	// processor on 10.0.0.5 and ListenPort). An IPv4 host must be the
+	// canonical dotted quad: the resolver's shorthand ("127.1", "0x7f.0.0.1",
+	// "2130706433", a leading zero) is refused as ambiguous. A host that is
+	// not "localhost" or a loopback literal adds a line to Output.Warning:
+	// the hooks then cross the network.
 	ProcessorAddr string
 	// Secret, when set, is sent to the processor with every hook as the
 	// metadata entry SecretMetadataKey, so the processor can refuse hooks that

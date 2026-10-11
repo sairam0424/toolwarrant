@@ -60,7 +60,9 @@ What the tests in this package prove about these files, and what they do not:
   non-boolean rules, empty and deny-only rule sets, `failOpen`, unknown method
   names, duplicate route names, two listeners on one port, a processor address
   that is one of the gateway's own sockets
-  (`TestGatewayAcceptsAProcessorOnItsOwnSocket`), bind addresses that cannot
+  (`TestGatewayAcceptsAProcessorOnItsOwnSocket`), a processor host in a numeric
+  spelling the resolver reads as loopback (`127.1`, `0x7f.0.0.1`, `2130706433`;
+  `TestGatewayAcceptsAmbiguousProcessorSpellings`), bind addresses that cannot
   be bound at start-up (`::ffff:127.0.0.1`, `224.0.0.1`, `255.255.255.255`,
   `fe80::1` without a zone), a dot or 64 bytes in a server name, and `|`, `^`,
   `{`, `}`, backslash and backtick in a URL, which is why the emitter refuses

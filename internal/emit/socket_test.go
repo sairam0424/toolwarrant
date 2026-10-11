@@ -2,6 +2,7 @@ package emit
 
 import (
 	"errors"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,7 +93,9 @@ func TestProcessorSocketRuleFollowsTheListenerInputs(t *testing.T) {
 // TestProcessorOnAnotherHostMayShareAGatewayPort: the rule is about this
 // host. A processor on a specific address or a name may use any port, with
 // the usual off-loopback warning; the emitter cannot know whether a specific
-// address is this host, so it does not pretend to.
+// address the input does not bind is this host, so it does not pretend to
+// (one the input does bind is recognised:
+// TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused).
 func TestProcessorOnAnotherHostMayShareAGatewayPort(t *testing.T) {
 	for _, addr := range []string{"10.0.0.5:15000", "h.example:" + strconv.Itoa(testListenPort), "192.168.1.20:15020", "processor.svc:15021"} {
 		s := validServer("a")
@@ -166,5 +169,84 @@ func TestGatewayAcceptsAProcessorOnItsOwnSocket(t *testing.T) {
 		s.ProcessorAddr = addr
 		requireInvalid(t, Input{ListenPort: testListenPort, Servers: []Server{s}})
 		requireValid(t, binary, mutate(t, out.YAML, hostLine, "      - host: "+quote(addr)+"\n"), "a processor on the gateway's own socket "+addr)
+	}
+}
+
+// TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused ports the fourth
+// review's reproduction (processor-emit-4, decision D14 h): when the input
+// itself binds the serving port or a listener to a specific address, a
+// processor on exactly that host:port is the gateway's own socket by the
+// input's own words and is refused like a loopback collision, an IPv6 bind
+// and an IPv4-mapped spelling included. Before this round the rule compared
+// the host class only and accepted the first four with the off-loopback
+// warning.
+func TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused(t *testing.T) {
+	serving := strconv.Itoa(testListenPort)
+	cases := []struct {
+		in                 Input
+		addr, socket, port string
+	}{
+		{Input{ListenPort: testListenPort, BindAddress: "10.0.0.5"}, "10.0.0.5:" + serving, servingName, serving},
+		{Input{ListenPort: testListenPort, AdminAddr: "10.0.0.5:15000", AllowAllInterfaces: true}, "10.0.0.5:15000", adminName, "15000"},
+		{Input{ListenPort: testListenPort, StatsAddr: "192.168.1.9:15020", AllowAllInterfaces: true}, "192.168.1.9:15020", statsName, "15020"},
+		{Input{ListenPort: testListenPort, ReadinessAddr: "192.168.1.9:15021", AllowAllInterfaces: true}, "192.168.1.9:15021", readinessName, "15021"},
+		{Input{ListenPort: testListenPort, BindAddress: "fc00::1"}, "[fc00::1]:" + serving, servingName, serving},
+		{Input{ListenPort: testListenPort, AdminAddr: "10.0.0.5:15000", AllowAllInterfaces: true}, "[::ffff:10.0.0.5]:15000", adminName, "15000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.addr, func(t *testing.T) {
+			s := validServer("a")
+			s.ProcessorAddr = tc.addr
+			in := tc.in
+			in.Servers = []Server{s}
+			requireRefusedSocket(t, in, "a", tc.addr, tc.socket, tc.port)
+		})
+	}
+}
+
+// TestProcessorBesideTheGatewaysOwnAddressIsAccepted draws the edge of the
+// address comparison: the bound address with another port is a processor
+// other hosts can reach (accepted, warned), another specific address with the
+// socket's port may be another host, which the emitter cannot tell from this
+// one, and a wildcard listener is not expanded to every specific address for
+// the same reason.
+func TestProcessorBesideTheGatewaysOwnAddressIsAccepted(t *testing.T) {
+	cases := []struct {
+		in   Input
+		addr string
+	}{
+		{Input{ListenPort: testListenPort, BindAddress: "10.0.0.5"}, "10.0.0.5:9001"},
+		{Input{ListenPort: testListenPort, BindAddress: "10.0.0.5"}, "10.0.0.6:" + strconv.Itoa(testListenPort)},
+		{Input{ListenPort: testListenPort, AdminAddr: "10.0.0.5:15000", AllowAllInterfaces: true}, "10.0.0.6:15000"},
+		{Input{ListenPort: testListenPort, AdminAddr: "0.0.0.0:15000", AllowAllInterfaces: true}, "10.0.0.5:15000"},
+	}
+	for _, tc := range cases {
+		s := validServer("a")
+		s.ProcessorAddr = tc.addr
+		in := tc.in
+		in.Servers = []Server{s}
+		out, err := AgentGateway(in)
+		if err != nil {
+			t.Errorf("processor %q rejected: %v", tc.addr, err)
+			continue
+		}
+		if want := "processor for server a at " + tc.addr + processorRisk; !strings.HasSuffix(out.Warning, want) {
+			t.Errorf("processor %q: Warning = %q, want it to end with %q", tc.addr, out.Warning, want)
+		}
+	}
+}
+
+// TestIsGatewayHost pins the collision predicate behind the socket rule: this
+// host as a class (every spelling TestIsThisHost accepts), the bound address
+// itself, also in its IPv4-mapped spelling, and nothing else.
+func TestIsGatewayHost(t *testing.T) {
+	bound := netip.MustParseAddr("10.0.0.5")
+	for host, want := range map[string]bool{
+		"10.0.0.5": true, "::ffff:10.0.0.5": true, "127.0.0.1": true, "127.0.0.2": true, "localhost": true, "0.0.0.0": true, "::": true,
+		"10.0.0.6": false, "h.example": false, "": false, "10.0.0.5.": false, "[10.0.0.5]": false, "10.0.0.5%en0": false,
+	} {
+		if got := isGatewayHost(host, bound); got != want {
+			t.Errorf("isGatewayHost(%q, %s) = %v, want %v", host, bound, got, want)
+		}
 	}
 }
