@@ -130,6 +130,19 @@ func nameDetail(err error) string {
 	return strings.TrimPrefix(err.Error(), toolname.ErrInvalid.Error()+": ")
 }
 
+// names returns every valid name the listing carries, usable and unusable:
+// the tools a crawl has to load, deprecated or not.
+func (ls *listing) names() []string {
+	names := make([]string, 0, len(ls.usable)+len(ls.unusable))
+	for i := range ls.usable {
+		names = append(names, ls.usable[i].name)
+	}
+	for name := range ls.unusable {
+		names = append(names, name)
+	}
+	return names
+}
+
 // usableByName returns the prepared definition listed under name, if any.
 func (ls *listing) usableByName(name string) *preparedTool {
 	i := sort.Search(len(ls.usable), func(i int) bool { return ls.usable[i].name >= name })

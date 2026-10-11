@@ -19,7 +19,12 @@ import (
 // Version 3 added the last_seen field to the detail of every tool audit entry
 // (see toolDetail); Integrity reads it to cross-check tools.last_seen_digest
 // against the log, and a log written without it cannot be cross-checked.
-const schemaVersion = 3
+// Version 4 added the proposals field to every tool detail and the url_sha256
+// field to the server.added detail (D13): Integrity compares every mutable
+// column the log describes (state, proposal budget, paused flag, allow_private
+// and the URL) with the latest entry about its subject, which a version 3 log
+// does not carry. The tables themselves did not change.
+const schemaVersion = 4
 
 // migrate creates the schema in an empty database, or checks that an existing
 // one is ours. It runs in one immediate transaction, so two processes opening

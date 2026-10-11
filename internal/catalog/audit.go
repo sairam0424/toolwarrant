@@ -2,9 +2,12 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
@@ -24,8 +27,8 @@ const (
 	// was refused.
 	evToolRejected = "tool.rejected"
 	// evBudgetReset records ResetProposalBudget: a person forgot the proposals a
-	// tool gained since its last decision. Its detail is a tool detail whose
-	// note says how many were forgotten.
+	// tool gained since its last decision. Its detail is a plain tool detail;
+	// the proposals field says how many were forgotten.
 	evBudgetReset = "tool.budget_reset"
 
 	noDigest    = "-" // the digest field of an event that concerns no version
@@ -78,15 +81,26 @@ func (t *txn) appendAudit(ctx context.Context, by Actor, event, subject, before,
 	return nil
 }
 
+// toolState is the part of a tool row that a tool detail records: the
+// lifecycle state and the proposal budget (tools.proposals_since_decision).
+// Two of them, before and after an operation, make one detail.
+type toolState struct {
+	tool   lifecycle.Tool
+	budget int
+}
+
+// state returns what the record holds now, for a detail's before or after half.
+func (r *toolRec) state() toolState { return toolState{tool: r.tool, budget: r.budget} }
+
 // auditTool writes one entry per lifecycle event. before_hash and after_hash
 // are the approved digest before and after the whole operation; the detail is
 // a tool detail (toolDetail) followed by note (the reason class of an unusable
 // observation), never tool text.
-func (t *txn) auditTool(ctx context.Context, by Actor, server, tool string, before, after lifecycle.Tool,
+func (t *txn) auditTool(ctx context.Context, by Actor, server, tool string, before, after toolState,
 	events []lifecycle.Event, note string) error {
 	for _, ev := range events {
 		detail := toolDetail(ev.Digest, before, after, note)
-		if err := t.appendAudit(ctx, by, string(ev.Kind), server+"/"+tool, before.Approved, after.Approved, detail); err != nil {
+		if err := t.appendAudit(ctx, by, string(ev.Kind), server+"/"+tool, before.tool.Approved, after.tool.Approved, detail); err != nil {
 			return err
 		}
 	}
@@ -94,26 +108,69 @@ func (t *txn) auditTool(ctx context.Context, by Actor, server, tool string, befo
 }
 
 // The fields of a tool detail. Every entry about a tool (auditTool and the
-// budget reset) starts with these three, in this order, as key=value tokens
+// budget reset) starts with these four, in this order, as key=value tokens
 // whose values never contain a space: digest is the version the event concerns
-// (noDigest when none), state the transition, last_seen what the upstream was
-// last seen serving once the operation was done (a digest,
-// lifecycle.UnusableDigest, or noDigest when the tool was absent). The last
-// field exists so that Integrity can read the state an operation left behind
-// and compare it with the mutable tools row: tool.missing and tool.unusable
-// both concern no version, so the digest field alone would not say what
-// last_seen became. A note of further key=value tokens may follow.
+// (noDigest when none), state the transition A->B, last_seen what the upstream
+// was last seen serving once the operation was done (a digest,
+// lifecycle.UnusableDigest, or noDigest when the tool was absent), and
+// proposals the transition A->B of the proposal budget
+// (tools.proposals_since_decision). The last two exist so that Integrity can
+// read the row an operation left behind and compare it with the mutable tools
+// table: tool.missing and tool.unusable both concern no version, so the digest
+// field alone would not say what last_seen became, and the budget is the one
+// column no event names. A note of further key=value tokens may follow.
 const (
-	fieldDigest   = "digest"
-	fieldState    = "state"
-	fieldLastSeen = "last_seen"
+	fieldDigest    = "digest"
+	fieldState     = "state"
+	fieldLastSeen  = "last_seen"
+	fieldProposals = "proposals"
+	// transitionArrow separates the before and after halves of the state and
+	// proposals fields; Integrity compares the registry with the after half.
+	transitionArrow = "->"
+)
+
+// The fields of a server detail: server.added carries the policy flag and a
+// SHA-256 of the URL (never the URL, which can hold a credential in its query
+// string), server.paused and server.resumed carry the paused flag. Integrity
+// compares the servers row with them.
+const (
+	fieldAllowPrivate = "allow_private"
+	fieldURLSHA256    = "url_sha256"
+	fieldPaused       = "paused"
 )
 
 // toolDetail renders the detail of one entry about a tool; see the field
 // constants for the format Integrity relies on.
-func toolDetail(digest string, before, after lifecycle.Tool, note string) string {
-	return fmt.Sprintf("%s=%s %s=%s->%s %s=%s%s", fieldDigest, orNoDigest(digest),
-		fieldState, before.State, after.State, fieldLastSeen, orNoDigest(after.LastSeen), note)
+func toolDetail(digest string, before, after toolState, note string) string {
+	return fmt.Sprintf("%s=%s %s=%s %s=%s %s=%s%s", fieldDigest, orNoDigest(digest),
+		fieldState, transition(string(before.tool.State), string(after.tool.State)),
+		fieldLastSeen, orNoDigest(after.tool.LastSeen),
+		fieldProposals, transition(strconv.Itoa(before.budget), strconv.Itoa(after.budget)), note)
+}
+
+// transition renders a before and after value as one field value.
+func transition(before, after string) string { return before + transitionArrow + after }
+
+// transitionAfter returns the after half of a transition value, or false when
+// the value is not one.
+func transitionAfter(v string) (string, bool) {
+	_, after, ok := strings.Cut(v, transitionArrow)
+	return after, ok
+}
+
+// serverAddedDetail renders the detail of a server.added entry.
+func serverAddedDetail(spec ServerSpec) string {
+	return fmt.Sprintf("%s=%t %s=%s", fieldAllowPrivate, spec.AllowPrivate, fieldURLSHA256, urlSHA256(spec.URL))
+}
+
+// pausedDetail renders the detail of a server.paused or server.resumed entry.
+func pausedDetail(paused bool) string { return fmt.Sprintf("%s=%t", fieldPaused, paused) }
+
+// urlSHA256 is how the log records a server URL: a hash that a rewritten URL
+// no longer matches, which never discloses a credential the URL may carry.
+func urlSHA256(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(sum[:])
 }
 
 // orNoDigest renders an empty digest or last-seen value as noDigest, so that
@@ -130,10 +187,10 @@ func orNoDigest(s string) string {
 // do not.
 func isToolDetail(detail string) bool { return strings.HasPrefix(detail, fieldDigest+"=") }
 
-// detailField returns the value of key in a tool detail: the token that starts
-// with "key=". Values carry no space, and no token of a tool detail other than
-// its fields contains '=' (a class token cannot, see isClassToken), so a split
-// on spaces reads the field exactly.
+// detailField returns the value of key in a detail: the token that starts
+// with "key=". Values carry no space, and no token of a detail other than its
+// fields contains '=' (a class token cannot, see isClassToken), so a split on
+// spaces reads the field exactly.
 func detailField(detail, key string) (string, bool) {
 	for _, tok := range strings.Fields(detail) {
 		if v, ok := strings.CutPrefix(tok, key+"="); ok {

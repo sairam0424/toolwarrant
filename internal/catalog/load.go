@@ -50,7 +50,36 @@ type versionRow struct {
 	// recorded is 1 when an approve or rollback row exists for the version;
 	// a version in status approved, or ever approved, without one is corrupt.
 	recorded int
+	// newest is 1 when the tool's newest approve or rollback row names this
+	// version (newestDecisionNames); the version in status approved must be it.
+	newest int
 }
+
+// The approvals table is append-only and every decision writes one row in the
+// transaction that moves the status, so it is the evidence the serving path
+// trusts; the status columns alone are mutable and prove nothing.
+//
+// Evidence per version (approvalRecorded) says that someone once approved the
+// version. Evidence per tool (newestDecisionNames) says that the newest
+// decision about the tool, approve or rollback, is the approval the tools row
+// claims: its version_id is the approved version and its hash_seen (the digest
+// the approver viewed, in the append-only table) is that version's digest
+// (D13). The second rule is what a Snapshot, an export, a listing of versions
+// and a decision require of the approved version, because the first one is
+// satisfied by any superseded version that was approved once (a pointer flip
+// to a retired digest) and by a version whose digest and bytes were rewritten
+// together under a dropped and re-created guard (hash_seen still names the
+// digest that was approved).
+const (
+	decisionFilter   = `a.decision IN ('approve', 'rollback')`
+	approvalRecorded = `EXISTS (SELECT 1 FROM approvals a WHERE a.version_id = v.id AND ` + decisionFilter + `)`
+	// newestDecisionNames is 1 when the newest approve or rollback row about
+	// any version of the tool that owns the version aliased v names v, 0
+	// otherwise (also when the tool has no decision, or v is NULL).
+	newestDecisionNames = `COALESCE((SELECT a.version_id = v.id AND a.hash_seen = v.digest
+		FROM approvals a JOIN tool_versions o ON o.id = a.version_id
+		WHERE o.tool_id = v.tool_id AND ` + decisionFilter + ` ORDER BY a.id DESC LIMIT 1), 0)`
+)
 
 const (
 	toolCols = `t.id, t.server_id, t.name, t.state, t.last_seen_digest, t.missing_crawls, t.approved_version_id,
@@ -58,20 +87,15 @@ const (
 
 	// The first argument switches the canonical bytes on: bulk loads do not
 	// need them, single-tool loads re-check them against the digest. The last
-	// column says whether an approve or rollback row backs the version.
+	// two columns are the approval evidence; see approvalRecorded.
 	versionCols = `v.id, v.tool_id, v.version_no, v.digest, v.digest_profile, CASE WHEN ? THEN v.canonical ELSE NULL END,
-		v.status, v.proposed_by, v.ever_approved,
-		EXISTS (SELECT 1 FROM approvals a WHERE a.version_id = v.id AND a.decision IN ('approve', 'rollback'))`
+		v.status, v.proposed_by, v.ever_approved, ` + approvalRecorded + `, ` + newestDecisionNames
 
-	versionsOfTool   = `SELECT ` + versionCols + ` FROM tool_versions v WHERE v.tool_id = ? ORDER BY v.version_no`
-	versionsOfServer = `SELECT ` + versionCols + ` FROM tool_versions v JOIN tools t ON t.id = v.tool_id
-		WHERE t.server_id = ? ORDER BY v.tool_id, v.version_no`
+	versionsOfTool = `SELECT ` + versionCols + ` FROM tool_versions v WHERE v.tool_id = ? ORDER BY v.version_no`
 
 	proposerCols    = `p.version_id, p.position, p.actor`
 	proposersOfTool = `SELECT ` + proposerCols + ` FROM tool_version_proposers p JOIN tool_versions v ON v.id = p.version_id
 		WHERE v.tool_id = ? ORDER BY p.version_id, p.position`
-	proposersOfServer = `SELECT ` + proposerCols + ` FROM tool_version_proposers p JOIN tool_versions v ON v.id = p.version_id
-		JOIN tools t ON t.id = v.tool_id WHERE t.server_id = ? ORDER BY p.version_id, p.position`
 
 	insertVersion = `INSERT INTO tool_versions
 		(tool_id, version_no, digest, digest_profile, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)
@@ -85,8 +109,10 @@ func scanToolRow(sc rowScanner) (toolRow, error) {
 	return r, err
 }
 
-func queryVersionRows(ctx context.Context, q queryer, query string, withCanonical bool, id int64) ([]versionRow, error) {
-	rows, err := q.QueryContext(ctx, query, boolInt(withCanonical), id)
+// queryVersionRows runs a query that selects versionCols; args follow the
+// canonical switch, which is the query's first parameter.
+func queryVersionRows(ctx context.Context, q queryer, query string, withCanonical bool, args ...any) ([]versionRow, error) {
+	rows, err := q.QueryContext(ctx, query, append([]any{boolInt(withCanonical)}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: load versions: %w", err)
 	}
@@ -94,7 +120,8 @@ func queryVersionRows(ctx context.Context, q queryer, query string, withCanonica
 	var out []versionRow
 	for rows.Next() {
 		var v versionRow
-		if err := rows.Scan(&v.id, &v.toolID, &v.no, &v.digest, &v.profile, &v.canonical, &v.status, &v.proposedBy, &v.ever, &v.recorded); err != nil {
+		if err := rows.Scan(&v.id, &v.toolID, &v.no, &v.digest, &v.profile, &v.canonical, &v.status, &v.proposedBy,
+			&v.ever, &v.recorded, &v.newest); err != nil {
 			return nil, fmt.Errorf("catalog: load versions: %w", err)
 		}
 		out = append(out, v)
@@ -103,14 +130,17 @@ func queryVersionRows(ctx context.Context, q queryer, query string, withCanonica
 }
 
 // loadProposers returns every version's proposers in position order, keyed by
-// version id. Positions must run 0, 1, 2... per version; a gap is corruption.
-func loadProposers(ctx context.Context, q queryer, query string, id int64) (map[int64][]string, error) {
-	rows, err := q.QueryContext(ctx, query, id)
+// version id, adding to out when it is not nil. Positions must run 0, 1, 2...
+// per version; a gap is corruption.
+func loadProposers(ctx context.Context, q queryer, out map[int64][]string, query string, args ...any) (map[int64][]string, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: load proposers: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := map[int64][]string{}
+	if out == nil {
+		out = map[int64][]string{}
+	}
 	for rows.Next() {
 		var (
 			versionID int64
@@ -149,60 +179,11 @@ func loadTool(ctx context.Context, q queryer, server, tool string) (*toolRec, er
 			return nil, err
 		}
 	}
-	proposers, err := loadProposers(ctx, q, proposersOfTool, row.id)
+	proposers, err := loadProposers(ctx, q, nil, proposersOfTool, row.id)
 	if err != nil {
 		return nil, err
 	}
 	return newToolRec(row, vrs, proposers)
-}
-
-// loadServerTools loads every tool of one server, keyed by name.
-func loadServerTools(ctx context.Context, q queryer, serverID int64) (map[string]*toolRec, error) {
-	trs, err := queryToolRows(ctx, q, serverID)
-	if err != nil {
-		return nil, err
-	}
-	vrs, err := queryVersionRows(ctx, q, versionsOfServer, false, serverID)
-	if err != nil {
-		return nil, err
-	}
-	proposers, err := loadProposers(ctx, q, proposersOfServer, serverID)
-	if err != nil {
-		return nil, err
-	}
-	byTool := make(map[int64][]versionRow, len(trs))
-	for _, v := range vrs {
-		byTool[v.toolID] = append(byTool[v.toolID], v)
-	}
-	out := make(map[string]*toolRec, len(trs))
-	for _, tr := range trs {
-		rec, err := newToolRec(tr, byTool[tr.id], proposers)
-		if err != nil {
-			return nil, err
-		}
-		out[tr.name] = rec
-	}
-	return out, nil
-}
-
-func queryToolRows(ctx context.Context, q queryer, serverID int64) ([]toolRow, error) {
-	rows, err := q.QueryContext(ctx, `SELECT `+toolCols+` FROM tools t WHERE t.server_id = ?`, serverID)
-	if err != nil {
-		return nil, fmt.Errorf("catalog: load tools: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var trs []toolRow
-	for rows.Next() {
-		tr, err := scanToolRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("catalog: load tools: %w", err)
-		}
-		trs = append(trs, tr)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("catalog: load tools: %w", err)
-	}
-	return trs, nil
 }
 
 // checkCanonical re-hashes the stored canonical bytes: they must hash to the
@@ -260,17 +241,38 @@ func newToolRec(row toolRow, vrs []versionRow, proposers map[int64][]string) (*t
 			rec.tool.Approved = v.digest
 			approvedSeen = true
 		}
-		if isPointer != (v.status == string(lifecycle.VersionApproved)) {
-			return nil, fmt.Errorf("%w: tool %q approved pointer and version status disagree", ErrCorrupt, row.name)
-		}
-		if (isPointer || v.ever == 1) && v.recorded == 0 {
-			return nil, fmt.Errorf("%w: version %d of tool %q is marked approved but has no approval record", ErrCorrupt, v.no, row.name)
+		if err := checkVersionEvidence(row.name, v, isPointer); err != nil {
+			return nil, err
 		}
 	}
 	if row.approved.Valid && !approvedSeen {
 		return nil, fmt.Errorf("%w: tool %q points at a version that is not its own", ErrCorrupt, row.name)
 	}
 	return rec, nil
+}
+
+// checkVersionEvidence requires the status columns of one version to agree
+// with the approved pointer and with the approvals table: the approved version
+// is the pointer and the tool's newest decision names it, and a version that
+// was ever approved has an approval record.
+func checkVersionEvidence(name string, v versionRow, isPointer bool) error {
+	if isPointer != (v.status == string(lifecycle.VersionApproved)) {
+		return fmt.Errorf("%w: tool %q approved pointer and version status disagree", ErrCorrupt, name)
+	}
+	if (isPointer || v.ever == 1) && v.recorded == 0 {
+		return fmt.Errorf("%w: version %d of tool %q is marked approved but has no approval record", ErrCorrupt, v.no, name)
+	}
+	if isPointer && v.newest == 0 {
+		return errNotNewestDecision(name)
+	}
+	return nil
+}
+
+// errNotNewestDecision is the ErrCorrupt for an approved version that the tool's
+// newest approve or rollback row does not name: a retired digest put back by
+// hand, or a version whose digest was rewritten under a dropped guard.
+func errNotNewestDecision(name string) error {
+	return fmt.Errorf("%w: approved version of %s is not the tool's newest approval decision", ErrCorrupt, quote(name))
 }
 
 // insertTool creates the row for a tool seen for the first time, in the

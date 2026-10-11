@@ -14,7 +14,7 @@ import (
 // open remembers no re-check: it exists to look at a database someone edited
 // and must report what the rows hold now.
 func wireStore(wdb, rdb *sql.DB, opts OpenOptions) *Store {
-	s := &Store{wdb: wdb, rdb: rdb, policy: opts.Policy, now: time.Now, readOnly: opts.ReadOnly || opts.Forensic}
+	s := &Store{wdb: wdb, rdb: rdb, policy: opts.Policy, now: time.Now, readOnly: opts.ReadOnly || opts.Forensic, caps: defaultServerCaps()}
 	bound := recheckCacheEntries
 	if opts.Forensic {
 		bound = 0

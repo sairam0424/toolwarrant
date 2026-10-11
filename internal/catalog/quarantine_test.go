@@ -102,7 +102,7 @@ func TestRecordCrawl_UnusableObservations(t *testing.T) {
 	if p := snap.Tools["echo"]; p.LastSeen != lifecycle.UnusableDigest || snap.Serves("echo", p.LastSeen) || !snap.Serves("echo", dA) {
 		t.Errorf("policy = %+v: the marker is never served, the approval stands", p)
 	}
-	if e := entryOf(t, s, "tool.unusable"); e.Subject != "alpha/echo" || e.Detail != "digest=- state=enabled->enabled last_seen=unusable reason=not-canonical" {
+	if e := entryOf(t, s, "tool.unusable"); e.Subject != "alpha/echo" || e.Detail != "digest=- state=enabled->enabled last_seen=unusable proposals=0->0 reason=not-canonical" {
 		t.Errorf("tool.unusable entry = %+v", e)
 	}
 	entries, _ := s.AuditEntries(bg, 0, 0)

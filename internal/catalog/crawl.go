@@ -10,13 +10,14 @@ import (
 
 // RecordCrawl applies one crawl in a single transaction: it creates tools and
 // versions for the usable definitions, drives the lifecycle for every tool
-// that was listed or is already known (a known tool absent from a complete
-// crawl is missing), and writes one audit entry per event. A crawl never
-// approves anything and never edits an existing version.
+// that was listed or is live (a live tool absent from a complete crawl is
+// missing), and writes one audit entry per event. A crawl never approves
+// anything and never edits an existing version.
 //
 // Every crawl of a registered server is recorded: a crawls row plus a
 // crawl.completed or crawl.failed entry. If in.Complete is false, or the
-// listing as a whole breaks a cap (MaxToolsPerCrawl, MaxCrawlBytes), only the
+// listing as a whole breaks a cap (MaxToolsPerCrawl, MaxCrawlBytes), or it
+// would push the server over MaxToolsPerServer or MaxServerBytes, only the
 // failure is recorded, under a class, and no tool changes: a crawl failure is
 // not a removal. One bad tool never fails a crawl (D3): a listed tool whose
 // name breaks the shared rule, whose definition cannot be used, or whose name
@@ -30,6 +31,10 @@ import (
 // observes the tool as unusable instead of storing the definition; a known
 // digest is still observed normally. Approve, reject and rollback reset the
 // budget.
+//
+// A deprecated tool is neither loaded nor reported unless the listing names
+// it, so the cost of a crawl follows the live set and not the server's history
+// (D13); a sighting of a deprecated name loads that tool and it reappears.
 //
 // All digesting and validation happen before the transaction begins; inside
 // it there are only inserts and updates, so the write lock is held briefly.
@@ -67,24 +72,22 @@ func (s *Store) crawlTx(ctx context.Context, t *txn, in CrawlInput, ls *listing,
 	if srv.Paused {
 		return CrawlReport{}, fmt.Errorf("%w: server %s", ErrPaused, quote(srv.Name))
 	}
-	complete := in.Complete && ls.failure == ""
-	crawlID, err := t.insert(ctx,
-		`INSERT INTO crawls (server_id, started_at, complete, error, tool_count, actor) VALUES (?, ?, ?, ?, ?, ?)`,
-		srv.ID, t.ts, boolInt(complete), crawlErrorRecord(in.Error, ls.failure), ls.count, by.Name)
+	if !in.Complete || ls.failure != "" {
+		return t.recordFailedCrawl(ctx, srv, in.Error, ls, by)
+	}
+	known, err := loadCrawlTools(ctx, t, srv.ID, ls.names())
 	if err != nil {
-		return CrawlReport{}, fmt.Errorf("catalog: record crawl: %w", err)
+		return CrawlReport{}, err
 	}
-	if !complete {
-		class := ls.failure
-		if class == "" {
-			class = errorClass(in.Error)
-		}
-		// The caller's text is kept in the crawls table only, quoted: it can
-		// echo the request URL, and the audit log can never be scrubbed.
-		detail := fmt.Sprintf("crawl=%d tools=%d complete=false reason=%s", crawlID, ls.count, auditClass(class))
-		return CrawlReport{CrawlID: crawlID, Error: class}, t.appendAudit(ctx, by, evCrawlFailed, srv.Name, "", "", detail)
+	class, err := s.caps.check(ctx, t, srv.ID, known, ls)
+	if err != nil {
+		return CrawlReport{}, err
 	}
-	known, err := loadServerTools(ctx, t, srv.ID)
+	if class != "" {
+		ls.failure = class
+		return t.recordFailedCrawl(ctx, srv, in.Error, ls, by)
+	}
+	crawlID, err := t.insertCrawl(ctx, srv, true, "", ls.count, by)
 	if err != nil {
 		return CrawlReport{}, err
 	}
@@ -99,6 +102,34 @@ func (s *Store) crawlTx(ctx context.Context, t *txn, in CrawlInput, ls *listing,
 	return CrawlReport{CrawlID: crawlID, Complete: true, Changes: changes, Rejected: rejected}, nil
 }
 
+// insertCrawl writes the crawls row and returns its id.
+func (t *txn) insertCrawl(ctx context.Context, srv Server, complete bool, errorRecord string, count int, by Actor) (int64, error) {
+	crawlID, err := t.insert(ctx,
+		`INSERT INTO crawls (server_id, started_at, complete, error, tool_count, actor) VALUES (?, ?, ?, ?, ?, ?)`,
+		srv.ID, t.ts, boolInt(complete), errorRecord, count, by.Name)
+	if err != nil {
+		return 0, fmt.Errorf("catalog: record crawl: %w", err)
+	}
+	return crawlID, nil
+}
+
+// recordFailedCrawl records a crawl that observes no tool: the caller's
+// incomplete one, or a listing the catalog refused under ls.failure. The
+// caller's text is kept in the crawls table only, quoted: it can echo the
+// request URL, and the audit log can never be scrubbed.
+func (t *txn) recordFailedCrawl(ctx context.Context, srv Server, text string, ls *listing, by Actor) (CrawlReport, error) {
+	crawlID, err := t.insertCrawl(ctx, srv, false, crawlErrorRecord(text, ls.failure), ls.count, by)
+	if err != nil {
+		return CrawlReport{}, err
+	}
+	class := ls.failure
+	if class == "" {
+		class = errorClass(text)
+	}
+	detail := fmt.Sprintf("crawl=%d tools=%d complete=false reason=%s", crawlID, ls.count, auditClass(class))
+	return CrawlReport{CrawlID: crawlID, Error: class}, t.appendAudit(ctx, by, evCrawlFailed, srv.Name, "", "", detail)
+}
+
 // observation is what one crawl said about one tool, in the catalog's terms.
 type observation struct {
 	present  bool
@@ -109,17 +140,11 @@ type observation struct {
 }
 
 // observeAll reports the crawl to the lifecycle for every tool that was listed
-// or was already known, in name order, and records the entries that no tool
+// or was loaded as live, in name order, and records the entries that no tool
 // row describes.
 func (s *Store) observeAll(ctx context.Context, t *txn, srv Server, known map[string]*toolRec,
 	ls *listing, crawlID int64, by Actor) ([]ToolChange, []RejectedTool, error) {
-	names := make([]string, 0, len(ls.usable)+len(ls.unusable)+len(known))
-	for i := range ls.usable {
-		names = append(names, ls.usable[i].name)
-	}
-	for name := range ls.unusable {
-		names = append(names, name)
-	}
+	names := ls.names()
 	for name := range known {
 		if ls.usableByName(name) == nil {
 			if _, listed := ls.unusable[name]; !listed {
@@ -186,7 +211,7 @@ func (s *Store) observeOne(ctx context.Context, t *txn, srv Server, rec *toolRec
 	if err := crawlMustNotDecide(res.Events); err != nil {
 		return ToolChange{}, err
 	}
-	before := rec.tool
+	before := rec.state()
 	if err := rec.save(ctx, t, res.Tool, p, crawlID); err != nil {
 		return ToolChange{}, err
 	}
@@ -197,7 +222,7 @@ func (s *Store) observeOne(ctx context.Context, t *txn, srv Server, rec *toolRec
 			note += fmt.Sprintf(" budget=%d", MaxProposalsPerDecision)
 		}
 	}
-	if err := t.auditTool(ctx, by, srv.Name, rec.name, before, res.Tool, res.Events, note); err != nil {
+	if err := t.auditTool(ctx, by, srv.Name, rec.name, before, rec.state(), res.Events, note); err != nil {
 		return ToolChange{}, err
 	}
 	return ToolChange{Tool: rec.name, Kind: classify(res.Events), Digest: ob.digest, State: res.Tool.State, Reason: ob.reason}, nil

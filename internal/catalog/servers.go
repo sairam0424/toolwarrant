@@ -74,9 +74,9 @@ func (s *Store) AddServer(ctx context.Context, spec ServerSpec, by Actor) (Serve
 		}
 		srv = Server{ID: id, ServerSpec: spec, CreatedAt: t.stamp}
 		// The URL can carry a credential in its query string, so the audit
-		// entry records the policy flag and not the address.
-		return t.appendAudit(ctx, actor, evServerAdded, spec.Name, "", "",
-			fmt.Sprintf("allow_private=%t", spec.AllowPrivate))
+		// entry records the policy flag and a hash of the address, which
+		// Integrity compares with the row (serverAddedDetail).
+		return t.appendAudit(ctx, actor, evServerAdded, spec.Name, "", "", serverAddedDetail(spec))
 	})
 	if err != nil {
 		return Server{}, err
@@ -118,7 +118,7 @@ func (s *Store) setPaused(ctx context.Context, name string, by Actor, paused boo
 		if paused {
 			event = evServerPaused
 		}
-		return t.appendAudit(ctx, actor, event, srv.Name, "", "", fmt.Sprintf("paused=%t", paused))
+		return t.appendAudit(ctx, actor, event, srv.Name, "", "", pausedDetail(paused))
 	})
 }
 

@@ -5,11 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
-
-	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
 // richHistory drives one server through every kind of event the catalog
@@ -140,7 +137,7 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 		},
 		"audit entry forged with a value that is no digest": {
 			func(t *testing.T, _ *Store, path, d string) {
-				mustExec(t, rawDB(t, path), forgedAuditEntry, d, d, "digest=- state=enabled->enabled last_seen=bogus")
+				mustExec(t, rawDB(t, path), forgedAuditEntry, d, d, "digest=- state=enabled->enabled last_seen=bogus proposals=0->0")
 			},
 			want{IntegrityReport{StaleLastSeen: 1}, []string{`"alpha/echo"`, "last_seen_digest is ", `recorded "bogus"`}},
 		},
@@ -171,7 +168,90 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 			func(t *testing.T, _ *Store, path, _ string) {
 				mustExec(t, rawDB(t, path), `UPDATE tools SET approved_version_id = NULL, state = 'pending_review' WHERE name = 'echo'`)
 			},
-			want{IntegrityReport{ApprovedDigestMismatches: 1}, []string{`"alpha/echo"`, "approved digest is none", "left it as"}},
+			// D13: the state column is cross-checked too, so the row's move to
+			// pending_review is its own finding next to the lost approval.
+			want{IntegrityReport{ApprovedDigestMismatches: 1, StateMismatches: 1}, []string{`"alpha/echo"`, "approved digest is none", "left it as", `state is "pending_review"`}},
+		},
+		"state rewritten": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `UPDATE tools SET state = 'disabled' WHERE name = 'echo'`)
+			},
+			want{IntegrityReport{StateMismatches: 1}, []string{`"alpha/echo"`, `state is "disabled"`, `left it as "enabled"`}},
+		},
+		"proposal budget rewritten": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `UPDATE tools SET proposals_since_decision = 7 WHERE name = 'echo'`)
+			},
+			want{IntegrityReport{BudgetMismatches: 1}, []string{`"alpha/echo"`, "proposals_since_decision is 7", "left it as 0"}},
+		},
+		"audit entry forged without a proposals field": {
+			func(t *testing.T, _ *Store, path, d string) {
+				mustExec(t, rawDB(t, path), forgedAuditEntry, d, d, "digest=- state=enabled->enabled last_seen="+d)
+			},
+			want{IntegrityReport{}, []string{"audit entry", `"alpha/echo"`, "has no proposals field"}},
+		},
+		"server paused flag rewritten": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `UPDATE servers SET paused = 1 WHERE name = 'alpha'`)
+			},
+			want{IntegrityReport{ServersMismatched: 1}, []string{`server "alpha"`, "paused is true", "left it as false"}},
+		},
+		"server allow_private rewritten": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `UPDATE servers SET allow_private = 1 WHERE name = 'alpha'`)
+			},
+			want{IntegrityReport{ServersMismatched: 1}, []string{`server "alpha"`, "allow_private is true", "recorded false"}},
+		},
+		"server url rewritten": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `UPDATE servers SET url = 'https://evil.example.net/mcp?token=SECRET' WHERE name = 'alpha'`)
+			},
+			want{IntegrityReport{ServersMismatched: 1}, []string{`server "alpha"`, "URL is not the one", "hash differs"}},
+		},
+		"server row forged": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `INSERT INTO servers (name, url, owner_group, allow_private, paused, created_at)
+					VALUES ('ghost', 'https://ghost.example.com/mcp', '', 1, 0, '2026-10-11T00:00:00.000000000Z')`)
+			},
+			want{IntegrityReport{ServersMismatched: 1}, []string{`server "ghost"`, "no server.added entry"}},
+		},
+		"server row deleted": {
+			func(t *testing.T, s *Store, path, _ string) {
+				mustAddServer(t, s, "beta")
+				mustExec(t, rawDB(t, path), `DELETE FROM servers WHERE name = 'beta'`)
+			},
+			want{IntegrityReport{ServersMismatched: 1}, []string{`server "beta"`, "registered by audit entry", "no servers row exists"}},
+		},
+		"server entry forged without a paused field": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), forgedServerEntry, "server.paused", "paused=maybe")
+			},
+			want{IntegrityReport{}, []string{"audit entry", `server "alpha"`, "has no paused field"}},
+		},
+		"server.added entry forged without a url hash": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), forgedServerEntry, "server.added", "allow_private=false url_sha256=short")
+			},
+			want{IntegrityReport{}, []string{"audit entry", `server "alpha"`, "has no url_sha256 field"}},
+		},
+		"server.added entry forged without a policy flag": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), forgedServerEntry, "server.added", "url_sha256="+urlSHA256("https://alpha.example.com/mcp"))
+			},
+			want{IntegrityReport{}, []string{"audit entry", `server "alpha"`, "has no allow_private field"}},
+		},
+		"foreign trigger": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `CREATE TRIGGER keep_serving AFTER UPDATE OF state ON tools
+					WHEN NEW.state = 'disabled' BEGIN UPDATE tools SET state = 'enabled' WHERE id = NEW.id; END`)
+			},
+			want{IntegrityReport{ForeignObjects: []string{"trigger keep_serving"}}, []string{"unexpected trigger keep_serving"}},
+		},
+		"foreign view": {
+			func(t *testing.T, _ *Store, path, _ string) {
+				mustExec(t, rawDB(t, path), `CREATE VIEW spy AS SELECT name FROM tools`)
+			},
+			want{IntegrityReport{ForeignObjects: []string{"view spy"}}, []string{"unexpected view spy"}},
 		},
 		"approved pointer dangles": {
 			func(t *testing.T, _ *Store, path, _ string) {
@@ -233,13 +313,18 @@ func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
 			}
 			problemMentioning(t, IntegrityReport{Problems: problems}, tc.want.fragments...)
 			for _, p := range problems {
-				if strings.Contains(p, "description") || strings.Contains(p, "inputSchema") {
-					t.Errorf("a Problems line carries tool text: %q", p)
+				if strings.Contains(p, "description") || strings.Contains(p, "inputSchema") || strings.Contains(p, "SECRET") || strings.Contains(p, "evil.example") {
+					t.Errorf("a Problems line carries tool text or a URL: %q", p)
 				}
 			}
 		})
 	}
 }
+
+// forgedServerEntry appends one entry about server alpha past the chain's head
+// with the given event and detail; see forgedAuditEntry.
+const forgedServerEntry = `INSERT INTO audit_log (seq, ts, actor, actor_type, event, subject, before_hash, after_hash, detail, prev_hash, hash)
+	VALUES ((SELECT MAX(seq) + 1 FROM audit_log), 't', 'mallory', 'human', ?, 'alpha', '', '', ?, 'p', 'h')`
 
 // forgedAuditEntry appends one entry about alpha/echo past the chain's head
 // (the sequential guard only insists on the next number); its before_hash,
@@ -252,7 +337,7 @@ const forgedAuditEntry = `INSERT INTO audit_log (seq, ts, actor, actor_type, eve
 // cannot run: a cancelled context, or a table one of its passes needs renamed
 // away, which also shows that each pass fails on its own query.
 func TestIntegrity_ReportsWhenTheCheckItselfCannotRun(t *testing.T) {
-	for _, table := range []string{"", "audit_log", "tools", "approvals"} {
+	for _, table := range []string{"", "audit_log", "servers", "tools", "approvals"} {
 		t.Run("missing "+table, func(t *testing.T) {
 			s, path := newStoreAt(t, defaultPolicyForTests())
 			mustAddServer(t, s, "alpha")
@@ -316,54 +401,5 @@ func TestIntegrity_RehashesApprovedBytesAndReadsGuardsOnEveryLoad(t *testing.T) 
 	}
 	if rep := mustIntegrity(t, s); len(rep.GuardsMissing)+len(rep.GuardsRedefined) != 0 {
 		t.Errorf("guards after the restore = %v %v", rep.GuardsMissing, rep.GuardsRedefined)
-	}
-}
-
-// The detail format Integrity reads is fixed by the writer: three fields first,
-// values without spaces, a note after. The reader must not be fooled by a
-// quoted class in the note or by a detail of another shape.
-func TestToolDetail_FieldsRoundTrip(t *testing.T) {
-	before := lifecycle.Tool{State: lifecycle.Enabled, LastSeen: strings.Repeat("a", 64)}
-	after := lifecycle.Tool{State: lifecycle.ChangedPendingReapproval, LastSeen: lifecycle.UnusableDigest}
-	detail := toolDetail("", before, after, ` reason="http status 401" budget=20`)
-	if want := `digest=- state=enabled->changed_pending_reapproval last_seen=unusable reason="http status 401" budget=20`; detail != want {
-		t.Fatalf("toolDetail = %q, want %q", detail, want)
-	}
-	for key, want := range map[string]string{fieldDigest: "-", fieldLastSeen: "unusable", fieldState: "enabled->changed_pending_reapproval", "budget": "20"} {
-		if got, ok := detailField(detail, key); !ok || got != want {
-			t.Errorf("detailField(%s) = %q, %t; want %q", key, got, ok, want)
-		}
-	}
-	if _, ok := detailField(detail, "reason=http"); ok {
-		t.Error("a quoted class must not read as a field")
-	}
-	absent := toolDetail(strings.Repeat("b", 64), before, lifecycle.Tool{State: lifecycle.Deprecated}, "")
-	if v, _ := detailField(absent, fieldLastSeen); v != noDigest || fromNoDigest(v) != "" {
-		t.Errorf("an absent tool must record last_seen=%s, got %q", noDigest, v)
-	}
-	for _, other := range []string{"crawl=1 tools=2 changes=0 rejected=0", "allow_private=true", "paused=true", "crawl=3 reason=invalid-name name=<unprintable>"} {
-		if isToolDetail(other) {
-			t.Errorf("%q is not a tool detail", other)
-		}
-	}
-	// The decision names and guard statements the reader relies on.
-	for decision, event := range map[string]string{decisionApprove: "version.approved", decisionReject: "version.rejected", decisionRollback: "version.rolled_back", "bless": ""} {
-		if got := decisionEvent(decision); got != event || (event != "" && !isDecisionEvent(got)) {
-			t.Errorf("decisionEvent(%s) = %q, want %q", decision, got, event)
-		}
-	}
-	if kind, name := parseGuardDDL("CREATE"); kind != "" || name != "" {
-		t.Errorf("parseGuardDDL of a fragment = %q %q", kind, name)
-	}
-	if kind, name := parseGuardDDL("CREATE UNIQUE INDEX idx ON t (c)"); kind != "index" || name != "idx" {
-		t.Errorf("parseGuardDDL(unique index) = %q %q", kind, name)
-	}
-	if !slices.Equal(guardTriggers(), []string{
-		"audit_log_no_update", "audit_log_no_delete", "audit_log_sequential",
-		"tool_versions_no_delete", "tool_versions_immutable", "tool_versions_no_replace",
-		"proposers_no_update", "proposers_no_delete", "proposers_append_only",
-		"approvals_no_update", "approvals_no_delete", "approvals_no_replace",
-	}) || !slices.Equal(guardIndexes(), []string{"one_pending_version", "one_approved_version", "approvals_by_version"}) {
-		t.Errorf("guard names parsed from the DDL = %v, %v", guardTriggers(), guardIndexes())
 	}
 }

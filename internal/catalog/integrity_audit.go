@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -14,11 +15,14 @@ import (
 // against the decision entries as a multiset.
 
 // toolTrace is what the newest audit entry about a tool left behind: the
-// approved digest (after_hash) and the last_seen field of its detail.
+// approved digest (after_hash) and, from its detail, the state and proposals
+// transitions' after halves and the last_seen field.
 type toolTrace struct {
 	seq      int64
 	approved string
+	state    string
 	lastSeen string
+	budget   int
 }
 
 // decisionTrace is the newest version.approved or version.rolled_back entry
@@ -82,15 +86,56 @@ func (c *integrityCheck) noteEntry(e audit.Entry) {
 			c.latestApproval[e.Subject] = decisionTrace{seq: e.Seq, digest: e.AfterHash}
 		}
 	}
-	if !isToolDetail(e.Detail) {
-		return // about a server, a crawl or a rejected entry: no tool row to compare
-	}
-	lastSeen, ok := detailField(e.Detail, fieldLastSeen)
-	if !ok {
-		c.problem("audit entry %d about %s has no %s field", e.Seq, quote(e.Subject), fieldLastSeen)
+	switch e.Event {
+	case evServerAdded, evServerPaused, evServerResumed:
+		c.noteServerEntry(e)
 		return
 	}
-	c.latest[e.Subject] = toolTrace{seq: e.Seq, approved: e.AfterHash, lastSeen: fromNoDigest(lastSeen)}
+	if !isToolDetail(e.Detail) {
+		return // about a crawl or a rejected entry: no tool row to compare
+	}
+	trace, missing := parseToolTrace(e)
+	if missing != "" {
+		c.problem("audit entry %d about %s has no %s field", e.Seq, quote(e.Subject), missing)
+		return
+	}
+	c.latest[e.Subject] = trace
+}
+
+// parseToolTrace reads the fields of a tool detail Integrity compares with the
+// tools row. It returns the name of the first field that is absent or not of
+// the shape toolDetail writes; an entry with such a detail is reported and
+// does not replace what an earlier entry said.
+func parseToolTrace(e audit.Entry) (toolTrace, string) {
+	trace := toolTrace{seq: e.Seq, approved: e.AfterHash}
+	lastSeen, ok := detailField(e.Detail, fieldLastSeen)
+	if !ok {
+		return toolTrace{}, fieldLastSeen
+	}
+	trace.lastSeen = fromNoDigest(lastSeen)
+	state, ok := detailField(e.Detail, fieldState)
+	if trace.state, ok = transitionAfterIf(state, ok); !ok {
+		return toolTrace{}, fieldState
+	}
+	proposals, ok := detailField(e.Detail, fieldProposals)
+	after, ok := transitionAfterIf(proposals, ok)
+	if !ok {
+		return toolTrace{}, fieldProposals
+	}
+	budget, err := strconv.Atoi(after)
+	if err != nil || budget < 0 {
+		return toolTrace{}, fieldProposals
+	}
+	trace.budget = budget
+	return trace, ""
+}
+
+// transitionAfterIf is transitionAfter guarded by whether the field was found.
+func transitionAfterIf(v string, found bool) (string, bool) {
+	if !found {
+		return "", false
+	}
+	return transitionAfter(v)
 }
 
 // fromNoDigest undoes orNoDigest.

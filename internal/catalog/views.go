@@ -92,11 +92,19 @@ func toolID(ctx context.Context, q queryer, server, tool string) (int64, error) 
 	return id, nil
 }
 
+// versionViewQuery reads a tool's versions with the two pieces of approval
+// evidence (approvalRecorded, newestDecisionNames).
+const versionViewQuery = `SELECT v.id, v.version_no, v.digest, v.digest_profile, v.status, v.proposed_by, v.ever_approved,
+		v.first_seen_at, v.canonical, ` + approvalRecorded + `, ` + newestDecisionNames + `
+	FROM tool_versions v WHERE v.tool_id = ? ORDER BY v.version_no`
+
 // Versions lists a tool's versions oldest first, each with its full proposer
 // history. Each canonical form is re-hashed on the way out, unless this Store
-// verified that row within RecheckTTL, its digest profile is checked, and a
+// verified that row within RecheckTTL, its digest profile is checked, a
 // version in status approved or marked ever approved must have an approve or
-// rollback record behind it, so a tampered row is reported, not displayed.
+// rollback record behind it, and the version in status approved must be the
+// one the tool's newest decision names, so a tampered row is reported, not
+// displayed.
 func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionView, error) {
 	out := []VersionView{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -104,14 +112,11 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 		if err != nil {
 			return err
 		}
-		proposers, err := loadProposers(ctx, q, proposersOfTool, id)
+		proposers, err := loadProposers(ctx, q, nil, proposersOfTool, id)
 		if err != nil {
 			return err
 		}
-		rows, err := q.QueryContext(ctx,
-			`SELECT id, version_no, digest, digest_profile, status, proposed_by, ever_approved, first_seen_at, canonical,
-			 EXISTS (SELECT 1 FROM approvals a WHERE a.version_id = tool_versions.id AND a.decision IN ('approve', 'rollback'))
-			 FROM tool_versions WHERE tool_id = ? ORDER BY version_no`, id)
+		rows, err := q.QueryContext(ctx, versionViewQuery, id)
 		if err != nil {
 			return fmt.Errorf("catalog: list versions: %w", err)
 		}
@@ -133,18 +138,21 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 
 func scanVersionView(sc rowScanner, proposers map[int64][]string, ver *verifier) (VersionView, error) {
 	var (
-		v        VersionView
-		id       int64
-		status   string
-		ever     int
-		seen     string
-		recorded int
+		v                VersionView
+		id               int64
+		status           string
+		ever             int
+		seen             string
+		recorded, newest int
 	)
-	if err := sc.Scan(&id, &v.No, &v.Digest, &v.DigestProfile, &status, &v.ProposedBy, &ever, &seen, &v.Canonical, &recorded); err != nil {
+	if err := sc.Scan(&id, &v.No, &v.Digest, &v.DigestProfile, &status, &v.ProposedBy, &ever, &seen, &v.Canonical, &recorded, &newest); err != nil {
 		return VersionView{}, fmt.Errorf("catalog: list versions: %w", err)
 	}
 	if (status == string(lifecycle.VersionApproved) || ever == 1) && recorded == 0 {
 		return VersionView{}, fmt.Errorf("%w: version %d is marked approved but has no approval record", ErrCorrupt, v.No)
+	}
+	if status == string(lifecycle.VersionApproved) && newest == 0 {
+		return VersionView{}, fmt.Errorf("%w: version %d is marked approved but is not the tool's newest approval decision", ErrCorrupt, v.No)
 	}
 	if v.DigestProfile != gate.DigestProfile {
 		return VersionView{}, fmt.Errorf("%w: version %d was digested under profile %s, this build uses %s",

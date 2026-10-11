@@ -91,7 +91,7 @@ func TestRecordCrawl_DriftRevertAndStrictMode(t *testing.T) {
 		t.Fatalf("drifted tool = %+v", v)
 	}
 	ev := entryOf(t, s, "tool.drifted")
-	if ev.Detail != "digest="+d2+" state=enabled->changed_pending_reapproval last_seen="+d2 ||
+	if ev.Detail != "digest="+d2+" state=enabled->changed_pending_reapproval last_seen="+d2+" proposals=0->1" ||
 		ev.BeforeHash != d1 || ev.AfterHash != d1 || ev.Subject != "alpha/echo" || ev.Actor != "crawler" || ev.ActorType != "system" {
 		t.Errorf("drift audit entry = %+v", ev)
 	}
@@ -145,9 +145,13 @@ func TestRecordCrawl_MissingDeprecatedAndReappeared(t *testing.T) {
 	if list, _ := s.Approved(bg); len(list) != 0 {
 		t.Errorf("Approved lists a deprecated tool: %+v", list)
 	}
-	// A deprecated tool that stays away produces no further noise.
-	if k := kindsOf(mustCrawl(t, s, "alpha", tool("b", "v1")))["a"]; k != ChangeUnchanged {
-		t.Errorf("deprecated and still absent: kind %s", k)
+	// A deprecated tool that stays away produces no further noise: it is not
+	// loaded and has no report line (D13: the crawl's cost follows the live set).
+	if rep := mustCrawl(t, s, "alpha", tool("b", "v1")); len(rep.Changes) != 1 || rep.Changes[0].Tool != "b" {
+		t.Errorf("deprecated and still absent: report %+v, want b alone", rep.Changes)
+	}
+	if v := mustTool(t, s, "alpha", "a"); v.State != lifecycle.Deprecated || v.MissingCrawls != 3 {
+		t.Errorf("deprecated tool after one more crawl = %+v, want untouched", v)
 	}
 
 	rep := mustCrawl(t, s, "alpha", tool("a", "v1"), tool("b", "v1"))

@@ -9,19 +9,25 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// IntegrityReport is the result of Integrity: the mutable registry (the tools
-// table and the status columns of tool_versions) checked against the
-// append-only history (approvals and the audit log), and the guard objects
-// against the schema. The counters summarise the cross-checks by kind;
-// Problems lists every finding, one line each, with tool names quoted and no
-// upstream text. An empty Problems means the registry is what its history
-// says it should be; a non-empty one means the file was edited outside
-// toolwarrant, or a bug wrote it, and nothing should be served from it.
+// IntegrityReport is the result of Integrity: the mutable registry (the
+// servers and tools tables and the status columns of tool_versions) checked
+// against the append-only history (approvals and the audit log), and the
+// objects in the file against the schema. The counters summarise the
+// cross-checks by kind; Problems lists every finding, one line each, with
+// names quoted and no upstream text. An empty Problems means the registry is
+// what its history says it should be; a non-empty one means the file was
+// edited outside toolwarrant, or a bug wrote it, and nothing should be served
+// from it.
 type IntegrityReport struct {
 	// GuardsMissing and GuardsRedefined label the guard objects ("trigger X",
 	// "index X") that are absent, or present under a definition that differs
 	// from the schema's. Either leaves history tables editable.
 	GuardsMissing, GuardsRedefined []string
+	// ForeignObjects labels the triggers and views ("trigger X", "view X")
+	// that the schema did not create. A trigger on the unguarded tools table
+	// can undo every decision inside the catalog's own transaction while the
+	// log records the decision; nothing of someone else's making may exist.
+	ForeignObjects []string
 	// ApprovalsWithoutRecord counts versions in status approved, or marked
 	// ever approved, with no approve or rollback row in the approvals table:
 	// the status columns are mutable, the approvals table is not.
@@ -42,6 +48,20 @@ type IntegrityReport struct {
 	// value the newest audit entry about the tool recorded, and tools the log
 	// never mentions at all.
 	StaleLastSeen int
+	// StateMismatches counts tools whose state is not the one the newest audit
+	// entry about the tool left behind (the after half of its state field): a
+	// disabled, deprecated or never-approved tool switched on by hand.
+	StateMismatches int
+	// BudgetMismatches counts tools whose proposals_since_decision is not what
+	// the newest audit entry about the tool recorded (the after half of its
+	// proposals field): a budget granted back without a tool.budget_reset entry.
+	BudgetMismatches int
+	// ServersMismatched counts servers whose row disagrees with the log: the
+	// paused flag against the newest server.paused or server.resumed entry (or
+	// server.added, which registers a running server), allow_private and the
+	// SHA-256 of the URL against the server.added detail, a row the log never
+	// registered, and a registration whose row is gone.
+	ServersMismatched int
 	// Problems lists every finding in one line each, in table order.
 	Problems []string
 }
@@ -49,19 +69,20 @@ type IntegrityReport struct {
 // Integrity checks the database against itself and reports every
 // disagreement; see IntegrityReport. VerifyAudit proves that the log was not
 // edited; Integrity proves that the current policy is what the log says it
-// should be, which the chain alone cannot: the tools table and the status
-// columns of tool_versions are mutable by design, so a forged approval, a
-// rewritten last_seen_digest or a replaced guard trigger leaves the chain
-// intact and the processor's read path has no way to tell. Integrity also
-// re-hashes the canonical bytes of every approved version, whatever the Store
-// remembers, so the one report says whether the file can be trusted.
+// should be, which the chain alone cannot: the servers and tools tables and
+// the status columns of tool_versions are mutable by design, so a forged
+// approval, a tool switched back on, a server un-paused, a rewritten
+// last_seen_digest or a replaced guard trigger leaves the chain intact and the
+// processor's read path has no way to tell. Integrity also re-hashes the
+// canonical bytes of every approved version, whatever the Store remembers, so
+// the one report says whether the file can be trusted.
 //
 // Everything is read in one read transaction, so the report describes one
 // consistent state. The log is streamed in pages and reduced to one small
-// record per tool and one per decision ever made, so memory grows with the
-// catalog and the decisions, not with the crawl history. The error is non-nil
-// only when the check itself could not run; otherwise the report is complete
-// and Problems is the verdict.
+// record per tool, one per server and one per decision ever made, so memory
+// grows with the catalog and the decisions, not with the crawl history. The
+// error is non-nil only when the check itself could not run; otherwise the
+// report is complete and Problems is the verdict.
 func (s *Store) Integrity(ctx context.Context) (IntegrityReport, error) {
 	var rep IntegrityReport
 	err := s.inRead(ctx, func(q queryer) error {
@@ -75,18 +96,20 @@ func (s *Store) Integrity(ctx context.Context) (IntegrityReport, error) {
 }
 
 // integrityCheck is the state of one Integrity run: what the audit log says
-// about every tool and every decision, gathered in one pass over the log, and
-// the report being filled.
+// about every tool, every server and every decision, gathered in one pass over
+// the log, and the report being filled.
 type integrityCheck struct {
 	ctx context.Context
 	q   queryer
 	rep *IntegrityReport
 	// latest is, per tool subject, what the newest entry about the tool left
 	// behind; latestApproval the newest version.approved or version.rolled_back
-	// entry; decisions the multiset of decision entries, by key, with their
-	// sequence numbers, which checkApprovals consumes.
+	// entry; servers what the log says about each server; decisions the
+	// multiset of decision entries, by key, with their sequence numbers, which
+	// checkApprovals consumes.
 	latest         map[string]toolTrace
 	latestApproval map[string]decisionTrace
+	servers        map[string]*serverTrace
 	decisions      map[decisionKey][]int64
 }
 
@@ -95,17 +118,21 @@ func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport) *in
 		ctx: ctx, q: q, rep: rep,
 		latest:         map[string]toolTrace{},
 		latestApproval: map[string]decisionTrace{},
+		servers:        map[string]*serverTrace{},
 		decisions:      map[decisionKey][]int64{},
 	}
 }
 
 // run performs the passes in dependency order: the log first, because the
-// tool and approval passes compare against what it recorded.
+// tool, server and approval passes compare against what it recorded.
 func (c *integrityCheck) run() error {
 	if err := c.checkGuardObjects(); err != nil {
 		return err
 	}
 	if err := c.readLog(); err != nil {
+		return err
+	}
+	if err := c.checkServers(); err != nil {
 		return err
 	}
 	if err := c.checkTools(); err != nil {
@@ -125,16 +152,19 @@ func (c *integrityCheck) problem(format string, args ...any) {
 }
 
 func (c *integrityCheck) checkGuardObjects() error {
-	missing, redefined, err := checkGuards(c.ctx, c.q)
+	g, err := checkGuards(c.ctx, c.q)
 	if err != nil {
 		return err
 	}
-	c.rep.GuardsMissing, c.rep.GuardsRedefined = missing, redefined
-	for _, label := range missing {
+	c.rep.GuardsMissing, c.rep.GuardsRedefined, c.rep.ForeignObjects = g.missing, g.redefined, g.foreign
+	for _, label := range g.missing {
 		c.problem("guard %s is missing", label)
 	}
-	for _, label := range redefined {
+	for _, label := range g.redefined {
 		c.problem("guard %s was redefined", label)
+	}
+	for _, label := range g.foreign {
+		c.problem("unexpected %s: the schema did not create it", label)
 	}
 	return nil
 }
@@ -142,8 +172,8 @@ func (c *integrityCheck) checkGuardObjects() error {
 // integrityToolsQuery reads every tool with what the registry claims about
 // its approval. The joins are outer so that a row pointing nowhere is
 // reported rather than dropped.
-const integrityToolsQuery = `SELECT s.name, t.id, t.name, t.last_seen_digest, t.approved_version_id, av.id, av.tool_id,
-		COALESCE(av.digest, ''), COALESCE(av.status, '')
+const integrityToolsQuery = `SELECT s.name, t.id, t.name, t.state, t.last_seen_digest, t.proposals_since_decision,
+		t.approved_version_id, av.id, av.tool_id, COALESCE(av.digest, ''), COALESCE(av.status, '')
 	FROM tools t LEFT JOIN servers s ON s.id = t.server_id
 	LEFT JOIN tool_versions av ON av.id = t.approved_version_id
 	ORDER BY s.name, t.name`
@@ -152,7 +182,8 @@ const integrityToolsQuery = `SELECT s.name, t.id, t.name, t.last_seen_digest, t.
 type integrityTool struct {
 	server                      sql.NullString
 	id                          int64
-	name, lastSeen              string
+	name, state, lastSeen       string
+	budget                      int
 	pointer, joined, joinedTool sql.NullInt64
 	digest, status              string
 }
@@ -165,7 +196,8 @@ func (c *integrityCheck) checkTools() error {
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r integrityTool
-		if err := rows.Scan(&r.server, &r.id, &r.name, &r.lastSeen, &r.pointer, &r.joined, &r.joinedTool, &r.digest, &r.status); err != nil {
+		if err := rows.Scan(&r.server, &r.id, &r.name, &r.state, &r.lastSeen, &r.budget, &r.pointer, &r.joined, &r.joinedTool,
+			&r.digest, &r.status); err != nil {
 			return fmt.Errorf("catalog: read tools: %w", err)
 		}
 		c.checkTool(r)
@@ -178,7 +210,8 @@ func (c *integrityCheck) checkTools() error {
 
 // checkTool compares one tools row with what the log recorded about it. A
 // tool counts once under ApprovedDigestMismatches however many ways its
-// approval disagrees with the log, and once under StaleLastSeen.
+// approval disagrees with the log, and once under each of StaleLastSeen,
+// StateMismatches and BudgetMismatches.
 func (c *integrityCheck) checkTool(r integrityTool) {
 	subject := r.server.String + "/" + r.name
 	shown := quote(subject)
@@ -199,17 +232,34 @@ func (c *integrityCheck) checkTool(r integrityTool) {
 				shown, shownDigest(approved), trace.seq, shownDigest(trace.approved))
 			mismatch = true
 		}
-		if trace.lastSeen != r.lastSeen {
-			c.problem("tool %s: last_seen_digest is %s but the latest audit entry (seq %d) recorded %s",
-				shown, shownDigest(r.lastSeen), trace.seq, shownDigest(trace.lastSeen))
-			c.rep.StaleLastSeen++
-		}
+		c.compareMutableColumns(r, trace, shown)
 	}
 	if approved != "" && !c.approvalEntryNames(subject, approved, shown) {
 		mismatch = true
 	}
 	if mismatch {
 		c.rep.ApprovedDigestMismatches++
+	}
+}
+
+// compareMutableColumns checks the columns of a tools row that no other pass
+// covers against the newest entry about the tool: last_seen_digest, state and
+// proposals_since_decision.
+func (c *integrityCheck) compareMutableColumns(r integrityTool, trace toolTrace, shown string) {
+	if trace.lastSeen != r.lastSeen {
+		c.problem("tool %s: last_seen_digest is %s but the latest audit entry (seq %d) recorded %s",
+			shown, shownDigest(r.lastSeen), trace.seq, shownDigest(trace.lastSeen))
+		c.rep.StaleLastSeen++
+	}
+	if trace.state != r.state {
+		c.problem("tool %s: state is %s but the latest audit entry (seq %d) left it as %s",
+			shown, quote(r.state), trace.seq, quote(trace.state))
+		c.rep.StateMismatches++
+	}
+	if trace.budget != r.budget {
+		c.problem("tool %s: proposals_since_decision is %d but the latest audit entry (seq %d) left it as %d",
+			shown, r.budget, trace.seq, trace.budget)
+		c.rep.BudgetMismatches++
 	}
 }
 
@@ -252,8 +302,7 @@ func (c *integrityCheck) approvalEntryNames(subject, digest, shown string) bool 
 
 // integrityVersionsQuery reads every version that claims to have been approved
 // at some point, with whether the approvals table agrees.
-const integrityVersionsQuery = `SELECT s.name, t.name, v.version_no, v.status, v.ever_approved,
-		EXISTS (SELECT 1 FROM approvals a WHERE a.version_id = v.id AND a.decision IN ('approve', 'rollback'))
+const integrityVersionsQuery = `SELECT s.name, t.name, v.version_no, v.status, v.ever_approved, ` + approvalRecorded + `
 	FROM tool_versions v JOIN tools t ON t.id = v.tool_id JOIN servers s ON s.id = t.server_id
 	WHERE v.status = 'approved' OR v.ever_approved = 1
 	ORDER BY s.name, t.name, v.version_no`
@@ -329,7 +378,7 @@ func shownDigest(s string) string {
 	switch {
 	case s == "":
 		return "none"
-	case s == lifecycle.UnusableDigest, len(s) == digestHexLen && isHex(s):
+	case s == lifecycle.UnusableDigest, lifecycle.IsDigest(s):
 		return s
 	}
 	return quote(s)

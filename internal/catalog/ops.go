@@ -120,7 +120,7 @@ func (s *Store) transition(ctx context.Context, server, tool string, c change, b
 		if err != nil {
 			return fmt.Errorf("catalog: %s %s/%s: %w", c.op, quote(server), quote(tool), err)
 		}
-		before := rec.tool
+		before := rec.state()
 		if c.decision != "" {
 			rec.budget = 0
 		}
@@ -132,7 +132,7 @@ func (s *Store) transition(ctx context.Context, server, tool string, c change, b
 				return err
 			}
 		}
-		return t.auditTool(ctx, by, server, tool, before, res.Tool, res.Events, "")
+		return t.auditTool(ctx, by, server, tool, before, rec.state(), res.Events, "")
 	})
 }
 
@@ -158,9 +158,10 @@ func recordDecision(ctx context.Context, t *txn, rec *toolRec, c change, by Acto
 // good (limit L6). A revert never resets the budget on its own: a hostile
 // upstream could then cycle through MaxProposalsPerDecision digests and one
 // revert to grow the file without bound, so a person must look and decide.
-// The reset is one audit entry, tool.budget_reset, by a human actor (D7); the
-// tool's state, approval and versions do not change. A budget that is already
-// zero is ErrInvalid, so a reset is never a silent no-op.
+// The reset is one audit entry, tool.budget_reset, by a human actor (D7),
+// whose proposals field records how many were forgotten (N->0); the tool's
+// state, approval and versions do not change. A budget that is already zero is
+// ErrInvalid, so a reset is never a silent no-op.
 func (s *Store) ResetProposalBudget(ctx context.Context, server, tool string, by Actor) error {
 	actor, err := requireHuman(by)
 	if err != nil {
@@ -174,12 +175,12 @@ func (s *Store) ResetProposalBudget(ctx context.Context, server, tool string, by
 		if rec.budget == 0 {
 			return invalidf("tool %s/%s has no proposals since its last decision", quote(server), quote(tool))
 		}
-		note := fmt.Sprintf(" proposals=%d->0", rec.budget)
+		before := rec.state()
 		rec.budget = 0
 		if err := rec.save(ctx, t, rec.tool, nil, 0); err != nil {
 			return err
 		}
 		return t.appendAudit(ctx, actor, evBudgetReset, server+"/"+tool, rec.tool.Approved, rec.tool.Approved,
-			toolDetail("", rec.tool, rec.tool, note))
+			toolDetail("", before, rec.state(), ""))
 	})
 }

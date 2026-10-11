@@ -13,21 +13,26 @@
 // quarantined on its own (RecordCrawl), a definition that cannot be used marks
 // its tool unusable instead of becoming a version, and a tool whose upstream
 // proposes new definitions faster than people decide stops gaining versions
-// (MaxProposalsPerDecision). Nothing is served until a person approves it,
-// and every read path re-hashes the canonical bytes behind the digests it
-// hands out, and serves an approval only with an approve or rollback record
-// behind it. A Store remembers each row it has verified for RecheckTTL (ten
+// (MaxProposalsPerDecision), and a server whose upstream keeps listing fresh
+// names stops gaining rows and bytes (MaxToolsPerServer, MaxServerBytes).
+// Nothing is served until a person approves it, and every read path re-hashes
+// the canonical bytes behind the digests it hands out, and serves an approval
+// only when the tool's newest approve or rollback record names that exact
+// version and digest. A Store remembers each row it has verified for RecheckTTL (ten
 // minutes), so the processor's reload after a crawl does not read every
 // approved definition again; the price, stated in full at RecheckTTL, is that
 // a change to the stored bytes of a row this Store verified within the last
 // RecheckTTL is not reported until that time has passed or a Store without
 // the memory reads the row. Decisions always load their tool afresh.
 //
-// The tools table is the current policy and has no guard trigger: its columns
-// must change with every crawl and decision. What binds them to the
-// append-only history (versions, approvals, the audit log) is Integrity,
-// which cross-checks the registry against the log and names every row that
-// disagrees; audit verify prints its report.
+// The servers and tools tables are the current policy and have no guard
+// trigger: their columns must change with every crawl and decision. What binds
+// them to the append-only history (versions, approvals, the audit log) is
+// Integrity, which cross-checks every mutable column the log describes against
+// the latest entry about its subject and names every row that disagrees; audit
+// verify prints its report. Open, every Snapshot and Approved load and every
+// write transaction refuse a file whose guard objects are missing or redefined
+// or that holds a trigger or view the schema did not create.
 package catalog
 
 import (
@@ -52,10 +57,11 @@ var (
 	ErrSchema = errors.New("catalog: unsupported schema version")
 	// ErrCorrupt means the database contradicts itself: a stored digest does
 	// not hash its canonical form, a pointer dangles, a status disagrees with
-	// the tool row, an approved version has no approval record, or a guard
-	// object is missing or redefined. Someone edited the file outside this
-	// package, or a bug wrote it. Callers must not serve from a corrupt
-	// catalog.
+	// the tool row, an approved version is not the one the tool's newest
+	// decision names, a guard object is missing or redefined, or a trigger or
+	// view exists that the schema did not create. Someone edited the file
+	// outside this package, or a bug wrote it. Callers must not serve from a
+	// corrupt catalog.
 	ErrCorrupt = errors.New("catalog: database integrity check failed")
 	// ErrReadOnly is returned by every mutating method of a Store opened with
 	// OpenOptions.ReadOnly: the processor reads policy and must never be able

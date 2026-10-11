@@ -81,6 +81,9 @@ type Store struct {
 	// verified remembers, for RecheckTTL, the version rows whose bytes a read
 	// path re-checked; see verifier. Close drops it.
 	verified *verifier
+	// caps are the per-server growth limits RecordCrawl enforces: the
+	// constants MaxToolsPerServer and MaxServerBytes, except in tests.
+	caps serverCaps
 }
 
 // Open opens or creates the database at path with the default options: read
@@ -192,6 +195,14 @@ type queryer interface {
 // inTx runs fn in one BEGIN IMMEDIATE transaction. Whatever fn did is committed
 // together with exactly one generation bump, or rolled back if fn (or the bump)
 // fails or panics. A read-only store refuses before touching the database.
+//
+// The guard objects are verified before the commit (verifyGuards): a crawl
+// scheduled every minute must not keep writing crawls, tool state and audit
+// entries into a file whose immutability triggers were dropped after it
+// opened, and a trigger of someone else's making must not get to rewrite the
+// policy inside the catalog's own transaction. The write lock is held from
+// the first statement, so what the check sees at the end is what the file held
+// throughout, and nothing commits into a file the check refuses.
 func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 	if s.readOnly || s.wdb == nil {
 		return ErrReadOnly
@@ -208,6 +219,9 @@ func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 	}()
 	t := newTxn(sqlTx, s.now())
 	if err := fn(t); err != nil {
+		return err
+	}
+	if err := verifyGuards(ctx, t); err != nil {
 		return err
 	}
 	if err := t.bumpGeneration(ctx); err != nil {

@@ -4,17 +4,22 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
 
 // The guard objects: the triggers that make history append-only and the
-// indexes the uniqueness rules rest on. Open, Snapshot and Approved refuse a
-// database that has lost any of them or holds one under another definition
-// (ErrCorrupt). A dropped trigger would silently turn history tables mutable;
-// a same-named trigger that never fires would do the same while a check of
-// names alone still passed, which is why the stored DDL text is compared and
-// not the name.
+// indexes the uniqueness rules rest on. Open, Snapshot, Approved and every
+// write transaction refuse a database that has lost any of them, holds one
+// under another definition, or holds a trigger or view the schema never
+// created (ErrCorrupt). A dropped trigger would silently turn history tables
+// mutable; a same-named trigger that never fires would do the same while a
+// check of names alone still passed, which is why the stored DDL text is
+// compared and not the name; and a trigger of someone else's making on the
+// unguarded tools table can rewrite the current policy inside the catalog's
+// own transaction while the log records the opposite (D13), which is why
+// nothing the schema did not create may exist.
 
 // guardIndexStatements creates the indexes the uniqueness rules rest on. The
 // two partial unique indexes enforce "one pending, one approved version per
@@ -135,21 +140,43 @@ func guardNames(kind string) []string {
 	return names
 }
 
+// The kinds of object sqlite_master lists that the checks look at. Tables are
+// checked by the schema version; an index someone adds can only speed a query
+// up, so foreign indexes are left alone; a trigger or a view can rewrite or
+// misrepresent rows, so a foreign one is corruption.
+const (
+	kindTrigger = "trigger"
+	kindIndex   = "index"
+	kindView    = "view"
+)
+
+// guardCheck is what checkGuards found in the file: the guard objects that are
+// absent, those stored under another definition, and the triggers and views
+// the schema never created. Every slice holds labels ("trigger X", "view X").
+type guardCheck struct {
+	missing, redefined, foreign []string
+}
+
 // verifyGuards requires every guard object to exist and to be defined exactly
-// as the schema defines it. It runs at Open and on every Snapshot and Approved
-// read: a reload costs one scan of sqlite_master, and the processor must never
-// serve from a file whose guards were replaced after it opened.
+// as the schema defines it, and no trigger or view to exist that the schema did
+// not create. It runs at Open, on every Snapshot and Approved read, and at the
+// end of every write transaction: a reload or a write costs one scan of
+// sqlite_master, the processor must never serve from a file whose guards were
+// replaced after it opened, and a long-lived writer must never commit into one.
 func verifyGuards(ctx context.Context, q queryer) error {
-	missing, redefined, err := checkGuards(ctx, q)
+	c, err := checkGuards(ctx, q)
 	if err != nil {
 		return err
 	}
 	var problems []string
-	for _, label := range missing {
+	for _, label := range c.missing {
 		problems = append(problems, "guard "+label+" is missing")
 	}
-	for _, label := range redefined {
+	for _, label := range c.redefined {
 		problems = append(problems, "guard "+label+" was redefined")
+	}
+	for _, label := range c.foreign {
+		problems = append(problems, "unexpected "+label)
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("%w: %s; the file was edited outside toolwarrant", ErrCorrupt, strings.Join(problems, ", "))
@@ -157,33 +184,44 @@ func verifyGuards(ctx context.Context, q queryer) error {
 	return nil
 }
 
-// checkGuards compares the guard objects the file holds with the schema's:
-// missing lists the labels of those that are absent, redefined those whose
-// stored statement differs from the schema's once whitespace is normalised.
-// Other triggers and indexes are ignored; they cannot weaken a guard that is
-// present and intact.
-func checkGuards(ctx context.Context, q queryer) (missing, redefined []string, err error) {
+// checkGuards compares the triggers, indexes and views the file holds with the
+// schema's: a guard that is absent is missing, one whose stored statement
+// differs from the schema's once whitespace is normalised is redefined, and a
+// trigger or view that is not a guard is foreign. Indexes that are not guards
+// are ignored: an index cannot change what a query returns.
+func checkGuards(ctx context.Context, q queryer) (guardCheck, error) {
 	stored, err := storedObjectDDL(ctx, q)
 	if err != nil {
-		return nil, nil, err
+		return guardCheck{}, err
 	}
+	var c guardCheck
+	expected := map[string]bool{}
 	for _, g := range guardObjects() {
-		ddl, ok := stored[g.kind+"/"+g.name]
+		key := g.kind + "/" + g.name
+		expected[key] = true
+		ddl, ok := stored[key]
 		switch {
 		case !ok:
-			missing = append(missing, g.label())
+			c.missing = append(c.missing, g.label())
 		case normalizeDDL(ddl) != normalizeDDL(g.ddl):
-			redefined = append(redefined, g.label())
+			c.redefined = append(c.redefined, g.label())
 		}
 	}
-	return missing, redefined, nil
+	for _, key := range slices.Sorted(maps.Keys(stored)) {
+		kind, name, _ := strings.Cut(key, "/")
+		if kind != kindIndex && !expected[key] {
+			c.foreign = append(c.foreign, kind+" "+name)
+		}
+	}
+	return c, nil
 }
 
-// storedObjectDDL reads the statement behind every trigger and index in the
-// file, keyed by kind/name. SQLite keeps the text of the CREATE statement that
-// made the object; an index it created for a constraint has none.
+// storedObjectDDL reads the statement behind every trigger, index and view in
+// the file, keyed by kind/name. SQLite keeps the text of the CREATE statement
+// that made the object; an index it created for a constraint has none.
 func storedObjectDDL(ctx context.Context, q queryer) (map[string]string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT type, name, sql FROM sqlite_master WHERE type IN ('trigger', 'index')`)
+	rows, err := q.QueryContext(ctx, `SELECT type, name, sql FROM sqlite_master WHERE type IN (?, ?, ?)`,
+		kindTrigger, kindIndex, kindView)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: inspect guard objects: %w", err)
 	}

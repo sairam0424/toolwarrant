@@ -79,6 +79,11 @@ func TestModel_StoreFollowsTheLifecycleModel(t *testing.T) {
 		if _, err := m.s.VerifyAudit(bg); err != nil {
 			rt.Fatalf("VerifyAudit: %v", err)
 		}
+		// Whatever the history, a catalog the Store wrote agrees with its log
+		// on every column Integrity cross-checks (D13).
+		if rep, err := m.s.Integrity(bg); err != nil || len(rep.Problems) != 0 {
+			rt.Fatalf("Integrity = %+v, %v; want a clean report", rep, err)
+		}
 	})
 }
 
@@ -279,9 +284,16 @@ func (m *model) crawl(force map[string]string) {
 	if len(rep.Rejected) != rejected {
 		m.rt.Fatalf("report rejected %d entries, model %d", len(rep.Rejected), rejected)
 	}
-	names := sortedNames(next)
+	// A deprecated tool the crawl did not list is neither loaded nor reported
+	// (D13); every other tool the model knows has one line.
+	var names []string
+	for _, n := range sortedNames(next) {
+		if seen[n] != absent || m.tools[n].State != lifecycle.Deprecated {
+			names = append(names, n)
+		}
+	}
 	if len(rep.Changes) != len(names) {
-		m.rt.Fatalf("report lists %d tools, model knows %d", len(rep.Changes), len(names))
+		m.rt.Fatalf("report lists %d tools, model expects %d (%v)", len(rep.Changes), len(names), names)
 	}
 	for i, c := range rep.Changes {
 		if c.Tool != names[i] || c.State != next[c.Tool].State || c.Digest != live[c.Tool] ||

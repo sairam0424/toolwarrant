@@ -65,7 +65,9 @@ func TestOpen_ReopenKeepsDataAndIsIdempotent(t *testing.T) {
 }
 
 func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
-	for name, version := range map[string]int{"newer": 99, "older unreleased": 1, "negative": -3} {
+	// Version 3 is the previous unreleased build (D13(i): the audit detail
+	// format gained fields); it is refused like every other.
+	for name, version := range map[string]int{"newer": 99, "older unreleased": 1, "previous unreleased": 3, "negative": -3} {
 		t.Run(name, func(t *testing.T) {
 			path := dbPath(t)
 			s, err := Open(path, lifecycle.DefaultPolicy())
@@ -78,7 +80,7 @@ func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
 			if !errors.Is(err, ErrSchema) {
 				t.Fatalf("Open on a version %d database: %v, want ErrSchema", version, err)
 			}
-			if version == 1 && !strings.Contains(err.Error(), "run init again") {
+			if version > 0 && version < schemaVersion && !strings.Contains(err.Error(), "delete the file and run init again") {
 				t.Errorf("an older database must tell the operator to re-initialise: %v", err)
 			}
 			if _, err := OpenWith(path, OpenOptions{ReadOnly: true}); !errors.Is(err, ErrSchema) {
