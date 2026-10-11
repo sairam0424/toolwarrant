@@ -12,7 +12,7 @@ corrections they forced to the spike's findings. Each record gives the context
 (what a review found), the decision, its consequences for operators and for
 other packages, and where it lives in code with the tests that pin it. Where a
 decision is proven on the real gateway, the end-to-end scenario is named:
-`TestEndToEnd` in `e2e/` runs scenarios A to N against the agentgateway v1.6.0
+`TestEndToEnd` in `e2e/` runs scenarios A to P against the agentgateway v1.6.0
 binary (`make e2e`; `demo/run.sh` keeps the last run in `demo/last-run.log`).
 
 ## D1. The digest covers the whole definition: profile `full-v1`
@@ -215,7 +215,8 @@ binary (`make e2e`; `demo/run.sh` keeps the last run in `demo/last-run.log`).
   roll back to, so no approve, reject or rollback was accepted and the tool
   could never take a new definition (limit L6). A budget that is already zero
   is refused, so the reset is never a silent no-op. The CLI command for the
-  reset is a later step; the catalog method exists. A revert alone never
+  reset is `budget reset SERVER TOOL [--by NAME]`, a human decision with one
+  audit entry; the system actor is refused as a usage error. A revert alone never
   resets the budget, because a hostile upstream could then cycle twenty garbage
   digests and a revert to grow the file.
 - Consequence. Excess becomes a denial or a hidden tool, never a pass. A tool
@@ -427,7 +428,7 @@ if a gateway behaviour appears that no control on our side can make visible.
 Where: `internal/emit` (the gateways form and the listener inputs),
 `cmd/toolwarrant/verify.go` and `cmd/toolwarrant/verdicts.go` (the canary),
 `e2e/` (every scenario runs through the real gateway). Tests: `TestEndToEnd`
-scenarios F, I, K and L; emit `TestGatewayParsesBindAddress`,
+scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
 `TestGoldenFilesValidateWithRealGateway`.
 
 ## D12. LEAK means served but not approved, and the canary probes the gateway
@@ -473,12 +474,20 @@ scenarios F, I, K and L; emit `TestGatewayParsesBindAddress`,
   defect: the probe is the control on our side, the report to the gateway
   project is the owner's pending action (L17), and the probe is re-run on every
   move of the gateway pin (L7). The e2e scenario L's assertion that MISMATCH
-  alone exits 0 encoded the old behaviour and changes with this decision.
+  alone exits 0 encoded the old behaviour and changed with this decision: on
+  the CEL-only variant scenario L now expects `LEAK vendor_tool` with the
+  MISMATCH sub-label and exit 1, with or without `--config`.
 - Where. `cmd/toolwarrant/verdicts.go` (`compare`, the LEAK rule),
   `cmd/toolwarrant/verify.go` (`--admin`, the probe, `--no-probe`),
   `internal/emit/listeners.go` (the listener inputs). Tests: cmd
   `TestCompareSortsLiveToolsIntoVerdicts`,
   `TestVerifyGatewayReportsLeaksAgainstAPassThroughUpstream`,
-  `TestVerifyGatewayChecksTheEmittedConfig`; e2e scenario F (CONFIG-EDITED and
+  `TestVerifyGatewayChecksTheEmittedConfig`; e2e scenarios F (CONFIG-EDITED and
   LEAK across a hand edit, and the `--every 1s --keep-going` canary that
-  exited 1 on SIGTERM after reporting both).
+  exited 1 on SIGTERM after reporting both), O (UNHOOKED-CALLS, exit 1, from
+  the pinned binary's HTTP 202, with the probe in the hostile upstream's
+  request log; `--no-probe` reports the probe as skipped) and P
+  (LIVE-CONFIG-MISMATCH, exit 1, after the processors were removed through
+  `POST /api/config`, against a byte-identical copy of the emitted file; the
+  gateway rewrote the watched file with the header lines kept, so that file
+  reported CONFIG-EDITED).

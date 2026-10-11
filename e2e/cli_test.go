@@ -153,11 +153,29 @@ func (s *stack) approve(t *testing.T, server, tool, hash string) string {
 	return out
 }
 
-// verifyGateway runs the canary for one server's route, with the emitted
-// file so CONFIG-EDITED is checked too.
-func (s *stack) verifyGateway(t *testing.T, server string) cliResult {
+// canaryArgs builds one verify-gateway command for a server's route. config
+// is the file for --config, "" for none. The unhooked-call probe is sent only
+// when probe is set: agentgateway v1.6.0 forwards the id-less probe, which is
+// UNHOOKED-CALLS with exit 1, so every check that is about something else
+// keeps the probe off with --no-probe, and scenario O is the one that turns
+// it on.
+func (s *stack) canaryArgs(server string, probe bool, config string) []string {
+	args := []string{"verify-gateway", "--server", server, "--url", s.routeURL(server)}
+	if config != "" {
+		args = append(args, "--config", config)
+	}
+	if !probe {
+		args = append(args, "--no-probe")
+	}
+	return args
+}
+
+// verifyGateway runs one check of one server's route with the emitted file,
+// so CONFIG-EDITED is checked too, and without the probe; extra flags such as
+// --admin are appended.
+func (s *stack) verifyGateway(t *testing.T, server string, extra ...string) cliResult {
 	t.Helper()
-	return s.tw(t, nil, "verify-gateway", "--server", server, "--url", s.routeURL(server), "--config", s.cfg)
+	return s.tw(t, nil, append(s.canaryArgs(server, false, s.cfg), extra...)...)
 }
 
 // mustContain reports every expected substring that is missing from s.

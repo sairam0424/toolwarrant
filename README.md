@@ -101,7 +101,7 @@ agentgateway v1.6.0. Everything binds to loopback. The individual steps are
 covered by the unit tests named in [docs/threat-model.md](docs/threat-model.md);
 the whole chain through the real gateway with `toolwarrant serve` as the
 processor is proven by the end-to-end test in `e2e/` (`make e2e`, scenarios A to
-N; `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The spike
+P; `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The spike
 in [seam/RESULTS.md](seam/RESULTS.md) ran the same shape with a prototype
 processor, not with this CLI.
 
@@ -257,8 +257,10 @@ rollback record in the append-only approvals table. A file that fails any of
 these is reported as corrupt and nothing is served from it. `Store.Integrity`
 in `internal/catalog` goes further and cross-checks the mutable registry
 (approved digests, approval rows, last-seen digests) against the approvals
-table and the audit log, listing every disagreement; no command runs it yet,
-and wiring it into `audit verify` is a later step.
+table and the audit log, listing every disagreement; `audit verify` runs it
+after the chain check and prints `integrity ok: guard objects intact, every
+approval recorded in the log`, or one `integrity problem:` line per
+disagreement and exits 1.
 
 The one operational rule: record the head hash outside the database. The chain
 proves that nothing inside it was altered since the first entry; it cannot
@@ -270,8 +272,8 @@ sequence order. Both commands open the database in forensic mode, which reads a
 file whose guard objects were dropped or redefined so that the broken entry can
 be named; nothing is ever served or written from such an open, and `audit log
 ok` in that mode means the chain is consistent, not that the guards are intact
-(every other command refuses such a file; `audit verify` printing the integrity
-problems itself is a later step).
+(every other command refuses such a file; `audit verify` prints the integrity
+problems itself and exits 1 when there are any).
 
 ## Non-goals
 
@@ -346,10 +348,10 @@ until a later version says otherwise.
   rollback reset the budget; when none of them is available (the second review
   found that an upstream revert with the budget exhausted left no pending
   proposal and nothing to roll back to, so the tool could never take a new
-  definition), the explicit reset decision `Store.ResetProposalBudget` in
-  `internal/catalog` is the way out; the CLI command for it is a later step. A
-  hostile upstream can keep its own tool hidden this way; it cannot grow the
-  database.
+  definition), the explicit reset decision `toolwarrant budget reset SERVER
+  TOOL [--by NAME]` (`Store.ResetProposalBudget` in `internal/catalog`) is the
+  way out: a human decision with one audit entry. A hostile upstream can keep
+  its own tool hidden this way; it cannot grow the database.
 - L7. agentgateway is pinned to v1.6.0. The project ships breaking changes about
   every five weeks, its config schema is unversioned and the ExtMCP protocol is
   young. Every other release of the gateway must be re-qualified against the

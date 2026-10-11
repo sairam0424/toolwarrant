@@ -7,8 +7,9 @@
 # one-line verdict and exits with the test's exit code. The test needs the
 # gateway binary at .cache/agentgateway-darwin-arm64 (or TOOLWARRANT_GATEWAY_BIN)
 # and skips loudly without it. Everything runs on loopback ports picked at
-# run time; the only fixed ports are the gateway's admin, stats and readiness
-# listeners (127.0.0.1:15000, 15020, 15021), which the emitted file pins.
+# run time, the gateway's admin, stats and readiness listeners included (the
+# test passes them through emit --admin-addr, --stats-addr and
+# --readiness-addr), so nothing on the host has to be stopped first.
 #
 # Processes the test starts are stopped by the test. As a safety net for a
 # run that was killed, anything whose command line still names this run's

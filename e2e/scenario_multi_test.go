@@ -29,7 +29,7 @@ func scenarioJ(t *testing.T, s *stack) {
 	mustContain(t, "denial on mockb", o.detail(), "not approved")
 	s.expectAllowed(t, s.eventuallyServes(t, "mock", "add", "echo"), "echo", "hello")
 
-	r := s.tw(t, nil, "emit", "--out", s.cfg, "--listen-port", itoa(s.gwPort), "--processor", "mock="+s.processorAddr("mock"), "--processor", "mockb="+s.processorAddr("mock"))
+	r := s.tw(t, nil, append(s.emitBaseArgs(), "--processor", "mock="+s.processorAddr("mock"), "--processor", "mockb="+s.processorAddr("mock"))...)
 	if r.code != exitFailure {
 		t.Fatalf("emit with one processor address for two servers: exit %d, want 1\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
@@ -112,8 +112,12 @@ func scenarioK(t *testing.T, s *stack) {
 // scenarioL: a tool carrying keys the gateway does not know is crawled
 // directly and approved. The gateway re-serialises it before the hook, so the
 // processor sees another digest and hides it (counted as a mismatch, D10,
-// limit L2). Which keys the gateway dropped is recorded by listing the
-// CEL-only variant with a raw client, where verify-gateway reports MISMATCH.
+// limit L2), and verify-gateway reports the hidden tool as MISSING with exit
+// 0. Which keys the gateway dropped is recorded by listing the CEL-only
+// variant with a raw client; there the gateway serves the re-serialised bytes
+// and verify-gateway reports a LEAK with the MISMATCH sub-label, exit 1,
+// with or without --config (decision D12; before the third round the check
+// without --config printed a non-failing MISMATCH verdict).
 func scenarioL(t *testing.T, s *stack) {
 	hostile := s.servers["hostile"].hostile
 	vendor := vendorTool()
@@ -130,10 +134,11 @@ func scenarioL(t *testing.T, s *stack) {
 	mustContain(t, "processor log", proc.output(proc.stderr), `"msg":"digest mismatch"`, "vendor_tool")
 	r := s.verifyGateway(t, "hostile")
 	if r.code != exitOK {
-		t.Errorf("verify-gateway with the processor hiding vendor_tool: exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+		t.Errorf("verify-gateway with the processor hiding vendor_tool: exit %d, want 0 (MISSING never fails)\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
+	mustContain(t, "verify-gateway with the processor", r.stdout, "MISSING vendor_tool", "OK: the gateway serves 1 tool(s), 1 approved and current, 1 approved but not listed (MISSING)")
+	mustNotContain(t, "verify-gateway with the processor", r.stdout, "LEAK", "MISMATCH")
 	s.note(t, "L: with the processor in place verify-gateway printed: %s", strings.TrimSpace(r.stdout))
-	mustContain(t, "verify-gateway with the processor", r.stdout, "vendor_tool")
 
 	original := s.config(t)
 	s.writeConfig(t, stripGuardrails(original))
@@ -148,19 +153,21 @@ func scenarioL(t *testing.T, s *stack) {
 	if !slices.Contains(dropped, "x-vendor") {
 		t.Errorf("the gateway kept the unknown top-level key x-vendor, so the processor's mismatch has another cause; dropped %v", dropped)
 	}
-	// With --config the hand edit itself fails the check (CONFIG-EDITED, exit
-	// 1); without it the served definition is reported as MISMATCH, which the
-	// docs define as a report, not a failure, so the exit code is 0.
+	// The re-serialised bytes reach a client only without the processor. With
+	// --config the hand edit is CONFIG-EDITED as well; without it the LEAK
+	// alone fails the check, because the catalog has no record of drift and
+	// the MISMATCH sub-label says so.
 	r = s.verifyGateway(t, "hostile")
 	if r.code != exitFailure {
 		t.Errorf("verify-gateway --config on the edited CEL-only file: exit %d, want 1\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
-	mustContain(t, "verify-gateway --config without the processor", r.stdout, "CONFIG-EDITED", "MISMATCH vendor_tool")
-	r = s.tw(t, nil, "verify-gateway", "--server", "hostile", "--url", s.routeURL("hostile"))
-	if r.code != exitOK {
-		t.Errorf("verify-gateway without --config on the CEL-only variant: exit %d (MISMATCH alone must not fail)\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+	mustContain(t, "verify-gateway --config without the processor", r.stdout, "CONFIG-EDITED", "LEAK vendor_tool", mismatchLabel)
+	r = s.tw(t, nil, s.canaryArgs("hostile", false, "")...)
+	if r.code != exitFailure {
+		t.Errorf("verify-gateway without --config on the CEL-only variant: exit %d, want 1 (a LEAK fails whatever its sub-label)\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
-	mustContain(t, "verify-gateway without the processor", r.stdout, "MISMATCH vendor_tool", "OK: the gateway serves 2 tool(s), 1 approved and current, 1 with a digest other than the approved one (MISMATCH)")
+	mustContain(t, "verify-gateway without the processor", r.stdout, "LEAK vendor_tool", mismatchLabel)
+	mustContain(t, "verify-gateway stderr without the processor", r.stderr, "1 tool(s) leak")
 	s.note(t, "L: without the processor and without --config verify-gateway printed: %s", strings.TrimSpace(r.stdout))
 	s.emit(t, nil)
 	s.eventuallyServes(t, "hostile", "echo")

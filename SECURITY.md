@@ -73,7 +73,7 @@ the egress policy forbids; an edit to the database that the catalog's integrity
 checks do not report (the digest re-check, the approval-record requirement and
 the guard definitions, all applied at open and on every snapshot load, the audit
 chain, and `Store.Integrity`'s cross-check of the registry against the approvals
-table and the log, which no command runs yet);
+table and the log, which `audit verify` runs after the chain check);
 upstream text reaching a terminal, a log line or a file name unescaped; a
 bearer token, shared secret or credential-bearing URL printed, stored, logged or
 written into a file that is not owner-only; anything under `internal/export`

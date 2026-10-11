@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +132,3 @@ func scenarioN(t *testing.T, s *stack) {
 		}
 	}
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }

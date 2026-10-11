@@ -6,7 +6,7 @@ table in `cmd/toolwarrant/main.go` (`toolwarrant help COMMAND` prints them).
 Every behaviour described here is covered by an in-process test of
 `cmd/toolwarrant` or of the package behind the command, and the chain through
 the real gateway by a scenario of the end-to-end test (`e2e/`, `make e2e`,
-scenarios A to N); see [threat-model.md](threat-model.md) for the test names.
+scenarios A to P); see [threat-model.md](threat-model.md) for the test names.
 
 Global flags come before the command: `--db PATH` (or `TOOLWARRANT_DB`, default
 `./toolwarrant.db`), `--as NAME` (or `TOOLWARRANT_ACTOR`; the name `crawler` is
@@ -141,12 +141,19 @@ Verdicts, one line per tool or per check:
   configuration replaced through the admin API (limit L18) and an operator
   pointing `--config` at the wrong file. The check needs the admin API on,
   which is the emitter's default; a file emitted with `--disable-admin` has
-  nothing to compare against.
+  nothing to compare against. Scenario P printed `LIVE-CONFIG-MISMATCH mock:
+  processor: the live route has none` with exit code 1 after the processors
+  were removed through the admin API, against a byte-identical copy of the
+  emitted file; the gateway had rewritten the watched file with the header
+  lines kept, so the same check against that file printed CONFIG-EDITED.
 - `UNHOOKED-CALLS`: the gateway forwarded the probe, a `tools/call` without an
   id for the tool name `toolwarrant.probe.<random>`, which no catalog can hold,
   instead of rejecting it with a 400 or a JSON-RPC error (limit L17). Exit
   code 1. The probe reaches the upstream exactly when the gateway is unhooked,
-  which is why `--no-probe` exists.
+  which is why `--no-probe` exists. Scenario O printed this verdict against the
+  pinned binary, the hostile upstream's request log showed the probe arriving,
+  and with `--no-probe` the OK line said `unhooked-call probe skipped
+  (--no-probe)`.
 - `OK: the gateway serves N tool(s), N approved and current`, followed by
   counts such as `, 1 approved but not listed (MISSING)` when there are any.
   Exit code 0 is OK or MISSING only.
@@ -235,10 +242,11 @@ name the broken entry (`the audit log is broken at entry N`). Nothing is ever
 served or written from such an open. Read `audit log ok` in that mode as "the
 chain is consistent", not as "the file is intact": every other command refuses
 a database whose guard objects are missing or do not have the definition `init`
-wrote (`ErrCorrupt`), and `Store.Integrity` in `internal/catalog` cross-checks
+wrote (`ErrCorrupt`), and `audit verify` runs `Store.Integrity`'s cross-check of
 the mutable registry (approved digests, approval rows, `LastSeen`) against the
-approvals table and the log, but no command runs that cross-check yet; wiring
-it into `audit verify` is a later step. Until then, run `list` against a
+approvals table and the log after the chain check, printing `integrity ok:
+guard objects intact, every approval recorded in the log` or one `integrity
+problem:` line per disagreement with exit code 1. Run `list` against a
 suspect database as well, and compare `show` with `audit list` for the tool in
 question.
 

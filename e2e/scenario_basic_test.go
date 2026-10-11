@@ -10,8 +10,9 @@ import (
 )
 
 // scenarioA: a fresh catalog is crawled, nothing is approved, the emitted
-// file is loaded by the real gateway and the processor guards the route.
-// Through the gateway tools/list is empty and every tools/call is denied.
+// file pins the gateway's listeners to the ports the stack picked, the file is
+// loaded by the real gateway and the processor guards the route. Through the
+// gateway tools/list is empty and every tools/call is denied.
 func scenarioA(t *testing.T, s *stack) {
 	s.addMock(t, "mock")
 	out := s.twOK(t, "crawl", "mock")
@@ -24,7 +25,11 @@ func scenarioA(t *testing.T, s *stack) {
 	s.emit(t, nil)
 	cfg := string(s.config(t))
 	mustContain(t, "emitted config", cfg, `allow: "false"`, `failureMode: "failClosed"`, `bindAddress: "127.0.0.1"`,
-		"port: "+strconv.Itoa(s.gwPort), `host: "`+s.processorAddr("mock")+`"`, `gateways: "toolwarrant"`)
+		"port: "+strconv.Itoa(s.gwPort), `host: "`+s.processorAddr("mock")+`"`, `gateways: "toolwarrant"`,
+		`adminAddr: "`+s.adminAddr()+`"`, `statsAddr: "`+s.statsAddr()+`"`, `readinessAddr: "`+s.readinessAddr()+`"`)
+	// The listeners are the stack's ports, never the emitter's defaults, so a
+	// second gateway on this host cannot collide with this one.
+	mustNotContain(t, "emitted config", cfg, ":15000", ":15020", ":15021")
 	s.startProcessor(t, "mock", nil)
 	s.startGateway(t)
 

@@ -37,23 +37,31 @@ func randomToken(t *testing.T) string {
 }
 
 // okSummary is the per-check line the canary loop prints while the route is
-// healthy.
+// healthy; the line goes on with the live-configuration and probe parts.
 const okSummary = "mock: the gateway serves 2 tool(s), 2 approved and current"
+
+// mismatchLabel is the sub-label a LEAK line carries when the latest crawl saw
+// the approved digest, so the catalog has no record of drift (decision D12).
+const mismatchLabel = "(MISMATCH:"
 
 // scenarioF: verify-gateway passes on the emitted file; a hand edit that
 // strips the processor block is reloaded by the gateway, and after a drift a
 // new session sees the drifted definition. verify-gateway --config reports
-// CONFIG-EDITED, and once the catalog knows about the drift, LEAK, with exit
-// code 1. A canary loop (--every 1s --keep-going) running throughout prints
-// the same verdicts as they happen and exits 1 when stopped. Restoring the
-// file restores the guard.
+// CONFIG-EDITED and a LEAK line at once, exit code 1: before the crawl records
+// the drift the LEAK carries the MISMATCH sub-label (the latest crawl saw the
+// approved digest), after it the plain LEAK (decision D12; before the third
+// round the first check printed a non-failing MISMATCH). A canary loop
+// (--every 1s --keep-going) running throughout prints the same verdicts as
+// they happen and exits 1 when stopped. Restoring the file restores the guard.
 func scenarioF(t *testing.T, s *stack) {
 	r := s.verifyGateway(t, "mock")
 	if r.code != exitOK {
 		t.Fatalf("verify-gateway before the edit: exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
 	mustContain(t, "verify-gateway", r.stdout, "OK: the gateway serves 2 tool(s)")
-	canary := s.spawn(t, "canary", nil, s.h.toolwarrant, "--db", s.db, "verify-gateway", "--server", "mock", "--url", s.routeURL("mock"), "--config", s.cfg, "--every", "1s", "--keep-going")
+	canaryCmd := append([]string{"--db", s.db}, s.canaryArgs("mock", false, s.cfg)...)
+	canaryCmd = append(canaryCmd, "--every", "1s", "--keep-going")
+	canary := s.spawn(t, "canary", nil, s.h.toolwarrant, canaryCmd...)
 	waitForOutput(t, canary, okSummary, 1)
 	original := s.config(t)
 	stripped := stripGuardrails(original)
@@ -77,7 +85,8 @@ func scenarioF(t *testing.T, s *stack) {
 	if r.code != exitFailure {
 		t.Errorf("verify-gateway on the edited file: exit %d, want 1\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
-	mustContain(t, "verify-gateway before the crawl", r.stdout, "CONFIG-EDITED", "MISMATCH echo")
+	mustContain(t, "verify-gateway before the crawl", r.stdout, "CONFIG-EDITED", "LEAK echo", mismatchLabel)
+	mustContain(t, "verify-gateway stderr before the crawl", r.stderr, "leak", "edited")
 	s.note(t, "F: before the crawl recorded the drift, verify-gateway printed: %s", strings.TrimSpace(r.stdout))
 	mustContain(t, "crawl", s.twOK(t, "crawl", "mock"), "DRIFT")
 	r = s.verifyGateway(t, "mock")
@@ -85,7 +94,9 @@ func scenarioF(t *testing.T, s *stack) {
 		t.Errorf("verify-gateway after the crawl: exit %d, want 1\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
 	mustContain(t, "verify-gateway after the crawl", r.stdout, "CONFIG-EDITED", "LEAK echo")
+	mustNotContain(t, "verify-gateway after the crawl", r.stdout, mismatchLabel)
 	mustContain(t, "verify-gateway stderr", r.stderr, "leak", "edited")
+	s.note(t, "F: after the crawl recorded the drift, verify-gateway printed: %s", strings.TrimSpace(r.stdout))
 	waitForOutput(t, canary, "LEAK echo", 0)
 	waitForOutput(t, canary, "CONFIG-EDITED", 0)
 
@@ -104,9 +115,9 @@ func scenarioF(t *testing.T, s *stack) {
 	if code := canary.stop(); code != exitFailure {
 		t.Errorf("verify-gateway --every --keep-going exit %d after seeing a LEAK, want 1\nstdout:\n%s\nstderr:\n%s", code, canary.output(canary.stdout), canary.output(canary.stderr))
 	}
-	mustContain(t, "canary stderr", canary.output(canary.stderr), "at least one check of this run found a LEAK or CONFIG-EDITED")
-	s.note(t, "F: the --every 1s --keep-going canary printed %d healthy checks, %d LEAK lines and %d CONFIG-EDITED lines across the edit, and exited 1 on SIGTERM",
-		countIn(canary.stdout, okSummary), countIn(canary.stdout, "LEAK echo"), countIn(canary.stdout, "CONFIG-EDITED"))
+	mustContain(t, "canary stderr", canary.output(canary.stderr), "check(s) in this run failed")
+	s.note(t, "F: the --every 1s --keep-going canary printed %d healthy checks, %d LEAK lines (%d of them with the MISMATCH sub-label) and %d CONFIG-EDITED lines across the edit, and exited 1 on SIGTERM",
+		countIn(canary.stdout, okSummary), countIn(canary.stdout, "LEAK echo"), countIn(canary.stdout, mismatchLabel), countIn(canary.stdout, "CONFIG-EDITED"))
 }
 
 // scenarioG: with the processor stopped, failClosed makes tools/list and
@@ -183,7 +194,8 @@ func scenarioH(t *testing.T, s *stack) {
 
 // scenarioI: the emitted file binds the serving port to 127.0.0.1 and the
 // running gateway refuses connections on the host's non-loopback address; the
-// admin, stats and readiness listeners are not reachable there either.
+// admin, stats and readiness listeners on the ports the stack picked are not
+// reachable there either.
 func scenarioI(t *testing.T, s *stack) {
 	mustContain(t, "emitted config", string(s.config(t)), `bindAddress: "127.0.0.1"`)
 	ip := nonLoopbackIPv4()
@@ -192,7 +204,7 @@ func scenarioI(t *testing.T, s *stack) {
 	}
 	// A host firewall may drop rather than refuse, so each probe waits the
 	// full refuseTimeout; the probes run together to keep that to one wait.
-	ports := append([]int{s.gwPort}, fixedAdminPorts...)
+	ports := append([]int{s.gwPort}, s.listenerPorts()...)
 	results := make([]error, len(ports))
 	var wg sync.WaitGroup
 	for i, port := range ports {
@@ -215,7 +227,7 @@ func scenarioI(t *testing.T, s *stack) {
 		}
 		s.note(t, "I: connection to %s not accepted: %v", addr, results[i])
 	}
-	if !portOpen(fmt.Sprintf("127.0.0.1:%d", s.gwPort)) {
+	if !portOpen(loopback(s.gwPort)) {
 		t.Errorf("the gateway does not accept connections on loopback either")
 	}
 }

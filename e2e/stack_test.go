@@ -30,12 +30,23 @@ const (
 	// variants of scenarios F, K, L and M remove it.
 	guardrailsKey    = "    mcpGuardrails:"
 	guardrailsIndent = 4
+	// loopbackHost is the address every listener of the stack binds; the
+	// ports are picked at run time.
+	loopbackHost = "127.0.0.1"
+	// stackPorts is how many distinct ports one gateway needs: the serving
+	// port and the admin, stats and readiness listeners.
+	stackPorts = 4
 )
 
-// fixedAdminPorts are the gateway's admin, stats and readiness listeners as
-// the emitter pins them. They are constants in the emitted file, so only one
-// gateway can run from an emitted file on a host at a time.
-var fixedAdminPorts = []int{15000, 15020, 15021}
+// listeners are the gateway's process-level listeners as the emitted file
+// pins them. The emitter's defaults are 15000, 15020 and 15021, which only
+// one gateway per host can bind; the stack passes ports of its own through
+// emit --admin-addr, --stats-addr and --readiness-addr, so two gateways can
+// run from emitted files on one host and the serving port never collides with
+// a listener port.
+type listeners struct {
+	admin, stats, readiness int
+}
 
 // upstream is one registered server: a mock process or the hostile server,
 // its processor, and the ports they use.
@@ -59,6 +70,7 @@ type stack struct {
 	db      string
 	cfg     string
 	gwPort  int
+	ports   listeners
 	gateway *proc
 	servers map[string]*upstream
 	names   []string
@@ -73,9 +85,47 @@ type reloadMark struct{ loaded, failed int }
 
 func newStack(t *testing.T) *stack {
 	t.Helper()
-	s := &stack{root: t, h: h, db: filepath.Join(h.workdir, "toolwarrant.db"), cfg: filepath.Join(h.workdir, "gateway.yaml"), gwPort: freePort(t), servers: map[string]*upstream{}}
+	ports := distinctFreePorts(t, stackPorts)
+	s := &stack{root: t, h: h, db: filepath.Join(h.workdir, "toolwarrant.db"), cfg: filepath.Join(h.workdir, "gateway.yaml"),
+		gwPort: ports[0], ports: listeners{admin: ports[1], stats: ports[2], readiness: ports[3]}, servers: map[string]*upstream{}}
 	s.twOK(t, "init")
 	return s
+}
+
+// distinctFreePorts picks n free loopback ports that differ from each other.
+// freePort can hand out the same port twice in quick succession, and the
+// emitter refuses a serving port equal to a listener port, so the stack
+// retries rather than let that race fail a run.
+func distinctFreePorts(t *testing.T, n int) []int {
+	t.Helper()
+	seen := map[int]bool{}
+	ports := make([]int, 0, n)
+	for len(ports) < n {
+		p := freePort(t)
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		ports = append(ports, p)
+	}
+	return ports
+}
+
+// loopback formats a loopback address for one port.
+func loopback(port int) string { return fmt.Sprintf("%s:%d", loopbackHost, port) }
+
+// adminAddr is the host:port of the gateway's admin API: the value the stack
+// gives to emit --admin-addr and that scenario P gives to verify-gateway
+// --admin.
+func (s *stack) adminAddr() string { return loopback(s.ports.admin) }
+
+// statsAddr and readinessAddr are the other two listener addresses.
+func (s *stack) statsAddr() string     { return loopback(s.ports.stats) }
+func (s *stack) readinessAddr() string { return loopback(s.ports.readiness) }
+
+// listenerPorts are the three listener ports, for the probes of scenario I.
+func (s *stack) listenerPorts() []int {
+	return []int{s.ports.admin, s.ports.stats, s.ports.readiness}
 }
 
 // spawn starts a process whose life ends with the root test, not with the
@@ -98,8 +148,7 @@ func (s *stack) note(t *testing.T, format string, args ...any) {
 // addMock starts a mock upstream on a free port and registers it.
 func (s *stack) addMock(t *testing.T, name string) *upstream {
 	t.Helper()
-	port := freePort(t)
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := loopback(freePort(t))
 	p := s.spawn(t, "mock-"+name, nil, s.h.mockupstream, "-addr", addr)
 	waitPort(t, p, addr)
 	u := &upstream{name: name, url: "http://" + addr + "/mcp", admin: "http://" + addr + "/admin/describe", procPort: freePort(t), mock: p}
@@ -126,7 +175,7 @@ func (s *stack) register(t *testing.T, u *upstream) {
 
 // processorAddr is the loopback address of one server's processor.
 func (s *stack) processorAddr(name string) string {
-	return fmt.Sprintf("127.0.0.1:%d", s.servers[name].procPort)
+	return loopback(s.servers[name].procPort)
 }
 
 // startProcessor runs toolwarrant serve for one server on its port, with the
@@ -154,13 +203,21 @@ func (s *stack) stopProcessor(t *testing.T, name string) string {
 	return p.output(p.stdout)
 }
 
+// emitBaseArgs are the emit flags every emit of the stack shares: the file,
+// the serving port and the three listener addresses the stack picked, so the
+// emitted file never pins the gateway's default listener ports.
+func (s *stack) emitBaseArgs() []string {
+	return []string{"emit", "--out", s.cfg, "--listen-port", strconv.Itoa(s.gwPort),
+		"--admin-addr", s.adminAddr(), "--stats-addr", s.statsAddr(), "--readiness-addr", s.readinessAddr()}
+}
+
 // emit writes the gateway configuration for every registered server to the
 // file the gateway watches, passing each server's processor address, and waits
 // for the running gateway to report the reload. extra flags (--secret-env) are
 // appended; env carries the secret for them.
 func (s *stack) emit(t *testing.T, env []string, extra ...string) cliResult {
 	t.Helper()
-	args := []string{"emit", "--out", s.cfg, "--listen-port", strconv.Itoa(s.gwPort)}
+	args := s.emitBaseArgs()
 	for _, name := range s.names {
 		args = append(args, "--processor", name+"="+s.processorAddr(name))
 	}
@@ -257,17 +314,15 @@ func (s *stack) gatewayLog() string {
 	return s.gateway.output(s.gateway.stdout) + s.gateway.output(s.gateway.stderr)
 }
 
-// startGateway runs the real agentgateway on the emitted file after checking
-// that the fixed admin ports are free, and waits for the serving port.
+// startGateway runs the real agentgateway on the emitted file and waits for
+// the serving port and the admin API. Every port is one the stack picked at
+// run time, so a second gateway started from another emitted file on the same
+// host cannot collide with this one.
 func (s *stack) startGateway(t *testing.T) {
 	t.Helper()
-	for _, port := range fixedAdminPorts {
-		if portOpen(fmt.Sprintf("127.0.0.1:%d", port)) {
-			t.Fatalf("127.0.0.1:%d is in use: the emitted configuration pins the gateway's admin, stats and readiness listeners to 15000, 15020 and 15021, so another agentgateway started from an emitted file (or anything else on that port) must stop before this test can run", port)
-		}
-	}
 	p := s.spawn(t, "gateway", nil, s.h.gatewayBin, "-f", s.cfg)
-	waitPort(t, p, fmt.Sprintf("127.0.0.1:%d", s.gwPort))
+	waitPort(t, p, loopback(s.gwPort))
+	waitPort(t, p, s.adminAddr())
 	s.gateway = p
 }
 

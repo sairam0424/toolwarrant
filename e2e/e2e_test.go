@@ -15,7 +15,8 @@ import (
 // hostile upstream with one processor each. The order matters because each
 // scenario leaves the stack in the state the next one starts from; running a
 // single subtest with -run is therefore not supported. The names are the ones
-// README.md and docs/ cite.
+// README.md and docs/ cite. Scenario N runs last, after O and P, because it
+// stops every processor and the two canary scenarios need them running.
 func TestEndToEnd(t *testing.T) {
 	if h.skip != "" {
 		t.Skip(h.skip)
@@ -38,6 +39,8 @@ func TestEndToEnd(t *testing.T) {
 		{"K_CELAloneNeverMatchingRule", scenarioK},
 		{"L_VendorExtensionMismatch", scenarioL},
 		{"M_Latency", scenarioM},
+		{"O_UnhookedCallProbe", scenarioO},
+		{"P_LiveConfigComparison", scenarioP},
 		{"N_StatsOnShutdown", scenarioN},
 	}
 	for _, step := range steps {
