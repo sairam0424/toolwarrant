@@ -70,8 +70,7 @@ func (s *Server) reload(ctx context.Context, gen int64) (*cachedSnapshot, error)
 	frozen.Tools = maps.Clone(snap.Tools)
 
 	c := &cachedSnapshot{generation: gen, snap: frozen}
-	s.cache.Store(c)
-	s.pruneObserved(frozen.Tools)
+	s.install(c)
 	s.log.Debug("catalog snapshot loaded", "server", s.server, "generation", gen, "tools", len(frozen.Tools))
 	return c, nil
 }

@@ -126,25 +126,6 @@ func TestCheckResponse_ListedAndCallableCoincideAcrossCrawlEvidence(t *testing.T
 	}
 }
 
-func TestIsDigest(t *testing.T) {
-	d1 := mustDigest(t, echoV1)
-	for _, good := range []string{d1, strings.Repeat("0", 64), strings.Repeat("f", 64)} {
-		if !isDigest(good) {
-			t.Errorf("isDigest(%q) = false", good)
-		}
-	}
-	bad := []string{
-		"", lifecycle.UnusableDigest, observedConflict, d1[:63], d1 + "0", strings.ToUpper(d1),
-		strings.Repeat("g", 64), strings.Repeat("0", 63) + "G", strings.Repeat("0", 62) + "é",
-		strings.Repeat(" ", 64), d1[:63] + "\x00",
-	}
-	for _, b := range bad {
-		if isDigest(b) {
-			t.Errorf("isDigest(%q) = true", b)
-		}
-	}
-}
-
 // clock replaces the processor's time source so a test can age evidence.
 type clock struct{ now time.Time }
 

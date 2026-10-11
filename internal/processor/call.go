@@ -7,6 +7,7 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
+	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 	"github.com/sairam0424/toolwarrant/internal/mcpwire"
 	"github.com/sairam0424/toolwarrant/internal/strictjson"
 )
@@ -105,6 +106,9 @@ func callName(params []byte) (string, error) {
 //   - not in the catalog, or in a state that can never serve: not approved;
 //   - any present evidence other than the approved digest (including the
 //     conflict marker a bad page leaves behind): changed since approval;
+//   - no listing evidence after the observed table has had to drop some
+//     (Stats.EvidenceDropped): not yet verified, because the missing entry may
+//     be the contradiction that was lost, until a listing records the tool;
 //   - a LastSeen that is not a digest, such as the catalog's "unusable"
 //     marker: the crawl could not verify the live definition;
 //   - no evidence at all: not yet verified.
@@ -122,8 +126,11 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 		return causeNotApproved, false
 	}
 	observed, listed := s.observedDigest(name)
-	if listed && observed != policy.Approved {
+	switch {
+	case listed && observed != policy.Approved:
 		return causeChanged, false
+	case !listed && s.stats.evidenceDropped.Load() > 0:
+		return causeUnverified, false
 	}
 	switch {
 	case policy.LastSeen == policy.Approved:
@@ -133,35 +140,9 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 			return "", true
 		}
 		return causeUnverified, false
-	case !isDigest(policy.LastSeen):
+	case !lifecycle.IsDigest(policy.LastSeen):
 		return causeUnverified, false
 	default:
 		return causeChanged, false
 	}
-}
-
-// crawlVerifiable reports whether a LastSeen value can be weighed as evidence
-// at all: a digest, or "" for a tool the latest crawl did not list, which D9
-// does not count against the gateway's own listing. Anything else is a marker
-// the catalog uses to say the live definition could not be verified; such a
-// tool is neither listed (judgeListed) nor callable (judgeCall) until a clean
-// crawl records a digest, so what a client sees is exactly what it may call.
-func crawlVerifiable(lastSeen string) bool {
-	return lastSeen == "" || isDigest(lastSeen)
-}
-
-// isDigest reports whether s has the shape of a gate digest: SHA-256 as 64
-// lowercase hex characters. Anything else stored in LastSeen is a marker the
-// catalog uses to say the live definition could not be verified.
-func isDigest(s string) bool {
-	if len(s) != digestHexLen {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }

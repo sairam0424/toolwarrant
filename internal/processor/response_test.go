@@ -150,7 +150,7 @@ func TestCheckResponse_KeepsCursorUnknownFieldsAndToolBytes(t *testing.T) {
 func TestCheckResponse_DigestMatchesGateDigestByteForByte(t *testing.T) {
 	raws := []string{
 		`{"name":"html","description":"a < b && c > d","inputSchema":{"type":"object"}}`,
-		`{"name":"uni","description":"caf\u00e9 \ud83d\ude00 and café","inputSchema":{}}`,
+		"{\"name\":\"uni\",\"description\":\"caf\\u00e9 \\ud83d\\ude00 and caf\u00e9\",\"inputSchema\":{}}", // the same bytes as the raw form: an escaped and a literal e-acute side by side
 		`{"name":"num","inputSchema":{"type":"object","properties":{"n":{"maximum":1.0,"minimum":1E2,"exclusiveMinimum":0.000001}}}}`,
 		"{\n  \"name\" : \"ws\",\n  \"description\":\"spaced\"\n}",
 		`{"name":"meta","description":"m","_meta":{"requestId":"abc"}}`,
@@ -243,19 +243,30 @@ func TestCheckResponse_ObservedTracksOnlyCatalogToolsAndIsBounded(t *testing.T) 
 	if n := s.trackedCount(); n != 2 {
 		t.Fatalf("tracked %d digests, want the MaxTracked bound of 2 (names outside the catalog must never be recorded)", n)
 	}
-	if _, ok := s.observedDigest("c"); ok {
-		t.Error("the third catalog tool should not fit under MaxTracked=2")
+	// D13: at the bound the newest evidence is kept by evicting an entry that
+	// agrees with its approval, so c is tracked and one of a, b is not.
+	if _, ok := s.observedDigest("c"); !ok {
+		t.Error("the newest evidence (c) should have been kept by evicting an agreeing entry")
 	}
 	if !strings.Contains(logs.String(), "observed-digest table is full") {
 		t.Errorf("hitting the bound should be logged:\n%s", logs.String())
 	}
+	if st := s.Stats(); st.EvidenceDropped != 0 {
+		t.Errorf("agreeing entries were there to evict, nothing should have been dropped: %+v", st)
+	}
 
-	// A tracked name can still be refreshed at the bound: it does not grow the table.
+	// A tracked name is refreshed in place and an evicted one comes back by
+	// evicting another agreeing entry: either way the newest digest wins, and
+	// the table does not grow.
 	a2 := tool("a", "A, changed")
 	servedNames(t, list(t, s, listBody("", a2)))
 	if d, _ := s.observedDigest("a"); d != mustDigest(t, a2) {
 		t.Errorf("observed digest of a = %s, want the newest %s", d, mustDigest(t, a2))
 	}
+	if n := s.trackedCount(); n != 2 {
+		t.Errorf("tracked %d digests after the refresh, want 2", n)
+	}
+	requireCallDenied(t, call(t, s, callReq("a")), "a", causeChanged)
 }
 
 func TestCheckResponse_UnknownToolsAreHiddenWithoutBeingHashed(t *testing.T) {

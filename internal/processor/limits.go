@@ -38,10 +38,6 @@ const (
 	// sourceTimeout bounds one hook's catalog reads, so a wedged database
 	// cannot hold the reload lock (and so every hook) forever.
 	sourceTimeout = 10 * time.Second
-
-	// digestHexLen is the length of a gate digest: SHA-256 as lowercase hex.
-	// LastSeen values of another shape are markers, not digests.
-	digestHexLen = 64
 )
 
 var (

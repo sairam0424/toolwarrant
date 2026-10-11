@@ -39,8 +39,10 @@ const (
 	methodToolsList = "tools/list"
 	methodToolsCall = "tools/call"
 
-	// DefaultMaxTracked bounds how many tool digests the processor remembers
-	// from tools/list responses when Config.MaxTracked is not set.
+	// DefaultMaxTracked is the upper bound on the observed-evidence table when
+	// Config.MaxTracked is not set. The table is sized from the catalog
+	// snapshot at every reload, so this bound is only reached by a server
+	// whose catalog holds more tools than this.
 	DefaultMaxTracked = 100000
 
 	// SecretMetadataKey is the metadata_context field that carries the shared
@@ -73,8 +75,16 @@ type Config struct {
 	Target string
 	// Logger receives denials, hides and errors. Nil means slog.Default().
 	Logger *slog.Logger
-	// MaxTracked caps the tool digests remembered from tools/list responses.
-	// Zero or negative means DefaultMaxTracked.
+	// MaxTracked is the upper bound on the table of digests remembered from
+	// tools/list responses. The table is sized from the catalog snapshot at
+	// every reload (the snapshot's tool count plus a small margin) and holds
+	// only tools the snapshot could serve, so it never needs more than that
+	// and this bound matters only when a server's catalog exceeds it. Then a
+	// new entry evicts one whose digest agrees with its approval, never a
+	// contradiction; when nothing agreeing is left the new evidence is dropped,
+	// counted in Stats.EvidenceDropped, and from then on a servable tool with
+	// no listing evidence is denied until a listing records it. Zero or
+	// negative means DefaultMaxTracked.
 	MaxTracked int
 	// Secret, when set, must arrive on every hook as the metadata_context
 	// string field SecretMetadataKey and is compared in constant time. Empty
@@ -133,6 +143,13 @@ type Stats struct {
 	// SourceErrors counts catalog reads that failed or returned an unusable
 	// snapshot. Each one also denied the hook that needed it.
 	SourceErrors uint64
+	// EvidenceDropped counts listing evidence the observed table could not
+	// keep because it was full and every entry it could have replaced
+	// contradicts its approval (Config.MaxTracked). A non-zero count is a
+	// standing condition, not a moment: while it holds, a servable tool with no
+	// listing evidence is denied as not yet verified until a listing records
+	// it, because the missing entry may be the contradiction that was lost.
+	EvidenceDropped uint64
 }
 
 // counters holds the atomic backing of Stats.
@@ -150,6 +167,7 @@ type counters struct {
 	unauthenticated atomic.Uint64
 	throttled       atomic.Uint64
 	sourceErrors    atomic.Uint64
+	evidenceDropped atomic.Uint64
 }
 
 // Server implements the ExtMCP service. Create it with New; it is safe for
@@ -170,15 +188,18 @@ type Server struct {
 
 	// cache holds the snapshot for one generation. Readers load it without a
 	// lock; loadMu only serialises reloads so a burst of hooks after a change
-	// produces one Snapshot call.
+	// produces one Snapshot call. It is written under obsMu (install) so the
+	// observed table is always sized for the snapshot the hooks see.
 	cache  atomic.Pointer[cachedSnapshot]
 	loadMu sync.Mutex
 
 	// observed maps a tool name to what the gateway's own tools/list traffic
-	// last showed for it. It only ever holds names that are in the catalog
-	// snapshot, so a hostile upstream cannot grow it.
+	// last showed for it. It only ever holds servable tools of the catalog
+	// snapshot, so a hostile upstream cannot grow it, and obsLimit is its
+	// capacity: set from the snapshot at each reload, at most maxTracked.
 	obsMu    sync.Mutex
 	observed map[string]observation
+	obsLimit int
 
 	// digests remembers the gate digest of definitions this processor has
 	// already canonicalised, by the SHA-256 of their raw bytes, so a page that
@@ -247,5 +268,6 @@ func (s *Server) Stats() Stats {
 		Unauthenticated: s.stats.unauthenticated.Load(),
 		Throttled:       s.stats.throttled.Load(),
 		SourceErrors:    s.stats.sourceErrors.Load(),
+		EvidenceDropped: s.stats.evidenceDropped.Load(),
 	}
 }

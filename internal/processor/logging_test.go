@@ -7,7 +7,7 @@ import (
 )
 
 func TestTruncate_NeverSplitsARune(t *testing.T) {
-	in := strings.Repeat("é", 300) // 2 bytes each
+	in := strings.Repeat("\u00e9", 300) // e-acute, 2 bytes each
 	out := truncate(in, maxNameBytes)
 	if !utf8.ValidString(out) {
 		t.Fatalf("truncate produced invalid UTF-8: %q", out)
