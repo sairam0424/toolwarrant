@@ -52,12 +52,11 @@ func TestJudgeCall_RuleTable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("listed "+short(tc.observed)+" crawl "+short(tc.lastSeen), func(t *testing.T) {
 			s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": policy(lifecycle.Enabled, d1, tc.lastSeen)}))
-			cur, err := s.current(context.Background())
-			if err != nil {
+			if _, err := s.current(context.Background()); err != nil { // load the snapshot the evidence is recorded against
 				t.Fatal(err)
 			}
 			if tc.observed != nothing {
-				s.observe("echo", tc.observed, cur.generation)
+				s.observe("echo", tc.observed)
 			}
 			res := call(t, s, callReq("echo"))
 			if tc.want == "" {
@@ -74,8 +73,11 @@ func TestJudgeCall_RuleTable(t *testing.T) {
 // duplicated definition, or an exhausted proposal budget). Such a tool is
 // hidden even while the gateway shows the approved bytes, and no call goes
 // through: the crawl could not verify what the upstream binds the name to, so
-// what is listed is exactly what is callable, as README and the threat model
-// promise ("marked UNUSABLE and never served"). Any marker shape is treated
+// a tool hidden for a marker is also uncallable, as README and the threat
+// model promise ("marked UNUSABLE and never served"). The rule is one-way
+// (D9): a listed tool may still be denied, after a revert the crawl has not
+// recorded or after its listing evidence was dropped, until the crawl or a
+// listing records the digest the gateway shows. Any marker shape is treated
 // the same way, in both servable states. Before this round the list hook
 // judged bytes alone and listed a tool whose every call it then denied.
 func TestJudgeCall_NonDigestLastSeenMarkersHideTheToolAndDenyCalls(t *testing.T) {

@@ -25,9 +25,19 @@ const (
 	// twice that size cannot equal any approved one: it is hidden unhashed.
 	maxToolBytes = 512 << 10
 
-	// maxConcurrentHooks bounds hooks in flight across all connections. Each
-	// hook may hold a page of maxPayloadBytes plus its parsed form, so this is
-	// also the memory ceiling of the process.
+	// maxConcurrentHooks bounds hooks in flight across all connections and,
+	// with the caps above, the memory of the process. One tools/list hook holds
+	// the page (at most maxPayloadBytes, owned by gRPC), the decoder's buffer
+	// for the largest single value on it (at most the page), the rewritten
+	// result (at most about the page), the names of at most maxToolsPerPage
+	// entries, and the canonical form of the one tool being hashed (a few times
+	// maxToolBytes); nothing else on the page is materialised. A hook therefore
+	// costs about three times maxPayloadBytes at the limit and the process
+	// about 32 times that, under 1 GiB. A refused page costs far less: the scan
+	// stops at the per-page cap before any name is read, so a mebibyte of tiny
+	// entries costs a few kibibytes rather than the eighteen mebibytes it cost
+	// when the array was materialised first (BenchmarkCheckResponseOverCapTinyNames,
+	// TestCheckResponse_OverCapPageIsRefusedBeforeNamesAreRead).
 	maxConcurrentHooks = 32
 
 	// ctxCheckInterval is how many tools are processed between checks of the

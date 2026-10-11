@@ -33,10 +33,14 @@ const (
 )
 
 // observation is what the processor remembers about one catalog tool from
-// the gateway's own tools/list traffic.
+// the gateway's own tools/list traffic. approved is the digest the snapshot
+// approved when the evidence was recorded, so a prune can tell an entry that
+// agreed with its approval from a contradiction after the tool has left the
+// snapshot and no approval is left to compare with.
 type observation struct {
-	digest string // a digest, or observedConflict
-	seenAt time.Time
+	digest   string // a digest, or observedConflict
+	approved string
+	seenAt   time.Time
 }
 
 // observeOutcome says what observe did with one piece of evidence, so the
@@ -57,9 +61,9 @@ const (
 )
 
 // observe remembers what the upstream served for a catalog tool in a
-// tools/list response. gen is the generation of the snapshot that said the
-// name is a catalog tool. Updating a tracked name always succeeds because it
-// does not grow the table. A new name in a full table evicts an entry whose
+// tools/list response, together with the approval the current snapshot gives
+// the tool. Updating a tracked name always succeeds because it does not grow
+// the table. A new name in a full table evicts an entry whose
 // digest equals its approved digest (evictAgreeing) and, when there is none,
 // is dropped: the loss is counted in Stats.EvidenceDropped, and from then on
 // judgeCall denies every servable tool that has no listing evidence, because
@@ -68,11 +72,11 @@ const (
 // The table is sized from the snapshot at every reload (install), so with the
 // default MaxTracked it is never full; the eviction and the drop exist for a
 // catalog larger than the configured bound.
-func (s *Server) observe(name, digest string, gen int64) observeOutcome {
+func (s *Server) observe(name, digest string) observeOutcome {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
 	c := s.cache.Load()
-	if c == nil || !stillListed(c, name, gen) {
+	if c == nil || !stillListed(c, name) {
 		return observeStored // dropped on purpose: the catalog no longer has the tool
 	}
 	outcome := observeStored
@@ -83,7 +87,7 @@ func (s *Server) observe(name, digest string, gen int64) observeOutcome {
 		}
 		outcome = observeEvicted
 	}
-	s.observed[name] = observation{digest: digest, seenAt: s.now()}
+	s.observed[name] = observation{digest: digest, approved: c.snap.Tools[name].Approved, seenAt: s.now()}
 	return outcome
 }
 
@@ -110,18 +114,19 @@ func (s *Server) evictAgreeing(snap catalog.Snapshot) bool {
 }
 
 // stillListed reports whether name is a tool of the snapshot the processor
-// currently serves from. A hook that read generation gen and then lost a race
-// with a reload may be about to record a name the newer snapshot dropped;
-// install has already pruned the table for that snapshot, so the entry would
-// outlive it and wrongly deny a tool re-created under the name. When gen is
-// still current the caller established membership against this very snapshot
-// and no lookup is needed. When it moved, the name is re-checked against the
-// newer snapshot rather than dropped outright: the digest describes what the
-// upstream serves now, which is newer evidence than anything in the table.
-func stillListed(c *cachedSnapshot, name string, gen int64) bool {
-	if c.generation == gen {
-		return true
-	}
+// currently serves from. A hook that judged against an earlier snapshot and
+// then lost a race with a reload may be about to record a name the newer
+// snapshot dropped; install has already pruned the table for that snapshot, so
+// the entry would outlive it and wrongly deny a tool re-created under the
+// name. The name is re-checked rather than dropped outright: the digest
+// describes what the upstream serves now, which is newer evidence than
+// anything in the table. It is checked even when the hook's generation is
+// still the current one, because two snapshots can carry the same generation
+// number with different contents (one read after the catalog moved on, or
+// installed after a newer one by a hook that read the number earlier), and an
+// entry recorded against a snapshot that lacks the name would carry no
+// approval to compare with and be kept by prune as a contradiction (D14).
+func stillListed(c *cachedSnapshot, name string) bool {
 	_, ok := c.snap.Tools[name]
 	return ok
 }
@@ -145,20 +150,40 @@ func (s *Server) observedDigest(name string) (string, bool) {
 
 // install publishes a loaded snapshot and fits the observed table to it in one
 // step under obsMu, so no hook can record against a table whose size belongs
-// to another snapshot. Tools the snapshot no longer has are forgotten (a tool
-// deleted and re-created starts without stale evidence, and the table cannot
-// accumulate names over the life of the process), and the capacity becomes
-// the snapshot's tool count plus trackedMargin, never more than MaxTracked.
+// to another snapshot. A non-empty snapshot prunes the table: a tool it no
+// longer has is forgotten when its evidence agreed with the approval that
+// stood when it was recorded (a tool deleted and re-created then starts
+// without stale evidence) and kept when it contradicted it (a changed digest
+// or the conflict marker), because losing a contradiction would re-allow a
+// call the gateway's own listing had denied; a re-created tool with a kept
+// contradiction is denied as changed until a listing records what the
+// upstream serves under the name. An empty snapshot is a paused server and
+// leaves the table alone: pause refuses crawls, so what the gateway listed
+// before the pause is the only evidence the resumed server can be judged on
+// (D14). The capacity becomes the larger of the snapshot's tool count and the
+// entries kept, plus trackedMargin, never more than MaxTracked.
 func (s *Server) install(c *cachedSnapshot) {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
 	s.cache.Store(c)
-	for name := range s.observed {
-		if _, ok := c.snap.Tools[name]; !ok {
+	if len(c.snap.Tools) > 0 {
+		s.prune(c.snap)
+	}
+	s.obsLimit = min(max(len(c.snap.Tools), len(s.observed))+trackedMargin, s.maxTracked)
+}
+
+// prune forgets the tools absent from next whose evidence agreed with their
+// approval at the time; a contradiction is kept. Must be called with obsMu
+// held.
+func (s *Server) prune(next catalog.Snapshot) {
+	for name, o := range s.observed {
+		if _, ok := next.Tools[name]; ok {
+			continue
+		}
+		if o.digest == o.approved {
 			delete(s.observed, name)
 		}
 	}
-	s.obsLimit = min(len(c.snap.Tools)+trackedMargin, s.maxTracked)
 }
 
 // trackedCount is the number of remembered observations; tests use it to

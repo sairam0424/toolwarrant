@@ -310,3 +310,12 @@ func requireRefused(t *testing.T, res *api.McpRequestResult, code api.Authorizat
 		t.Errorf("reason %q does not carry the cause %q", e.GetReason(), want)
 	}
 }
+
+// replace swaps the catalog contents without moving the generation, the way a
+// fresh file at the same path can happen to carry the number the processor
+// cached its snapshot under.
+func (f *fakeSource) replace(tools map[string]catalog.ToolPolicy) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snap = catalog.Snapshot{Server: testServer, Generation: f.gen, Tools: tools}
+}

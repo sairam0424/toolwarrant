@@ -156,3 +156,45 @@ func BenchmarkCheckRequest(b *testing.B) {
 
 // Compile-time use of the hook message types the benchmarks build.
 var _ *api.McpResponse = listMsg(nil)
+
+// overCapTinyPage is a tools/list page of about one mebibyte of tiny unique
+// entries, about seven times maxToolsPerPage: the cheapest page an upstream can
+// send that the processor must refuse. The fourth review used it to measure
+// what one denied hook allocates.
+func overCapTinyPage() []byte {
+	var sb strings.Builder
+	sb.WriteString(`{"tools":[`)
+	for i := 0; sb.Len() < 1<<20; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `{"name":"n%d"}`, i)
+	}
+	sb.WriteString("]}")
+	return []byte(sb.String())
+}
+
+// BenchmarkCheckResponseOverCapTinyNames measures one hook on overCapTinyPage.
+// Before D14(g) the whole tools array was materialised before the per-page cap
+// was checked and the hook allocated about eighteen times the payload; now the
+// scan stops at the cap before any name is read, so B/op is the figure
+// limits.go states for a refused page.
+func BenchmarkCheckResponseOverCapTinyNames(b *testing.B) {
+	d, err := gate.Digest(echoV1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	s := benchServer(map[string]catalog.ToolPolicy{"echo": servedPolicy(d)})
+	req := listMsg(overCapTinyPage())
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(req.McpResponse)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := s.CheckResponse(ctx, req)
+		if err != nil || res.GetError() == nil {
+			b.Fatalf("result %v, err %v", res, err)
+		}
+	}
+}

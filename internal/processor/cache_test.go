@@ -172,22 +172,46 @@ func TestCache_SourceCannotMutateTheCachedSnapshot(t *testing.T) {
 	requireCallDenied(t, call(t, s, callReq("wipe_database")), "wipe_database", causeNotApproved)
 }
 
+// D14(g): when a tool leaves a non-empty snapshot, evidence that agreed with
+// its approval is forgotten, so a tool re-created under the same name starts
+// clean; a contradiction (a changed digest or the conflict marker) is kept,
+// because losing it would re-allow a call the gateway's own listing had denied,
+// and the re-created tool is denied as changed until a listing records what
+// the upstream serves. Before this round every absent name was forgotten.
 func TestCache_ObservedEvidenceIsPrunedWhenAToolLeavesTheCatalog(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
-	src := newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)})
-	s, _ := newTestServer(src)
-	servedNames(t, list(t, s, listBody("", echoV2))) // drifted: observed = d2
-	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
+	other := tool("other", "o")
+	dOther := mustDigest(t, other)
+	withBoth := map[string]catalog.ToolPolicy{"echo": servedPolicy(d1), "other": servedPolicy(dOther)}
+	onlyOther := map[string]catalog.ToolPolicy{"other": servedPolicy(dOther)}
 
-	src.publish(map[string]catalog.ToolPolicy{})
-	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeNotApproved)
-	if n := s.trackedCount(); n != 0 {
-		t.Fatalf("%d digests still tracked for tools that left the catalog", n)
-	}
-
-	// A tool re-created under the same name starts without stale evidence.
-	src.publish(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)})
-	requireAllowed(t, call(t, s, callReq("echo")))
+	t.Run("agreeing evidence is forgotten", func(t *testing.T) {
+		src := newFakeSource(withBoth)
+		s, _ := newTestServer(src)
+		servedNames(t, list(t, s, listBody("", echoV1, other))) // both agree with their approvals
+		src.publish(onlyOther)
+		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeNotApproved)
+		if _, ok := s.observedDigest("echo"); ok || s.trackedCount() != 1 {
+			t.Fatalf("agreeing evidence for a tool that left the catalog was kept (%d tracked)", s.trackedCount())
+		}
+		src.publish(withBoth) // re-created under the same name: no stale evidence
+		requireAllowed(t, call(t, s, callReq("echo")))
+	})
+	t.Run("a contradiction is kept", func(t *testing.T) {
+		src := newFakeSource(withBoth)
+		s, _ := newTestServer(src)
+		servedNames(t, list(t, s, listBody("", echoV2, other))) // drifted: observed = d2
+		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
+		src.publish(onlyOther)
+		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeNotApproved)
+		if seen, ok := s.observedDigest("echo"); !ok || seen != mustDigest(t, echoV2) {
+			t.Fatalf("the contradiction for echo was pruned: %q, %v", seen, ok)
+		}
+		src.publish(withBoth) // re-created: still denied until a listing shows the approved bytes
+		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
+		servedNames(t, list(t, s, listBody("", echoV1)))
+		requireAllowed(t, call(t, s, callReq("echo")))
+	})
 }
 
 // A tools/list hook that read the previous snapshot can reach observe after a
@@ -202,7 +226,6 @@ func TestCache_LateObservationForADroppedToolIsNotRecorded(t *testing.T) {
 	src := newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1), "zzz": servedPolicy(dz)})
 	s, _ := newTestServer(src)
 	servedNames(t, list(t, s, listBody("", zzz, echoV1)))
-	oldGen := s.cache.Load().generation
 
 	src.publish(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}) // zzz leaves the catalog
 	requireAllowed(t, call(t, s, callReq("echo")))                       // reload and prune
@@ -211,11 +234,11 @@ func TestCache_LateObservationForADroppedToolIsNotRecorded(t *testing.T) {
 	}
 
 	// The late writer computed against the old snapshot, in which zzz existed.
-	s.observe("zzz", dz, oldGen)
+	s.observe("zzz", dz)
 	if _, ok := s.observedDigest("zzz"); ok {
 		t.Fatal("a late observation resurrected a tool the catalog dropped")
 	}
-	s.observe("echo", d2, oldGen)
+	s.observe("echo", d2)
 	if seen, ok := s.observedDigest("echo"); !ok || seen != d2 {
 		t.Fatalf("a late observation for a tool still in the catalog was dropped: %q, %v", seen, ok)
 	}

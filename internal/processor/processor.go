@@ -55,7 +55,11 @@ const (
 // test can fake it and so the processor never writes to the catalog.
 type Source interface {
 	// Generation returns a counter that changes whenever the catalog changes.
-	// The processor polls it on every hook and reloads only when it moves.
+	// The processor polls it on every hook and reloads only when it moves. An
+	// error that is catalog.ErrCorrupt (catalog.ErrReplaced among them: the
+	// file at the path is no longer the one the Source opened) also tells the
+	// processor that the snapshot it cached can no longer be trusted, so the
+	// next successful read reloads even when the counter has not moved.
 	Generation(ctx context.Context) (int64, error)
 	// Snapshot returns the serving policy of one server. The returned Tools
 	// map must not be modified by the Source afterwards.
@@ -125,9 +129,12 @@ type Stats struct {
 	// ToolsUnverified counts hidden tools whose live definition hashes to the
 	// approved digest while the latest crawl recorded a marker, not a digest,
 	// in LastSeen (the catalog's "unusable": an invalid or duplicated
-	// definition, or an exhausted proposal budget). Such a tool is hidden so
-	// that what is listed is exactly what judgeCall lets through: every call
-	// to it is denied as not yet verified until a clean crawl records a digest.
+	// definition, or an exhausted proposal budget). Such a tool is hidden
+	// because judgeCall denies every call to it as not yet verified until a
+	// clean crawl records a digest: a tool hidden for a marker is also
+	// uncallable (D9). The reverse does not hold: a listed tool may still be
+	// denied until the crawl, or a listing, records the digest the gateway
+	// shows, and no listing counter records that.
 	ToolsUnverified uint64
 	// CallsAllowed counts tools/call requests passed to the upstream.
 	CallsAllowed uint64
@@ -192,6 +199,12 @@ type Server struct {
 	// observed table is always sized for the snapshot the hooks see.
 	cache  atomic.Pointer[cachedSnapshot]
 	loadMu sync.Mutex
+	// taint counts the Source reports that made the cached snapshot
+	// untrustworthy (distrust in snapshot.go): a cachedSnapshot is reused only
+	// while it carries the current count. distrustLogged makes the Error line
+	// for the condition appear once per episode rather than once per hook.
+	taint          atomic.Uint64
+	distrustLogged atomic.Bool
 
 	// observed maps a tool name to what the gateway's own tools/list traffic
 	// last showed for it. It only ever holds servable tools of the catalog

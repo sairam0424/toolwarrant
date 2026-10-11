@@ -26,15 +26,19 @@ func (s *Server) CheckResponse(ctx context.Context, resp *api.McpResponse) (*api
 		return s.denyList(ctx, api.AuthorizationError_RESOURCE_EXHAUSTED, reasonListThrottled, errThrottled), nil
 	}
 	defer release()
-	raw := resp.GetMcpResponse()
-	if len(raw) > maxPayloadBytes {
-		return s.denyList(ctx, api.AuthorizationError_INVALID, reasonListUnverifiable, errPayloadSize), nil
-	}
 	cur, err := s.current(ctx)
 	if err != nil {
 		s.noteSourceError(ctx, methodToolsList, err)
 		s.stats.listsDenied.Add(1)
 		return denyResponse(api.AuthorizationError_PERMISSION_DENIED, reasonListUnavailable), nil
+	}
+	raw := resp.GetMcpResponse()
+	if len(raw) > maxPayloadBytes {
+		// Never parsed, so evidence about nothing: every servable tool of the
+		// snapshot is marked before the page is denied, as for any page the
+		// processor cannot read through to the end (D14).
+		s.markPageUnread(ctx, cur)
+		return s.denyList(ctx, api.AuthorizationError_INVALID, reasonListUnverifiable, errPayloadSize), nil
 	}
 	page, err := s.filterList(ctx, cur, raw)
 	if err != nil {

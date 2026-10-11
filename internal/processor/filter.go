@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
@@ -30,18 +31,21 @@ type filtered struct {
 
 // listFilter is the state of one two-pass filtering of one tools/list page.
 //
-// Pass one (collect) reads only names: it counts the entries, finds names that
-// repeat, notes which catalog tools the page lists and polls the hook context,
-// hashing nothing. Pass two (decide) runs only when the page is clean and does
-// the per-tool work in order. Deciding a tool before the whole page has been
-// read is what once let a repeated name leave approved evidence behind: the
-// first copy was observed and the second copy denied the page, so tools/call
-// kept passing on the first copy's digest. With two passes every duplicate is
-// known before any evidence is recorded, and a page that is denied for any
-// reason leaves the conflict marker behind (markConflicts): on every catalog
-// tool it listed when the page could be read to the end, and on every
-// servable tool of the snapshot when it could not, so a decoy in any position
-// cannot keep older evidence alive for a changed tool.
+// The page is surveyed once by mcpwire, which stops at the per-page cap before
+// any name is read. Pass one (collect) then reads only names: it finds names
+// that repeat, notes which catalog tools the page lists and polls the hook
+// context, hashing nothing. Pass two (decide) runs only when the page is clean
+// and does the per-tool work in order. Deciding a tool before the whole page
+// has been read is what once let a repeated name leave approved evidence
+// behind: the first copy was observed and the second copy denied the page, so
+// tools/call kept passing on the first copy's digest. With two passes every
+// duplicate is known before any evidence is recorded, and a page that is
+// denied for any reason leaves the conflict marker behind (markConflicts): on
+// every catalog tool it listed when the page could be read to the end, and on
+// every servable tool of the snapshot when it could not (an entry without a
+// string name, no tools array, more entries than the cap, or a page over the
+// payload cap that was never parsed), so a decoy in any position cannot keep
+// older evidence alive for a changed tool.
 type listFilter struct {
 	ctx        context.Context
 	srv        *Server
@@ -50,8 +54,7 @@ type listFilter struct {
 	seen       map[string]int // name -> occurrences, pass one
 	dupes      []string       // names that occur more than once, in first-seen order
 	present    []string       // catalog tools the page lists, in first-seen order
-	tooMany    bool           // the page lists more tools than maxToolsPerPage
-	unreadable bool           // pass one stopped before the end of the tools array
+	unreadable bool           // the page was not read through to the end
 	failure    error
 	evicted    int // records that forgot an agreeing entry to fit
 	dropped    int // records the full table lost
@@ -74,25 +77,34 @@ func (f *listFilter) run(raw []byte) (filtered, error) {
 	return page, err
 }
 
-// filter is the two passes; run says what happens when they fail. A mcpwire
-// error from pass one means the scan stopped at an entry it could not read
-// (or the document had no tools array at all), so f.present is incomplete:
-// f.unreadable records that for markConflicts, whichever error is reported.
+// filter is the survey and the two passes; run says what happens when they
+// fail. A survey error means the page was not read to the end (no tools
+// array, more entries than the cap, not an object), and so does an mcpwire
+// error from pass one (an entry without a string name): f.present is then
+// incomplete and f.unreadable records that for markConflicts. The hook's own
+// failure (a cancelled context) stops pass one without being a statement
+// about the page.
 func (f *listFilter) filter(raw []byte) (filtered, error) {
-	_, _, err := mcpwire.FilterToolsListRaw(raw, f.collect)
-	f.unreadable = err != nil
-	switch {
-	case f.failure != nil:
-		return filtered{}, f.failure
-	case f.tooMany:
-		return filtered{}, errTooManyTools
-	case err != nil:
+	page, err := mcpwire.ParseToolsList(raw, maxToolsPerPage)
+	if err != nil {
+		f.unreadable = true
+		if errors.Is(err, mcpwire.ErrTooManyTools) {
+			return filtered{}, errTooManyTools
+		}
 		return filtered{}, fmt.Errorf("filter tools/list: %w", err)
-	case len(f.dupes) > 0:
+	}
+	if err := page.Walk(f.collect); err != nil {
+		if f.failure != nil {
+			return filtered{}, f.failure
+		}
+		f.unreadable = true
+		return filtered{}, fmt.Errorf("filter tools/list: %w", err)
+	}
+	if len(f.dupes) > 0 {
 		return filtered{}, fmt.Errorf("tool %s: %w", quoteName(f.dupes[0]), errDuplicateTool)
 	}
 	f.count = 0
-	out, hidden, err := mcpwire.FilterToolsListRaw(raw, f.decide)
+	out, hidden, err := page.Filter(f.decide)
 	if f.failure != nil {
 		return filtered{}, f.failure
 	}
@@ -114,35 +126,26 @@ func (f *listFilter) tick() error {
 	return nil
 }
 
-// collect is the pass-one callback. It keeps nothing (mcpwire's output for
-// this pass is discarded) and does no per-tool work beyond one catalog lookup
-// and counting names. Past the per-page cap the page is denied already, so
-// only catalog names are still noted, for markConflicts, and nothing else is
-// remembered: the table of names stays bounded by the cap plus the catalog,
-// however many entries a hostile page carries.
-func (f *listFilter) collect(name string, _ []byte) bool {
-	if f.failure != nil {
-		return false
-	}
+// collect is the pass-one visitor. It keeps nothing but names and does no
+// per-tool work beyond one catalog lookup. The survey has already refused a
+// page past the per-page cap, so the table of names is bounded by the cap,
+// however many entries a hostile page carries. A failure of the hook itself
+// is parked in f.failure and stops the walk.
+func (f *listFilter) collect(name string, _ []byte) error {
 	if err := f.tick(); err != nil {
 		f.failure = err
-		return false
-	}
-	_, inCatalog := f.cur.snap.Tools[name]
-	if f.count > maxToolsPerPage {
-		f.tooMany = true
-		if !inCatalog {
-			return false
-		}
+		return err
 	}
 	f.seen[name]++
-	switch {
-	case f.seen[name] == 1 && inCatalog:
-		f.present = append(f.present, name)
-	case f.seen[name] == 2:
+	switch f.seen[name] {
+	case 1:
+		if _, inCatalog := f.cur.snap.Tools[name]; inCatalog {
+			f.present = append(f.present, name)
+		}
+	case 2:
 		f.dupes = append(f.dupes, name)
 	}
-	return false
+	return nil
 }
 
 // decide is the pass-two callback: whether one tool is shown. mcpwire's
@@ -189,7 +192,11 @@ func (f *listFilter) decide(name string, tool []byte) bool {
 // crawl must not have left a marker in LastSeen: a tool the crawler could not
 // verify (an invalid or duplicated definition, an exhausted proposal budget)
 // is hidden even while the gateway shows the approved bytes, because judgeCall
-// denies every call to it (D9) and what is listed must be what is callable.
+// denies every call to it (D9). The rule is one-way: a tool hidden for a
+// marker is also uncallable, but a listed tool may still be denied, when the
+// latest crawl recorded another real digest (a revert or rollback the crawl
+// has not caught up with) or when its listing evidence was dropped from a
+// full table, until a crawl or a listing records the digest the gateway shows.
 func (f *listFilter) judgeListed(name string, policy catalog.ToolPolicy, digest string) bool {
 	switch {
 	case !f.cur.snap.Serves(name, digest):
@@ -217,7 +224,7 @@ func (f *listFilter) record(name string, policy catalog.ToolPolicy, digest strin
 	if !f.cur.snap.Serves(name, policy.Approved) {
 		return
 	}
-	switch f.srv.observe(name, digest, f.cur.generation) {
+	switch f.srv.observe(name, digest) {
 	case observeEvicted:
 		f.evicted++
 	case observeDropped:
@@ -229,14 +236,15 @@ func (f *listFilter) record(name string, policy catalog.ToolPolicy, digest strin
 // markConflicts records a conflict for the catalog tools a denied page is
 // evidence against, so tools/call stays denied for each of them until a clean
 // page shows what the upstream serves. A page the processor read to the end
-// (denied for a repeated name, too many tools, or a tool it could not hash)
-// is evidence about exactly the tools it listed. A page it could not read to
-// the end (no tools array, or an entry without a string name, wherever it
-// sits) is evidence about nothing: the processor cannot know which tools were
-// behind the unreadable entry, so every servable tool of the snapshot is
-// marked. Either way, evidence recorded earlier must not survive a page that
-// contradicts it: with a decoy first on the page, the changed tool behind it
-// would otherwise keep its approved digest from an earlier listing.
+// (denied for a repeated name or a tool it could not hash) is evidence about
+// exactly the tools it listed. A page it could not read to the end (no tools
+// array, an entry without a string name wherever it sits, more entries than
+// the per-page cap, or a page over the payload cap) is evidence about nothing:
+// the processor cannot know which tools were behind the part it did not read,
+// so every servable tool of the snapshot is marked. Either way, evidence
+// recorded earlier must not survive a page that contradicts it: with a decoy
+// first on the page, the changed tool behind it would otherwise keep its
+// approved digest from an earlier listing.
 func (f *listFilter) markConflicts() {
 	if f.unreadable {
 		for name, policy := range f.cur.snap.Tools {
@@ -250,12 +258,31 @@ func (f *listFilter) markConflicts() {
 }
 
 // filterList filters one page with the catalog policy and reports a full
-// observed table once per page rather than once per tool. An eviction keeps
-// the newest evidence at the cost of an entry that agreed with its approval;
-// a drop is a loss, and the line says what judgeCall does about it.
+// observed table once per page rather than once per tool.
 func (s *Server) filterList(ctx context.Context, cur *cachedSnapshot, raw []byte) (filtered, error) {
 	f := newListFilter(ctx, s, cur)
 	page, err := f.run(raw)
+	s.logTableLoss(ctx, f)
+	return page, err
+}
+
+// markPageUnread records the conflict marker on every servable tool of the
+// snapshot for a page the processor did not parse at all because it was over
+// the payload cap. Like a page that stops at an unreadable entry it is
+// evidence about nothing, and the evidence older listings left must not
+// outlive it (D14).
+func (s *Server) markPageUnread(ctx context.Context, cur *cachedSnapshot) {
+	f := newListFilter(ctx, s, cur)
+	f.unreadable = true
+	f.markConflicts()
+	s.logTableLoss(ctx, f)
+}
+
+// logTableLoss reports what the observed table had to give up for one page.
+// An eviction keeps the newest evidence at the cost of an entry that agreed
+// with its approval; a drop is a loss, and the line says what judgeCall does
+// about it.
+func (s *Server) logTableLoss(ctx context.Context, f *listFilter) {
 	switch {
 	case f.dropped > 0:
 		s.log.WarnContext(ctx, "observed-digest table is full, evidence was dropped: tools without listing evidence are denied until a listing records them",
@@ -264,7 +291,6 @@ func (s *Server) filterList(ctx context.Context, cur *cachedSnapshot, raw []byte
 		s.log.WarnContext(ctx, "observed-digest table is full, agreeing evidence was evicted to keep newer evidence",
 			"server", s.server, "max_tracked", s.maxTracked, "evicted", f.evicted)
 	}
-	return page, err
 }
 
 // toolDigest is the digest of one tool definition exactly as the crawler and
