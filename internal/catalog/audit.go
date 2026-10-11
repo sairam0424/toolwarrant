@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -22,6 +23,10 @@ const (
 	// the reason class and the quoted name, or a marker when the name itself
 	// was refused.
 	evToolRejected = "tool.rejected"
+	// evBudgetReset records ResetProposalBudget: a person forgot the proposals a
+	// tool gained since its last decision. Its detail is a tool detail whose
+	// note says how many were forgotten.
+	evBudgetReset = "tool.budget_reset"
 
 	noDigest    = "-" // the digest field of an event that concerns no version
 	noLimit     = -1  // SQLite: a negative LIMIT means no limit
@@ -74,22 +79,68 @@ func (t *txn) appendAudit(ctx context.Context, by Actor, event, subject, before,
 }
 
 // auditTool writes one entry per lifecycle event. before_hash and after_hash
-// are the approved digest before and after the whole operation; the detail
-// names the digest the event concerns and the state change, followed by note
-// (the reason class of an unusable observation), never tool text.
+// are the approved digest before and after the whole operation; the detail is
+// a tool detail (toolDetail) followed by note (the reason class of an unusable
+// observation), never tool text.
 func (t *txn) auditTool(ctx context.Context, by Actor, server, tool string, before, after lifecycle.Tool,
 	events []lifecycle.Event, note string) error {
 	for _, ev := range events {
-		digest := ev.Digest
-		if digest == "" {
-			digest = noDigest
-		}
-		detail := fmt.Sprintf("digest=%s state=%s->%s%s", digest, before.State, after.State, note)
+		detail := toolDetail(ev.Digest, before, after, note)
 		if err := t.appendAudit(ctx, by, string(ev.Kind), server+"/"+tool, before.Approved, after.Approved, detail); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// The fields of a tool detail. Every entry about a tool (auditTool and the
+// budget reset) starts with these three, in this order, as key=value tokens
+// whose values never contain a space: digest is the version the event concerns
+// (noDigest when none), state the transition, last_seen what the upstream was
+// last seen serving once the operation was done (a digest,
+// lifecycle.UnusableDigest, or noDigest when the tool was absent). The last
+// field exists so that Integrity can read the state an operation left behind
+// and compare it with the mutable tools row: tool.missing and tool.unusable
+// both concern no version, so the digest field alone would not say what
+// last_seen became. A note of further key=value tokens may follow.
+const (
+	fieldDigest   = "digest"
+	fieldState    = "state"
+	fieldLastSeen = "last_seen"
+)
+
+// toolDetail renders the detail of one entry about a tool; see the field
+// constants for the format Integrity relies on.
+func toolDetail(digest string, before, after lifecycle.Tool, note string) string {
+	return fmt.Sprintf("%s=%s %s=%s->%s %s=%s%s", fieldDigest, orNoDigest(digest),
+		fieldState, before.State, after.State, fieldLastSeen, orNoDigest(after.LastSeen), note)
+}
+
+// orNoDigest renders an empty digest or last-seen value as noDigest, so that
+// every field of a detail has a value.
+func orNoDigest(s string) string {
+	if s == "" {
+		return noDigest
+	}
+	return s
+}
+
+// isToolDetail reports whether a detail was written by toolDetail: it starts
+// with the digest field. Entries about a server, a crawl or a rejected entry
+// do not.
+func isToolDetail(detail string) bool { return strings.HasPrefix(detail, fieldDigest+"=") }
+
+// detailField returns the value of key in a tool detail: the token that starts
+// with "key=". Values carry no space, and no token of a tool detail other than
+// its fields contains '=' (a class token cannot, see isClassToken), so a split
+// on spaces reads the field exactly.
+func detailField(detail, key string) (string, bool) {
+	for _, tok := range strings.Fields(detail) {
+		if v, ok := strings.CutPrefix(tok, key+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 func queryAudit(ctx context.Context, q queryer, after int64, limit int) ([]audit.Entry, error) {

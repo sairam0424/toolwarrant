@@ -16,7 +16,10 @@ import (
 //
 // Version 2 added digest_profile and proposals_since_decision, the
 // tool_version_proposers table, servers.paused and the unusable marker.
-const schemaVersion = 2
+// Version 3 added the last_seen field to the detail of every tool audit entry
+// (see toolDetail); Integrity reads it to cross-check tools.last_seen_digest
+// against the log, and a log written without it cannot be cross-checked.
+const schemaVersion = 3
 
 // migrate creates the schema in an empty database, or checks that an existing
 // one is ours. It runs in one immediate transaction, so two processes opening
@@ -118,9 +121,11 @@ const (
 // checks that every guard object still exists (verifyGuards), VerifyAudit
 // checks the hash chain, and every read of a definition re-hashes its
 // canonical bytes against the stored digest (loadTool, Versions, Snapshot and
-// Approved, see checkCanonical and scanPolicy).
+// Approved, see checkCanonical and scanPolicy). Nothing guards the tools
+// table: its columns are the current policy and must change. Only Integrity
+// binds them to the append-only history.
 func schemaStatements() []string {
-	return slices.Concat(catalogTables(), historyTables(), guardStatements())
+	return slices.Concat(catalogTables(), historyTables(), guardIndexStatements(), guardStatements())
 }
 
 // catalogTables holds the mutable registry: servers, crawls and tools.
@@ -169,7 +174,8 @@ func catalogTables() []string {
 }
 
 // historyTables holds the records that are only ever appended to: versions,
-// their proposers, approvals and the audit log.
+// their proposers, approvals and the audit log. Their indexes are guard
+// objects (guardIndexStatements) and are created after them.
 func historyTables() []string {
 	return []string{
 		`CREATE TABLE tool_versions (
@@ -188,8 +194,6 @@ func historyTables() []string {
 			UNIQUE (tool_id, digest),
 			UNIQUE (tool_id, version_no)
 		)`,
-		`CREATE UNIQUE INDEX one_pending_version ON tool_versions (tool_id) WHERE status = 'pending'`,
-		`CREATE UNIQUE INDEX one_approved_version ON tool_versions (tool_id) WHERE status = 'approved'`,
 		// position 0 is the original proposer, equal to tool_versions.proposed_by.
 		`CREATE TABLE tool_version_proposers (
 			version_id INTEGER NOT NULL REFERENCES tool_versions (id),
@@ -207,7 +211,6 @@ func historyTables() []string {
 			hash_seen  TEXT NOT NULL,
 			at         TEXT NOT NULL
 		)`,
-		`CREATE INDEX approvals_by_version ON approvals (version_id, id)`,
 		`CREATE TABLE audit_log (
 			seq        INTEGER PRIMARY KEY,
 			ts         TEXT NOT NULL,

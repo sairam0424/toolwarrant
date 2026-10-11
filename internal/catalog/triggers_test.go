@@ -123,9 +123,15 @@ func TestSnapshot_RechecksTheApprovedDigest(t *testing.T) {
 	if _, err := s.Versions(bg, "alpha", "echo"); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Versions = %v, want ErrCorrupt", err)
 	}
-	// Tools that are not approved are unaffected by the check and still listed.
+	// With the digest restored the dropped guard is still reported, on every
+	// load and not only at Open (review finding: guards are verified by DDL on
+	// each Snapshot); once it is back the tool is served again.
 	mustExec(t, db, `UPDATE tool_versions SET digest = ?`, digestOf(t, "echo", "good"))
+	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "tool_versions_immutable is missing") {
+		t.Errorf("Snapshot with the guard still dropped = %v, want ErrCorrupt naming it", err)
+	}
+	restoreGuard(t, db, "tool_versions_immutable")
 	if _, err := s.Snapshot(bg, "alpha"); err != nil {
-		t.Errorf("Snapshot after restoring the digest: %v", err)
+		t.Errorf("Snapshot after restoring the digest and the guard: %v", err)
 	}
 }

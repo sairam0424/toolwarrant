@@ -91,7 +91,7 @@ func TestRecordCrawl_DriftRevertAndStrictMode(t *testing.T) {
 		t.Fatalf("drifted tool = %+v", v)
 	}
 	ev := entryOf(t, s, "tool.drifted")
-	if ev.Detail != "digest="+d2+" state=enabled->changed_pending_reapproval" ||
+	if ev.Detail != "digest="+d2+" state=enabled->changed_pending_reapproval last_seen="+d2 ||
 		ev.BeforeHash != d1 || ev.AfterHash != d1 || ev.Subject != "alpha/echo" || ev.Actor != "crawler" || ev.ActorType != "system" {
 		t.Errorf("drift audit entry = %+v", ev)
 	}

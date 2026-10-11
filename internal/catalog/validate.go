@@ -16,7 +16,15 @@ import (
 // Limits on everything that crosses the package boundary. They bound memory
 // and storage, and keep hostile input from becoming hostile output.
 const (
-	maxServerNameLen   = 63
+	maxServerNameLen = 63
+	// serverNamePattern is the rule agentgateway v1.6.0 applies to an MCP
+	// target name, which the emitted configuration derives from the server
+	// name; validateServerName enforces it by hand.
+	serverNamePattern = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+	// urlPunctuation is every non-alphanumeric byte a server URL may hold: the
+	// RFC 3986 unreserved marks "-._~", the gen-delims ":/?#[]@", the
+	// sub-delims "!$&'()*+,;=" and the percent sign that encodes the rest.
+	urlPunctuation     = "-._~:/?#[]@!$&'()*+,;=%"
 	maxURLBytes        = 2048
 	maxOwnerGroupBytes = 256
 	maxActorNameBytes  = 256 // before normalisation; the normalised form is bounded by the pattern
@@ -79,35 +87,51 @@ func validateToolName(name string) error {
 	return nil
 }
 
-// validateServerName enforces ^[a-z0-9][a-z0-9_-]{0,62}$ by hand: the name ends
-// up in file names, log lines and audit subjects, and a hand-written loop
-// cannot be surprised by regexp end-of-line semantics.
+// validateServerName enforces serverNamePattern, ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+// in at most maxServerNameLen bytes, by hand: the name ends up in the gateway
+// configuration, in file names, log lines and audit subjects, and a
+// hand-written loop cannot be surprised by regexp end-of-line semantics.
+//
+// The rule is the gateway's own. agentgateway v1.6.0 refuses an MCP target
+// name with an underscore (it reserves '_' as an MCP delimiter) or a trailing
+// hyphen, and it refuses the whole file: a name the catalog accepted but the
+// gateway did not would freeze every server's configuration at the next emit,
+// so such a name is refused before it is ever registered. The gateway would
+// accept a dot; it is refused here on purpose, because the name becomes a path
+// segment (/<name>/mcp), an export directory and an audit subject, and dotted
+// names ('.', '..', a look-alike of a host name) have no place in any of those.
 func validateServerName(name string) error {
 	if name == "" || len(name) > maxServerNameLen {
 		return invalidf("server name %s must be 1 to %d characters", quote(name), maxServerNameLen)
 	}
+	last := len(name) - 1
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if isLowerAlnum(c) || (i > 0 && (c == '_' || c == '-')) {
+		if isLowerAlnum(c) || (c == '-' && i > 0 && i < last) {
 			continue
 		}
-		return invalidf("server name %s must match ^[a-z0-9][a-z0-9_-]{0,62}$", quote(name))
+		return invalidf("server name %s must match %s: lower-case letters, digits and inner hyphens only", quote(name), serverNamePattern)
 	}
 	return nil
 }
 
 func isLowerAlnum(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') }
 
-// validateURL accepts only plain http(s) URLs that every parser reads the same
-// way: printable ASCII, no backslashes, no user info, no fragment. A URL that
-// two components could parse differently is an SSRF primitive.
+// validateURL accepts only plain http(s) URLs that every parser, the gateway's
+// included, reads the same way: letters, digits and urlPunctuation (the
+// RFC 3986 unreserved and reserved characters plus '%'), no user info, no
+// fragment. agentgateway v1.6.0's URI parser refuses '"', '<', '>', '|', '^',
+// '{', '}' and '`', and with them the whole file, which would freeze every
+// server's configuration at the next emit; a URL that two components could
+// parse differently is also an SSRF primitive. Space, backslash and every
+// control or non-ASCII byte are outside the set as before.
 func validateURL(raw string) error {
 	if raw == "" || len(raw) > maxURLBytes {
 		return invalidf("server URL must be 1 to %d bytes", maxURLBytes)
 	}
 	for i := 0; i < len(raw); i++ {
-		if c := raw[i]; c <= ' ' || c >= 0x7f || c == '\\' {
-			return invalidf("server URL contains a character that is not allowed")
+		if c := raw[i]; !isURLByte(c) {
+			return invalidf("server URL contains a character that is not allowed (byte 0x%02x)", c)
 		}
 	}
 	if strings.Contains(raw, "#") {
@@ -132,6 +156,15 @@ func validateURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// isURLByte reports whether c may appear in a server URL: an ASCII letter or
+// digit, or one of urlPunctuation.
+func isURLByte(c byte) bool {
+	if isLowerAlnum(c) || (c >= 'A' && c <= 'Z') {
+		return true
+	}
+	return strings.IndexByte(urlPunctuation, c) >= 0
 }
 
 func validateServerSpec(spec ServerSpec) error {

@@ -17,12 +17,15 @@ import (
 // sharedBits are the permission bits that give group or others any access.
 const sharedBits = 0o077
 
-// prepareDatabaseFile checks an existing file or creates a private one.
+// prepareDatabaseFile checks an existing file or creates a private one. Only
+// an init-style open (neither MustExist, ReadOnly nor Forensic) may create: a
+// reader, and above all an inspection of a tampered catalog, must never leave
+// a new file behind at a path it was pointed at.
 func prepareDatabaseFile(abs string, opts OpenOptions) error {
 	fi, err := os.Lstat(abs)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if opts.MustExist || opts.ReadOnly {
+		if opts.MustExist || opts.ReadOnly || opts.Forensic {
 			return fmt.Errorf("%w: database file %s does not exist", ErrNotFound, abs)
 		}
 		return createPrivateFile(abs, opts)

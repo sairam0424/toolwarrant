@@ -15,12 +15,19 @@
 // proposes new definitions faster than people decide stops gaining versions
 // (MaxProposalsPerDecision). Nothing is served until a person approves it,
 // and every read path re-hashes the canonical bytes behind the digests it
-// hands out. A Store remembers each row it has verified for RecheckTTL (ten
+// hands out, and serves an approval only with an approve or rollback record
+// behind it. A Store remembers each row it has verified for RecheckTTL (ten
 // minutes), so the processor's reload after a crawl does not read every
 // approved definition again; the price, stated in full at RecheckTTL, is that
 // a change to the stored bytes of a row this Store verified within the last
 // RecheckTTL is not reported until that time has passed or a Store without
 // the memory reads the row. Decisions always load their tool afresh.
+//
+// The tools table is the current policy and has no guard trigger: its columns
+// must change with every crawl and decision. What binds them to the
+// append-only history (versions, approvals, the audit log) is Integrity,
+// which cross-checks the registry against the log and names every row that
+// disagrees; audit verify prints its report.
 package catalog
 
 import (
@@ -45,9 +52,10 @@ var (
 	ErrSchema = errors.New("catalog: unsupported schema version")
 	// ErrCorrupt means the database contradicts itself: a stored digest does
 	// not hash its canonical form, a pointer dangles, a status disagrees with
-	// the tool row, or a guard object is missing. Someone edited the file
-	// outside this package, or a bug wrote it. Callers must not serve from a
-	// corrupt catalog.
+	// the tool row, an approved version has no approval record, or a guard
+	// object is missing or redefined. Someone edited the file outside this
+	// package, or a bug wrote it. Callers must not serve from a corrupt
+	// catalog.
 	ErrCorrupt = errors.New("catalog: database integrity check failed")
 	// ErrReadOnly is returned by every mutating method of a Store opened with
 	// OpenOptions.ReadOnly: the processor reads policy and must never be able
@@ -82,7 +90,11 @@ type Actor struct {
 
 // ServerSpec describes an upstream MCP server to register.
 type ServerSpec struct {
-	// Name is unique and matches ^[a-z0-9][a-z0-9_-]{0,62}$.
+	// Name is unique and matches ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ in at most 63
+	// bytes: the rule agentgateway v1.6.0 applies to the MCP target name the
+	// emitted configuration derives from it. No underscore (the gateway
+	// reserves it), no trailing hyphen, and no dot by choice; see
+	// validateServerName.
 	Name string
 	// URL is the remote Streamable HTTP endpoint (http or https). Stdio
 	// commands are never executed.

@@ -88,6 +88,10 @@ func TestVerifyAudit_PagesThroughLargeLogs(t *testing.T) {
 	if err != nil || sum.Entries != 1+2*2600+1 {
 		t.Fatalf("summary = %+v, %v", sum, err)
 	}
+	// Integrity pages through the same log and finds nothing wrong with it.
+	if rep, err := s.Integrity(bg); err != nil || len(rep.Problems) != 0 {
+		t.Fatalf("Integrity = %+v, %v", rep, err)
+	}
 }
 
 func brokenAt(t *testing.T, err error) *audit.BrokenError {

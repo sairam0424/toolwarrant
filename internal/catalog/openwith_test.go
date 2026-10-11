@@ -79,12 +79,16 @@ func TestOpenWith_ReadOnly(t *testing.T) {
 	}
 }
 
+// Review finding (low): a forensic open of a missing path created an empty
+// 0600 file before failing. Only an init-style open may create a file.
 func TestOpenWith_ReadOnlyAndMustExistRefuseAMissingFile(t *testing.T) {
 	path := dbPath(t)
 	for name, opts := range map[string]OpenOptions{
-		"read-only":  {ReadOnly: true},
-		"must exist": {MustExist: true},
-		"both":       {ReadOnly: true, MustExist: true},
+		"read-only":                {ReadOnly: true},
+		"must exist":               {MustExist: true},
+		"both":                     {ReadOnly: true, MustExist: true},
+		"forensic":                 {Forensic: true},
+		"forensic with must exist": {Forensic: true, MustExist: true},
 	} {
 		if _, err := OpenWith(path, opts); !errors.Is(err, ErrNotFound) {
 			t.Errorf("%s on a missing file: %v, want ErrNotFound", name, err)

@@ -176,12 +176,28 @@ func TestIntegrity_InconsistentRowsAreReportedNotServed(t *testing.T) {
 		}
 	})
 	t.Run("approved version without an approval record", func(t *testing.T) {
+		// Review finding: the serving path (Snapshot) accepted an approval
+		// that existed only in the mutable status columns. Every path that
+		// hands out or acts on an approval now needs the approvals row.
 		s, path := setup(t)
 		db := rawDB(t, path)
 		mustExec(t, db, `DROP TRIGGER approvals_no_delete`)
 		mustExec(t, db, `DELETE FROM approvals`)
-		if _, err := s.Approved(bg); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("Approved = %v, want ErrCorrupt", err)
+		restoreGuard(t, db, "approvals_no_delete")
+		for name, err := range map[string]error{
+			"Approved": func() error { _, err := s.Approved(bg); return err }(),
+			"Snapshot": func() error { _, err := s.Snapshot(bg, "alpha"); return err }(),
+			"Versions": func() error { _, err := s.Versions(bg, "alpha", "echo"); return err }(),
+			"Disable":  s.Disable(bg, "alpha", "echo", alice),
+			"Crawl":    func() error { _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), crawler); return err }(),
+		} {
+			if !errors.Is(err, ErrCorrupt) {
+				t.Errorf("%s = %v, want ErrCorrupt", name, err)
+			}
+		}
+		rep, err := s.Integrity(bg)
+		if err != nil || rep.ApprovalsWithoutRecord != 1 || rep.AuditEntriesWithoutApproval != 1 || len(rep.Problems) == 0 {
+			t.Errorf("Integrity = %+v, %v; want the missing record and the orphaned version.approved entry", rep, err)
 		}
 	})
 	t.Run("digest profile is not the current one", func(t *testing.T) {

@@ -148,3 +148,38 @@ func recordDecision(ctx context.Context, t *txn, rec *toolRec, c change, by Acto
 	}
 	return nil
 }
+
+// ResetProposalBudget forgets the proposals a tool gained since its last
+// decision (tools.proposals_since_decision), so that the next crawl may store
+// a new digest again. It is the decision that is always available: approve,
+// reject and rollback each need a version in the right status, and a tool
+// whose upstream exhausted the budget and then went back to the approved
+// definition has none, which left it unable to take any new definition for
+// good (limit L6). A revert never resets the budget on its own: a hostile
+// upstream could then cycle through MaxProposalsPerDecision digests and one
+// revert to grow the file without bound, so a person must look and decide.
+// The reset is one audit entry, tool.budget_reset, by a human actor (D7); the
+// tool's state, approval and versions do not change. A budget that is already
+// zero is ErrInvalid, so a reset is never a silent no-op.
+func (s *Store) ResetProposalBudget(ctx context.Context, server, tool string, by Actor) error {
+	actor, err := requireHuman(by)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(t *txn) error {
+		rec, err := loadTool(ctx, t, server, tool)
+		if err != nil {
+			return err
+		}
+		if rec.budget == 0 {
+			return invalidf("tool %s/%s has no proposals since its last decision", quote(server), quote(tool))
+		}
+		note := fmt.Sprintf(" proposals=%d->0", rec.budget)
+		rec.budget = 0
+		if err := rec.save(ctx, t, rec.tool, nil, 0); err != nil {
+			return err
+		}
+		return t.appendAudit(ctx, actor, evBudgetReset, server+"/"+tool, rec.tool.Approved, rec.tool.Approved,
+			toolDetail("", rec.tool, rec.tool, note))
+	})
+}

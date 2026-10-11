@@ -51,7 +51,7 @@ func TestApprove_RecordsTheDecisionEverywhere(t *testing.T) {
 	}
 	e := entryOf(t, s, "version.approved")
 	if e.Actor != "bob" || e.ActorType != "human" || e.Subject != "alpha/echo" || e.BeforeHash != "" || e.AfterHash != d ||
-		e.Detail != "digest="+d+" state=pending_review->enabled" {
+		e.Detail != "digest="+d+" state=pending_review->enabled last_seen="+d {
 		t.Errorf("audit entry = %+v", e)
 	}
 
@@ -160,7 +160,7 @@ func TestReject(t *testing.T) {
 	if n := mustCount(t, rawDB(t, path), `SELECT COUNT(*) FROM approvals WHERE decision = 'reject' AND approver = 'bob'`); n != 2 {
 		t.Errorf("%d reject rows, want 2", n)
 	}
-	if e := entryOf(t, s, "version.rejected"); e.Detail != "digest="+digestOf(t, "live", "v2")+" state=changed_pending_reapproval->enabled" {
+	if e := entryOf(t, s, "version.rejected"); e.Detail != "digest="+digestOf(t, "live", "v2")+" state=changed_pending_reapproval->enabled last_seen="+digestOf(t, "live", "v2") {
 		t.Errorf("entry = %+v", e)
 	}
 }
@@ -236,7 +236,7 @@ func TestEnable_WithoutReReviewRestoresTheApproval(t *testing.T) {
 	if v := mustTool(t, s, "alpha", "echo"); v.State != lifecycle.Enabled || v.Approved != d {
 		t.Errorf("tool = %+v", v)
 	}
-	if e := entryOf(t, s, "tool.enabled"); e.Detail != "digest=- state=disabled->enabled" || e.BeforeHash != d || e.AfterHash != d {
+	if e := entryOf(t, s, "tool.enabled"); e.Detail != "digest=- state=disabled->enabled last_seen="+d || e.BeforeHash != d || e.AfterHash != d {
 		t.Errorf("entry = %+v", e)
 	}
 }
@@ -279,7 +279,7 @@ func TestRollback(t *testing.T) {
 		t.Errorf("%d rollback rows", n)
 	}
 	e := entryOf(t, s, "version.rolled_back")
-	if e.BeforeHash != dB || e.AfterHash != dA || e.Detail != "digest="+dA+" state=changed_pending_reapproval->changed_pending_reapproval" {
+	if e.BeforeHash != dB || e.AfterHash != dA || e.Detail != "digest="+dA+" state=changed_pending_reapproval->changed_pending_reapproval last_seen="+dC {
 		t.Errorf("entry = %+v", e)
 	}
 }

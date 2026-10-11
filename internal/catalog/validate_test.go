@@ -38,14 +38,18 @@ const (
 	eAcute      = 0x00E9
 )
 
+// Server names follow the gateway's own rule for an MCP target name (review
+// finding: agentgateway v1.6.0 refuses '_' and a trailing '-', and with them
+// the whole emitted file). Dots are refused on purpose; see validateServerName.
 func TestValidateServerName(t *testing.T) {
 	long63 := "a" + strings.Repeat("b", 62)
 	for _, tc := range []struct {
 		name string
 		ok   bool
 	}{
-		{"a", true}, {"0", true}, {"my-server_1", true}, {long63, true},
-		{"", false}, {"-a", false}, {"_a", false}, {"A", false}, {"a b", false}, {"a.b", false},
+		{"a", true}, {"0", true}, {"99", true}, {"my-server-1", true}, {"a--b", true}, {"a-" + strings.Repeat("b", 60) + "c", true}, {long63, true},
+		{"", false}, {"-", false}, {"-a", false}, {"a-", false}, {"_a", false}, {"a_", false}, {"my_server", false}, {"my-server_1", false},
+		{"A", false}, {"a b", false}, {"a.b", false}, {"a.", false}, {".", false}, {"..", false},
 		{"a/b", false}, {"a\n", false}, {"a\x00", false}, {cp(eAcute), false}, {long63 + "c", false},
 		{"a'; DROP TABLE servers; --", false}, {"../etc", false},
 	} {
@@ -90,6 +94,19 @@ func TestValidateURL(t *testing.T) {
 		{"https://exa\\mple.com/", false},
 		{"https://example.com/" + cp(eAcute), false},
 		{"https:opaque", false},
+		// The characters the gateway's URI parser refuses (review finding), and
+		// everything else outside the RFC 3986 reserved and unreserved sets.
+		{"https://example.com/mcp?x=\"y\"", false},
+		{"https://example.com/<mcp>", false},
+		{"https://example.com/a|b", false},
+		{"https://example.com/a^b", false},
+		{"https://example.com/{mcp}", false},
+		{"https://example.com/`mcp`", false},
+		{"https://example.com/\x7f", false},
+		{"https://example.com/a\tb", false},
+		// The RFC 3986 unreserved marks, sub-delims and percent-encoding stay allowed.
+		{"https://example.com/a~b_(c)*,;=!$&'+/-.", true},
+		{"https://example.com/%41%2Fmcp?x=1&y=2@3:4", true},
 	} {
 		err := validateURL(tc.url)
 		if tc.ok != (err == nil) {

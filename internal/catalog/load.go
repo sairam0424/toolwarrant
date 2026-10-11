@@ -47,6 +47,9 @@ type versionRow struct {
 	status     string
 	proposedBy string
 	ever       int
+	// recorded is 1 when an approve or rollback row exists for the version;
+	// a version in status approved, or ever approved, without one is corrupt.
+	recorded int
 }
 
 const (
@@ -54,9 +57,11 @@ const (
 		t.proposals_since_decision`
 
 	// The first argument switches the canonical bytes on: bulk loads do not
-	// need them, single-tool loads re-check them against the digest.
+	// need them, single-tool loads re-check them against the digest. The last
+	// column says whether an approve or rollback row backs the version.
 	versionCols = `v.id, v.tool_id, v.version_no, v.digest, v.digest_profile, CASE WHEN ? THEN v.canonical ELSE NULL END,
-		v.status, v.proposed_by, v.ever_approved`
+		v.status, v.proposed_by, v.ever_approved,
+		EXISTS (SELECT 1 FROM approvals a WHERE a.version_id = v.id AND a.decision IN ('approve', 'rollback'))`
 
 	versionsOfTool   = `SELECT ` + versionCols + ` FROM tool_versions v WHERE v.tool_id = ? ORDER BY v.version_no`
 	versionsOfServer = `SELECT ` + versionCols + ` FROM tool_versions v JOIN tools t ON t.id = v.tool_id
@@ -89,7 +94,7 @@ func queryVersionRows(ctx context.Context, q queryer, query string, withCanonica
 	var out []versionRow
 	for rows.Next() {
 		var v versionRow
-		if err := rows.Scan(&v.id, &v.toolID, &v.no, &v.digest, &v.profile, &v.canonical, &v.status, &v.proposedBy, &v.ever); err != nil {
+		if err := rows.Scan(&v.id, &v.toolID, &v.no, &v.digest, &v.profile, &v.canonical, &v.status, &v.proposedBy, &v.ever, &v.recorded); err != nil {
 			return nil, fmt.Errorf("catalog: load versions: %w", err)
 		}
 		out = append(out, v)
@@ -223,8 +228,8 @@ func checkProfile(v versionRow) error {
 }
 
 // newToolRec converts rows into lifecycle types and checks that the approved
-// pointer, the version statuses and the proposer lists agree, because
-// lifecycle.Apply relies on them.
+// pointer, the version statuses, the approval records and the proposer lists
+// agree, because lifecycle.Apply relies on them.
 func newToolRec(row toolRow, vrs []versionRow, proposers map[int64][]string) (*toolRec, error) {
 	rec := &toolRec{id: row.id, serverID: row.serverID, name: row.name, budget: row.budget, storedBudget: row.budget}
 	rec.tool = lifecycle.Tool{
@@ -257,6 +262,9 @@ func newToolRec(row toolRow, vrs []versionRow, proposers map[int64][]string) (*t
 		}
 		if isPointer != (v.status == string(lifecycle.VersionApproved)) {
 			return nil, fmt.Errorf("%w: tool %q approved pointer and version status disagree", ErrCorrupt, row.name)
+		}
+		if (isPointer || v.ever == 1) && v.recorded == 0 {
+			return nil, fmt.Errorf("%w: version %d of tool %q is marked approved but has no approval record", ErrCorrupt, v.no, row.name)
 		}
 	}
 	if row.approved.Valid && !approvedSeen {

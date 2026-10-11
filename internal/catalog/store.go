@@ -59,8 +59,9 @@ type OpenOptions struct {
 	// Forensic opens a database of ours even when its guard triggers or
 	// indexes are missing, which Open otherwise reports as ErrCorrupt. It is
 	// for inspection after tampering: VerifyAudit can then name the broken
-	// entry and the views can show the rows. It implies ReadOnly; nothing is
-	// ever served or written from such an open.
+	// entry, Integrity can list every disagreement and the views can show the
+	// rows. It implies ReadOnly and MustExist (a missing file is ErrNotFound,
+	// never created); nothing is ever served or written from such an open.
 	Forensic bool
 }
 
@@ -94,7 +95,7 @@ func Open(path string, policy lifecycle.Policy) (*Store, error) {
 // OpenWith opens the database at path per opts. The file is checked before
 // SQLite touches it: a symbolic link, a non-regular file, or a file readable by
 // group or others (unless AllowSharedFile) is ErrInvalid; a missing file is
-// created owner-only unless MustExist or ReadOnly (ErrNotFound). The schema
+// created owner-only unless MustExist, ReadOnly or Forensic (ErrNotFound). The schema
 // version is checked before the journal mode is switched, so a foreign
 // database is refused untouched.
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
