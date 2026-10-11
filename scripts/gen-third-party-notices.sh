@@ -59,11 +59,11 @@ licence_row() { # module@version
 	github.com/segmentio/asm@v1.1.3) echo 'MIT|LICENSE=e2a78de21d6d8ded2dff0f3189cd32e011630d785da127ebfbc8949012c0947b' ;;
 	github.com/segmentio/encoding@v0.5.4) echo 'MIT|LICENSE=d6d71a1f7dc6539e371120cc7af6e3257e55ca79634d473211f217b8965b0f16' ;;
 	github.com/yosida95/uritemplate/v3@v3.0.2) echo 'BSD-3-Clause|LICENSE=0761aadfb1921103752869ee942d4a71bdd54494697684d4b13dc17ad9781191' ;;
-	golang.org/x/net@v0.58.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
+	golang.org/x/net@v0.60.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	golang.org/x/oauth2@v0.36.0) echo 'BSD-3-Clause|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad' ;;
 	golang.org/x/sync@v0.23.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	golang.org/x/sys@v0.48.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
-	golang.org/x/text@v0.41.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
+	golang.org/x/text@v0.42.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	golang.org/x/time@v0.15.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	google.golang.org/genproto/googleapis/rpc@v0.0.0-20260817212433-ac3dfec99bb1) echo 'Apache-2.0|LICENSE=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' ;;
 	google.golang.org/grpc@v1.86.0-dev) echo 'Apache-2.0, with a NOTICE file|LICENSE=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30,NOTICE.txt=693ff28ec216d5112ac1bbfe64ef539005867d1c7bd427b57d579683293b947f' ;;

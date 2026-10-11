@@ -43,11 +43,11 @@ of the SHA-256 given in full in Appendix B.
 | `github.com/segmentio/asm` | v1.1.3 | MIT | LICENSE (e2a78de21d6d; A9) | mockupstream, seamclient |
 | `github.com/segmentio/encoding` | v0.5.4 | MIT | LICENSE (d6d71a1f7dc6; A10) | mockupstream, seamclient |
 | `github.com/yosida95/uritemplate/v3` | v3.0.2 | BSD-3-Clause | LICENSE (0761aadfb192; A11) | mockupstream, seamclient |
-| `golang.org/x/net` | v0.58.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | seamgate, seamprocessor, toolwarrant |
+| `golang.org/x/net` | v0.60.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | seamgate, seamprocessor, toolwarrant |
 | `golang.org/x/oauth2` | v0.36.0 | BSD-3-Clause | LICENSE (911f8f578293; A12) | mockupstream, seamclient |
 | `golang.org/x/sync` | v0.23.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | mockupstream, seamclient |
 | `golang.org/x/sys` | v0.48.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | mockupstream, seamclient, seamgate, seamprocessor, toolwarrant |
-| `golang.org/x/text` | v0.41.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | seamgate, seamprocessor, toolwarrant |
+| `golang.org/x/text` | v0.42.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | seamgate, seamprocessor, toolwarrant |
 | `golang.org/x/time` | v0.15.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A12), PATENTS (96f408bfae65; A13) | mockupstream, seamclient |
 | `google.golang.org/genproto/googleapis/rpc` | v0.0.0-20260817212433-ac3dfec99bb1 | Apache-2.0 | LICENSE (cfc7749b96f6; A4) | seamgate, seamprocessor, toolwarrant |
 | `google.golang.org/grpc` | v1.86.0-dev | Apache-2.0, with a NOTICE file | LICENSE (cfc7749b96f6; A4), NOTICE.txt (693ff28ec216; A14) | seamgate, seamprocessor, toolwarrant |
@@ -127,9 +127,9 @@ is stated, because nothing was read.
 | `go.opentelemetry.io/otel/sdk/metric` | v1.45.0 | no | not inspected | |
 | `go.opentelemetry.io/otel/trace` | v1.45.0 | no | not inspected | |
 | `go.yaml.in/yaml/v3` | v3.0.5 | yes | MIT and Apache-2.0, by file, with a NOTICE file | LICENSE (d18f6323b71b), NOTICE (f6c2dd3a67b5) |
-| `golang.org/x/crypto` | v0.55.0 | no | not inspected | |
+| `golang.org/x/crypto` | v0.57.0 | no | not inspected | |
 | `golang.org/x/mod` | v0.41.0 | yes | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293), PATENTS (96f408bfae65) |
-| `golang.org/x/term` | v0.45.0 | no | not inspected | |
+| `golang.org/x/term` | v0.46.0 | no | not inspected | |
 | `golang.org/x/tools` | v0.50.0 | yes | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293), PATENTS (96f408bfae65) |
 | `gonum.org/v1/gonum` | v0.17.0 | yes | BSD-3-Clause | LICENSE (b44d9e394ba3) |
 | `google.golang.org/api` | v0.293.0 | no | not inspected | |
@@ -856,7 +856,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-### A12. golang.org/x/net@v0.58.0/LICENSE, golang.org/x/oauth2@v0.36.0/LICENSE, golang.org/x/sync@v0.23.0/LICENSE, golang.org/x/sys@v0.48.0/LICENSE, golang.org/x/text@v0.41.0/LICENSE, golang.org/x/time@v0.15.0/LICENSE
+### A12. golang.org/x/net@v0.60.0/LICENSE, golang.org/x/oauth2@v0.36.0/LICENSE, golang.org/x/sync@v0.23.0/LICENSE, golang.org/x/sys@v0.48.0/LICENSE, golang.org/x/text@v0.42.0/LICENSE, golang.org/x/time@v0.15.0/LICENSE
 
 SHA-256 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
 
@@ -890,7 +890,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-### A13. golang.org/x/net@v0.58.0/PATENTS, golang.org/x/sync@v0.23.0/PATENTS, golang.org/x/sys@v0.48.0/PATENTS, golang.org/x/text@v0.41.0/PATENTS, golang.org/x/time@v0.15.0/PATENTS, google.golang.org/protobuf@v1.36.12/PATENTS
+### A13. golang.org/x/net@v0.60.0/PATENTS, golang.org/x/sync@v0.23.0/PATENTS, golang.org/x/sys@v0.48.0/PATENTS, golang.org/x/text@v0.42.0/PATENTS, golang.org/x/time@v0.15.0/PATENTS, google.golang.org/protobuf@v1.36.12/PATENTS
 
 SHA-256 96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc
 
@@ -1571,15 +1571,15 @@ Paths are relative to the module cache: `module@version/file`.
     f6c2dd3a67b576eafb89b80200b8b1627230bf3821a0c14cb99a22ac19107d00  go.yaml.in/yaml/v3@v3.0.5/NOTICE
     911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/mod@v0.41.0/LICENSE
     96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/mod@v0.41.0/PATENTS
-    911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/net@v0.58.0/LICENSE
-    96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/net@v0.58.0/PATENTS
+    911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/net@v0.60.0/LICENSE
+    96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/net@v0.60.0/PATENTS
     911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/oauth2@v0.36.0/LICENSE
     911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/sync@v0.23.0/LICENSE
     96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/sync@v0.23.0/PATENTS
     911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/sys@v0.48.0/LICENSE
     96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/sys@v0.48.0/PATENTS
-    911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/text@v0.41.0/LICENSE
-    96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/text@v0.41.0/PATENTS
+    911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/text@v0.42.0/LICENSE
+    96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/text@v0.42.0/PATENTS
     911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/time@v0.15.0/LICENSE
     96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/time@v0.15.0/PATENTS
     911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  golang.org/x/tools@v0.50.0/LICENSE
