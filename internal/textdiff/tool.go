@@ -162,7 +162,11 @@ func writeSpan(r *report, g wordChange) {
 }
 
 // writeQuoted prints one removed or added span on its own line, escaped and in
-// quotes so leading and trailing spaces are visible. An empty span is skipped.
+// quotes so leading and trailing spaces are visible. A quotation mark inside
+// the span is written \" (escapeInline doubles every real backslash, so the
+// form is unambiguous, as in keySegment): a span can end only at the
+// renderer's own closing quote, and hostile text cannot forge a second span on
+// the line. An empty span is skipped.
 func writeQuoted(r *report, sign byte, text string) {
 	if text == "" {
 		return
@@ -170,6 +174,6 @@ func writeQuoted(r *report, sign byte, text string) {
 	r.writeString("    ")
 	r.writeByte(sign)
 	r.writeString(` "`)
-	r.writeString(escapeInline(text))
+	r.writeString(strings.ReplaceAll(escapeInline(text), `"`, `\"`))
 	r.writeString("\"\n")
 }

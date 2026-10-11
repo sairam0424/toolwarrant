@@ -607,9 +607,9 @@ the round changed in the statements of this file:
   later step did; init refuses a database path whose directory is reached
   through a symbolic link that root does not own; the three processor
   comments that still said listed equals callable state the one-way rule of
-  D9 (D14 f, i); and textdiff is to escape a quotation mark inside a quoted
-  changed span (D14 j), the one sub-decision whose code had not landed when
-  this subsection was written. The finding that
+  D9 (D14 f, i); and textdiff escapes a quotation mark inside a quoted
+  changed span (D14 j; `TestTool_changedTextSpanEscapesQuotationMarks`, landed
+  in the commit after this round's documents). The finding that
   unlisted deprecated tools kept a stale unusable marker was fixed in 15eba5e
   before this round and re-verified with the reviewer's recorded seed.
 - Decisions added since: D14, in docs/decisions.md, with the trust boundary of

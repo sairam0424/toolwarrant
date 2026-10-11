@@ -973,10 +973,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   private file is created.
 - Decision (j): `textdiff` escapes a quotation mark inside a quoted changed
   span as `\"`, the way it already did inside a key, so a span can only end at
-  the renderer's own closing quote. This is the one sub-decision whose code
-  had not landed in the tree when this record was written; the documents
-  describe the decision, not a shipped behaviour, until the corrections
-  subsection of RESULTS.md says otherwise.
+  the renderer's own closing quote. Landed in the commit after this round's
+  documents; pinned by `TestTool_changedTextSpanEscapesQuotationMarks`.
 - Decision (k): the schema version moves from 4 to 5 (the new column, the
   meta key and the no-delete guards). A v4 file from the fourth round is
   refused with `ErrSchema` and must be re-initialised, as every earlier

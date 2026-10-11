@@ -261,3 +261,39 @@ func TestKeySegment(t *testing.T) {
 		}
 	}
 }
+
+// A quotation mark inside a changed span is escaped, so the span can end only
+// at the renderer's own closing quote: before this a description containing a
+// quote printed as + "Adds"" and an approver could misread which text was
+// added (fourth review, core-3).
+func TestTool_changedTextSpanEscapesQuotationMarks(t *testing.T) {
+	from := `{"name":"add","description":"Adds two numbers."}`
+	to := `{"name":"add","description":"Adds \"two\" numbers, then some."}`
+	out := mustTool(t, from, to)
+	changed := strings.SplitN(out, "\nChanged text\n", 2)
+	if len(changed) != 2 {
+		t.Fatalf("no Changed text section:\n%s", out)
+	}
+	spans := 0
+	for _, line := range strings.Split(changed[1], "\n") {
+		if !strings.HasPrefix(line, "    - \"") && !strings.HasPrefix(line, "    + \"") {
+			continue
+		}
+		spans++
+		body := strings.TrimSuffix(strings.TrimPrefix(line[6:], "\""), "\"")
+		if !strings.HasSuffix(line, "\"") {
+			t.Errorf("span line does not end with the closing quote: %q", line)
+		}
+		for i := 0; i < len(body); i++ {
+			if body[i] == '"' && (i == 0 || body[i-1] != '\\') {
+				t.Errorf("raw quotation mark inside a span: %q", line)
+			}
+		}
+	}
+	if spans == 0 {
+		t.Fatalf("no span lines rendered:\n%s", out)
+	}
+	if !strings.Contains(changed[1], `\"two\"`) {
+		t.Errorf("the added quotes are not shown escaped:\n%s", changed[1])
+	}
+}
