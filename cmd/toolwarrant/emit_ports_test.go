@@ -230,3 +230,41 @@ func TestPortAllocator(t *testing.T) {
 		t.Errorf("portOf(-1) = %d, %v", port, ok)
 	}
 }
+
+// Fifth review (cli-docs-2, D15 j): runEmit recorded every new or changed
+// processor address, with its server.processor_set audit entry, before the
+// file was staged, validated with --gateway-binary and renamed into place, so
+// a gateway refusal left the catalog holding the address of a file that never
+// existed and the next emit printed no "is new" line for it. The addresses are
+// now recorded after the write succeeded: a refused emit and one whose
+// directory does not exist record nothing, and the first emit that writes a
+// file announces every address.
+func TestEmitRecordsProcessorAddressesOnlyAfterTheFileIsWritten(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	out := filepath.Join(t.TempDir(), "gateway.yaml")
+	bad, _ := fakeGateway(t, t.TempDir(), "gateway-bad", 1, "refused on purpose")
+	r := c.fail(exitFailure, "emit", "--out", out, "--gateway-binary", bad)
+	wantContains(t, "stderr", r.stderr, "refused the configuration, so nothing was written")
+	r = c.fail(exitFailure, "emit", "--out", filepath.Join(t.TempDir(), "missing", "gateway.yaml"))
+	wantContains(t, "stderr", r.stderr, "create temp file")
+	for _, when := range []string{"a gateway refusal", "a failed write"} {
+		var rows []serverJSON
+		c.jsonInto(&rows, "server", "list", "--json")
+		if len(rows) != 1 || rows[0].ProcessorAddr != "" {
+			t.Errorf("after %s the catalog records a processor address: %+v", when, rows)
+		}
+		if entries := c.processorSetEntries(); len(entries) != 0 {
+			t.Errorf("after %s the audit log carries %d %s entry(ies): %+v", when, len(entries), processorSetEvent, entries)
+		}
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused emit left a file: %v", err)
+	}
+	good := c.ok("emit", "--out", out)
+	wantContains(t, "first emit that wrote a file", good, "processor address of server s1 is new: 127.0.0.1:9001")
+	if entries := c.processorSetEntries(); len(entries) != 1 || entries[0].Subject != "s1" || entries[0].Detail != "processor_addr=127.0.0.1:9001" {
+		t.Errorf("%s entries after the written emit = %+v", processorSetEvent, entries)
+	}
+	wantContains(t, "server list", c.ok("server", "list"), "127.0.0.1:9001")
+}

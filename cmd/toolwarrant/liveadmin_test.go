@@ -327,3 +327,22 @@ func TestGatewayAcceptsTheShadowRouteDocument(t *testing.T) {
 		t.Fatalf("the gateway refused the shadow-route document, so the evasion would not load: %v", err)
 	}
 }
+
+// A listing failure no longer hides the live comparison: when a policy posted
+// through the admin API breaks the route for the canary's own listing (seen
+// on the real gateway with requestMirror), the LIVE-CONFIG-MISMATCH lines are
+// printed and named in the error next to the listing failure, and the run
+// still exits 1 (sixth round).
+func TestVerifyGatewayComparesTheLiveConfigurationWhenTheListingFails(t *testing.T) {
+	c, u, _, cfg := liveFixture(t)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "route broken", http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+	doc := adminDoc(t, u.url(), `"policies": {`, `"policies": {"requestMirror": {"backend": {"host": "127.0.0.1:4444"}, "percentage": 100},`)
+	admin := serveAdmin(t, http.StatusOK, doc)
+	r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", broken.URL+routePath, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
+	wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: policy requestMirror: not in the emitted file")
+	wantContains(t, "stderr", r.stderr, "listing through the gateway failed", "differs from the emitted file in 1 place(s)")
+	wantNotContains(t, "stdout", r.stdout, verdictOK)
+}

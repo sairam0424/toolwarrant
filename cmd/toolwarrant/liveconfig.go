@@ -82,29 +82,37 @@ type processorConfig struct {
 // routeConfig is one route of the gateway configuration reduced to the fields
 // the canary compares between the file emit wrote and the configuration the
 // gateway is running: its name, the gateway it attaches to, the exact paths it
-// matches, the allow rules, the processors and the backend hosts. Both sides
-// take this shape so that a comparison names the field that differs rather
-// than two documents.
+// matches, the allow rules, the processors and the backend hosts, plus the
+// lines about everything else the live route carries, which the emitted file
+// cannot (D15 i; always empty for the emitted side). Both sides take this
+// shape so that a comparison names the field that differs rather than two
+// documents.
 type routeConfig struct {
 	name, gateway string
 	paths         []string
 	rules         []string
 	processors    []processorConfig
 	backendHosts  []string
+	foreign       []string
 }
 
 // configDoc is a whole gateway configuration as the canary compares it: the
 // listeners of the config block, every gateway by name, every route in
-// document order, and the names of every other top-level section the live
-// document carries (always empty for the emitted file, which has three). The
-// comparison is over the whole document (D13 e, D14 i), because a route, a
-// gateway or a section the file does not carry serves clients without the
-// emitted guards however intact the server's own route is.
+// document order, the names of every other top-level section the live
+// document carries, and the lines about every key of the config block and of
+// each gateway that the emitted file cannot carry (all three always empty for
+// the emitted file, which has three sections and writes only what the
+// comparison reads). The comparison is over the whole document (D13 e, D14 i,
+// D15 i), because a route, a gateway, a section or a field the file does not
+// carry serves clients without the emitted guards however intact the server's
+// own route is.
 type configDoc struct {
-	listeners     listenerConfig
-	gateways      map[string]gatewayConfig
-	routes        []routeConfig
-	extraSections []string
+	listeners       listenerConfig
+	gateways        map[string]gatewayConfig
+	routes          []routeConfig
+	extraSections   []string
+	foreignConfig   []string
+	foreignGateways map[string][]string
 }
 
 // route returns the route named name and how many routes carry that name; a

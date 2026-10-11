@@ -112,19 +112,22 @@ func probeToolName() (string, error) {
 }
 
 // classifyProbe turns the gateway's answer to the id-less tools/call into a
-// verdict (D13 h, D14 i): 202 forwarded it; 400 refused it, unless the body
-// is a JSON-RPC error, which a forwarding gateway relays from an upstream that
-// refused the shape itself (fourth review cli-docs-7); any other 2xx that
-// carries a body is inconclusive for the same reason, because a gateway that
-// forwarded the call and relayed the upstream's answer looks exactly like a
-// gateway that refused it with a JSON-RPC error of its own; a 2xx without a
+// verdict (D13 h, D14 i, D15 k): 202 forwarded it; 400 refused it, unless the
+// body is JSON, which a forwarding gateway relays from an upstream that
+// refused the shape itself with a JSON-RPC error, single (fourth review
+// cli-docs-7) or batched in an array (fifth review cli-docs-4); any other 2xx
+// that carries a body is inconclusive for the same reason, because a gateway
+// that forwarded the call and relayed the upstream's answer looks exactly like
+// a gateway that refused it with a JSON-RPC error of its own; a 2xx without a
 // body and every other status is an error, since the probe then proved nothing
-// either way, and the error says whether the answer carried a body.
+// either way, and the error says whether the answer carried a body. Only a
+// 400 with an empty or non-JSON body is healthy: the pinned gateway's own
+// refusals and the go-sdk's are plain text.
 func classifyProbe(resp rawResponse) (probeOutcome, error) {
 	switch {
 	case resp.status == http.StatusAccepted:
 		return probeUnhooked, nil
-	case resp.status == http.StatusBadRequest && !resp.carriesRPCError():
+	case resp.status == http.StatusBadRequest && !resp.carriesJSONAnswer():
 		return probeHealthy, nil
 	case resp.status == http.StatusBadRequest, resp.status/100 == 2 && len(resp.body) > 0:
 		return probeInconclusive, nil
@@ -141,12 +144,18 @@ func (r rawResponse) bodyPhrase() string {
 	return fmt.Sprintf("with a body of %d bytes", len(r.body))
 }
 
-// carriesRPCError reports whether any JSON-RPC message in the answer (the
-// body, or the data lines of an event stream) carries an error member.
-func (r rawResponse) carriesRPCError() bool {
+// carriesJSONAnswer reports whether any message in the answer (the body, or
+// the data lines of an event stream) is JSON: a JSON-RPC answer is a JSON
+// object or, batched, an array of them, and a 400 that carries one may be an
+// upstream's refusal relayed by a forwarding gateway (D15 k). Until the fifth
+// review only an object with an error member counted, so a batch of errors
+// passed as the gateway's own refusal. Every JSON value counts, a bare scalar
+// included, because the probe cannot tell who wrote it and must fail closed;
+// an empty or non-JSON body is the plain-text refusal the gateway writes
+// itself.
+func (r rawResponse) carriesJSONAnswer() bool {
 	for _, m := range r.messages() {
-		var env rpcEnvelope
-		if json.Unmarshal(m, &env) == nil && len(env.Error) > 0 && string(bytes.TrimSpace(env.Error)) != "null" {
+		if json.Valid(bytes.TrimSpace(m)) {
 			return true
 		}
 	}

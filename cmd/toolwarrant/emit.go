@@ -99,10 +99,10 @@ func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 	fs.BoolVar(&o.disableAdmin, "disable-admin", false, "turn the gateway's admin API off (config.adminAddr off) instead of binding it; verify-gateway --admin then has nothing to ask")
 	fs.StringVar(&o.statsAddr, "stats-addr", "", "host:port of the gateway's metrics listener, config.statsAddr (default "+emit.DefaultStatsAddr+")")
 	fs.StringVar(&o.readinessAddr, "readiness-addr", "", "host:port of the gateway's readiness probe, config.readinessAddr (default "+emit.DefaultReadinessAddr+")")
-	fs.IntVar(&o.basePort, "processor-base-port", defaultProcessorBasePort, "on a first emit the i-th server in name order gets processor "+processorHost+":(base+i); every address is recorded in the catalog (server list shows it, audit entry server.processor_set) and every later emit keeps it, giving a new server the next free port above the recorded ones, so adding a server moves nobody; the file at --out is never read for addresses")
-	fs.Var(o.overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable); it replaces the address the catalog records for that server and is kept by later emits; a host other than loopback is warned about, and the printed serve command then carries "+allowNonLoopbackFlag+", which serve accepts only together with --secret-env")
+	fs.IntVar(&o.basePort, "processor-base-port", defaultProcessorBasePort, "on a first emit the i-th server in name order gets processor "+processorHost+":(base+i); every address is recorded in the catalog once the file is written (server list shows it, audit entry server.processor_set) and every later emit keeps it, giving a new server the next free port above the recorded ones, so adding a server moves nobody; the file at --out is never read for addresses")
+	fs.Var(o.overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable); it replaces the address the catalog records for that server and is kept by later emits; a host other than loopback is warned about, and the printed serve command then carries "+allowNonLoopbackFlag+", which serve accepts only together with --secret-env or the explicit --insecure-no-secret")
 	fs.StringVar(&o.secretEnv, "secret-env", "", "environment variable holding a shared secret (16 to 256 printable ASCII characters) written into every processor entry")
-	fs.StringVar(&o.gatewayBinary, "gateway-binary", getenv(envGatewayBinary), "agentgateway binary (env "+envGatewayBinary+"); when set, the file is staged under a temporary name, checked with <binary> -f FILE "+validateOnlyFlag+" and renamed into place only if the gateway accepts it; a refusal exits 1, prints the gateway's message and leaves no file")
+	fs.StringVar(&o.gatewayBinary, "gateway-binary", getenv(envGatewayBinary), "agentgateway binary (env "+envGatewayBinary+"); when set, the file is staged under a temporary name, checked with <binary> -f FILE "+validateOnlyFlag+" and renamed into place only if the gateway accepts it; a refusal exits 1, prints the gateway's message, leaves no file and records no processor address")
 	return o
 }
 
@@ -136,8 +136,11 @@ func (o *emitOptions) input(plans []emitPlan, secret string) emit.Input {
 // --bind-address says otherwise, and a wildcard address needs
 // --allow-all-interfaces on top (seam finding F2). The file is always written
 // owner-only (D13 g). Every server's processor address comes from the catalog
-// and goes back into it when it is new or changed (D14 i); the file at --out
-// is never read and must be absent or a regular file.
+// and goes back into it when it is new or changed, after the file was
+// validated and renamed into place (D14 i, D15 j): a refused or failed emit
+// records nothing, so the next emit that writes a file still prints every
+// address as new; the file at --out is never read and must be absent or a
+// regular file.
 func runEmit(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	o := bindEmitFlags(fs, a.getenv)
@@ -176,10 +179,10 @@ func runEmit(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := recordProcessorAddrs(a, store, plans); err != nil {
+	if err := writeValidated(a.ctx, o.out, result.YAML, configFileMode, o.gatewayBinary); err != nil {
 		return err
 	}
-	if err := writeValidated(a.ctx, o.out, result.YAML, configFileMode, o.gatewayBinary); err != nil {
+	if err := recordProcessorAddrs(a, store, plans, o.out); err != nil {
 		return err
 	}
 	return a.reportEmit(o, emitOutcome{plans: plans, result: result, credentialed: serversWithQuery(servers)})

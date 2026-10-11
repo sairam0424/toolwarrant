@@ -36,23 +36,27 @@ func metadataDigest(m map[string]string) string {
 
 // compareDocuments names every way in which the configuration the gateway is
 // running differs from the emitted file, over the whole document (D13 e,
-// D14 i): no top-level section the file does not carry may be present, the
-// config block must declare the same listeners, every emitted gateway and
-// route must be present exactly once with the same fields and match path,
-// nothing the file does not carry may exist, no path may appear twice, and
-// the path of --url must be the emitted route's match for --server. The third
-// review showed why one route is not enough: a live document that keeps the
-// server's route intact, parks it on another path and adds a processor-less
-// route owning the client's path compared as a match; the fourth showed a
-// binds section with a listener on another port that the comparison never
-// read. Every value shown is escaped; backend hosts and processor metadata
-// are never shown, because an upstream URL may carry a credential and the
-// metadata carries the secret.
+// D14 i, D15 i): no non-empty top-level section the file does not carry may
+// be present, the config block must declare the same listeners and nothing
+// else, every emitted gateway and route must be present exactly once with the
+// same fields and match path and with no field, policy, match condition or
+// backend the file cannot carry, nothing the file does not carry may exist,
+// no path may appear twice, and the path of --url must be the emitted route's
+// match for --server. The third review showed why one route is not enough: a
+// live document that keeps the server's route intact, parks it on another
+// path and adds a processor-less route owning the client's path compared as a
+// match; the fourth showed a binds section with a listener on another port
+// that the comparison never read; the fifth showed an extProc or
+// requestMirror policy and a second backend inside the compared route that
+// the pinned decoder dropped. Every value shown is escaped; backend hosts and
+// processor metadata are never shown, because an upstream URL may carry a
+// credential and the metadata carries the secret.
 func compareDocuments(emitted, live configDoc, server, urlPath string) []string {
 	var diffs []string
 	diffs = append(diffs, extraSections(live.extraSections)...)
 	diffs = append(diffs, compareListeners(emitted.listeners, live.listeners)...)
-	diffs = append(diffs, compareGateways(emitted.gateways, live.gateways)...)
+	diffs = append(diffs, live.foreignConfig...)
+	diffs = append(diffs, compareGateways(emitted.gateways, live.gateways, live.foreignGateways)...)
 	diffs = append(diffs, compareRouteSets(emitted, live, server)...)
 	diffs = append(diffs, duplicatePaths(live.routes)...)
 	diffs = append(diffs, compareURLPath(emitted, server, urlPath)...)
@@ -85,10 +89,14 @@ func compareListeners(emitted, live listenerConfig) []string {
 }
 
 // compareGateways requires the live gateways to be exactly the emitted ones,
-// each with the same bind address and port: a gateway the file does not carry
-// serves every route attached to it without the emitted guards.
-func compareGateways(emitted, live map[string]gatewayConfig) []string {
+// each with the same bind address and port and with no field the file cannot
+// carry (foreign, by gateway name; D15 i): a gateway the file does not carry
+// serves every route attached to it without the emitted guards, and one with
+// listeners of its own serves something the comparison cannot see. A gateway
+// that is not in the emitted file is reported once, as a whole.
+func compareGateways(emitted, live map[string]gatewayConfig, foreign map[string][]string) []string {
 	var diffs []string
+	diffs = append(diffs, foreign[""]...)
 	for _, name := range sortedKeys(emitted) {
 		e := emitted[name]
 		l, ok := live[name]
@@ -98,6 +106,7 @@ func compareGateways(emitted, live map[string]gatewayConfig) []string {
 		}
 		diffs = appendDiff(diffs, "gateway "+cell(name)+": bind address", e.bindAddress, l.bindAddress)
 		diffs = appendDiff(diffs, "gateway "+cell(name)+": serving port", e.port, l.port)
+		diffs = append(diffs, foreign[name]...)
 	}
 	for _, name := range sortedKeys(live) {
 		if _, ok := emitted[name]; ok {
@@ -179,7 +188,10 @@ func compareURLPath(emitted configDoc, server, urlPath string) []string {
 }
 
 // compareRoutes names every field in which one live route differs from the
-// emitted route of the same name.
+// emitted route of the same name, then everything the live route carries that
+// the emitted file cannot (D15 i): a policy such as extProc or requestMirror,
+// a match condition beyond the exact path, a backend of another kind, a field
+// of the route, a processor or a target that emit never writes.
 func compareRoutes(emitted, live routeConfig) []string {
 	var diffs []string
 	diffs = appendDiff(diffs, "gateway", emitted.gateway, live.gateway)
@@ -187,6 +199,7 @@ func compareRoutes(emitted, live routeConfig) []string {
 	diffs = append(diffs, compareRules(emitted.rules, live.rules)...)
 	diffs = append(diffs, compareProcessors(emitted.processors, live.processors)...)
 	diffs = append(diffs, compareHosts(emitted.backendHosts, live.backendHosts)...)
+	diffs = append(diffs, live.foreign...)
 	return diffs
 }
 

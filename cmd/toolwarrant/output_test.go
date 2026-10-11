@@ -255,7 +255,12 @@ func TestScrubCrawlErrorNeverLeaksTextAndYieldsCatalogClasses(t *testing.T) {
 func TestIsLoopbackHost(t *testing.T) {
 	for host, want := range map[string]bool{
 		"127.0.0.1": true, "127.5.4.3": true, "::1": true, "localhost": true, "LOCALHOST": true,
+		// D15 (h): the aliases common resolvers map to loopback without DNS,
+		// one list shared with the emitter (emit.IsLoopbackName).
+		"localhost.localdomain": true, "localhost4": true, "localhost4.localdomain4": true, "localhost6": true,
+		"localhost6.localdomain6": true, "ip6-localhost": true, "IP6-LOOPBACK": true,
 		"": false, "0.0.0.0": false, "::": false, "10.0.0.1": false, "example.com": false, "fe80::1%lo0": false,
+		"localhost.example.com": false, "localhost7": false, "ip6-localhost.lan": false,
 	} {
 		if got := isLoopbackHost(host); got != want {
 			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)

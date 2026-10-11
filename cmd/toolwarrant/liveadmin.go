@@ -38,9 +38,10 @@ func knownSections() []string { return []string{sectionConfig, sectionGateways, 
 // liveConfigDoc is the pinned subset of GET /api/config: the config block
 // with the gateway's own listeners, the gateways with their bind and port,
 // every route with its matches, policies and backends, and the names of the
-// other top-level sections that are not empty. A field the comparison does
-// not read inside a known section is ignored, a missing one compares as
-// empty.
+// other top-level sections that are not empty. A missing field compares as
+// empty; a field the pinned shape does not read is not ignored but reported
+// by the generic walk of liveshape.go (D15 i), because the gateway applies
+// what the comparison cannot read.
 type liveConfigDoc struct {
 	Config struct {
 		AdminAddr     string `json:"adminAddr"`
@@ -55,6 +56,12 @@ type liveConfigDoc struct {
 	// extraSections are the top-level keys other than the known ones whose
 	// value is not empty, in document order of first appearance.
 	extraSections []string
+	// foreignConfig names what the config block carries that the emitted
+	// file cannot; foreignGateways the same for every gateway, by name; and
+	// routeForeign the same for every route, by index (D15 i).
+	foreignConfig   []string
+	foreignGateways map[string][]string
+	routeForeign    [][]string
 }
 
 // liveProcessorDoc is one mcpGuardrails processor of a live route. The
@@ -131,8 +138,9 @@ func fetchLiveConfig(ctx context.Context, client *http.Client, admin string) (li
 }
 
 // decodeLiveConfig reads the whole document twice: once generically, to see
-// every top-level section the gateway loaded, and once into the pinned shape.
-// A document that is not a JSON object is refused as a whole.
+// every top-level section the gateway loaded and every key inside the known
+// sections that the emitted file cannot carry (D15 i), and once into the
+// pinned shape. A document that is not a JSON object is refused as a whole.
 func decodeLiveConfig(body []byte) (liveConfigDoc, error) {
 	var sections map[string]json.RawMessage
 	if err := json.Unmarshal(body, &sections); err != nil || sections == nil {
@@ -151,6 +159,9 @@ func decodeLiveConfig(body []byte) (liveConfigDoc, error) {
 			doc.extraSections = append(doc.extraSections, name)
 		}
 	}
+	doc.foreignConfig = configShape().foreign(sections[sectionConfig], "")
+	doc.foreignGateways = foreignGateways(sections[sectionGateways])
+	doc.routeForeign = foreignRoutes(sections[sectionRoutes])
 	return doc, nil
 }
 
@@ -175,13 +186,16 @@ func sectionHasContent(raw json.RawMessage) bool {
 
 // config reduces the live document to the shape the comparison works on:
 // the listeners, every gateway and every route, in document order, nothing
-// dropped, plus the names of the sections the file does not carry. A port of
-// zero means the gateway declared none.
+// dropped, plus the names of the sections the file does not carry and every
+// key inside the known sections that it cannot carry. A port of zero means
+// the gateway declared none.
 func (d liveConfigDoc) config() configDoc {
 	out := configDoc{
-		listeners:     listenerConfig{adminAddr: d.Config.AdminAddr, statsAddr: d.Config.StatsAddr, readinessAddr: d.Config.ReadinessAddr},
-		gateways:      map[string]gatewayConfig{},
-		extraSections: d.extraSections,
+		listeners:       listenerConfig{adminAddr: d.Config.AdminAddr, statsAddr: d.Config.StatsAddr, readinessAddr: d.Config.ReadinessAddr},
+		gateways:        map[string]gatewayConfig{},
+		extraSections:   d.extraSections,
+		foreignConfig:   d.foreignConfig,
+		foreignGateways: d.foreignGateways,
 	}
 	for name, gw := range d.Gateways {
 		port := ""
@@ -190,8 +204,12 @@ func (d liveConfigDoc) config() configDoc {
 		}
 		out.gateways[name] = gatewayConfig{bindAddress: gw.BindAddress, port: port}
 	}
-	for _, r := range d.Routes {
-		out.routes = append(out.routes, r.config())
+	for i, r := range d.Routes {
+		rc := r.config()
+		if i < len(d.routeForeign) {
+			rc.foreign = d.routeForeign[i]
+		}
+		out.routes = append(out.routes, rc)
 	}
 	return out
 }

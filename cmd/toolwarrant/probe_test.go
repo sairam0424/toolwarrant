@@ -48,9 +48,9 @@ func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 	for name, mode := range map[string]int32{"json-rpc error": probeModeRPCError, "event stream error": probeModeSSEError, "result without error": probeModeSilent} {
 		g.probeMode.Store(mode)
 		r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
-		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON-RPC error in the body, instead of a bare HTTP 400", "the gateway or the upstream may have written that answer")
+		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON body, instead of a bare HTTP 400", "the gateway or the upstream may have written that answer")
 		wantNotContains(t, name+" stdout", r.stdout, okLine, verdictUnhooked, verdictLeak)
-		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until it answers HTTP 400 without a JSON-RPC error")
+		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until it answers HTTP 400 with an empty or non-JSON body")
 	}
 	g.probeMode.Store(probeModeForward)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
@@ -245,11 +245,21 @@ func TestProbeHelpers(t *testing.T) {
 		{rawResponse{status: http.StatusAccepted, body: []byte("{}")}, probeUnhooked, false},
 		{rawResponse{status: http.StatusBadRequest}, probeHealthy, false},
 		{rawResponse{status: http.StatusBadRequest, body: []byte("Bad Request: id required")}, probeHealthy, false},
-		// D14 (i): a 400 whose body is a JSON-RPC error may be an upstream's
-		// refusal relayed by a forwarding gateway (fourth review cli-docs-7).
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte("Bad Request: id required")}, probeHealthy, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("event: message\n\n")}, probeHealthy, false},
+		// D14 (i), D15 (k): a 400 whose body is JSON may be an upstream's
+		// refusal relayed by a forwarding gateway (fourth review cli-docs-7),
+		// a batch of JSON-RPC errors included (fifth review cli-docs-4), so
+		// every JSON body on a 400 is inconclusive, an error member or not.
 		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":{"code":1}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("data: {\"error\":{\"code\":1}}\n\n")}, probeInconclusive, false},
-		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":null}`)}, probeHealthy, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte(`[{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"id required"}}]`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("data: [{\"error\":{\"code\":1}}]\n\n")}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":null}`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"result":{}}`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(` "id required" `)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`[]`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":`)}, probeHealthy, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"error":{"code":1}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"result":{}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaSSE, body: []byte("data: {\"error\":{\"code\":1}}\n\n")}, probeInconclusive, false},
@@ -270,10 +280,11 @@ func TestProbeHelpers(t *testing.T) {
 // whoever produced it, so a forwarding stand-in in front of an upstream that
 // refuses the id-less tools/call with 400 and a JSON-RPC error relayed that
 // answer, the probe name reached the upstream, and the canary printed "rejected
-// by the gateway" with exit 0. A 400 whose body is a JSON-RPC error is now
-// PROBE-INCONCLUSIVE; a 400 with a plain-text body or none stays healthy, which
-// is what the go-sdk upstream answers and what the pinned gateway's own
-// refusal would look like.
+// by the gateway" with exit 0. A 400 whose body is JSON is now
+// PROBE-INCONCLUSIVE (D15 k widened it from a JSON-RPC error object to any
+// JSON body); a 400 with a plain-text body or none stays healthy, which is
+// what the go-sdk upstream answers and what the pinned gateway's own refusal
+// would look like.
 func TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive(t *testing.T) {
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
@@ -286,16 +297,43 @@ func TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive(t *testing.T) {
 	if len(names) != before+1 || !strings.HasPrefix(names[len(names)-1], probeToolPrefix) {
 		t.Fatalf("the probe did not reach the upstream through the forwarding stand-in: %q", names)
 	}
-	wantContains(t, "stdout", r.stdout, verdictInconclusive+" s1: ", "HTTP 400 and a JSON-RPC error in the body")
+	wantContains(t, "stdout", r.stdout, verdictInconclusive+" s1: ", "HTTP 400 and a JSON body")
 	wantNotContains(t, "stdout", r.stdout, verdictOK, "rejected by the gateway")
-	wantContains(t, "stderr", r.stderr, "HTTP 400 and a JSON-RPC error in the body", "treat the gateway as unhooked until it answers HTTP 400 without a JSON-RPC error")
+	wantContains(t, "stderr", r.stderr, "HTTP 400 and a JSON body", "treat the gateway as unhooked until it answers HTTP 400 with an empty or non-JSON body")
 
 	// The go-sdk's own refusal, a 400 with a plain-text body, relayed by the
-	// same stand-in, is healthy: the decision narrows the rule to JSON-RPC
-	// error bodies.
+	// same stand-in, is healthy: the decision narrows the rule to JSON bodies.
 	up.probeMode.Store(probeModeRefuse)
 	out := c.ok("verify-gateway", "--server", "s1", "--url", gw.URL)
 	wantContains(t, "stdout", out, verdictOK, "id-less tools/call rejected by the gateway")
+}
+
+// Fifth review (cli-docs-4, D15 k): the probe read each message as one JSON
+// object, so a JSON-RPC batch answer, an array of error objects, relayed on a
+// 400 by a forwarding stand-in was not recognised and the canary printed
+// "rejected by the gateway" with exit 0 for the same relayed-upstream shape
+// D14 (i) made inconclusive. Any JSON body on a 400 is now PROBE-INCONCLUSIVE.
+func TestProbeReportsA400WithABatchOfJSONRPCErrorsAsInconclusive(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	up := newUpstream(t, map[string]string{"echo": echoV1})
+	const batch = `[{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"id required"}}]`
+	gw := forwardingGateway(t, up.url(), func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", mediaJSON)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, batch)
+	})
+	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw.URL)
+	wantContains(t, "stdout", r.stdout, verdictInconclusive+" s1: ", "HTTP 400 and a JSON body")
+	wantNotContains(t, "stdout", r.stdout, verdictOK, "rejected by the gateway")
+	wantContains(t, "stderr", r.stderr, verdictInconclusive)
+	resp := rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte(batch)}
+	if !resp.carriesJSONAnswer() {
+		t.Error("a batch of JSON-RPC errors is not recognised as a JSON answer")
+	}
+	if got, err := classifyProbe(resp); got != probeInconclusive || err != nil {
+		t.Errorf("classifyProbe(400, batch) = %d, %v; want PROBE-INCONCLUSIVE", got, err)
+	}
 }
 
 // The error for a status the probe cannot classify says whether the answer
@@ -311,7 +349,7 @@ func TestProbeErrorSaysWhetherTheAnswerHadABody(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "http status 500 without a body") {
 		t.Errorf("500 without a body: %v", err)
 	}
-	if (rawResponse{status: http.StatusBadRequest, body: []byte("not json")}).carriesRPCError() {
-		t.Error("plain text counted as a JSON-RPC error")
+	if (rawResponse{status: http.StatusBadRequest, body: []byte("not json")}).carriesJSONAnswer() {
+		t.Error("plain text counted as a JSON answer")
 	}
 }

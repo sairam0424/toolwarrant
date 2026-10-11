@@ -83,8 +83,9 @@ const (
 	// it to the upstream without the processor or the allow rule.
 	probeUnhooked
 	// probeInconclusive means the answer was another 2xx with a body, or a
-	// 400 whose body is a JSON-RPC error, which the gateway or the upstream
-	// may have written; the canary cannot tell (D13 h, D14 i).
+	// 400 whose body is JSON (a JSON-RPC answer, single or batched), which the
+	// gateway or the upstream may have written; the canary cannot tell (D13 h,
+	// D14 i, D15 k).
 	probeInconclusive
 )
 
@@ -279,7 +280,7 @@ func (v *verifier) printChecks(res verdicts) {
 		out.printf("%s %s: the gateway accepted a tools/call without an id (HTTP 202) and forwarded it to the upstream without the processor or the allow rule; every tools/call in that shape bypasses the approval (known limit L17)\n", verdictUnhooked, cell(v.server))
 		v.failingLines++
 	case probeInconclusive:
-		out.printf("%s %s: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON-RPC error in the body, instead of a bare HTTP 400; the gateway or the upstream may have written that answer, so whether such calls reach the upstream unhooked is unknown and the check fails\n", verdictInconclusive, cell(v.server))
+		out.printf("%s %s: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON body, instead of a bare HTTP 400; the gateway or the upstream may have written that answer, so whether such calls reach the upstream unhooked is unknown and the check fails\n", verdictInconclusive, cell(v.server))
 		v.failingLines++
 	}
 }

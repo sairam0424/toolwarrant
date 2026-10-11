@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,32 +88,62 @@ func TestApproveRefusesSuspiciousCharactersUnlessAccepted(t *testing.T) {
 	}
 }
 
+// Rows changed behind the audit log: since D15 (b) the catalog trusts a
+// version only when the verified audit walk proposed it, so a tool renamed by
+// hand in the database is refused as ErrCorrupt on every read path that
+// checks (show does today; list, crawl and audit list may follow). Whichever
+// way a command answers, the hostile name reaches the terminal escaped only:
+// in text mode as \u{...} on stdout, in an error as a quoted string on stderr,
+// and JSON mode carries the raw name for machines when it answers at all.
 func TestHostileToolNamesFromTheDatabaseAreEscaped(t *testing.T) {
 	c, _ := fixture(t)
 	hostile := "ev" + zeroWidth + "il" + esc + "[31m" + bidi
 	execSQL(t, c.db, "UPDATE tools SET name = 'ev' || char(8203) || 'il' || char(27) || '[31m' || char(8238) WHERE name = 'add'")
-
-	out := c.ok("list")
-	wantContains(t, "list", out, `s1/ev\u{200B}il\u{001B}[31m\u{202E}`)
-	wantNotContains(t, "list", out, zeroWidth, esc, bidi)
-	out = c.ok("show", "s1", hostile)
-	wantContains(t, "show", out, `ev\u{200B}il`)
-	wantNotContains(t, "show", out, zeroWidth, esc, bidi)
-	out = c.ok("crawl", "s1")
-	wantContains(t, "crawl report", out, `\u{200B}`, "missing")
-	wantNotContains(t, "crawl report", out, zeroWidth, esc, bidi)
-	out = c.ok("audit", "list")
-	wantContains(t, "audit list", out, `\u{200B}`)
-	wantNotContains(t, "audit list", out, zeroWidth, esc, bidi)
-
-	var rows []toolJSON
-	c.jsonInto(&rows, "list", "s1", "--json")
-	found := false
-	for _, row := range rows {
-		found = found || row.Tool == hostile
+	escaped := func(name string, args ...string) result {
+		t.Helper()
+		r := c.run(args...)
+		wantNotContains(t, name+" stdout", r.stdout, zeroWidth, esc, bidi)
+		wantNotContains(t, name+" stderr", r.stderr, zeroWidth, esc, bidi)
+		switch r.code {
+		case exitOK:
+			wantContains(t, name+" stdout", r.stdout, `\u{200B}`)
+		case exitFailure:
+			wantContains(t, name+" stderr", r.stderr, "integrity check failed", `\u200b`)
+		default:
+			t.Errorf("%s: exit %d\nstdout: %s\nstderr: %s", name, r.code, r.stdout, r.stderr)
+		}
+		return r
 	}
-	if !found {
-		t.Errorf("json mode must carry the raw name for machines: %+v", rows)
+	if r := escaped("list", "list"); r.code == exitOK {
+		wantContains(t, "list", r.stdout, `s1/ev\u{200B}il\u{001B}[31m\u{202E}`)
+	}
+	if r := escaped("show", "show", "s1", hostile); r.code == exitOK {
+		wantContains(t, "show", r.stdout, `ev\u{200B}il`)
+	}
+	if r := escaped("crawl", "crawl", "s1"); r.code == exitOK {
+		wantContains(t, "crawl report", r.stdout, "missing")
+	}
+	escaped("audit list", "audit", "list")
+
+	r := c.run("list", "s1", "--json")
+	wantNotContains(t, "json stderr", r.stderr, zeroWidth, esc, bidi)
+	switch r.code {
+	case exitOK:
+		var rows []toolJSON
+		if err := json.Unmarshal([]byte(r.stdout), &rows); err != nil {
+			t.Fatalf("list --json is not json (%v):\n%s", err, r.stdout)
+		}
+		found := false
+		for _, row := range rows {
+			found = found || row.Tool == hostile
+		}
+		if !found {
+			t.Errorf("json mode must carry the raw name for machines: %+v", rows)
+		}
+	case exitFailure:
+		wantContains(t, "json stderr", r.stderr, "integrity check failed")
+	default:
+		t.Errorf("list --json: exit %d: %s", r.code, r.stderr)
 	}
 }
 

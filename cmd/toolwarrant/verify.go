@@ -90,7 +90,7 @@ func (e *verifyFailure) Error() string {
 	case probeUnhooked:
 		parts = append(parts, "the gateway forwards a tools/call without an id to the upstream unhooked ("+verdictUnhooked+", known limit L17); every such call bypasses the approval")
 	case probeInconclusive:
-		parts = append(parts, "the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON-RPC error in the body ("+verdictInconclusive+"); the upstream may have written that answer, so treat the gateway as unhooked until it answers HTTP 400 without a JSON-RPC error")
+		parts = append(parts, "the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON body ("+verdictInconclusive+"); the upstream may have written that answer, so treat the gateway as unhooked until it answers HTTP 400 with an empty or non-JSON body")
 	}
 	return strings.Join(parts, "; ")
 }
@@ -104,8 +104,8 @@ func bindVerifyFlags(fs *flag.FlagSet) *verifyOptions {
 	fs.StringVar(&o.bearerEnv, "bearer-env", "", "environment variable holding a bearer token for Authorization (never printed)")
 	fs.StringVar(&o.config, "config", "", "gateway configuration file written by emit; "+verdictConfigEdited+" when it is no longer the file emit wrote, cannot be read, or is not a regular file (a symbolic link, directory, device, socket or named pipe is refused before it is opened, so a planted pipe cannot block the check)")
 	fs.StringVar(&o.expectBodyHash, "expect-body-hash", "", "the body sha256 emit printed for --config, recorded outside the gateway host; "+verdictConfigEdited+" when the file's body hashes to anything else, which catches a replacement that recomputed the header hash (known limit L19); needs --config")
-	fs.StringVar(&o.admin, "admin", "", "HOST:PORT or http(s) URL of the gateway's admin API (emit --admin-addr, default "+emit.DefaultAdminAddr+"); the configuration the gateway is running (GET "+adminConfigPath+") is compared with --config as a whole document: no top-level section other than config, gateways and routes may be present, the config block must declare the same adminAddr, statsAddr and readinessAddr, every emitted gateway must be present exactly once with the same bind address and port, every emitted route exactly once with the same gateway, match path, allow rules, backend targets and processors (host, kind, failureMode, methods, the requestHeaders allowed and disallowed lists, and the metadata compared by a hash of its canonical form and never shown), nothing the file does not carry may exist, no path may be matched by two routes, and the path of --url must be the emitted route's match; any difference is "+verdictLiveConfig+"; needs --config")
-	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), HTTP 400 without a JSON-RPC error in the body is healthy, and any other 2xx answer with a body or a 400 whose body is a JSON-RPC error is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; the probe reaches the upstream exactly when the gateway behaves this way, which is why it can be switched off (agentgateway v1.6.0 answers 202, known limit L17)")
+	fs.StringVar(&o.admin, "admin", "", "HOST:PORT or http(s) URL of the gateway's admin API (emit --admin-addr, default "+emit.DefaultAdminAddr+"); the configuration the gateway is running (GET "+adminConfigPath+") is compared with --config as a whole document: no non-empty top-level section other than config, gateways and routes may be present, the config block must declare the same adminAddr, statsAddr and readinessAddr and no other field, every emitted gateway must be present exactly once with the same bind address and port and no other field, every emitted route exactly once with the same gateway, match path, allow rules, backend targets and processors (host, kind, failureMode, methods, the requestHeaders allowed and disallowed lists, and the metadata compared by a hash of its canonical form and never shown), nothing the file does not carry may exist (no other route, gateway or section; inside a route no field other than name, gateways, matches, policies and backends, no policy other than mcpAuthorization and mcpGuardrails, no match that is not a single exact path, no backend other than the one mcp backend with the emitted target, and no field of a processor, rule or target that emit does not write), no path may be matched by two routes, and the path of --url must be the emitted route's match; any difference is "+verdictLiveConfig+"; needs --config")
+	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), HTTP 400 with an empty or non-JSON body is healthy, and any other 2xx answer with a body or a 400 whose body is JSON (a JSON-RPC answer, single or batched) is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; the probe reaches the upstream exactly when the gateway behaves this way, which is why it can be switched off (agentgateway v1.6.0 answers 202, known limit L17)")
 	fs.DurationVar(&o.every, "every", 0, "repeat at this interval (at least 1s) with a fresh MCP session each time, until SIGINT or SIGTERM")
 	fs.BoolVar(&o.keepGoing, "keep-going", false, "with --every, keep checking after a failed check instead of exiting at the first one; without it a check that printed a failing verdict exits 1 at once, even when a later step of that check (the live comparison, the probe) could not run, while a listing failure alone is printed, counted and does not stop the run; the run still exits 1 at the end if any check failed or printed a verdict line, or none completed, and a file --config cannot read, an unknown --server or a catalog error stops it at once")
 	return o
@@ -231,14 +231,22 @@ func (v *verifier) check(ctx context.Context) (verdicts, error) {
 	}
 	var res verdicts
 	emitted := v.readConfig(&res)
-	live, err := listThroughGateway(ctx, v.client, v.url, v.headers)
-	if err != nil {
-		v.printListing(res)
-		return res, err
+	live, listErr := listThroughGateway(ctx, v.client, v.url, v.headers)
+	if listErr == nil {
+		compare(snap, live, &res)
 	}
-	compare(snap, live, &res)
 	v.printListing(res)
-	err = v.compareLive(ctx, emitted, &res)
+	// The live comparison runs even when the listing failed: a policy or a
+	// backend posted through the admin API can break the route for the
+	// canary's own listing, and the operator must still see what differs
+	// (sixth round; finding cli-docs-1 of the fifth review as observed on
+	// the real gateway, where a requestMirror policy did exactly that).
+	liveErr := v.compareLive(ctx, emitted, &res)
+	if listErr != nil {
+		v.printChecks(res)
+		return res, v.listingFailure(res, listErr, liveErr)
+	}
+	err = liveErr
 	if err == nil && v.probe {
 		res.probe, err = probeUnhookedCalls(ctx, v.client, v.url, v.headers)
 	}
@@ -247,6 +255,20 @@ func (v *verifier) check(ctx context.Context) (verdicts, error) {
 		return res, err
 	}
 	return res, v.a.stdout.broken()
+}
+
+// listingFailure is the error of a check whose listing failed. The live
+// comparison may still have found differences; they are named after the
+// listing failure so a route broken by a posted policy is explained, not only
+// reported as unreachable. The probe does not run on such a check.
+func (v *verifier) listingFailure(res verdicts, listErr, liveErr error) error {
+	switch {
+	case liveErr != nil:
+		return fmt.Errorf("%w; %w", listErr, liveErr)
+	case len(res.live.diffs) > 0:
+		return fmt.Errorf("%w; %w", listErr, &verifyFailure{liveDiffs: len(res.live.diffs), server: v.server, url: v.url})
+	}
+	return listErr
 }
 
 // readConfig reads the emitted file and checks its integrity header. Any

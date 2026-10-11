@@ -82,11 +82,14 @@ func recordedAddresses(servers []catalog.Server) map[string]string {
 }
 
 // recordProcessorAddrs writes every new or changed address into the catalog
-// before the file is written, so the catalog is the source the next emit reads
-// whatever happens to the file afterwards. An unchanged address writes
-// nothing and adds no audit entry. It runs after the emitter validated the
-// input, so an address the emitter refuses is never recorded.
-func recordProcessorAddrs(a *app, store *catalog.Store, plans []emitPlan) error {
+// after the file at out was validated and renamed into place (D15 j), so the
+// catalog records addresses of files that exist: the fifth review found a
+// gateway refusal leaving the address and its audit entry behind, after which
+// the next emit printed no "is new" line for an address no file had ever
+// carried. An unchanged address writes nothing and adds no audit entry. The
+// plans were computed from the catalog before the write, so an emit that
+// fails here is repeated with the same addresses and prints them again.
+func recordProcessorAddrs(a *app, store *catalog.Store, plans []emitPlan, out string) error {
 	var actor catalog.Actor
 	resolved := false
 	for _, p := range plans {
@@ -101,7 +104,7 @@ func recordProcessorAddrs(a *app, store *catalog.Store, plans []emitPlan) error 
 			resolved = true
 		}
 		if err := store.SetProcessorAddr(a.ctx, p.name, p.processor, actor); err != nil {
-			return fmt.Errorf("record the processor address of server %s: %w", cell(p.name), err)
+			return fmt.Errorf("%s was written, but recording the processor address of server %s failed: %w", textdiff.Escape(out), cell(p.name), err)
 		}
 	}
 	return nil

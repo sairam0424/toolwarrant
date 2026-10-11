@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sairam0424/toolwarrant/internal/emit"
 	"github.com/sairam0424/toolwarrant/internal/processor"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 const (
 	unixPrefix = "unix:"
-	localhost  = "localhost"
 	// socketMode lets only the owner connect. The ExtMCP protocol has no
 	// authentication of its own and every reply decides what the gateway
 	// serves, so the socket must not be reachable by other users of the
@@ -148,11 +148,13 @@ func checkListenAddr(c *command, addr string, p listenPolicy) error {
 	return nil
 }
 
-// isLoopbackHost accepts "localhost" and loopback IP literals. A host name
-// other than localhost is not resolved: a listen address is configuration,
-// and a name is not a safe way to say "loopback".
+// isLoopbackHost accepts the loopback names common resolvers map without a
+// DNS query (localhost and the aliases emit.IsLoopbackName lists, one list for
+// serve and the emitter; D15 h) and loopback IP literals. Any other host name
+// is not resolved: a listen address is configuration, and a name is not a
+// safe way to say "loopback".
 func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, localhost) {
+	if emit.IsLoopbackName(host) {
 		return true
 	}
 	ip := net.ParseIP(host)
