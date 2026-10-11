@@ -13,11 +13,12 @@ import (
 // Port and name limits. The server name ends up in a URL path, a route name
 // and a backend target name, so it is held to a strict, boring alphabet.
 const (
-	minPort       = 1
-	maxPort       = 65535
-	maxPortDigits = 5
-	maxHostLen    = 253
-	maxNameShown  = 64
+	minPort          = 1
+	maxPort          = 65535
+	maxPortDigits    = 5
+	maxHostLen       = 253
+	maxNameShown     = 64
+	maxServerNameLen = 63
 )
 
 // Secret bounds. A shared secret shorter than MinSecretLen gives false
@@ -34,12 +35,27 @@ const (
 var ErrInvalidInput = errors.New("emit: invalid input")
 
 var (
-	serverNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+	// serverNamePattern is agentgateway v1.6.0's MCP target-name rule minus
+	// the dot: the gateway refuses '_' (a reserved MCP delimiter) and a leading
+	// or trailing '-' with "invalid MCP target name", and keeps serving its
+	// previous configuration when a reload fails, so a name it would refuse is
+	// refused here first. The length cap is separate because the gateway
+	// enforces none at load time and 63 bytes is the SectionName limit.
+	serverNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	// hostPattern accepts DNS names and IPv4 literals only. agentgateway
 	// v1.6.0 rejects bracketed IPv6 in a processor host, so refusing it here
 	// turns a gateway start-up failure into an error at generation time.
 	hostPattern = regexp.MustCompile(`^[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(\.[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*$`)
 )
+
+// urlPunctuation is every non-alphanumeric character RFC 3986 allows in a
+// URI (the unreserved marks, gen-delims and sub-delims) plus the percent sign
+// that introduces an encoded byte. agentgateway's URI parser refuses a URL
+// with anything else ("invalid uri character" for a double quote, an angle
+// bracket or a space), and the characters it happens to tolerate at load time
+// (| ^ { } ` and backslash) are refused here as well, so that the alphabet is
+// a standard and not a reading of one parser version.
+const urlPunctuation = "-._~:/?#[]@!$&'()*+,;=%"
 
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidInput, fmt.Sprintf(format, args...))
@@ -54,15 +70,16 @@ func shown(s string) string {
 	return fmt.Sprintf("%q", s)
 }
 
-// validated is the checked input: the servers sorted by name and the address
-// the serving gateway binds, in canonical form.
+// validated is the checked input: the servers sorted by name, the address
+// the serving gateway binds in canonical form, and the three listeners.
 type validated struct {
-	servers []Server
-	bind    netip.Addr
+	servers   []Server
+	bind      netip.Addr
+	listeners []listener
 }
 
 // validate checks the whole input and returns a copy of the servers sorted by
-// name plus the bind address. The caller's slice is never modified. Nothing is
+// name plus the addresses. The caller's slice is never modified. Nothing is
 // emitted for input that fails any check, because a half-written gateway
 // config is worse than none: it could leave a route without an authorization
 // rule.
@@ -77,6 +94,10 @@ func validate(in Input) (validated, error) {
 		return validated{}, invalid("listen port %d is outside %d-%d", in.ListenPort, minPort, maxPort)
 	}
 	bind, err := validateBindAddress(in)
+	if err != nil {
+		return validated{}, err
+	}
+	listeners, err := validateListeners(in)
 	if err != nil {
 		return validated{}, err
 	}
@@ -101,12 +122,12 @@ func validate(in Input) (validated, error) {
 		out = append(out, s)
 	}
 	sortServers(out)
-	return validated{servers: out, bind: bind}, nil
+	return validated{servers: out, bind: bind, listeners: listeners}, nil
 }
 
 func validateServer(s Server) error {
-	if !serverNamePattern.MatchString(s.Name) {
-		return invalid("server name %s does not match %s", shown(s.Name), serverNamePattern)
+	if err := validateServerName(s.Name); err != nil {
+		return err
 	}
 	if err := validateUpstreamURL(s.URL); err != nil {
 		return invalid("server %s: %v", s.Name, err)
@@ -120,12 +141,26 @@ func validateServer(s Server) error {
 	return nil
 }
 
-// validateUpstreamURL requires an absolute http or https URL with a host and
-// no embedded credentials. The URL itself is deliberately not echoed in the
-// error: it comes from a catalog that may hold tokens in the query string.
+// validateServerName applies the gateway's target-name rule (see
+// serverNamePattern) and the 63-byte cap. The length is checked first so a
+// huge name gets a short error.
+func validateServerName(name string) error {
+	if len(name) > maxServerNameLen {
+		return invalid("server name %s is longer than %d bytes", shown(name), maxServerNameLen)
+	}
+	if !serverNamePattern.MatchString(name) {
+		return invalid("server name %s does not match %s: agentgateway's MCP target rule reserves '_' and refuses a leading or trailing '-'; '.' is refused here on purpose", shown(name), serverNamePattern)
+	}
+	return nil
+}
+
+// validateUpstreamURL requires an absolute http or https URL within the
+// RFC 3986 alphabet, with a host and no embedded credentials. The URL itself
+// is deliberately not echoed in the error: it comes from a catalog that may
+// hold tokens in the query string.
 func validateUpstreamURL(raw string) error {
-	if !isPrintableASCII(raw) || strings.ContainsAny(raw, " ") {
-		return errors.New("url must be printable ASCII without spaces")
+	if !hasOnlyURLBytes(raw) {
+		return errors.New("url contains a character outside the RFC 3986 alphabet (letters, digits and " + urlPunctuation + "), which the gateway's URI parser refuses")
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -144,6 +179,26 @@ func validateUpstreamURL(raw string) error {
 		return fmt.Errorf("url port must be %d-%d", minPort, maxPort)
 	}
 	return nil
+}
+
+// hasOnlyURLBytes reports whether every byte of s is a letter, a digit or one
+// of urlPunctuation. Space, control characters, non-ASCII bytes and the
+// printable characters RFC 3986 leaves out all fail.
+func hasOnlyURLBytes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isURLByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isURLByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	return strings.IndexByte(urlPunctuation, c) >= 0
 }
 
 // validateProcessorAddr requires host:port with a DNS-name or IPv4 host and a
@@ -180,18 +235,26 @@ func validateSecret(secret string) error {
 	return nil
 }
 
-// isPortNumber accepts only plain decimal digits, so forms strconv.Atoi
-// tolerates ("+80", " 80") are refused.
-func isPortNumber(s string) bool {
+// parsePort accepts only plain decimal digits within the port range, so
+// forms strconv.Atoi tolerates ("+80", " 80") are refused.
+func parsePort(s string) (int, bool) {
 	if s == "" || len(s) > maxPortDigits {
-		return false
+		return 0, false
 	}
 	n := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
-			return false
+			return 0, false
 		}
 		n = n*10 + int(s[i]-'0')
 	}
-	return n >= minPort && n <= maxPort
+	if n < minPort || n > maxPort {
+		return 0, false
+	}
+	return n, true
+}
+
+func isPortNumber(s string) bool {
+	_, ok := parsePort(s)
+	return ok
 }

@@ -42,7 +42,9 @@ type goldenCase struct {
 // rule refuses with the given explanation.
 func invalidReason(detail string) string { return ReasonInvalidName + ": " + detail }
 
-func goldenCases() []goldenCase {
+// baseGoldenCases are the original golden inputs; goldenCases (listeners_test.go)
+// appends the cases added later so these keep their positions.
+func baseGoldenCases() []goldenCase {
 	longName := strings.Repeat("a", MaxToolNameLen+1)
 	midName := strings.Repeat("m", 200) // over the emitter's former cap of 128, within the shared rule
 	return []goldenCase{

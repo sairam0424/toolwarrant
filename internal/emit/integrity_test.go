@@ -187,3 +187,35 @@ func FuzzSealVerify(f *testing.F) {
 		}
 	})
 }
+
+// TestVerifyIsUnkeyed ports the review's forgery: the processor block is
+// removed, the allow rule widened and the hash line recomputed. Verify cannot
+// tell such a file from a fresh one, because the hash is unkeyed (which the
+// documentation says), but it returns the forged body's digest, which differs
+// from the Output.BodyHash the operator recorded: a caller that compares the
+// two catches the forgery, and that is the check the canary must make.
+func TestVerifyIsUnkeyed(t *testing.T) {
+	out := freshOutput(t)
+	start := bytes.Index(out.YAML, []byte("    mcpGuardrails:\n"))
+	end := bytes.Index(out.YAML, []byte("  backends:\n"))
+	if start < 0 || end < start {
+		t.Fatal("setup: blocks not found")
+	}
+	edited := slices.Concat(out.YAML[:start], out.YAML[end:])
+	edited = bytes.Replace(edited, []byte(`- allow: "mcp.tool.name`), []byte(`- allow: "true || mcp.tool.name`), 1)
+	if bytes.Contains(edited, []byte("mcpGuardrails")) || !bytes.Contains(edited, []byte(`- allow: "true ||`)) {
+		t.Fatal("setup: edits did not apply")
+	}
+	if _, ok := Verify(edited); ok {
+		t.Fatal("edit without a recomputed hash verified")
+	}
+	_, body := splitHeader(t, edited)
+	forged := slices.Concat([]byte(generatedHeader+hashLinePrefix+bodyDigest(body)+"\n"), body)
+	got, ok := Verify(forged)
+	if !ok {
+		t.Fatal("a recomputed hash line did not verify: Verify would have to be keyed, and it is not")
+	}
+	if got == out.BodyHash || got != bodyDigest(body) {
+		t.Errorf("Verify(forged) = %q; want the forged body's digest, different from the recorded %q", got, out.BodyHash)
+	}
+}

@@ -24,9 +24,10 @@ const (
 	maxGenTools     = 12
 )
 
-// nastyNames are tool names chosen to break naive quoting.
+// nastyNames are tool names chosen to break naive quoting, including the
+// forms the gateway's environment substitution would act on.
 var nastyNames = []string{
-	`"`, `\`, `\"`, `"\`, `\\`, `A`, `\x41`, `' || true || '`, `") || true || ("`,
+	`"`, `\`, `\"`, `"\`, `\\`, `A`, `\x41`, `' || true || '`, `") || true || ("`, "$HOME", "${PATH}", "$$", "a$",
 	"line\nbreak", "cr\r", "tab\t", "nul\x00", "\u202e", "é", "\U0001F600", "#", ": ", "- ", "{", "[", "&a", "*a", "!x", "%", "@", "`",
 	" lead", "trail ", "two  spaces", "u\u0308ber", "zero\u200bwidth", strings.Repeat("l", 256), strings.Repeat("l", 257),
 }
@@ -50,7 +51,7 @@ func drawServers(t *rapid.T) []Server {
 	seen := map[string]bool{}
 	var servers []Server
 	for i := 0; i < count; i++ {
-		name := rapid.StringMatching(`[a-z0-9][a-z0-9_-]{0,20}`).Draw(t, "name")
+		name := rapid.StringMatching(`[a-z0-9]([a-z0-9-]{0,19}[a-z0-9])?`).Draw(t, "name")
 		if seen[name] {
 			continue
 		}
@@ -138,9 +139,9 @@ func assertShapeIndependentOfTools(t *rapid.T, servers []Server, got []byte) {
 			t.Fatalf("line %d differs outside the allow rule: %q vs %q", i, gotLines[i], baseLines[i])
 		}
 	}
-	for _, b := range got {
-		if (b < 0x20 || b > 0x7e) && b != '\n' {
-			t.Fatalf("output contains byte %#x", b)
+	for _, b := range got[len(generatedHeader):] { // the header's $schema hint is the one dollar sign allowed
+		if (b < 0x20 || b > 0x7e || b == '$') && b != '\n' {
+			t.Fatalf("output contains byte %#x (control, non-ASCII or a dollar sign the gateway would substitute)", b)
 		}
 	}
 }

@@ -21,6 +21,7 @@ func TestQuote(t *testing.T) {
 		{"\U0001F600", `"\U0001f600"`},
 		{"bad\xffbyte", "\"bad\\ufffdbyte\""},
 		{"a: b # c", `"a: b # c"`},
+		{"$HOME ${X} $$ a$", `"\u0024HOME \u0024{X} \u0024\u0024 a\u0024"`},
 	}
 	for _, tc := range cases {
 		if got := quote(tc.in); got != tc.want {
@@ -37,6 +38,21 @@ func TestQuoteOutputIsSingleLinePrintableASCII(t *testing.T) {
 	got := quote(sb.String())
 	if !isPrintableASCII(got) || strings.ContainsAny(got, "\n\r") {
 		t.Errorf("quote produced raw control or non-ASCII bytes")
+	}
+}
+
+// TestQuoteNeverWritesADollarSign: the gateway substitutes environment
+// variables into the raw file, so no quoted value may carry one, whatever
+// the input.
+func TestQuoteNeverWritesADollarSign(t *testing.T) {
+	var sb strings.Builder
+	for r := rune(0); r < 0x300; r++ {
+		sb.WriteRune(r)
+	}
+	for _, in := range []string{sb.String(), "$", "$$$", "${HOME}", `\$`, "a$b$c"} {
+		if got := quote(in); strings.ContainsRune(got, '$') {
+			t.Errorf("quote(%q) = %s carries a dollar sign", in, got)
+		}
 	}
 }
 
@@ -86,6 +102,7 @@ func TestSharedRuleThenASCIIRule(t *testing.T) {
 		"Tool Name":                 "",
 		strings.Repeat("x", 200):    "",
 		"get-user.v2":               "",
+		"$HOME":                     "",
 		"u\u0308ber":                invalidReason("not in Unicode normalization form C"),
 		" a":                        invalidReason("leading or trailing space"),
 		"a ":                        invalidReason("leading or trailing space"),

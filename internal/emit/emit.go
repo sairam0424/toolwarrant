@@ -21,21 +21,56 @@
 //     one processor address belongs to exactly one server, so a processor can
 //     refuse hooks that name any other target.
 //   - Every string that comes from the catalog is written as an escaped,
-//     double-quoted scalar, so it cannot add keys, lines or CEL syntax.
-//   - The gateway's admin, stats and readiness listeners are pinned to
-//     loopback instead of the default wildcard binds.
+//     double-quoted scalar, so it cannot add keys, lines or CEL syntax. A
+//     dollar sign is always written as its \u0024 escape, because the gateway
+//     substitutes environment variables ($NAME, ${NAME}) into the raw file
+//     text before parsing it: a raw name would be replaced by whatever the
+//     gateway's environment holds or, when unset, make it refuse the file.
+//   - Server names and upstream URLs are held to the gateway's own rules, and
+//     a little more, so that a file this package writes is one the gateway
+//     loads. The gateway keeps serving its previous configuration when a
+//     reload fails, so a refused file would silently freeze every route.
+//   - The gateway's admin, stats and readiness listeners are always written,
+//     on loopback by default (DefaultAdminAddr, DefaultStatsAddr,
+//     DefaultReadinessAddr). A listener other hosts can reach needs
+//     Input.AllowAllInterfaces and adds a line to Output.Warning; the admin
+//     API can be turned off with Input.DisableAdmin.
 //   - The header records the SHA-256 of the body and Verify tells an edited
-//     file from a fresh one. The gateway reloads an edited file with a single
-//     log line, and a route whose processor entry was removed fails open for
-//     every new session, so the owner of the file must check it.
+//     file from a fresh one. This is an unkeyed integrity check: it catches
+//     accidental and careless edits, including a removed processor block, not
+//     an attacker who rewrites the hash line as well. The body hash the
+//     emitter returns (and the CLI prints) is what an operator records
+//     elsewhere and compares against later; a dropped guard is caught for
+//     certain only by listing through the gateway in a fresh session.
+//
+// # The admin API
+//
+// agentgateway's admin listener has no authentication. GET /api/config
+// returns the running configuration, POST /api/config replaces it and
+// rewrites the watched file (keeping this package's header lines, so the
+// recorded hash no longer matches the body), /config_dump returns the loaded
+// configuration with every processor secret in clear, and /logging changes
+// the log level. Whoever can connect to that listener decides what the
+// gateway serves, exactly like whoever reaches the processor without the
+// shared secret: the admin listener is part of the gateway's trusted
+// computing base. A loopback bind therefore means "every local user of this
+// host", not "nobody". On a host with other local users, turn the admin API
+// off with Input.DisableAdmin, or run the gateway in its own network
+// namespace or container. The stats and readiness listeners expose metrics
+// and health only and cannot be turned off here. Unix-socket listeners, which
+// the schema also allows, are not written: the socket's permissions would be
+// the gateway process's umask, which this package cannot pin, and
+// DisableAdmin is the stronger control. The three listeners are process-level
+// settings; whether a reload moves them has not been observed, so plan a
+// gateway restart when they change.
 //
 // # Shape of the file
 //
 // The file uses the schema's gateways form: the binds form is marked
 // deprecated in the v1.6.0 schema and has no bind address. One gateway, named
 // toolwarrant, declares the port and the address; every route attaches to it
-// by name. For an Input with ListenPort 3000 and the default bind address the
-// body is, with one route block per server in name order:
+// by name. For an Input with ListenPort 3000 and every address left at its
+// default the body is, with one route block per server in name order:
 //
 //	config:
 //	  adminAddr: "127.0.0.1:15000"
@@ -74,8 +109,10 @@
 //
 // The allow rule is the literal "false" when the server has no approved tool;
 // the metadata block is present only when Server.Secret is set; the bind
-// address is written in canonical form. Four comment lines precede the body:
-// the generated-file warning (two lines), the schema hint, and
+// address and the listener addresses are written in canonical form (an IPv6
+// listener as "[::1]:15000"); adminAddr is the literal "off" when
+// Input.DisableAdmin is set. Four comment lines precede the body: the
+// generated-file warning (two lines), the schema hint, and
 // "# toolwarrant-sha256: <hex>" with the digest of the body. The gateways form
 // changes nothing under a route: the v1.6.0 schema documents the same fields
 // under routes[] as under binds[].listeners[].routes[], plus routes[].gateways,
@@ -87,23 +124,24 @@
 // # What this package cannot do
 //
 // The gateway's --validate-only mode, which the tests run, proves that the
-// file parses, that bindAddress is read as an IP literal, that every route's
-// gateways reference resolves, and that the CEL rules are well formed. It
-// proves nothing about runtime: that the socket really is bound to that
-// address and not to every interface, that the routes attached by name are
-// served on it, which methods the rules filter and how mcp.tool.name binds are
-// observable only with the gateway running as a server, and are covered by the
-// end-to-end test in cmd (the step after this one), not here. Processor
-// addresses are limited to host:port: the schema describes processors[].host
-// as "Hostname or IP address" and documents no unix:// or https:// form
-// (--validate-only accepts both, but it also accepts unknown CEL variables, so
-// that proves nothing); TLS towards a processor is the separate
-// processors[].policies.backendTLS block, which this version does not write.
-// The three listener addresses and the gateway name are constants, so the file
-// does not support a second gateway on the same host or a metrics scraper on
-// another host, and editing it by hand fails Verify. A secret is written into
-// the file in clear, so a file that carries one must be readable by the
-// gateway alone.
+// file parses, that bindAddress is read as an IP literal, that the listener
+// addresses parse and that "off" is read as a switch, that every route's
+// gateways reference resolves, that the CEL rules are well formed, and that
+// the names and URLs this package refuses are refused by the gateway too (or
+// are refused here on purpose). It proves nothing about runtime: that the
+// sockets really are bound to those addresses, that the routes attached by
+// name are served, which methods the rules filter and how mcp.tool.name binds
+// are observable only with the gateway running as a server, and are covered
+// by the end-to-end test (package e2e), not here. --validate-only also
+// accepts two listeners on one port, so the emitter refuses that itself.
+// Processor addresses are limited to host:port: the schema describes
+// processors[].host as "Hostname or IP address" and documents no unix:// or
+// https:// form (--validate-only accepts both, but it also accepts unknown
+// CEL variables, so that proves nothing); TLS towards a processor is the
+// separate processors[].policies.backendTLS block, which this version does
+// not write. The gateway name is a constant, and editing the file by hand
+// fails Verify. A secret is written into the file in clear, so a file that
+// carries one must be readable by the gateway alone.
 package emit
 
 import (
@@ -117,13 +155,22 @@ import (
 type Server struct {
 	// Name is the route name, the backend target name and therefore the target
 	// the processor sees in every hook; the server is reachable at
-	// "/<Name>/mcp". It must match ^[a-z0-9][a-z0-9_-]{0,62}$.
+	// "/<Name>/mcp". It must match ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ and be at
+	// most 63 bytes. That is agentgateway's own MCP target rule (the Gateway
+	// API SectionName pattern, in which '_' and '+' are reserved MCP
+	// delimiters and a name cannot start or end with '-'), minus the '.' the
+	// gateway would accept: one boring alphabet serves the route path, the
+	// processor's target check, file names and audit subjects alike.
 	Name string
-	// URL is the upstream MCP endpoint (http or https).
+	// URL is the upstream MCP endpoint (http or https). Every byte must be a
+	// letter, a digit or one of the RFC 3986 characters -._~:/?#[]@!$&'()*+,;=
+	// and %, because the gateway's URI parser refuses anything else.
 	URL string
 	// ProcessorAddr is the host:port of the toolwarrant ExtMCP processor that
 	// enforces strict mode for this upstream. Every server needs its own,
-	// because a processor serves exactly one target and denies the rest.
+	// because a processor serves exactly one target and denies the rest. A
+	// host that is not "localhost" or a loopback literal adds a line to
+	// Output.Warning: the hooks then cross the network.
 	ProcessorAddr string
 	// Secret, when set, is sent to the processor with every hook as the
 	// metadata entry SecretMetadataKey, so the processor can refuse hooks that
@@ -137,7 +184,8 @@ type Server struct {
 
 // Input is everything the emitter needs; the result depends on nothing else.
 type Input struct {
-	// ListenPort is the single port the gateway binds.
+	// ListenPort is the single port the gateway binds for serving. It must
+	// differ from the ports of the admin, stats and readiness listeners.
 	ListenPort int
 	// BindAddress is the IPv4 or IPv6 literal the gateway binds ListenPort on.
 	// Empty means DefaultBindAddress; "::1" is the IPv6 loopback. A wildcard
@@ -147,9 +195,29 @@ type Input struct {
 	// IPv6 link-local, multicast and broadcast addresses are refused. The
 	// address is written in canonical form ("0:0:0:0:0:0:0:1" becomes "::1").
 	BindAddress string
-	// AllowAllInterfaces permits a wildcard BindAddress. It is a permission,
-	// not a request: with a loopback or specific address it changes nothing.
+	// AllowAllInterfaces permits a wildcard BindAddress and permits an
+	// AdminAddr, StatsAddr or ReadinessAddr that is not loopback. It is a
+	// permission, not a request: with loopback addresses it changes nothing.
+	// Every exposure it unlocks adds a line to Output.Warning.
 	AllowAllInterfaces bool
+	// AdminAddr is the host:port of the gateway's admin API, DefaultAdminAddr
+	// when empty. The host must be an IP literal under the BindAddress rules
+	// and must be loopback unless AllowAllInterfaces is set, because the API
+	// has no authentication (see the package documentation). An IPv6 address
+	// is written in brackets, "[::1]:15000". Host names, including
+	// "localhost", are refused: a name is not a safe way to say loopback.
+	AdminAddr string
+	// DisableAdmin writes adminAddr "off", the gateway's own switch for "no
+	// admin listener", instead of an address. It cannot be combined with a
+	// non-empty AdminAddr: the two contradict each other and the input is
+	// refused. The stats and readiness listeners cannot be turned off.
+	DisableAdmin bool
+	// StatsAddr is the host:port of the gateway's metrics listener,
+	// DefaultStatsAddr when empty, under the same rules as AdminAddr.
+	StatsAddr string
+	// ReadinessAddr is the host:port of the gateway's readiness probe,
+	// DefaultReadinessAddr when empty, under the same rules as AdminAddr.
+	ReadinessAddr string
 	// Servers lists the upstreams, in any order.
 	Servers []Server
 }
@@ -170,14 +238,21 @@ type Output struct {
 	YAML []byte
 	// BodyHash is the lowercase hex SHA-256 recorded in the header: the digest
 	// of everything that follows the header. Verify recomputes it from a file.
+	// It is the value an operator records elsewhere, because the header alone
+	// cannot prove anything to a reader who distrusts the file.
 	BodyHash string
 	// Skipped lists approved tools that were not emitted, sorted by server
 	// then tool.
 	Skipped []Skipped
-	// Warning is a one-line, printable-ASCII notice for the operator, set when
-	// the serving socket is reachable from other hosts (any bind address that
-	// is not loopback) and empty otherwise. The input was valid; the CLI
-	// should print it so that the exposure is a decision, not a surprise.
+	// Warning is empty, or one or more lines of printable ASCII separated by
+	// "\n" and without a trailing newline, each a notice about an exposure the
+	// input asked for: the serving socket when its bind address is not
+	// loopback; each admin, stats or readiness listener that is not loopback;
+	// and each server whose processor address is not loopback (its hooks then
+	// cross the network, and serve refuses such a listener unless it is
+	// explicitly allowed and carries a shared secret), in that order, servers
+	// by name. The input was valid; the CLI should print every line so that
+	// the exposure is a decision, not a surprise.
 	Warning string
 }
 
@@ -194,17 +269,6 @@ const (
 	routePathSuffix = "/mcp"
 )
 
-// Loopback addresses for the gateway's own listeners. Left unset, agentgateway
-// binds stats to [::]:15020 and readiness to [::]:15021, which exposes metrics
-// and health on every interface of the host. They are process-level settings;
-// whether a reload moves them has not been observed, so plan a gateway restart
-// when they change.
-const (
-	adminAddr     = "127.0.0.1:15000"
-	statsAddr     = "127.0.0.1:15020"
-	readinessAddr = "127.0.0.1:15021"
-)
-
 // AgentGateway renders the gateway configuration for in. It validates all
 // input first and returns an error wrapping ErrInvalidInput without producing
 // any output if anything is wrong. The input is not modified.
@@ -214,7 +278,7 @@ func AgentGateway(in Input) (Output, error) {
 		return Output{}, err
 	}
 	var w yamlWriter
-	writeConfig(&w)
+	writeConfig(&w, v.listeners)
 	writeGateway(&w, v.bind, in.ListenPort)
 	w.line(0, "routes:")
 
@@ -225,16 +289,18 @@ func AgentGateway(in Input) (Output, error) {
 		writeRoute(&w, s, plan.allowed)
 	}
 	file, digest := seal(w.bytes())
-	return Output{YAML: file, BodyHash: digest, Skipped: skipped, Warning: bindWarning(v.bind, in.ListenPort)}, nil
+	return Output{YAML: file, BodyHash: digest, Skipped: skipped, Warning: buildWarning(v, in.ListenPort)}, nil
 }
 
-// writeConfig pins the gateway's own listeners to loopback. It comes first in
-// the body so a reader sees where the gateway listens before what it serves.
-func writeConfig(w *yamlWriter) {
+// writeConfig declares the gateway's own listeners. It comes first in the
+// body so a reader sees where the gateway listens before what it serves, and
+// every listener is written even at its default, because the gateway's own
+// defaults for stats and readiness are wildcard binds.
+func writeConfig(w *yamlWriter, listeners []listener) {
 	w.line(0, "config:")
-	w.line(2, "adminAddr: "+quote(adminAddr))
-	w.line(2, "statsAddr: "+quote(statsAddr))
-	w.line(2, "readinessAddr: "+quote(readinessAddr))
+	for _, l := range listeners {
+		w.line(2, l.key+": "+quote(l.text()))
+	}
 }
 
 // writeGateway declares the one gateway the routes attach to: the serving
