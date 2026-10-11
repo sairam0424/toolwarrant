@@ -1,0 +1,62 @@
+{
+  "config": {
+    "adminAddr": "127.0.0.1:15000",
+    "statsAddr": "127.0.0.1:15020",
+    "readinessAddr": "127.0.0.1:15021"
+  },
+  "gateways": {
+    "toolwarrant": {
+      "port": 63902,
+      "bindAddress": "127.0.0.1"
+    }
+  },
+  "routes": [
+    {
+      "name": "mock",
+      "gateways": "toolwarrant",
+      "matches": [
+        {
+          "path": {
+            "exact": "/mock/mcp"
+          }
+        }
+      ],
+      "policies": {
+        "mcpAuthorization": {
+          "rules": [
+            {
+              "allow": "mcp.tool.name == \"add\" || mcp.tool.name == \"echo\""
+            }
+          ]
+        },
+        "mcpGuardrails": {
+          "processors": [
+            {
+              "host": "127.0.0.1:63941",
+              "kind": "remote",
+              "failureMode": "failClosed",
+              "methods": {
+                "tools/call": "request",
+                "tools/list": "response"
+              }
+            }
+          ]
+        }
+      },
+      "backends": [
+        {
+          "mcp": {
+            "targets": [
+              {
+                "name": "mock",
+                "mcp": {
+                  "host": "http://127.0.0.1:63905/mcp"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

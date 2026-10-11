@@ -3,246 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-const (
-	testTimeout = 30 * time.Second
-	pollEvery   = 10 * time.Millisecond
-	// sessionHeader is the Streamable HTTP session header; a POST without it
-	// opens a new MCP session (it is the initialize request).
-	sessionHeader = "Mcp-Session-Id"
-	// loopEvery is the smallest interval --every accepts, used by every
-	// scheduled-command test.
-	loopEvery = minEvery
-)
-
-var hexDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-// cli drives run in-process against a temporary database with an injected
-// environment, so no test touches the real environment or file system.
-type cli struct {
-	t   *testing.T
-	db  string
-	env map[string]string
-}
-
-// result is what one invocation produced.
-type result struct {
-	code   int
-	stdout string
-	stderr string
-}
-
-// auditRow is the subset of an audit entry the tests look at.
-type auditRow struct {
-	Seq       int64  `json:"seq"`
-	Actor     string `json:"actor"`
-	ActorType string `json:"actor_type"`
-	Event     string `json:"event"`
-	Subject   string `json:"subject"`
-	Detail    string `json:"detail"`
-}
-
-func newCLI(t *testing.T) *cli {
-	t.Helper()
-	c := &cli{t: t, db: filepath.Join(t.TempDir(), "tw.db"), env: map[string]string{}}
-	c.ok("init")
-	return c
-}
-
-// sub returns a copy bound to a subtest, so failures are reported there.
-func (c *cli) sub(t *testing.T) *cli { return &cli{t: t, db: c.db, env: c.env} }
-
-func (c *cli) getenv(k string) string { return c.env[k] }
-
-func (c *cli) run(args ...string) result {
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	defer cancel()
-	return c.runCtx(ctx, args...)
-}
-
-func (c *cli) runCtx(ctx context.Context, args ...string) result {
-	var out, errb bytes.Buffer
-	full := append([]string{"--db", c.db}, args...)
-	code := runCtx(ctx, full, strings.NewReader(""), &out, &errb, c.getenv)
-	return result{code: code, stdout: out.String(), stderr: errb.String()}
-}
-
-func (c *cli) ok(args ...string) string {
-	c.t.Helper()
-	r := c.run(args...)
-	if r.code != exitOK {
-		c.t.Fatalf("%v: exit %d\nstdout: %s\nstderr: %s", args, r.code, r.stdout, r.stderr)
-	}
-	return r.stdout
-}
-
-func (c *cli) fail(want int, args ...string) result {
-	c.t.Helper()
-	r := c.run(args...)
-	if r.code != want {
-		c.t.Fatalf("%v: exit %d, want %d\nstdout: %s\nstderr: %s", args, r.code, want, r.stdout, r.stderr)
-	}
-	return r
-}
-
-func (c *cli) jsonInto(v any, args ...string) {
-	c.t.Helper()
-	out := c.ok(args...)
-	if err := json.Unmarshal([]byte(out), v); err != nil {
-		c.t.Fatalf("%v: output is not json (%v):\n%s", args, err, out)
-	}
-}
-
-func (c *cli) auditEntries() []auditRow {
-	c.t.Helper()
-	var rows []auditRow
-	c.jsonInto(&rows, "audit", "list", "--json")
-	return rows
-}
-
-// start runs a long-lived command in the background. The returned stop cancels
-// it and returns its exit code.
-func (c *cli) start(args ...string) (stdout, stderr *syncBuffer, stop func() int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	stdout, stderr = &syncBuffer{}, &syncBuffer{}
-	done := make(chan int, 1)
-	full := append([]string{"--db", c.db}, args...)
-	go func() { done <- runCtx(ctx, full, strings.NewReader(""), stdout, stderr, c.getenv) }()
-	stop = func() int {
-		cancel()
-		select {
-		case code := <-done:
-			return code
-		case <-time.After(testTimeout):
-			c.t.Fatalf("%v did not stop after cancellation", args)
-			return -1
-		}
-	}
-	return stdout, stderr, stop
-}
-
-// syncBuffer is a bytes.Buffer that a background command and the test may
-// share.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// brokenPipe fails every write, like a pipe whose reader went away.
-type brokenPipe struct{ writes int }
-
-func (b *brokenPipe) Write([]byte) (int, error) {
-	b.writes++
-	return 0, errors.New("broken pipe")
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(testTimeout)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(pollEvery)
-	}
-}
-
-// nonEmptyLines splits output into its lines.
-func nonEmptyLines(s string) []string {
-	var out []string
-	for _, line := range strings.Split(s, "\n") {
-		if strings.TrimSpace(line) != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}
-
-func wantContains(t *testing.T, where, s string, subs ...string) {
-	t.Helper()
-	for _, sub := range subs {
-		if !strings.Contains(s, sub) {
-			t.Errorf("%s lacks %q:\n%s", where, sub, s)
-		}
-	}
-}
-
-func wantNotContains(t *testing.T, where, s string, subs ...string) {
-	t.Helper()
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			t.Errorf("%s must not contain %q:\n%s", where, sub, s)
-		}
-	}
-}
-
-// upstream is a real go-sdk MCP server over Streamable HTTP whose tools a
-// test can change at will, which is how drift is simulated. It counts the MCP
-// sessions opened against it, so a test can show that a scheduled check
-// really starts a fresh one every time.
-type upstream struct {
-	server   *mcp.Server
-	http     *httptest.Server
-	sessions atomic.Int64
-}
-
-func newUpstream(t *testing.T, tools map[string]string) *upstream {
-	t.Helper()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "test-upstream", Version: "0.0.1"}, nil)
-	u := &upstream{server: srv}
-	for name, desc := range tools {
-		u.set(name, desc)
-	}
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
-	u.http = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.Header.Get(sessionHeader) == "" {
-			u.sessions.Add(1)
-		}
-		handler.ServeHTTP(w, r)
-	}))
-	t.Cleanup(u.http.Close)
-	return u
-}
-
-func (u *upstream) url() string { return u.http.URL }
-
-// set adds a tool or replaces the one with that name.
-func (u *upstream) set(name, desc string) {
-	u.server.AddTool(&mcp.Tool{Name: name, Description: desc, InputSchema: json.RawMessage(`{"type":"object"}`)},
-		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
-		})
-}
-
-func (u *upstream) remove(name string) { u.server.RemoveTools(name) }
 
 func TestHelpAndVersion(t *testing.T) {
 	c := newCLI(t)
@@ -250,9 +16,9 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "server pause NAME", "server resume NAME",
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
 		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
-		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR]",
-		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE] [--every DURATION] [--keep-going]",
-		"audit verify", "exit codes", "-allow-self-approval")
+		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]",
+		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR]] [--no-probe] [--every DURATION] [--keep-going]",
+		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
 	r := c.run("-h")
@@ -263,9 +29,14 @@ func TestHelpAndVersion(t *testing.T) {
 	out = c.ok("approve", "-h")
 	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious")
 	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
-	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going")
+	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going", "-admin", "-no-probe", "GET "+adminConfigPath, verdictLiveConfig,
+		probeToolPrefix, "HTTP 202", verdictUnhooked, "the probe reaches the upstream exactly when the gateway behaves this way", "L17")
 	wantContains(t, "help crawl", c.ok("help", "crawl"), "-strict", "-every")
-	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env", "-bind-address", `(default "127.0.0.1")`, "-allow-all-interfaces", "a permission, not a request")
+	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env", "-bind-address", `(default "127.0.0.1")`, "-allow-all-interfaces", "a permission, not a request",
+		"-admin-addr", "-disable-admin", "-stats-addr", "-readiness-addr", "-gateway-binary", envGatewayBinary, validateOnlyFlag)
+	wantContains(t, "help budget", c.ok("help", "budget"), "subcommands", "budget reset SERVER TOOL [--by NAME]")
+	wantContains(t, "help budget reset", c.ok("help", "budget", "reset"), "-by", systemActorName)
+	wantContains(t, "help audit verify", c.ok("help", "audit", "verify"), "-expect-head")
 	out = c.ok("help", "server")
 	wantContains(t, "help server", out, "server add", "server list", "server pause", "server resume")
 	out = c.ok("help", "server", "add")
@@ -298,9 +69,17 @@ func TestUsageErrors(t *testing.T) {
 		{"crawl negative every", []string{"crawl", "s1", "--every", "-1s"}, "--every must be at least"},
 		{"crawl every below the minimum", []string{"crawl", "s1", "--every", "10ms"}, "--every must be at least 1s"},
 		{"verify every below the minimum", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--every", "1ms"}, "--every must be at least 1s"},
+		{"verify admin without config", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--admin", "127.0.0.1:15000"}, "--admin needs --config"},
+		{"verify admin with user info", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--admin", "http://u:p@127.0.0.1:15000"}, "without user info"},
+		{"verify admin with a query", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--admin", "127.0.0.1:15000/?x=1"}, "without user info, query or fragment"},
 		{"audit negative limit", []string{"audit", "list", "--limit", "-1"}, "must not be negative"},
 		{"rollback without to", []string{"rollback", "s1", "echo"}, "--to is required"},
 		{"reject without hash", []string{"reject", "s1", "echo"}, "--hash is required"},
+		{"budget alone", []string{"budget"}, "needs a subcommand"},
+		{"budget reset without tool", []string{"budget", "reset", "s1"}, "expected 2 argument(s)"},
+		{"budget reset by the system actor", []string{"budget", "reset", "s1", "echo", "--by", "crawler"}, "system actor cannot reset"},
+		{"budget reset as the system actor", []string{"--as", "crawler", "budget", "reset", "s1", "echo"}, "system actor"},
+		{"budget reset by an invalid name", []string{"budget", "reset", "s1", "echo", "--by", "ali ce"}, "must match"},
 		{"serve without flags", []string{"serve"}, "--server is required"},
 		{"serve without listen", []string{"serve", "--server", "s1"}, "--listen is required"},
 		{"serve negative evidence age", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--max-evidence-age", "-1s"}, "must not be negative"},
@@ -342,9 +121,37 @@ func TestInitIsIdempotentAndPrivate(t *testing.T) {
 	}
 }
 
+// The create behind init never follows a symbolic link, so a link planted
+// between the path check (TestInitRefusesASymbolicLink) and the open creates
+// nothing where the link points.
+func TestEnsurePrivateFileNeverFollowsALink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.db")
+	link := filepath.Join(dir, "link.db")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create a symbolic link here: %v", err)
+	}
+	if err := ensurePrivateFile(link); err == nil {
+		t.Error("ensurePrivateFile followed a symbolic link")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("ensurePrivateFile created the link's target: %v", err)
+	}
+	if err := refuseSymlink(filepath.Join(dir, "absent.db")); err != nil {
+		t.Errorf("an absent path is not a link: %v", err)
+	}
+	plain := filepath.Join(dir, "plain.db")
+	if err := ensurePrivateFile(plain); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(plain); err != nil || fi.Mode().Perm() != dbFileMode {
+		t.Errorf("plain file: %v %v, want mode %o", fi, err, dbFileMode)
+	}
+}
+
 func TestCommandsNeedAnExistingDatabase(t *testing.T) {
 	c := &cli{t: t, db: filepath.Join(t.TempDir(), "missing.db"), env: map[string]string{}}
-	for _, args := range [][]string{{"list"}, {"audit", "verify"}, {"serve", "--server", "s1", "--listen", "127.0.0.1:0"}} {
+	for _, args := range [][]string{{"list"}, {"audit", "verify"}, {"serve", "--server", "s1", "--listen", "127.0.0.1:0"}, {"--as", "alice", "budget", "reset", "s1", "echo"}} {
 		r := c.fail(exitFailure, args...)
 		wantContains(t, "stderr", r.stderr, "does not exist", programName+" init")
 	}

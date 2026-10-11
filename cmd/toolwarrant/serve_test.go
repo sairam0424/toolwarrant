@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -72,9 +70,9 @@ func callHook(target, tool string, md *structpb.Struct) *api.McpRequest {
 
 // secretMetadata is the metadata context the gateway builds from the emitted
 // processor entry.
-func secretMetadata(t *testing.T, secret string) *structpb.Struct {
+func secretMetadata(t *testing.T, shared string) *structpb.Struct {
 	t.Helper()
-	md, err := structpb.NewStruct(map[string]any{processor.SecretMetadataKey: secret})
+	md, err := structpb.NewStruct(map[string]any{processor.SecretMetadataKey: shared})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +206,7 @@ func TestServeAcceptsTheExposureFlagsOnLoopback(t *testing.T) {
 	}
 	wantContains(t, "stdout", out.String(), "hooks are not authenticated")
 
-	c.env[secretVar] = plant("secret")
+	c.env[secretVar] = plant("shared")
 	out, errb, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0", "--allow-non-loopback", "--secret-env", secretVar)
 	waitListening(t, out)
 	if code := stop(); code != exitOK {
@@ -257,14 +255,29 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 	if code := stop(); code != exitOK {
 		t.Fatalf("serve exit %d:\n%s", code, out.String())
 	}
+	// docs/operations.md quotes this line; the unverified category was added
+	// in the third round.
 	wantContains(t, "stdout", out.String(), "guarding server s1, target s1", "hooks are not authenticated",
-		"stats: lists served=1 denied=1, tools hidden=2 (mismatched=0 unapproved=2 oversized=0), calls allowed=1 denied=1, wrong backend=1, unauthenticated=0, throttled=0, source errors=0")
+		"stats: lists served=1 denied=1, tools hidden=2 (mismatched=0 unapproved=2 oversized=0 unverified=0), calls allowed=1 denied=1, wrong backend=1, unauthenticated=0, throttled=0, source errors=0\n")
+}
+
+// The stats line is quoted by docs/operations.md and read by operators, so
+// every counter is pinned here in order, with values that cannot be confused
+// with one another.
+func TestWriteStatsPinsTheLine(t *testing.T) {
+	var sb strings.Builder
+	writeStats(&stream{w: &sb}, processor.Stats{ListsServed: 1, ListsDenied: 2, ToolsHidden: 3, ToolsMismatched: 4, ToolsUnapproved: 5, ToolsOversized: 6, ToolsUnverified: 7,
+		CallsAllowed: 8, CallsDenied: 9, WrongBackend: 10, Unauthenticated: 11, Throttled: 12, SourceErrors: 13})
+	want := "stats: lists served=1 denied=2, tools hidden=3 (mismatched=4 unapproved=5 oversized=6 unverified=7), calls allowed=8 denied=9, wrong backend=10, unauthenticated=11, throttled=12, source errors=13\n"
+	if got := sb.String(); got != want {
+		t.Errorf("stats line\n got %q\nwant %q", got, want)
+	}
 }
 
 func TestServeRequiresTheSharedSecretWhenConfigured(t *testing.T) {
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
-	c.env[secretVar] = plant("secret")
+	c.env[secretVar] = plant("shared")
 	out, errb, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0", "--secret-env", secretVar, "--target", "s1", "--max-evidence-age", "1h")
 	addr := waitListening(t, out)
 	client, ctx := dial(t, addr)
@@ -278,7 +291,7 @@ func TestServeRequiresTheSharedSecretWhenConfigured(t *testing.T) {
 	if err != nil || wrong.GetError() == nil {
 		t.Fatalf("call with the wrong secret = %v, %v; want a denial", wrong, err)
 	}
-	res, err := client.CheckResponse(ctx, listHook("s1", body, secretMetadata(t, plant("secret"))))
+	res, err := client.CheckResponse(ctx, listHook("s1", body, secretMetadata(t, plant("shared"))))
 	if err != nil || res.GetMutated() == nil {
 		t.Fatalf("hook with the secret = %v, %v; want a filtered list", res, err)
 	}
@@ -393,46 +406,4 @@ func TestServeOnAUnixSocketIsOwnerOnlyAndWarnsAboutALooseDirectory(t *testing.T)
 		t.Fatalf("serve exit %d:\n%s", code, out.String())
 	}
 	wantContains(t, "stderr for a 0755 directory", errb.String(), "warning: socket directory", "0755", "not 0700")
-}
-
-// The scheduled crawl is checked by waiting for completed iterations, not by
-// a fixed time window, so a loaded machine cannot turn it into a flake.
-func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
-	c := newCLI(t)
-	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "down", http.StatusInternalServerError)
-	}))
-	defer broken.Close()
-	c.ok("server", "add", "down", broken.URL, "--allow-private")
-	u := newUpstream(t, map[string]string{"echo": echoV1})
-	c.ok("server", "add", "up", u.url(), "--allow-private")
-
-	out, errb, stop := c.start("crawl", "down", "--every", loopEvery.String())
-	waitFor(t, "two crawl lines", func() bool { return len(nonEmptyLines(out.String())) >= 2 })
-	if code := stop(); code != exitOK {
-		t.Fatalf("crawl --every against a broken upstream: exit %d: %s", code, errb.String())
-	}
-	for _, line := range nonEmptyLines(out.String()) {
-		wantContains(t, "line", line, "down:", "http status 500")
-		wantNotContains(t, "line", line, broken.URL)
-	}
-
-	out, errb, stop = c.start("crawl", "up", "--every", loopEvery.String(), "--json")
-	waitFor(t, "two json lines", func() bool { return len(nonEmptyLines(out.String())) >= 2 })
-	if code := stop(); code != exitOK {
-		t.Fatalf("crawl --every --json: exit %d: %s", code, errb.String())
-	}
-	for i, line := range nonEmptyLines(out.String()) {
-		var rep crawlJSON
-		if err := json.Unmarshal([]byte(line), &rep); err != nil || !rep.Complete || rep.Server != "up" {
-			t.Fatalf("line %d = %s (%v)", i, line, err)
-		}
-	}
-	// the crawls table has one row per iteration, every one of the broken ones incomplete
-	var incomplete, complete int
-	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 0", &incomplete)
-	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1", &complete)
-	if incomplete < 2 || complete < 2 {
-		t.Errorf("crawls recorded: %d incomplete, %d complete", incomplete, complete)
-	}
 }

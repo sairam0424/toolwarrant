@@ -83,7 +83,7 @@ type app struct {
 }
 
 // command is one entry of the command table. A command with sub-entries
-// (server, audit) dispatches to them instead of running itself.
+// (server, audit, budget) dispatches to them instead of running itself.
 type command struct {
 	name     string
 	synopsis string // what follows "toolwarrant [global flags]"
@@ -121,11 +121,12 @@ func commands() []*command {
 		{name: "disable", synopsis: "disable SERVER TOOL", summary: "switch a tool off", run: runDisable},
 		{name: "enable", synopsis: "enable SERVER TOOL", summary: "bring a disabled tool back for review", run: runEnable},
 		{name: "rollback", synopsis: "rollback SERVER TOOL --to HASH", summary: "re-approve a version that was approved before", run: runRollback},
+		{name: "budget", synopsis: "budget reset ...", summary: "reset the proposal budget of a tool that no other decision can unblock", run: runSub, sub: budgetCommands()},
 		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]", summary: "run the ExtMCP processor that enforces approvals at the gateway", run: runServe},
-		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR]", summary: "write the agentgateway configuration for every server", run: runEmit},
+		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]", summary: "write the agentgateway configuration for every server, validated with the gateway binary when one is named", run: runEmit},
 		{name: "export", synopsis: "export --dir DIR [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git", run: runExport},
 		{name: "audit", synopsis: "audit verify|list ...", summary: "verify and read the hash-chained audit log", run: runSub, sub: auditCommands()},
-		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE] [--every DURATION] [--keep-going]", summary: "deploy-time self-test: list through the gateway and compare with the catalog (LEAK, MISMATCH, MISSING, CONFIG-EDITED)", run: runVerifyGateway},
+		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR]] [--no-probe] [--every DURATION] [--keep-going]", summary: "canary: list through the gateway in a fresh session, compare with the catalog, the emitted file and the live configuration, probe for unhooked calls (LEAK, MISSING, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS)", run: runVerifyGateway},
 		{name: "version", synopsis: "version", summary: "print the version and the pinned gateway version", run: runVersion},
 		{name: "help", synopsis: "help [COMMAND ...]", summary: "print usage", run: runHelp},
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/emit"
@@ -273,6 +274,9 @@ func runInit(a *app, c *command, args []string) error {
 		return err
 	}
 	path := a.dbPath()
+	if err := refuseSymlink(path); err != nil {
+		return err
+	}
 	if err := ensurePrivateFile(path); err != nil {
 		return err
 	}
@@ -291,9 +295,25 @@ func runInit(a *app, c *command, args []string) error {
 	return nil
 }
 
-// ensurePrivateFile creates path with dbFileMode if it does not exist.
+// refuseSymlink refuses a database path that is a symbolic link before
+// anything is created: a link planted in a shared working directory would
+// otherwise make init create an owner-only file wherever the link points
+// (second review). The catalog refuses the link too, but only after the
+// target exists; this check runs first, and ensurePrivateFile opens with
+// O_NOFOLLOW so a link planted between the two is refused as well.
+func refuseSymlink(path string) error {
+	fi, err := os.Lstat(path)
+	if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("database path %s is a symbolic link; name the file itself", textdiff.Escape(path))
+	}
+	return nil
+}
+
+// ensurePrivateFile creates path with dbFileMode if it does not exist. The
+// open never follows a symbolic link, so the file is created where the path
+// says, or not at all.
 func ensurePrivateFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, dbFileMode)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, dbFileMode)
 	if err != nil {
 		return fmt.Errorf("create database file: %w", err)
 	}

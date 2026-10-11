@@ -363,47 +363,6 @@ func TestWalkStringsFindsHiddenCharactersWithPaths(t *testing.T) {
 	}
 }
 
-func TestCompareSortsLiveToolsIntoVerdicts(t *testing.T) {
-	approved := strings.Repeat("a", 64)
-	other := strings.Repeat("b", 64)
-	snap := catalog.Snapshot{Server: "s1", Tools: map[string]catalog.ToolPolicy{
-		"served":   {State: lifecycle.Enabled, Approved: approved, LastSeen: approved},
-		"drifted":  {State: lifecycle.ChangedPendingReapproval, Approved: approved, LastSeen: other},
-		"disabled": {State: lifecycle.Disabled, Approved: approved, LastSeen: approved},
-		"reserial": {State: lifecycle.Enabled, Approved: approved, LastSeen: approved},
-		"absent":   {State: lifecycle.Enabled, Approved: approved, LastSeen: approved},
-		"gone":     {State: lifecycle.Enabled, Approved: approved, LastSeen: ""},
-	}}
-	live := []liveTool{{name: "served", digest: approved}, {name: "drifted", digest: other}, {name: "unknown", digest: other},
-		{name: "broken", unusable: "not-canonical"}, {name: "disabled", digest: approved}, {name: "reserial", digest: other}}
-	var res verdicts
-	compare(snap, live, &res)
-	leaks := make([]string, 0, len(res.leaks))
-	for _, l := range res.leaks {
-		leaks = append(leaks, l.name)
-	}
-	if strings.Join(leaks, ",") != "drifted,unknown,broken,disabled" {
-		t.Errorf("leaks = %v", leaks)
-	}
-	if len(res.mismatches) != 1 || res.mismatches[0].name != "reserial" {
-		t.Errorf("mismatches = %+v", res.mismatches)
-	}
-	if strings.Join(res.missing, ",") != "absent" || res.served != 1 || !res.failed() {
-		t.Errorf("missing %v served %d failed %v", res.missing, res.served, res.failed())
-	}
-	wantContains(t, "summary", res.summary(), "serves 6 tool(s), 1 approved and current", "4 leaked", "1 with a digest other", "1 approved but not listed")
-
-	var clean verdicts
-	compare(snap, []liveTool{{name: "served", digest: approved}}, &clean)
-	if clean.failed() || clean.served != 1 || strings.Join(clean.missing, ",") != "absent,reserial" {
-		t.Errorf("clean = %+v", clean)
-	}
-	edited := verdicts{configEdited: true}
-	if !edited.failed() || !strings.Contains(edited.summary(), "configuration edited") {
-		t.Errorf("edited = %+v", edited)
-	}
-}
-
 func TestProcessorOverridesFlag(t *testing.T) {
 	p := processorOverrides{}
 	if err := p.Set("s1=127.0.0.1:9001"); err != nil {

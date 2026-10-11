@@ -262,7 +262,8 @@ func TestPauseBlocksCrawlingAndServing(t *testing.T) {
 	// The snapshot of a paused server is empty, so through a pass-through
 	// gateway even the approved tool is a leak.
 	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", u.url())
-	wantContains(t, "stdout", r.stdout, verdictLeak+" echo "+v1[:shortDigestLen])
+	wantContains(t, "stdout", r.stdout, verdictLeak+" echo live "+v1[:shortDigestLen])
+	wantNotContains(t, "stdout", r.stdout, " approved ", verdictMismatch)
 	// Decisions keep working and the views still show the tools.
 	wantContains(t, "list", c.ok("list"), "s1/echo", "enabled")
 	c.fail(exitFailure, "--as", "alice", "server", "pause", "s1")
