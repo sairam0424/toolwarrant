@@ -220,3 +220,110 @@ headers, and refuses any other; go generate ./internal/extmcpv1 runs it. The
 root .golangci.yml pins the lint set. go.mod says go 1.27 with toolchain
 go1.27.1, so a 1.27.0 toolchain no longer triggers a download. The three
 textdiff tests that walk all of Unicode skip under go test -short.
+
+## Corrections after the end-to-end run and the second review (2026-10-11)
+
+The end-to-end test (e2e/, commit 21164fd; its run of 2026-10-07 is kept in
+demo/last-run.log, which is gitignored) and the second hostile review ran the
+code the post-review section above describes against the real agentgateway
+v1.6.0 binary. This section records what they changed in the statements above.
+Every statement of the day-5 results table and of the post-review section was
+true of the tree it names (20e32b4); the corrections below say what holds now.
+The results table and findings F1 to F5 are again left exactly as written.
+
+### Corrections to the post-review section
+
+- F1 correction, was: "cmd/toolwarrant still passes its own program name and
+  version". Is: the CLI passes no client name; the initialize request on the
+  wire carries the library default clientInfo `mcp-client`. Request shape,
+  timing, source address and Go's default User-Agent still identify a crawler
+  (README limit L4). Was: "At 20e32b4 the catalog and the CLI do not yet
+  consume Result.Unusable". Is: `crawl` prints rejected entries with their
+  reason and `crawl --strict` exits 1 (cmd test
+  TestCrawlReportsAnInvisibleToolNameAsRejected); the e2e scenario J denies a
+  duplicate page through the gateway as a whole.
+- F3 correction, was: "at 20e32b4 nothing calls emit.Verify yet". Is:
+  `verify-gateway --config FILE` calls it and prints CONFIG-EDITED, exit 1, on
+  a one-byte edit and on a missing header (e2e scenario F). The hash is an
+  unkeyed SHA-256, so an edit that recomputes the header line passes `Verify`
+  and the gateway's `--validate-only` (README limit L19); the controls against
+  that are the canary's listing in a fresh session and, since the third round,
+  its comparison of the gateway's live configuration (`GET /api/config` on the
+  admin listener) with the emitted file (`--admin`, LIVE-CONFIG-MISMATCH).
+  The second review also showed that the verdicts of 21164fd were too lenient:
+  a route without its processor printed OK while nothing had drifted (the
+  allow rule hides unapproved names), MISMATCH with exit 0 while a poisoned
+  and later rejected definition was being served, and LEAK only after a crawl
+  had recorded the drift. Decision D12 (docs/decisions.md) makes LEAK mean any
+  served tool the catalog would not serve, exit 1, with MISMATCH kept only as
+  a diagnostic sub-label of a LEAK line.
+- F2 correction, was: "unchanged for route binds: the v1.6.0 schema has no
+  address key under binds[], so route sockets still listen on all
+  interfaces". Is: the emitter moved to the gateways form in 611e081 and
+  writes `gateways.toolwarrant.bindAddress: "127.0.0.1"` by default; the real
+  binary parses it and binds only 127.0.0.1 (e2e scenario I: connections to
+  the gateway port and to the admin, stats and readiness listeners on the
+  host's LAN address were not accepted). `emit --bind-address ADDR` chooses
+  another address, a wildcard also needs `--allow-all-interfaces`, and `emit`
+  prints a warning for any address other hosts can reach. The admin, stats and
+  readiness addresses became emitter inputs in the third round, with an off
+  switch for the admin API (`DisableAdmin`, the gateway's `adminAddr: off`).
+  The admin listener is loopback but its API is unauthenticated
+  (`GET /config_dump` returns the shared secret, `POST /api/config` replaces
+  the running configuration), so it is part of the trusted computing base
+  (README limit L18).
+- Test 14 and L3 stand as corrected: the second review reproduced that a
+  session opened before the reload kept calling the processor after the
+  processor was removed from its route.
+- "Still open at 20e32b4", was: schema.go's digest re-check, catalog.go's
+  "the processor only reads", and Approve, Reject and Rollback accepting a
+  system actor. Is: every read path re-hashes the approved bytes it hands out
+  (with the verified-version memory of 4dce1c1); `serve` opens the catalog
+  read-only (cmd test TestServeOpensTheCatalogReadOnly); the system actor is
+  refused with exit 2 (decision D7, commit 8b7a574, which also states D7 that
+  this section recorded as unstated). The third round added to the integrity
+  checks: guard objects are compared by their DDL text rather than by name (a
+  same-named no-op trigger had passed), the serving snapshot requires an
+  approve or rollback record for every approved version (a forged approval
+  through the mutable `tools` and `tool_versions.status` columns had been
+  served), and `Store.Integrity` cross-checks the registry against the
+  approvals table and the audit log (no command runs it yet; wiring it into
+  `audit verify` is a later step).
+- D1 as stated above, was: "refuses invalid UTF-8 and lone surrogate escapes
+  (ErrNotUTF8)". The second review found that at 21164fd a lone or ill-paired
+  surrogate escape was refused by the RFC 8785 step with only the
+  canonicaliser's own error, so `errors.Is(err, ErrNotUTF8)` was false (no
+  caller depended on it: crawler and catalog classify every canonicalisation
+  failure as `not-canonical`). Is, since the third round: both cases are
+  reported as `ErrNotUTF8`, and for a surrogate escape the step's own error is
+  wrapped alongside, so the statement above holds again.
+- D10 as stated above, was: "the gateway drops unknown top-level and
+  annotations keys before the hook". Is, as observed: the e2e scenario L
+  recorded the gateway dropping `x-vendor` (with `x-vendor.tier`) and
+  `annotations.x-risk` and keeping `annotations.title`,
+  `annotations.readOnlyHint` and the `_meta` member `vendor/ui`; the second
+  review's lab, not pinned by a test in this tree, also saw a `_meta` member
+  named `ui` and a top-level `execution` key dropped. With the processor in
+  place such a tool is hidden and `verify-gateway` reports it as MISSING;
+  MISMATCH appears only as the sub-label of a LEAK line when a route without
+  its processor serves the re-serialised bytes (README limit L2).
+- Decisions added since: D11 (no data plane of its own; the seam is hardened
+  instead) and D12 (LEAK semantics and the two canary probes, including the
+  probe for a `tools/call` sent without a JSON-RPC id, which agentgateway
+  v1.6.0 forwards without the hook and without the allow rule, README limit
+  L17). Both are in docs/decisions.md.
+
+### Cost caveat, resolved
+
+Was: "A digest cache keyed by the SHA-256 of the raw tool bytes (F4) is being
+added in the post-review wave ... until it lands, read the table as a lower
+bound." Is: the cache landed in c311115 (internal/processor/digestcache.go),
+and the e2e scenario M re-measured the added latency with `toolwarrant serve`
+on the real gateway, loopback, a 3-tool page and 100 list and call pairs per
+mode. demo/last-run.log of 2026-10-07: tools/list p50 2.07 ms with the
+processor against 1.11 ms with the CEL rule alone (+0.95 ms), p95 7.08 against
+3.25 (+3.83); tools/call p50 1.77 against 0.90 (+0.87), p95 5.50 against 2.15
+(+3.35). The commit message of 21164fd records +0.3 ms list and +0.2 ms call at
+p50 from other runs; p95 on a shared laptop is noise. The table at the top of
+this file remains the spike's measurement with cmd/seamgate and is read as
+history; pages of 100 tools and more are still not measured (README limit L12).

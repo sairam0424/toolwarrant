@@ -1,0 +1,210 @@
+# toolwarrant continuous integration.
+#
+# Why this file exists: SECURITY.md and docs/threat-model.md say that the lint
+# set, govulncheck, gitleaks and the third-party notices check run in CI, and
+# README.md says that every test name cited in the documents exists. This
+# workflow is what makes those sentences true. Every go command runs with
+# GOFLAGS=-mod=readonly so that no job can edit go.mod; a dependency change is
+# a deliberate commit that also regenerates THIRD_PARTY_NOTICES.md.
+#
+# Action pins. Actions marked "SHA pinned" name the commit of the release in
+# the trailing comment. Actions marked "tag pinned" are pinned to a release tag
+# because the commit was not verified while this file was written; the owner
+# should replace each tag with the commit hash of that release before relying
+# on the job (a tag can be moved, a commit cannot).
+#
+# The e2e job runs only on workflow_dispatch. It downloads the agentgateway
+# v1.6.0 release asset for linux and refuses to run until the owner has
+# recorded its SHA-256 in AGENTGATEWAY_SHA256 below; the value is a marked
+# placeholder on purpose, nothing here was invented.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+
+jobs:
+  lint:
+    name: gofmt, go vet, golangci-lint v2.13.2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The version is the one CLAUDE.md pins. install-only leaves the run to
+      # make lint, so "lint clean" means the same thing here and on a laptop.
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8.0.0, SHA pinned
+        with:
+          version: v2.13.2
+          install-only: true
+      - run: make lint
+
+  build:
+    name: go build and go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make build
+      - run: go vet -tags e2e ./e2e/...
+
+  test:
+    name: go test -race -short
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      # -short skips the three Unicode walks of internal/textdiff and two slow
+      # catalog tests; the test-full job runs those on their own.
+      - run: go test -race -short -count=1 -timeout 900s -cover ./...
+
+  test-full:
+    name: full textdiff Unicode walk and slow catalog tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Installed at a pinned module version rather than @latest so that a new
+      # govulncheck release cannot change what this job does without a commit.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - run: govulncheck ./...
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+        with:
+          fetch-depth: 0 # the whole history: a secret that was ever committed counts
+      # tag pinned (see the header). The action is free for personal
+      # repositories; an organisation repository needs GITLEAKS_LICENSE.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notices:
+    name: scripts/gen-third-party-notices.sh --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      # Section 3 of THIRD_PARTY_NOTICES.md states a licence only for the
+      # graph-only modules that were in the module cache when the file was
+      # generated. A fresh runner has none of them, so download exactly those
+      # (derived from the committed file, not a list kept here) before the
+      # check compares like with like.
+      - name: download the graph-only modules the notices file inspected
+        run: |
+          mods=$(awk '/^## 3\./{s=1} /^## 4\./{s=0} s && /^\| `/ && / \| yes \| / { gsub(/`/,"",$2); print $2"@"$4 }' THIRD_PARTY_NOTICES.md)
+          echo "$mods"
+          # shellcheck disable=SC2086
+          go mod download $mods
+      - run: scripts/gen-third-party-notices.sh --check
+
+  docs:
+    name: cited tests and relative links exist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - name: every test name cited in the documents is a test function
+        run: |
+          set -euo pipefail
+          fail=0
+          while read -r n; do
+            if ! grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.git .; then
+              echo "cited test does not exist: $n"
+              fail=1
+            fi
+          done < <(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sort -u)
+          exit "$fail"
+      - name: every relative link resolves
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS=: read -r file link; do
+            target=${link%%#*}
+            [ -n "$target" ] || continue
+            case "$target" in http://*|https://*|mailto:*) continue ;; esac
+            if [ ! -e "$(dirname "$file")/$target" ]; then
+              echo "broken link in $file: $link"
+              fail=1
+            fi
+          done < <(grep -oHE '\]\([^)]+\)' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sed -E 's/\]\((.*)\)$/\1/')
+          exit "$fail"
+
+  e2e:
+    name: end-to-end on the agentgateway v1.6.0 release binary (dispatch only)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      AGENTGATEWAY_VERSION: v1.6.0
+      # The linux asset name of the release; the darwin asset the laptops use
+      # is agentgateway-darwin-arm64. Adjust if the release names it otherwise.
+      AGENTGATEWAY_ASSET: agentgateway-linux-amd64
+      # PLACEHOLDER: the owner must replace this with the SHA-256 of the asset
+      # named above, read from the v1.6.0 release page. The job refuses to run
+      # while the placeholder is in place; no checksum was invented here.
+      AGENTGATEWAY_SHA256: REPLACE_WITH_THE_SHA256_OF_THE_LINUX_RELEASE_ASSET
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0, SHA pinned
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: download the gateway and verify its checksum
+        run: |
+          set -euo pipefail
+          case "$AGENTGATEWAY_SHA256" in
+            REPLACE_WITH_*) echo "AGENTGATEWAY_SHA256 is the placeholder; record the release checksum first" >&2; exit 1 ;;
+          esac
+          mkdir -p .cache
+          curl -fsSL --retry 3 -o .cache/agentgateway \
+            "https://github.com/agentgateway/agentgateway/releases/download/${AGENTGATEWAY_VERSION}/${AGENTGATEWAY_ASSET}"
+          echo "${AGENTGATEWAY_SHA256}  .cache/agentgateway" | sha256sum -c -
+          chmod +x .cache/agentgateway
+          .cache/agentgateway --version || true
+      - name: make e2e
+        env:
+          TOOLWARRANT_GATEWAY_BIN: ${{ github.workspace }}/.cache/agentgateway
+          TOOLWARRANT_E2E_WORKDIR: ${{ runner.temp }}/toolwarrant-e2e
+        run: |
+          mkdir -p "$TOOLWARRANT_E2E_WORKDIR"
+          make e2e
+      - name: process logs on failure
+        if: failure()
+        run: |
+          find "${{ runner.temp }}/toolwarrant-e2e" -type f -path '*/logs/*' -print -exec cat {} \; 2>/dev/null || true
