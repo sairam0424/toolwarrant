@@ -1,4 +1,4 @@
-# Design decisions D1 to D13
+# Design decisions D1 to D14
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
@@ -7,7 +7,9 @@ commit 8b7a574, the emitter commit 611e081, the end-to-end commit 21164fd, the
 commits of the third round (2026-10-11, the fixes after the second review),
 which state D11 and D12 and the catalog integrity changes recorded in
 [threat-model.md](threat-model.md) rows 20 and 21, and the commits of the fourth
-round (2026-10-11, the fixes after the third review), which state D13. The
+round (2026-10-11, the fixes after the third review), which state D13, and
+the commits of the fifth round (2026-10-12, the fixes after the fourth review),
+which state D14. The
 post-review sections of [../seam/RESULTS.md](../seam/RESULTS.md) quote the same
 decisions and record the corrections they forced to the spike's findings. Each
 record gives the context (what a review found), the decision, its consequences
@@ -702,7 +704,16 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   main, which is what `.github/workflows/ci.yml` triggers on; `.golangci.yml`
   names golangci-lint v2.14.0; README step 7, the SECURITY.md canary item and
   the operations guide show the OK line as it is printed, with the
-  live-configuration and probe clauses.
+  live-configuration and probe clauses. The fourth review re-attacked this
+  round and D14 records what did not hold: the newest-decision rule of (a)
+  trusted `approvals.hash_seen`, a column the same drop-and-re-create technique
+  rewrites; the whole-document comparison of (e) decoded two of the fourteen
+  top-level sections the gateway loads and compared neither the
+  `requestHeaders` filter nor the processor metadata; the stable addresses of
+  (g) were read from the file at `--out`, which L19 says an attacker can
+  re-seal; the probe rule of (h) called an HTTP 400 healthy whoever produced
+  it; and the per-server caps of (c) bound rows and bytes but not the audit
+  log.
 - Where. `internal/catalog/snapshot.go` and `internal/catalog/load.go` (a),
   `internal/catalog/integrity.go`, `internal/catalog/integrity_audit.go` and
   `internal/catalog/guards.go` (b), `internal/catalog/crawl.go` and
@@ -754,11 +765,324 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestCrawlEveryExits1WhenNoCrawlCompleted`, `TestCrawlTallyOutcome` (f),
   `TestEmitAlwaysWritesAnOwnerOnlyFile`,
   `TestEmitKeepsProcessorAddressesAcrossReEmits`,
-  `TestPlanEmitKeepsPreviousAddresses`, `TestPortAllocator`,
-  `TestReadPreviousFile`, `TestVerifyGatewayComparesTheRecordedBodyHash` (g),
+  `TestPlanEmitKeepsPreviousAddresses` (its previous-file reader and that
+  reader's test were removed in the fifth round, since addresses now come from
+  the catalog, D14), `TestPortAllocator`,
+  `TestVerifyGatewayComparesTheRecordedBodyHash` (g),
   `TestProbeReportsARelayedUpstreamAnswerAsInconclusive` (h),
   `TestVerifyGatewayReportsAnUnverifiedToolAsALeak` (j),
   `TestAuditVerifyReportsIntegrityWhenTheHeadMismatches` (the integrity report
   under a mismatching head); e2e scenarios J
   (stable processor addresses on the side file) and P (the added route and the
   shadow route).
+
+## D14. The fifth round: the trust boundary of the catalog file, the chain on the serving path, the replaced file, the live comparison and the processor addresses
+
+- Context. The fourth hostile review (2026-10-12, four reviewers over the
+  areas ingest, CLI and documents, core, and processor and emit, each finding
+  re-run by an independent verifier against a96672e) confirmed twenty-six
+  findings, two of them reported from two areas, four of them high after
+  verification. In the order of the sub-decisions below: the newest-decision
+  rule of D13 (a) read `approvals.hash_seen`, a column that one guard trigger
+  protects, so the drop-and-re-create technique applied to
+  `approvals_no_update` together with `tool_versions_immutable` rewrote a
+  definition and its `hash_seen` consistently, and `Snapshot`, `Approved` and
+  `Versions` served the rewritten bytes under the approver's name while only
+  `Integrity` saw it; one `DELETE` of a `tools` row with foreign keys off (the
+  `sqlite3` shell's default), or a rewrite of the proposer tables under
+  re-created guards, laundered the proposer rule of D4: the next crawl
+  discovered the tool afresh with the system actor as proposer and the person
+  whose crawl had proposed the bytes approved them with `Integrity` and
+  `audit verify` clean; a rejected version flipped back to pending by one
+  `UPDATE` was approvable and unreported; a `UNIQUE` index the schema did not
+  create broke every write with a plain constraint error while `audit verify`
+  printed `integrity ok`; an upstream that listed fresh unusable names on every
+  crawl added one `tool.rejected` entry per name (258 bytes of log columns
+  each, about 2.6 MB per crawl at the per-crawl cap) and no cap counted them,
+  while README L6 said the caps bounded the file; after the documented
+  growth-cap recovery (pause, delete the file, `init`, re-register,
+  re-approve) a running processor kept reading the deleted file through its
+  open handle, its generation never moved, and it listed and allowed calls to
+  a tool the catalog on disk no longer approved, with `source errors` at zero
+  and nothing logged; `list` printed a forged approved pointer as fact while
+  `Snapshot`, `Approved` and `Versions` refused the file, and the operations
+  guide told the operator to run `list` against a suspect database;
+  `PRAGMA journal_mode = DELETE` on a tampered file locked out the forensic
+  open, whose error suggested a read-write open that the guard check refused;
+  a page over the payload cap was denied before the marking step, so a changed
+  tool kept its older evidence; a pause followed by a resume emptied the
+  observed-evidence table, contradictions included; one `tools/list` hook
+  allocated about eighteen times its payload before the per-page count ran;
+  three code comments still said that what is listed is exactly what is
+  callable; loopback spellings the resolver accepts (`127.1`, `0x7f.0.0.1`,
+  `2130706433`, `0`) passed the socket rule and were warned about as
+  non-loopback, and a processor on the very bind or listener address the input
+  named was accepted; the live comparison decoded the `gateways` map and the
+  `routes` list only, so a `binds` listener or a top-level `mcp` section, both
+  of which the pinned binary loads in `--validate-only`, compared as a match,
+  and the processor `requestHeaders` filter and metadata were not compared; a
+  FIFO at `--config` blocked the canary in `open()` with no verdict, no exit
+  and no reaction to SIGTERM or SIGINT, and a FIFO at `--out` blocked `emit`;
+  a re-emit took processor addresses from a file whose header had been
+  recomputed, or that was reached through a symbolic link at `--out`, and the
+  documented CONFIG-EDITED remedy (run `emit` again) re-sealed the forged
+  address with no change line and an OK canary; without `--keep-going` a check
+  that printed a LEAK and then hit a probe error did not end the run;
+  `audit verify` returned at a broken chain without the integrity report; the
+  probe called an HTTP 400 healthy whoever produced it, and its error said
+  "without a body" whatever the body was; `init` followed a symbolic link in
+  the directory part of the database path; the Changed text section of `diff`
+  printed a raw quotation mark inside a quoted span, so a span could appear to
+  close early. The finding that unlisted deprecated tools kept a stale unusable
+  marker was fixed in 15eba5e before this round (D13 (c) as corrected) and was
+  re-verified: `TestModel_StoreFollowsTheLifecycleModel` passes with the
+  reviewer's recorded seed and
+  `TestRecordCrawl_DeprecatedToolWithAMarkerIsClearedOnce` pins the clearing.
+- The trust boundary, stated once. The controls inside the catalog file (the
+  guard triggers, the newest-decision rule, the chain anchor and the pin below,
+  `Store.Integrity`) detect rewrites of history. Whoever can write the 0600
+  file can also append a new, correctly sealed audit entry that approves a
+  definition, and nothing inside the file can refute it; that is detected only
+  by anchors outside the file: the audit head the operator records, the git
+  export of approved definitions, and backups. This round therefore anchors
+  the serving path to the chain, so that a forger must re-chain the log suffix
+  (which the recorded head betrays), lets a running processor pin the chain
+  prefix it has verified, so that history cannot change under it, and states
+  the remaining limit in one sentence in README L19, threat-model row 21 and
+  here.
+- Decision (a): the serving-path evidence reaches the chain. For every
+  approved version, `Snapshot`, `Approved` and `Versions` read the newest
+  `version.approved` or `version.rolled_back` audit entry about the tool,
+  require its `after_hash` to equal the approved digest, and require the entry
+  to re-seal from its predecessor (`audit.Seal`), next to the newest-decision
+  rule of D13 (a). The verifier memory of `RecheckTTL` caches the result by
+  entry hash, so the price is one indexed read and one seal per approved tool
+  per ten minutes per `Store`. A forger who rewrites a definition and its
+  `hash_seen` under re-created guards must now also rewrite and re-chain the
+  log suffix, which `audit verify --expect-head` betrays.
+- Decision (b): chain pinning. A `Store` remembers the sequence number and
+  hash of the newest audit entry it has verified; every `Snapshot` verifies
+  that the entry still has that hash and that the suffix since it re-seals,
+  then advances the pin. A mismatch is `ErrCorrupt`, which the processor turns
+  into a source-error denial of every hook, so the log cannot be rewritten
+  under a running processor without every list and call being denied. The
+  first pin is the head as the `Store` finds it at open, verified to re-seal
+  from its predecessor only, because verifying the whole chain on every start
+  of a processor or a canary would cost a full read of the log; a rewrite
+  before the `Store` opened is what `audit verify` with the recorded head is
+  for.
+- Decision (c): `Store.Integrity` gains passes that the log makes possible: a
+  subject the log describes whose `tools` row is gone; a `tools` row with no
+  `tool.discovered` entry; a second `tool.discovered` entry for one subject
+  (the catalog never deletes a row, so a second discovery is impossible);
+  `tool_versions` rows whose tool is gone; each version's proposer list
+  against the actors of its `version.proposed` entries; and each version's
+  status reconstructed from the log (`version.proposed`, `version.superseded`,
+  `version.rejected`, `version.approved`, `version.rolled_back`) against
+  `tool_versions.status`. A `UNIQUE` index the schema did not create is a
+  foreign object, like a foreign trigger or view (an ordinary index cannot
+  change what a query returns; a unique one changes what every write does).
+  New guard triggers refuse `DELETE` on `tools`, `tool_versions`,
+  `tool_version_proposers` and `approvals`, so the laundering `DELETE` is
+  refused outright and a dropped guard is a missing guard. A constraint
+  failure on a guarded table inside a write transaction is reported as
+  `ErrCorrupt`, so a crawl schedule stops instead of treating it as an
+  upstream failure.
+- Decision (d): audit-log growth. The per-server caps of D13 (c) bound rows
+  and bytes; the log grows with observed changes. A per-crawl cap on rejected
+  entries (`catalog.MaxRejectedPerCrawl`, a named constant) bounds the one
+  shape that added entries without adding rows: a crawl that would exceed it
+  is recorded as failed under its own class and adds no entries. The documents
+  say it as it is: the caps bound rows and bytes, and the log grows with
+  observed changes, bounded by the crawl cadence and this cap.
+- Decision (e): replaced-file detection. `init` writes a random catalog
+  identity into the `meta` table; a `Store` records it and the file's device
+  and inode at open; `Generation` re-checks both and returns `ErrReplaced`,
+  which wraps `ErrCorrupt`, when the file at the path was replaced or removed.
+  The processor turns that into a source error that denies everything with the
+  reason `catalog unavailable` and logs `catalog unavailable, denying` at
+  Error. The end-to-end scenario N deletes and re-initialises the catalog
+  under two running processors: 23 and 26 ms after the re-init both denied
+  every list and call with that reason and logged the line, and a processor
+  started on the new file served the re-approved tool while a tool approved
+  only in the deleted file was denied as not approved. The recovery procedures
+  say to stop every processor of the file before deleting it, and README no
+  longer says that the processors need no restart without the qualification
+  "while the file is the same".
+- Decision (f): `Tools` and `Tool`, the queries behind `list` and `show`,
+  apply the same evidence as the serving path and return `ErrCorrupt`, so the
+  operations guide no longer presents `list` as a check against a suspect
+  database. A forensic open accepts a database whose journal mode is not WAL
+  (it opens with `mode=ro` and `immutable=1`), so `audit verify` and
+  `audit list` work on a file whose tamperer also switched the journal mode.
+- Decision (g): processor. An oversized page marks every servable tool of the
+  snapshot before it is denied, like every other page the processor cannot
+  read through to the end. The observed-evidence table is pruned only against
+  a non-empty snapshot and never loses a contradiction, so a pause followed by
+  a resume keeps every conflict marker and changed digest the gateway's
+  listings recorded. `internal/mcpwire` counts the entries of a `tools/list`
+  page with a streaming decoder and stops at the per-page cap before the array
+  is materialised, so a page of tiny entries cannot allocate many times its
+  bytes. The three comments that still said listed equals callable now state
+  the one-way rule of D9.
+- Decision (h): emit. A processor host that is all digits, dotted digits or
+  hex-looking must parse with `netip.ParseAddr` or is refused, so a loopback
+  spelling the resolver would accept cannot pass the socket rule as a name;
+  the socket rule compares the processor address with the input's own bind
+  address and listener addresses, not only with the loopback class.
+- Decision (i): CLI. The live comparison decodes `GET /api/config` into a map
+  of top-level sections and fails closed on any non-empty section other than
+  `config`, `gateways` and `routes`, one LIVE-CONFIG-MISMATCH line per extra
+  section (`section binds: not in the emitted file; it may bind ports and
+  routes the comparison cannot see`); it compares the `config` block's admin,
+  stats and readiness addresses, the `requestHeaders` filter of every
+  processor (the allowed and the disallowed list), and the processor metadata
+  by equality of a hash of its canonical form, never printing a value. The
+  end-to-end scenario P pins what the pinned gateway does with such a
+  document: on the emitted file `GET /api/config` rendered the sections
+  `config`, `gateways` and `routes` with the header filter in the processor
+  entry; a `binds` section with a listener on another port and a top-level
+  `mcp` shortcut were each accepted by `POST /api/config` with status 200 and
+  rendered, and through each new listener a fresh session listed every tool
+  of the upstream, unapproved `wipe_database` included, and `tools/call echo`
+  was allowed, so each is a route with no processor and no allow rule; the
+  comparison reported each as LIVE-CONFIG-MISMATCH naming the section, and a
+  stripped header filter as `processor requestHeaders allowed: emitted
+  :method, live (none)` with its `disallowed` twin. Processor addresses live
+  in the catalog: a `servers.processor_addr` column written by `emit` and by
+  `emit --processor` with the audit entry `server.processor_set`, shown in
+  the PROCESSOR column of `server list` (`-` before the first emit); `emit`
+  never reads addresses from the file at `--out`, so a file an attacker wrote
+  or re-sealed lends nothing to the next emit. `--config` and `--out` must be
+  regular files: a symbolic link, directory, device, socket or named pipe is
+  refused by `Lstat` before anything is opened, and the open itself never
+  follows a link and never blocks. Without `--keep-going` the run exits 1 at
+  a check that found a failing verdict even if a later step errored, while a
+  listing failure alone is printed, counted and does not stop the run.
+  `audit verify` runs the integrity report even when the chain is broken and
+  reports both; a broken chain is not compared with `--expect-head`, since
+  the head is then meaningless. The probe treats an HTTP 400 as healthy only
+  when its body is not a JSON-RPC error (a JSON-RPC error on a 400 is
+  PROBE-INCONCLUSIVE, since a forwarding gateway relays the upstream's
+  refusal), and its error text names the status and whether a body was
+  present (`the gateway answered http status N with a body of M bytes`).
+  `init` walks the directory of the database path and refuses a component
+  that is a symbolic link not owned by root (links the operating system
+  installs in its own directories, such as `/var` on macOS, are tolerated),
+  so a link planted in a shared working directory cannot redirect where the
+  private file is created.
+- Decision (j): `textdiff` escapes a quotation mark inside a quoted changed
+  span as `\"`, the way it already did inside a key, so a span can only end at
+  the renderer's own closing quote. This is the one sub-decision whose code
+  had not landed in the tree when this record was written; the documents
+  describe the decision, not a shipped behaviour, until the corrections
+  subsection of RESULTS.md says otherwise.
+- Decision (k): the schema version moves from 4 to 5 (the new column, the
+  meta key and the no-delete guards). A v4 file from the fourth round is
+  refused with `ErrSchema` and must be re-initialised, as every earlier
+  version was.
+- Decision (l): how the round was run. Each area was fixed by one agent that
+  edited only its own paths and reported to the lead in its final message; no
+  agent messaged another, and the documents were written against the
+  decisions above and checked against the tree at the end.
+- Consequence. Operators: a database from the fourth round (schema v4) must be
+  re-initialised; stop every processor of a catalog file before deleting or
+  replacing it and start them after `init`, because a processor that detects a
+  replaced file denies every hook and logs an error until it is restarted;
+  record the audit head, keep the git export and keep backups, because they
+  are the only anchors against an appended, correctly sealed approval; after a
+  CONFIG-EDITED the remedy is still to run `emit` again, and the addresses it
+  writes come from the catalog (`server list` shows them), not from the file;
+  `list` and `show` refuse a tampered file like every other command, so use
+  `audit verify` and `audit list` on a suspect database; a canary without
+  `--keep-going` ends at the first check that printed a failing verdict even
+  when a later step of that check errored; the growth of the audit log is
+  bounded by the crawl cadence and the rejected-entries cap, not by the
+  per-server caps. The processor's `source errors` counter rises when the
+  file was replaced under it. Document corrections of the round are listed in
+  the corrections subsection of [../seam/RESULTS.md](../seam/RESULTS.md).
+- Where. `internal/catalog/anchor.go` and `internal/catalog/approved.go` (a),
+  `internal/catalog/pin.go` and `internal/audit/audit.go` (`VerifyFrom`, b),
+  `internal/catalog/integrity_versions.go`, `internal/catalog/integrity.go`,
+  `internal/catalog/guards.go` and `internal/catalog/store.go` (c),
+  `internal/catalog/crawl.go` and `internal/catalog/crawlprep.go`
+  (`MaxRejectedPerCrawl`, the `rejected-cap` class, d),
+  `internal/catalog/identity.go` (e), `internal/catalog/views.go` and
+  `internal/catalog/openmodes.go` (f), `internal/catalog/processoraddr.go`
+  and `internal/catalog/schema.go` (i, k); `internal/processor/list.go`,
+  `internal/processor/filter.go`, `internal/processor/observed.go`,
+  `internal/processor/snapshot.go` and `internal/mcpwire/mcpwire.go` (g);
+  `internal/emit/socket.go` and `internal/emit/validate.go` (h);
+  `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`,
+  `cmd/toolwarrant/liveconfig.go`, `cmd/toolwarrant/paths.go`,
+  `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/verifyloop.go`,
+  `cmd/toolwarrant/audit.go`, `cmd/toolwarrant/probe.go`,
+  `cmd/toolwarrant/global.go`, `cmd/toolwarrant/emit.go`,
+  `cmd/toolwarrant/emitports.go` and `cmd/toolwarrant/server.go` (i);
+  `internal/textdiff/tool.go` (j, pending). Tests: catalog
+  `TestSnapshot_RewritingHashSeenUnderRecreatedGuardsIsCorrupt`,
+  `TestSnapshot_AppendedApprovalRowIsCaughtByTheChainAnchor`,
+  `TestSnapshot_AnchorAcceptsStoreWrittenHistoryAndRemembersEntries` (a),
+  `TestSnapshot_LegitimateAppendsAdvanceThePin`,
+  `TestSnapshot_ReChainedLogIsCaughtByThePinAndTheRecordedHead`,
+  `TestSnapshot_LogChangedAfterThePinIsCorrupt` (b), audit
+  `TestVerifyFrom_AcceptsEverySuffixOfAValidChain`,
+  `TestVerifyFrom_ZeroPrevIsVerify`,
+  `TestVerifyFrom_RefusesASuffixThatDoesNotContinueFromPrev` (b); catalog
+  `TestIntegrity_DeletedToolRowIsRefusedAndReported`,
+  `TestIntegrity_ProposerHistoryRewrittenUnderRecreatedGuardsIsReported`,
+  `TestIntegrity_RejectedVersionFlippedToPendingIsReported`,
+  `TestIntegrity_ProposerAndStatusReconstructionAcceptsStoreWrittenHistory`,
+  `TestIntegrity_RowsTheLogDoesNotDescribeAreReported`,
+  `TestOpen_ForeignUniqueIndexIsCorrupt`, `TestOpen_PlainForeignIndexIsTolerated`,
+  `TestInTx_ConstraintFailureIsCorrupt` (c),
+  `TestRecordCrawl_RejectedEntriesStopAtTheCap`,
+  `TestRecordCrawl_RejectedCapConstant` (d),
+  `TestGeneration_DetectsADeletedAndReinitialisedFile`,
+  `TestGeneration_DetectsARenamedFileAndRecoversWhenItReturns`,
+  `TestGeneration_DetectsAnotherIdentityInMeta`,
+  `TestOpen_WritesAndKeepsACatalogIdentity` (e),
+  `TestTools_ForgedApprovedPointerIsCorrupt`,
+  `TestTools_ApplyTheServingPathEvidence`,
+  `TestOpenWith_ForensicOpensANonWALFile` (f),
+  `TestSetProcessorAddr_RecordsTheAddressAndTheEntry`,
+  `TestIntegrity_ProcessorAddrRewrittenIsReported` (i),
+  `TestOpen_RefusesOtherSchemaVersions` (k); processor
+  `TestCheckResponse_OversizedPageMarksEveryServableToolBeforeDenial`,
+  `TestCheckResponse_OversizedPageWithAnUnreadableCatalogIsASourceError`,
+  `TestCache_PauseAndResumeKeepTheListingEvidence`,
+  `TestCheckResponse_OverCapPageIsRefusedBeforeNamesAreRead`,
+  `TestCheckResponse_ReplacedCatalogFileDeniesEveryHook`,
+  `TestCache_CorruptGenerationDiscardsTheCacheUntilASnapshotReloads` (e, g),
+  mcpwire `TestParseToolsList_StopsAtTheCapBeforeReadingTheEntryPastIt`,
+  `TestToolsList_WalkRejectsEntriesWithoutAStringName`,
+  `TestToolsList_EntriesAliasTheInput`,
+  `TestInternals_DecoderDisagreementsFailClosed` (g); emit
+  `TestAmbiguousProcessorHostSpellingsAreRefused`,
+  `TestNumericHostRuleLeavesNamesAndCanonicalAddressesAlone`,
+  `TestIsNumericHost`, `TestGatewayAcceptsAmbiguousProcessorSpellings` (the
+  binary accepts what the emitter refuses),
+  `TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused`,
+  `TestProcessorBesideTheGatewaysOwnAddressIsAccepted`, `TestIsGatewayHost`
+  (h); cmd `TestLiveComparisonReportsASectionTheFileDoesNotCarry`,
+  `TestLiveComparisonComparesTheConfigListeners`,
+  `TestLiveComparisonComparesTheRequestHeaderFilter`,
+  `TestCompareDocumentsSeesAMissingRequestHeaderFilter`,
+  `TestLiveComparisonComparesTheProcessorMetadataWithoutShowingIt`,
+  `TestEmittedConfigReadsTheHeaderFilterAndHashesTheMetadata`,
+  `TestGatewayAcceptsAMixedGatewaysAndBindsDocument` (the binary loads the
+  `binds` document), `TestReEmitIgnoresAForgedAddressInTheFileAtOut`,
+  `TestPlanEmitKeepsPreviousAddresses`,
+  `TestEmitKeepsProcessorAddressesAcrossReEmits`,
+  `TestVerifyGatewayReportsAFIFOAtConfigAsEdited`, `TestEmitRefusesAnIrregularOut`,
+  `TestReadRegularFile`, `TestInitRefusesADirectorySymlink`,
+  `TestEveryWithoutKeepGoingStopsAtALeakWhenTheProbeErrors`,
+  `TestEveryWithoutKeepGoingStopsAtAnEditedConfigWhenTheListingFails`,
+  `TestAuditVerifyReportsIntegrityWhenTheChainIsBroken`,
+  `TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive`,
+  `TestProbeErrorSaysWhetherTheAnswerHadABody` (i); e2e scenario P (the
+  header filter, the `binds` section and the `mcp` section through the admin
+  API of the running gateway) and scenario N (the catalog deleted and
+  re-initialised under two running processors). The fixed finding about the
+  stale unusable marker is pinned by `TestModel_StoreFollowsTheLifecycleModel`
+  and `TestRecordCrawl_DeprecatedToolWithAMarkerIsClearedOnce`.

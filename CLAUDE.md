@@ -39,24 +39,24 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 
 - `cmd/toolwarrant`: operator CLI, a thin client of the internal packages; `run()` is driven in-process by tests, `main` only exits.
 - `cmd/mockupstream`, `cmd/seamclient`, `cmd/seamgate`, `cmd/seamprocessor`: spike scaffolding for the seam tests and the e2e test; never deployed.
-- `internal/catalog`: SQLite registry (schema v4; a v2 or v3 file from an unreleased build is refused with `ErrSchema` and must be re-initialised, there is no migration); the only writer of lifecycle state and the audit log, in one transaction; per-crawl and per-server caps, quarantine, proposal budget and its reset, integrity checks (guard DDL and the absence of foreign triggers and views, the newest-decision rule for every approved version, the audit cross-check of every mutable column the log describes).
+- `internal/catalog`: SQLite registry (schema v5; a v2, v3 or v4 file from an unreleased build is refused with `ErrSchema` and must be re-initialised, there is no migration); the only writer of lifecycle state and the audit log, in one transaction; per-crawl and per-server caps and the per-crawl cap on rejected entries, quarantine, proposal budget and its reset, each server's processor address, integrity checks (guard DDL, no-delete guards and the absence of foreign triggers, views and unique indexes; the newest-decision rule and the newest chained audit entry for every approved version; the pin on the newest verified audit entry; the catalog identity and the file's device and inode against a replaced file; the audit cross-check of every mutable column and every subject the log describes). The trust boundary is D14: whoever can write the file can append a correctly sealed entry, and only the recorded head, the git export and backups catch that.
 - `internal/lifecycle`: pure state machine (states, commands, events, `Serves`) and the exported digest-shape rule (`IsDigest`, `LastSeenVerifiable`) that the processor and the canary share; property-tested invariants.
 - `internal/gate`: RFC 8785 canonicalisation and SHA-256 digest, profile `full-v1`; refuses inexact numbers and non-UTF-8.
 - `internal/audit`: hash chain over audit entries (`Seal`, `Verify`, `Head`).
 - `internal/crawl`: raw MCP Streamable HTTP `tools/list` client; vets every tool, quarantines, never approves.
 - `internal/fetch`: the only egress path; SSRF-hardened dialer (connect-time address checks, DNS pinning, caps).
-- `internal/processor`: ExtMCP gRPC processor; list filtering, call rule, caps, shared secret, digest cache, observed-evidence table sized from the snapshot.
-- `internal/emit`: agentgateway v1.6.0 config emitter; gateways form with a loopback bind, listener inputs, explicit allow rules, failClosed, sha256 header, `Verify`, validation with the gateway binary, the request-header filter on every processor entry, refusal of a processor address on one of the gateway's own sockets.
+- `internal/processor`: ExtMCP gRPC processor; list filtering, call rule, caps, shared secret, digest cache, observed-evidence table sized from the snapshot and kept across a pause; an oversized or unreadable page marks every servable tool; a replaced catalog file is a source error.
+- `internal/emit`: agentgateway v1.6.0 config emitter; gateways form with a loopback bind, listener inputs, explicit allow rules, failClosed, sha256 header, `Verify`, validation with the gateway binary, the request-header filter on every processor entry, refusal of a processor address on one of the gateway's own sockets (compared with the input's own bind and listener addresses) and of a numeric-looking host that is not an IP literal.
 - `internal/export`: write-only mirror of approved definitions into a directory and git; crash-safe manifest.
 - `internal/textdiff`: escaped diff renderer and invisible-character findings for approvers.
 - `internal/toolname`: the one tool-name rule shared by crawler, catalog, processor and emitter.
 - `internal/strictjson`: rejects JSON objects that two parsers could read differently.
-- `internal/mcpwire`: pure helpers over raw MCP JSON-RPC payloads.
+- `internal/mcpwire`: pure helpers over raw MCP JSON-RPC payloads; the entry count of a `tools/list` page is taken by a streaming decoder that stops at the cap before the array is materialised.
 - `internal/extmcpv1`: generated ExtMCP stubs (package `api`) from `third_party/agentgateway/ext_mcp.proto`.
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
-- `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections.
+- `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
-- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D13), `docs/operations.md`.
+- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D14), `docs/operations.md`.
 - `.github/workflows/ci.yml`: the CI workflow.
 
 ## Rules
@@ -66,7 +66,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - Nothing is pushed, tagged, published or registered without the owner.
 - Keep "MCP" out of the product name; "toolwarrant for MCP" is the permitted form.
 - Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
-- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D13 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`.
+- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D14 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/liveadmin.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.
 - Test files must not contain literal invisible or format characters: build them at run time or use `\u` escapes, then check with `grep -P`.

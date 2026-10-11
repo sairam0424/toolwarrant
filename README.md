@@ -89,7 +89,10 @@ until a named person has approved an exact digest; a catalog miss, an unreadable
 page, an unreachable catalog or a hook from another backend all deny. The catalog
 hands out an approval only when the newest approve or rollback decision about
 the tool, in the append-only approvals table, names that exact version and
-digest (decision D13). A crawl never approves anything: it records proposals,
+digest (decision D13) and the newest approval or rollback entry in the
+hash-chained audit log carries the same digest and seals correctly from its
+predecessor (decision D14), so a forged approval must re-chain the log, which
+the head you recorded betrays. A crawl never approves anything: it records proposals,
 drift, reverts, absences and unusable definitions, and the person who ran the
 crawl that proposed a version cannot approve that version. Whoever can reach the
 processor without the shared secret, or the gateway's admin listener, decides
@@ -149,11 +152,12 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 # wipe_database stays pending_review and is never served.
 
 # 5. Write the gateway configuration and start the processor it names.
-#    The first emit gives the i-th server in name order the processor
-#    127.0.0.1:9001+i; a later emit reads the file it wrote before and keeps
-#    every server's address, so adding a server never moves the others (a new
-#    server takes the next free port and emit prints every address that
-#    changed). The route is /<server>/mcp on port 3000 bound to 127.0.0.1.
+#    A server with no processor address yet gets the next free port from
+#    127.0.0.1:9001 up, and the address is stored in the catalog (server list
+#    shows it), so a later emit keeps every server's address and adding a
+#    server never moves the others; emit prints every address that is new or
+#    changed and never reads addresses from the file it replaces. The route
+#    is /<server>/mcp on port 3000 bound to 127.0.0.1.
 #    The file is always written 0600: make it readable by the user the
 #    gateway runs as (chown, or a read ACL) and by nobody else. Record the
 #    "body sha256" line emit prints; the canary compares the file with it.
@@ -245,6 +249,9 @@ pinned gateway version.
 - Pause and resume. `server pause NAME` refuses crawls of the server and empties
   its serving snapshot, so nothing of that server is served until `server
   resume NAME`; decisions keep working while it is paused (e2e scenario E).
+  The processor keeps what the gateway's listings told it across the pause, so
+  a tool whose live definition had changed stays uncallable after the resume
+  until a clean listing or a crawl records the approved digest (decision D14).
 - Missing and deprecated. A tool absent from a successful crawl is flagged
   `MISSING`; after three consecutive misses (the default policy) it is
   `deprecated` and never served. A failed crawl is not a removal. A tool whose
@@ -258,10 +265,15 @@ pinned gateway version.
   L6).
 - Re-emit. Approvals change which names the explicit allow rule carries, so
   run `emit` again after changes and let the gateway reload the file (266 to
-  373 ms in every observation of the end-to-end test). A re-emit reads the file
-  it wrote before and keeps every server's processor address (a new server
-  takes the next free port, and every changed address is printed), so the
-  processors need no restart: they read the catalog's generation on every hook.
+  373 ms in every observation of the end-to-end test). Processor addresses live
+  in the catalog, so a re-emit keeps every server's address (a new server
+  takes the next free port, every new or changed address is printed, and
+  nothing is read from the file at `--out`), and the processors need no
+  restart while the catalog file is the same file: they read its generation on
+  every hook. A catalog file that is deleted or replaced under a running
+  processor is detected and denies everything (`catalog unavailable`) until
+  the processor is restarted (decision D14; e2e scenario N), so stop the
+  processors before you delete a catalog file.
 
 ## The audit log
 
@@ -270,42 +282,64 @@ SQLite transaction as the change. Each entry hashes every field of itself plus
 the previous entry's hash, as RFC 8785 canonical JSON, so changing, deleting,
 reordering or inserting any row breaks `audit verify` from that row on.
 Triggers in the database refuse ordinary SQL updates and deletes on the history
-tables, and the catalog checks the file before it trusts it: guard objects must
-be present with the definition `init` wrote (compared by their DDL text at open,
-on every snapshot load and at the end of every write transaction, so a
-same-named no-op trigger is corruption and a long-running crawl schedule cannot
-keep writing into a file whose trigger was dropped); no
-trigger or view the schema did not create may exist (a foreign trigger can undo
-a decision inside the operator's own transaction, so one is corruption too,
-decision D13); and every approved version it hands out is re-hashed and must be
-what the newest decision about the tool says: among all versions of the tool,
-the approve or rollback row with the highest id in the append-only approvals
-table must point at the approved version and carry `hash_seen` equal to its
-digest (decision D13; before the fourth round any historic approve row about the
-version counted, so a pointer flipped back to a superseded version, or a
-definition rewritten under a dropped and re-created guard trigger, reached the
-serving path). A file that fails any of these is reported as corrupt and nothing
-is served from it. `Store.Integrity` in `internal/catalog` goes further and
+tables (tools, versions, proposers and approvals included, decision D14), and
+the catalog checks the file before it trusts it: guard objects must be present
+with the definition `init` wrote (compared by their DDL text at open, on every
+snapshot load and at the end of every write transaction, so a same-named no-op
+trigger is corruption and a long-running crawl schedule cannot keep writing
+into a file whose trigger was dropped); no trigger, view or unique index the
+schema did not create may exist (a foreign trigger can undo a decision inside
+the operator's own transaction, and a foreign unique index makes writes fail,
+so both are corruption, decisions D13 and D14); every approved version it hands
+out is re-hashed and must be what the newest decision about the tool says:
+among all versions of the tool, the approve or rollback row with the highest
+id in the append-only approvals table must point at the approved version and
+carry `hash_seen` equal to its digest (decision D13; before the fourth round
+any historic approve row about the version counted, so a pointer flipped back
+to a superseded version reached the serving path); and the newest
+`version.approved` or `version.rolled_back` entry about the tool in the audit
+log must carry the same digest and must seal correctly from its predecessor
+(decision D14; before the fifth round a definition and its `hash_seen`
+rewritten together under two dropped and re-created guard triggers reached the
+serving path, because the approvals table was the only evidence). The serving
+snapshot also pins the newest audit entry it has verified and refuses a file in
+which that entry or anything after it changed, and refuses a file that was
+deleted or replaced under it (a random identity written by `init` and the
+file's device and inode are re-checked on every read, decision D14). A file
+that fails any of these is reported as corrupt and nothing is served, listed
+or shown from it: `list` and `show` apply the same evidence as the serving
+path (decision D14). `Store.Integrity` in `internal/catalog` goes further and
 cross-checks every mutable column the log describes (the approved digest, the
-last-seen digest, the state and the proposal budget of every tool; the paused
-flag, the allow-private flag and a hash of the URL of every server; every
-approval row) against the approvals table and the audit log, listing every
-disagreement; `audit verify` runs it after the chain check and prints
-`integrity ok`, or one `integrity problem:` line per disagreement and exits 1.
+last-seen digest, the state and the proposal budget of every tool; the status
+and the proposers of every version; the paused flag, the allow-private flag
+and a hash of the URL of every server; every approval row) against the
+approvals table and the audit log, and every subject the log describes against
+the rows that exist (a deleted tool row, a tool the log never discovered, a
+second discovery of one subject, a version whose tool is gone), listing every
+disagreement; `audit verify` runs it after the chain check, and also when the
+chain is broken, and prints `integrity ok`, or one `integrity problem:` line
+per disagreement and exits 1.
 
 The one operational rule: record the head hash outside the database. The chain
 proves that nothing inside it was altered since the first entry; it cannot
-prove that the whole log was not replaced by a shorter, internally valid one.
-`audit verify` prints the head after every successful check, and
+prove that the whole log was not replaced by a shorter, internally valid one,
+and nothing inside the file can prove that an entry was not appended by
+whoever can write the file: such a person can append a correctly sealed entry
+that approves a definition, and only the head you recorded, the git export of
+approved definitions (`export --dir`) and your backups betray it (decision
+D14, known limit L19). The checks above force that person to re-chain the
+whole log suffix, which is what the recorded head catches. `audit verify`
+prints the head after every successful check, and
 `audit verify --expect-head HASH` fails unless the head equals the one you
 recorded. `audit list [--after N] [--limit N] [--json]` prints entries in
 sequence order. Both commands open the database in forensic mode, which reads a
-file whose guard objects were dropped or redefined, or that holds a foreign
-trigger or view, so that the broken entry can be named; nothing is ever served
-or written from such an open, and `audit log ok` in that mode means the chain is
-consistent, not that the guards are intact (every other command refuses such a
-file; `audit verify` prints the integrity problems itself and exits 1 when
-there are any).
+file whose guard objects were dropped or redefined, that holds a foreign
+trigger, view or index, or whose journal mode was switched away from WAL, so
+that the broken entry can be named; nothing is ever served or written from
+such an open, and `audit log ok` in that mode means the chain is consistent,
+not that the guards are intact (every other command refuses such a file;
+`audit verify` prints the integrity problems itself and exits 1 when there are
+any).
 
 ## Non-goals
 
@@ -343,11 +377,14 @@ until a later version says otherwise.
   entry without a string name, a `tools` member that is not an array) is
   evidence about nothing, so every servable catalog tool of the server gets
   the marker (decision D13; the third review placed an unreadable decoy in front of a
-  changed tool and the changed tool kept its older evidence). So a decoy in any
-  position cannot keep a changed tool's older evidence alive: its calls are
-  denied until a clean page shows the approved digest. The table that holds
-  this evidence is sized from the catalog snapshot, records only tools the
-  catalog could serve, and when full evicts an entry that agrees with its
+  changed tool and the changed tool kept its older evidence), and so does a
+  page over the 8 MiB payload cap (decision D14; the fourth review's oversized
+  page was denied before the marking step). So a decoy in any position cannot
+  keep a changed tool's older evidence alive: its calls are denied until a
+  clean page shows the approved digest. The table that holds this evidence is
+  sized from the catalog snapshot, records only tools the catalog could serve,
+  survives a pause of the server (it is pruned only against a non-empty
+  snapshot, decision D14), and when full evicts an entry that agrees with its
   approval, never a contradiction; when no agreeing entry is left the new
   evidence is dropped and counted (`Stats.EvidenceDropped`), and a servable
   tool with no listing evidence is then denied until a listing records it.
@@ -392,20 +429,28 @@ until a later version says otherwise.
   definition), the explicit reset decision `toolwarrant budget reset SERVER
   TOOL [--by NAME]` (`Store.ResetProposalBudget` in `internal/catalog`) is the
   way out: a human decision with one audit entry. A hostile upstream can keep
-  its own tool hidden this way. It cannot grow the database without bound
-  either, but the bound is a cap, not the budget: besides the per-crawl caps,
-  the catalog holds a fixed cap on tool rows per server
-  (`catalog.MaxToolsPerServer`, 50000, five full crawls of fresh names) and on
-  stored canonical bytes per server (`catalog.MaxServerBytes`, 1 GiB,
-  thirty-two crawls at the per-crawl cap), and a crawl that would exceed
-  either is recorded as failed under its own class (`server-tools-cap`,
-  `server-bytes-cap`) and adds no rows (decision D13; the third review listed
-  1500 fresh names on every crawl, grew the file by 18 MB in six crawls and
-  made every later crawl slower, while this item said the upstream could not
-  grow the database). Deprecated rows are not loaded on every crawl (except
-  one that still carries the unusable marker, which the first crawl that does
-  not list it clears), so crawl cost follows the live set. There is no prune in v0.1: the recovery from a
-  server that hit a cap is `server pause`, then a fresh `init` and a re-crawl
+  its own tool hidden this way. What bounds the database is a set of caps, not
+  the budget: besides the per-crawl caps, the catalog holds a fixed cap on tool
+  rows per server (`catalog.MaxToolsPerServer`, 50000, five full crawls of
+  fresh names) and on stored canonical bytes per server
+  (`catalog.MaxServerBytes`, 1 GiB, thirty-two crawls at the per-crawl cap),
+  and a crawl that would exceed either is recorded as failed under its own
+  class (`server-tools-cap`, `server-bytes-cap`) and adds no rows (decision
+  D13; the third review listed 1500 fresh names on every crawl, grew the file
+  by 18 MB in six crawls and made every later crawl slower, while this item
+  said the upstream could not grow the database). The caps bound rows and
+  bytes; the audit log grows with observed changes (one entry per rejected
+  name, per drift, per revert), bounded by the crawl cadence and by a
+  per-crawl cap on rejected entries (`catalog.MaxRejectedPerCrawl`) past which
+  the crawl is recorded as failed under its own class and adds no entries
+  (decision D14; the fourth review listed fresh unusable names on every crawl,
+  which created no row and tripped no cap but added about 2.6 MB of log per
+  crawl at the per-crawl cap). Deprecated rows are not loaded on every crawl
+  (except one that still carries the unusable marker, which the first crawl
+  that does not list it clears), so crawl cost follows the live set. There is
+  no prune in v0.1: the recovery from a server that hit a cap is `server
+  pause`, stopping every processor of the file, then a fresh `init`, a
+  re-crawl and a restart of the processors
   ([docs/operations.md](docs/operations.md)).
 - L7. agentgateway is pinned to v1.6.0. The project ships breaking changes about
   every five weeks, its config schema is unversioned and the ExtMCP protocol is
@@ -471,10 +516,12 @@ until a later version says otherwise.
   cannot judge a message the gateway never shows it. The control is the
   canary's probe: every `verify-gateway` check sends such a call for a name no
   catalog can hold and reports UNHOOKED-CALLS, exit 1, when the gateway answers
-  202 instead of rejecting it; HTTP 400 is the healthy answer, and any other
-  2xx answer with a body is PROBE-INCONCLUSIVE, exit 1, because a JSON-RPC
+  202 instead of rejecting it; HTTP 400 is the healthy answer when its body is
+  not a JSON-RPC error, and a 400 with a JSON-RPC error body, like any other
+  2xx answer with a body, is PROBE-INCONCLUSIVE, exit 1, because a JSON-RPC
   error in such an answer may have come from the upstream through a forwarding
-  gateway rather than from the gateway's own refusal (decision D13). On the
+  gateway rather than from the gateway's own refusal (decisions D13 and D14).
+  On the
   pinned gateway the probe therefore fails every check: run it once, record the
   limit, pass `--no-probe` until the pin moves, and re-run the probe on every
   move of the pin (the probe reaches the upstream when the gateway is
@@ -494,13 +541,26 @@ until a later version says otherwise.
   where they are (`emit --admin-addr`, `--stats-addr`, `--readiness-addr`),
   and the admin API can be turned off (`emit --disable-admin`, the gateway's
   own `adminAddr: off`) at the price of the live-configuration comparison;
-  `verify-gateway --admin` (with `--config`) compares the whole live
-  configuration with the emitted file: every emitted gateway and route must be
-  present exactly once with the same fields and match path, nothing the file
-  does not carry may exist, no path may appear twice, and the `--url` path
-  must be the emitted route's match (LIVE-CONFIG-MISMATCH; decision D13, after
-  the third review added a route that owned the path and a second gateway and
-  the comparison of the named route alone called both healthy); rotate the
+  `verify-gateway --admin` (with `--config`) compares the live configuration
+  (`GET /api/config`) with the emitted file: every top-level section other
+  than `config`, `gateways` and `routes` is a mismatch on its own (the pinned
+  gateway loads fourteen sections, and a `binds` listener or a top-level `mcp`
+  shortcut carries routes with no processor); the admin, stats and readiness
+  addresses must be the emitted ones; every emitted gateway and route must be
+  present exactly once with the same fields, including each processor's
+  `requestHeaders` filter and a hash of its metadata (never printed), and
+  match path; nothing the file does not carry may exist; no path may appear
+  twice; and the `--url` path must be the emitted route's match
+  (LIVE-CONFIG-MISMATCH; decision D13, after the third review added a route
+  that owned the path and a second gateway and the comparison of the named
+  route alone called both healthy; decision D14, after the fourth review's
+  `binds` and `mcp` sections and a stripped header filter compared healthy
+  against the two decoded sections; e2e scenario P then posted each section
+  through the admin API of the running gateway, which accepted it, rendered
+  it in `GET /api/config` and served every tool of the upstream through the
+  new listener, unapproved `wipe_database` included, with `tools/call`
+  allowed, and the comparison reported `section binds: not in the emitted
+  file; it may bind ports and routes the comparison cannot see`); rotate the
   secret whenever another user could have reached loopback while the admin
   API was on.
 - L19. The configuration file's header hash is an unkeyed SHA-256 of the body.
@@ -513,7 +573,20 @@ until a later version says otherwise.
   `audit verify --expect-head` guards the log (decision D13). The canary's
   listing in a fresh session (LEAK) and its live-configuration comparison
   (LIVE-CONFIG-MISMATCH with `--admin`) remain the controls behind it; one
-  owner for the file remains an operator duty.
+  owner for the file remains an operator duty. The remedy after a
+  CONFIG-EDITED is to run `emit` again, and since the fifth round that is
+  safe: processor addresses come from the catalog, never from the file at
+  `--out`, and `--out` and `--config` must be regular files (a symbolic link,
+  directory, device, socket or named pipe is refused before it is opened;
+  decision D14;
+  before, a re-emit kept the addresses of a re-sealed or symlinked file, so
+  the remedy wrote an attacker's address back with no change line). The
+  catalog file has the same kind of boundary: whoever can write the 0600
+  database can append a new, correctly sealed audit entry that approves a
+  definition, and nothing inside the file can refute it; the audit head you
+  recorded, the git export of approved definitions and your backups are the
+  controls, and the chain anchor on the serving path makes such a forger
+  re-chain the log suffix those anchors catch (decision D14).
 
 The residual-risk table in [docs/threat-model.md](docs/threat-model.md) says what
 an operator can do about each of these.
@@ -535,7 +608,7 @@ checksum of the linux gateway binary; it has not run yet because the repository
 has not been pushed. The security policy, including how to report a problem once
 the repository is public and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D13 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D14 are in
 [docs/decisions.md](docs/decisions.md).
 
 ## Licence

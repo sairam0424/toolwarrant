@@ -485,3 +485,135 @@ What the round changed in the statements of this file:
   what is callable; CLAUDE.md names schema v4; the CI trigger is stated as
   every pull request and every push to main; .golangci.yml names golangci-lint
   v2.14.0).
+
+### Corrections after the fourth review (2026-10-12)
+
+The fourth hostile review ran against a96672e, the tree the note of 00:37 IST
+above describes; its fixes are the fifth round, recorded as decision D14 in
+docs/decisions.md. Every statement above was true of the tree it names. What
+the round changed in the statements of this file:
+
+- "Still open at 20e32b4" as corrected twice above, was: the serving path
+  "requires the newest decision about the tool ... carry hash_seen equal to
+  its digest (D13 a)". Is: it also requires the newest version.approved or
+  version.rolled_back audit entry about the tool to carry after_hash equal to
+  the approved digest and to re-seal from its predecessor, and a Store pins
+  the newest audit entry it has verified and refuses a file in which that
+  entry or the suffix since it changed (D14 a and b). The fourth review
+  dropped and re-created approvals_no_update together with
+  tool_versions_immutable, rewrote a definition and its hash_seen
+  consistently, and Snapshot, Approved and Versions served it while only
+  Store.Integrity saw it: the approvals table was the only evidence, and it
+  is as rewritable as the versions table.
+- Same bullet, was: "Store.Integrity ... compares every mutable column the
+  log describes". Is: it also compares every subject the log describes with
+  the rows that exist (a deleted tools row, a tool the log never discovered,
+  a second tool.discovered for one subject, orphaned tool_versions rows),
+  each version's proposers with its version.proposed entries and each
+  version's status with the status the log implies; a UNIQUE index the schema
+  did not create is a foreign object; guard triggers refuse DELETE on tools,
+  tool_versions, tool_version_proposers and approvals; and the schema version
+  is 5 (D14 c and k). The fourth review laundered the proposer rule with one
+  DELETE of the tools row and flipped a rejected version back to pending, each
+  with Integrity clean.
+- The trust boundary that every bullet above left implicit is now stated once
+  (D14, README limit L19, threat-model row 21): the controls inside the
+  catalog file detect rewrites of history; whoever can write the 0600 file can
+  append a new, correctly sealed audit entry that approves a definition, and
+  nothing inside the file can refute it; the recorded audit head, the git
+  export of approved definitions and backups are the anchors that do.
+- "Processor addresses are stable across re-emits (an existing emitted file
+  is read first ...)" in the corrections after the third review. Is: the
+  addresses live in the catalog (servers.processor_addr, written by emit and
+  by --processor with the audit entry server.processor_set, shown by server
+  list) and emit never reads addresses from the file at --out; --out and the
+  canary's --config must be regular files (D14 i). The fourth review re-sealed
+  a file with a forged processor address (the unkeyed header hash, L19) and
+  planted a symbolic link at --out, and the documented CONFIG-EDITED remedy,
+  running emit again, wrote the forged address back with no change line and
+  an OK canary; a FIFO at --config blocked the canary in open() with no
+  verdict and no exit.
+- "The comparison covers the whole document" in the same corrections. Is: the
+  live document is decoded as a map of top-level sections and every section
+  other than config, gateways and routes is a LIVE-CONFIG-MISMATCH of its own;
+  the listener addresses, each processor's requestHeaders filter and a hash of
+  its metadata are compared as well (D14 i). The fourth review loaded the
+  emitted file plus a binds listener and plus a top-level mcp section in
+  --validate-only, and the comparison, which decoded two sections, called both
+  a match; a stripped header filter compared healthy too. The end-to-end
+  scenario P now posts each of the three through the admin API of the running
+  gateway (demo/last-run.log of 2026-10-12): the gateway accepted the binds
+  section and the mcp shortcut with status 200, rendered each in GET
+  /api/config, and through each new listener a fresh session listed every
+  tool of the upstream, unapproved wipe_database included, with tools/call
+  echo allowed; the comparison printed "section binds: not in the emitted
+  file; it may bind ports and routes the comparison cannot see" (and the mcp
+  twin) and, for the stripped filter, "processor requestHeaders allowed:
+  emitted :method, live (none)" with its disallowed twin, exit 1 each time.
+- The probe rule of D13 h, "HTTP 400 healthy". Is: a 400 is healthy only when
+  its body is not a JSON-RPC error; a JSON-RPC error on a 400 is
+  PROBE-INCONCLUSIVE, since a forwarding gateway relays the upstream's
+  refusal, status included; and the error for every other answer names the
+  status and whether a body was present (D14 i). Not reachable on v1.6.0,
+  which answers 202.
+- "The processor reloads only when the catalog generation moves, so decisions
+  take effect without a restart" (operations guide, README). Is: while the
+  file is the same file. init writes a random catalog identity, a Store
+  records it with the file's device and inode, and Generation refuses a
+  replaced or removed file, which the processor turns into a source-error
+  denial and an Error log line; every recovery procedure that deletes the
+  file now says to stop the processors first and start them after init
+  (D14 e). The fourth review followed the growth-cap recovery of the
+  operations guide and a running processor kept serving the deleted file's
+  approvals, including a tool the new catalog did not approve, with source
+  errors at zero. The end-to-end scenario N now deletes and re-initialises
+  the catalog under two running processors: 23 and 26 ms later both denied
+  every list and call with "catalog unavailable" and logged "catalog
+  unavailable, denying", and a processor started on the new file served the
+  re-approved tool while a tool approved only in the deleted file was denied
+  as not approved.
+- README limit L6 as corrected after the third review, "per-server caps on
+  tool rows and stored bytes bound it now". Is: the caps bound rows and
+  bytes; the audit log grows with observed changes, bounded by the crawl
+  cadence and a per-crawl cap on rejected entries
+  (catalog.MaxRejectedPerCrawl) past which the crawl is recorded as failed
+  under its own class and adds no entries (D14 d). The fourth review listed
+  fresh unusable names on every crawl and grew the log by about 2.6 MB per
+  crawl at the per-crawl cap with no row added and no cap tripped.
+- The processor-level rule of D3 and D13 d, "a page the processor cannot read
+  through to the end marks every servable tool of the snapshot". Is: a page
+  over the payload cap is marked the same way before it is denied, and the
+  observed-evidence table is pruned only against a non-empty snapshot and
+  never loses a contradiction, so a pause and resume keeps every marker
+  (D14 g); mcpwire counts a page's entries with a streaming decoder and stops
+  at the per-page cap before the array is materialised, so the per-hook memory
+  is the raw page plus at most 10000 parsed entries (threat-model row 15; the
+  fourth review measured about eighteen times the payload for a 1 MiB page of
+  tiny entries under the old order).
+- The emitter's socket rule of D13 g, "a processor address on one of the
+  gateway's own sockets (a loopback, localhost or wildcard host ...) is
+  refused". Is: a host that is all digits, dotted digits or hex-looking must
+  parse with netip.ParseAddr or is refused, and the rule compares the
+  processor address with the input's own bind address and listener addresses
+  (D14 h). The fourth review passed 127.1, 0x7f.0.0.1, 2130706433 and 0,
+  which the resolver reads as loopback or the wildcard, and a processor on the
+  very address the input named for the bind.
+- Smaller corrections of the round: list and show apply the same evidence as
+  the serving path and refuse a tampered file, so the operations guide no
+  longer presents list as a check; a forensic open accepts a file whose
+  journal mode is not WAL (mode=ro with immutable=1); audit verify prints the
+  integrity report when the chain is broken as well; without --keep-going the
+  canary ends at the first check that printed a failing verdict whatever a
+  later step did; init refuses a database path whose directory is reached
+  through a symbolic link that root does not own; the three processor
+  comments that still said listed equals callable state the one-way rule of
+  D9 (D14 f, i); and textdiff is to escape a quotation mark inside a quoted
+  changed span (D14 j), the one sub-decision whose code had not landed when
+  this subsection was written. The finding that
+  unlisted deprecated tools kept a stale unusable marker was fixed in 15eba5e
+  before this round and re-verified with the reviewer's recorded seed.
+- Decisions added since: D14, in docs/decisions.md, with the trust boundary of
+  the catalog file stated once and the document corrections of the round
+  (README L1, L6, L17, L18 and L19; threat-model rows 4, 7, 10, 11, 15, 16,
+  18, 20, 21, 22, 25 and 26; the operations guide's processor, canary, audit,
+  recovery and re-emit sections; CLAUDE.md names schema v5).
