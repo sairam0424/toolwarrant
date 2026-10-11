@@ -23,7 +23,15 @@ const (
 	// recognised and swept.
 	tmpPrefix = ".tmp-"
 
+	// tmpRandomBytes is the entropy behind a temporary file name; hex-encoded
+	// it is the whole of the name after the prefix.
 	tmpRandomBytes = 8
+
+	// tmpNameLen is the exact length of a temporary file name: the prefix
+	// plus two hex digits per random byte. The sweep matches that exact
+	// shape, not the prefix alone, so a ".tmp-notes" somebody else keeps in
+	// the directory is never mistaken for a leftover of this package.
+	tmpNameLen = len(tmpPrefix) + 2*tmpRandomBytes
 )
 
 // openExportRoot creates dir if needed, refuses it if it is a symlink or not a
@@ -118,6 +126,22 @@ func randomSuffix() (string, error) {
 		return "", fmt.Errorf("export: random name: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// isTempName reports whether name is exactly what writeAtomic produces: the
+// prefix followed by 2*tmpRandomBytes lower-case hex digits and nothing else.
+// Anything looser would let the sweep delete a file this package never
+// created, which the package promises not to do.
+func isTempName(name string) bool {
+	if len(name) != tmpNameLen || !strings.HasPrefix(name, tmpPrefix) {
+		return false
+	}
+	for i := len(tmpPrefix); i < len(name); i++ {
+		if c := name[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // writeAtomic replaces rel with data so that a reader sees either the old file
@@ -225,9 +249,10 @@ func removeIfEmpty(root *os.Root, name string) error {
 }
 
 // listTemp returns the leftover temporary files directly inside dir, as
-// slash-separated paths. Only regular files with the temp prefix count: a
-// directory or symlink wearing the name is left alone. A missing dir, or one
-// that is not a real directory, has no temp files.
+// slash-separated paths. Only regular files whose name is exactly the shape
+// writeAtomic produces count: a directory or symlink wearing such a name, and
+// any other file that merely starts with the prefix, are left alone. A missing
+// dir, or one that is not a real directory, has no temp files.
 func listTemp(root *os.Root, dir string) ([]string, error) {
 	fi, err := root.Lstat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -253,7 +278,7 @@ func listTemp(root *os.Root, dir string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), tmpPrefix) && e.Type().IsRegular() {
+		if isTempName(e.Name()) && e.Type().IsRegular() {
 			out = append(out, path.Join(dir, e.Name()))
 		}
 	}

@@ -4,9 +4,12 @@
 // The export is write-only: nothing in toolwarrant reads it back to make a
 // decision. That is deliberate. The catalog is the source of truth; this is a
 // human-facing mirror, so its failure modes are kept narrow. Every name that
-// reaches the file system is hostile input (it came from an upstream server),
-// nothing is deleted except files MANIFEST.json says this package created,
-// and symlinks are never followed.
+// reaches the file system is hostile input (it came from an upstream server);
+// nothing is deleted except files MANIFEST.json says this package created and
+// this package's own leftover temporary files (".tmp-" followed by exactly
+// sixteen lower-case hex digits, looked for only in the export root and the
+// server directories the manifest or the plan names); and symlinks are never
+// followed.
 //
 // MANIFEST.json is written twice by a Write that changes anything: first
 // marked pending, listing every file that may exist while the work is in

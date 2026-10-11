@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -21,12 +22,30 @@ const (
 	maxApproverBytes = 256
 )
 
-// ReasonCaseCollision is the Skipped reason for tools of one server whose
-// encoded file names differ only in ASCII letter case. On a case-insensitive
-// file system the two would be one file, and there is no fair way to pick a
-// winner, so neither is written. It is a constant so callers and tests can
-// match on it without parsing prose.
-const ReasonCaseCollision = "tool file name differs from another tool of the same server only in letter case, which a case-insensitive file system cannot tell apart"
+// Reasons reported in Skipped. They are constants so callers and tests can
+// match on them without parsing prose. Both describe something the upstream
+// chose: the operator cannot fix either without disabling the tool, so neither
+// is allowed to stop the export of every other approval.
+const (
+	// ReasonCaseCollision marks tools of one server whose encoded file names
+	// differ only in ASCII letter case. On a case-insensitive file system the
+	// two would be one file, and there is no fair way to pick a winner, so
+	// neither is written.
+	ReasonCaseCollision = "tool file name differs from another tool of the same server only in letter case, which a case-insensitive file system cannot tell apart"
+
+	// ReasonNameTooLong marks a tool whose name exceeds maxEncodedNameBytes
+	// once percent-encoded. The shared name rule accepts 256 raw bytes and
+	// every byte outside [A-Za-z0-9_-] grows to three, so a name the catalog
+	// approved can be too long for a file name. The number is the cap; a test
+	// keeps the two in step.
+	ReasonNameTooLong = "tool file name exceeds 200 bytes once percent-encoded, the longest this export writes"
+)
+
+// errToolNameTooLong is planTool's report of a tool name (never a server name)
+// that exceeds maxEncodedNameBytes once encoded. It wraps errNameTooLong but
+// is a distinct value because the two cases end differently: a server name is
+// operator input and refused, a tool name is upstream input and skipped.
+var errToolNameTooLong = fmt.Errorf("export: tool name: %w", errNameTooLong)
 
 // Skipped records an approved tool that Write left out of the export, with the
 // reason. Server and Name are the raw names and therefore hostile input: a
@@ -90,17 +109,23 @@ func validateContent(t Tool) error {
 	return nil
 }
 
-// planTool validates one tool and derives its paths and file content.
+// planTool validates one tool and derives its paths and file content. Every
+// refusal is the caller's fault and fatal for the batch, except the one
+// reported as errToolNameTooLong, which planAll turns into a skip. The content
+// is checked before the tool name so that a skip can never hide a bad digest.
 func planTool(t Tool) (plannedTool, error) {
 	encServer, err := encodeName("server", t.Server)
 	if err != nil {
 		return plannedTool{}, err
 	}
-	encTool, err := encodeName("tool", t.Name)
-	if err != nil {
+	if err := validateContent(t); err != nil {
 		return plannedTool{}, err
 	}
-	if err := validateContent(t); err != nil {
+	encTool, err := encodeName("tool", t.Name)
+	if errors.Is(err, errNameTooLong) {
+		return plannedTool{}, errToolNameTooLong
+	}
+	if err != nil {
 		return plannedTool{}, err
 	}
 	data := make([]byte, 0, len(t.Canonical)+1)
@@ -112,24 +137,29 @@ func planTool(t Tool) (plannedTool, error) {
 // planAll validates every tool before any byte is written, so a bad batch
 // leaves the directory exactly as it was. Bad input, an exact duplicate and
 // two server directories that collide on a case-insensitive file system are
-// errors: the caller controls those. Tools of one server whose file names
-// collide only in letter case come from the upstream, so they are not an
-// error: the colliding group is left out and reported in Skipped, and the
-// export of every other tool goes ahead.
+// errors: the caller controls those. What the upstream controls is not an
+// error: a tool whose name is too long once encoded, and tools of one server
+// whose file names collide only in letter case, are left out and reported in
+// Skipped, and the export of every other tool goes ahead.
 func planAll(tools []Tool) ([]plannedTool, []Skipped, error) {
 	all := make([]plannedTool, 0, len(tools))
+	var skipped []Skipped
 	seen := make(map[[2]string]struct{}, len(tools))
 	dirs := make(map[string]string)
 	for i, t := range tools {
-		p, err := planTool(t)
-		if err != nil {
-			return nil, nil, fmt.Errorf("tool %d: %w", i, err)
-		}
 		id := [2]string{t.Server, t.Name}
 		if _, dup := seen[id]; dup {
 			return nil, nil, fmt.Errorf("export: tool %d: duplicate of an earlier tool", i)
 		}
 		seen[id] = struct{}{}
+		p, err := planTool(t)
+		if errors.Is(err, errToolNameTooLong) {
+			skipped = append(skipped, Skipped{Server: t.Server, Name: t.Name, Reason: ReasonNameTooLong})
+			continue
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("tool %d: %w", i, err)
+		}
 		dirKey := lowerASCII(p.dirName)
 		if prev, ok := dirs[dirKey]; ok && prev != p.dirName {
 			return nil, nil, fmt.Errorf("export: tool %d: server directory collides with another server on a case-insensitive file system", i)
@@ -137,8 +167,8 @@ func planAll(tools []Tool) ([]plannedTool, []Skipped, error) {
 		dirs[dirKey] = p.dirName
 		all = append(all, p)
 	}
-	planned, skipped := splitCaseCollisions(all)
-	return planned, skipped, nil
+	planned, collided := splitCaseCollisions(all)
+	return planned, sortSkipped(append(skipped, collided...)), nil
 }
 
 // splitCaseCollisions separates the tools whose file names are equal once
@@ -159,13 +189,25 @@ func splitCaseCollisions(all []plannedTool) ([]plannedTool, []Skipped) {
 		}
 		kept = append(kept, p)
 	}
-	sort.Slice(skipped, func(i, j int) bool {
-		if skipped[i].Server != skipped[j].Server {
-			return skipped[i].Server < skipped[j].Server
-		}
-		return skipped[i].Name < skipped[j].Name
-	})
 	return kept, skipped
+}
+
+// sortSkipped orders the skipped tools by server then name, so the report
+// does not depend on the order the caller passed the tools in. It returns a
+// new slice, nil when there is nothing to report.
+func sortSkipped(in []Skipped) []Skipped {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Skipped, len(in))
+	copy(out, in)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // sortPlanned orders tools by their encoded path, so the write order and the

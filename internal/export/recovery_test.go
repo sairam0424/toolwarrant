@@ -98,30 +98,35 @@ func TestWrite_PendingManifestWithNothingLeftToDoIsCompleted(t *testing.T) {
 // A temp file left by a crash between OpenFile and Rename used to stay forever
 // and be committed with the snapshots. Every Write now sweeps the temp files
 // of the directories it touches, including the top level and the directories
-// of files it removes.
+// of files it removes. Only the exact name shape writeAtomic produces is
+// swept, and only when it is a regular file: a directory or a symlink wearing
+// it is left alone (sweep_test.go covers names that merely start with the
+// prefix).
 func TestWrite_SweepsLeftoverTemporaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	one := mkTool(t, "s", "one", "v1")
 	mustWrite(t, dir, one, mkTool(t, "b", "y", "1"))
-	writeFile(t, filepath.Join(dir, "s", tmpPrefix+"deadbeefdeadbeef"), "partial")
-	writeFile(t, filepath.Join(dir, tmpPrefix+"cafe"), "partial")
-	writeFile(t, filepath.Join(dir, "b", tmpPrefix+"feed"), "partial")
-	if err := os.Mkdir(filepath.Join(dir, "s", tmpPrefix+"dir"), 0o755); err != nil {
+	const inS, inRoot, inB = "deadbeefdeadbeef", "cafecafecafecafe", "feedfeedfeedfeed"
+	const asDir, asLink = "0123456789abcdef", "fedcba9876543210"
+	writeFile(t, filepath.Join(dir, "s", tmpPrefix+inS), "partial")
+	writeFile(t, filepath.Join(dir, tmpPrefix+inRoot), "partial")
+	writeFile(t, filepath.Join(dir, "b", tmpPrefix+inB), "partial")
+	if err := os.Mkdir(filepath.Join(dir, "s", tmpPrefix+asDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(dir, "s", "one.json"), filepath.Join(dir, "s", tmpPrefix+"link")); err != nil {
+	if err := os.Symlink(filepath.Join(dir, "s", "one.json"), filepath.Join(dir, "s", tmpPrefix+asLink)); err != nil {
 		t.Fatal(err)
 	}
 
 	rep := mustWrite(t, dir, one) // b/y.json is stale now
 	wantReport(t, rep, 0, 1, 1)
 	snap := snapshot(t, dir)
-	for _, gone := range []string{"s/" + tmpPrefix + "deadbeefdeadbeef", tmpPrefix + "cafe", "b/" + tmpPrefix + "feed", "b/y.json", "b"} {
+	for _, gone := range []string{"s/" + tmpPrefix + inS, tmpPrefix + inRoot, "b/" + tmpPrefix + inB, "b/y.json", "b"} {
 		if _, ok := snap[gone]; ok {
 			t.Errorf("%s must be swept", gone)
 		}
 	}
-	for _, kept := range []string{"s/" + tmpPrefix + "dir", "s/" + tmpPrefix + "link", "s/one.json"} {
+	for _, kept := range []string{"s/" + tmpPrefix + asDir, "s/" + tmpPrefix + asLink, "s/one.json"} {
 		if _, ok := snap[kept]; !ok {
 			t.Errorf("%s must be left alone", kept)
 		}
