@@ -128,8 +128,11 @@ func TestCheckResponse_DeniedPageLeavesToolsItDoesNotListAlone(t *testing.T) {
 // D13: a page the processor cannot read to the end is evidence about nothing,
 // because it cannot know which tools were behind the unreadable entry. Every
 // servable tool of the snapshot gets the conflict marker, whether or not the
-// readable part of the page named it; tools that can never be served are not
-// recorded at all, since judgeCall never consults their evidence.
+// readable part of the page named it. Since D15 so does every other catalog
+// tool of the snapshot: a disabled or pending tool is denied regardless today,
+// and the marker is what keeps it denied after an enable or an approval until
+// a clean listing shows the approved bytes, instead of the agreeing digest an
+// older listing left (the clean page here records all four).
 func TestCheckResponse_UnreadablePageMarksEveryServableToolOfTheSnapshot(t *testing.T) {
 	echo1, add1 := tool("echo", "e1"), tool("add", "a1")
 	pend, off := tool("pend", "pending"), tool("off", "disabled")
@@ -162,13 +165,13 @@ func TestCheckResponse_UnreadablePageMarksEveryServableToolOfTheSnapshot(t *test
 				requireCallDenied(t, call(t, s, callReq(servable)), servable, causeChanged)
 			}
 			for _, never := range []string{"pend", "off"} {
-				if _, ok := s.observedDigest(never); ok {
-					t.Errorf("evidence was recorded for %s, which can never be served", never)
+				if seen, ok := s.observedDigest(never); !ok || seen != observedConflict {
+					t.Errorf("evidence for %s = %q, %v; want the conflict marker on every catalog tool (D15)", never, seen, ok)
 				}
 				requireCallDenied(t, call(t, s, callReq(never)), never, causeNotApproved)
 			}
-			if n := s.trackedCount(); n != 2 {
-				t.Errorf("tracked %d names, want the two servable tools", n)
+			if n := s.trackedCount(); n != 4 {
+				t.Errorf("tracked %d names, want the four catalog tools", n)
 			}
 		})
 	}

@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
 )
@@ -18,8 +21,19 @@ import (
 const (
 	// maxRecvMsgSize lets a large tools/list page through; gRPC's 4 MiB default
 	// would turn a big catalog page into a transport error. It equals the
-	// payload cap, so a page the hook would refuse is refused by the transport.
+	// payload cap, so a page the hook would refuse is refused by the transport:
+	// the serialised hook message is the payload plus the method and the
+	// service names, so a payload within a few dozen bytes of the cap, or over
+	// it, never reaches CheckResponse. gRPC answers ResourceExhausted from the
+	// length prefix, before the body is read, and the processor learns of the
+	// refusal through the wrapped decoder of serviceDesc (pageRefused), which
+	// marks every catalog tool of the snapshot as if CheckResponse had seen the
+	// page (D15).
 	maxRecvMsgSize = maxPayloadBytes
+
+	// checkResponseMethod is the short name of the CheckResponse method in the
+	// generated ServiceDesc, whose decoder serviceDesc wraps.
+	checkResponseMethod = "CheckResponse"
 
 	// keepaliveMinPing is the shortest ping interval the server tolerates from
 	// the gateway. gRPC-Go's default (5 minutes) answers a gateway that pings
@@ -32,9 +46,17 @@ const (
 	shutdownGrace = 5 * time.Second
 )
 
-// errRemoteListener means Serve was given a TCP listener that is reachable
-// from other hosts while Config.AllowRemoteListener is off.
-var errRemoteListener = errors.New("processor: refusing a listener that is not loopback; set AllowRemoteListener to serve on it anyway")
+var (
+	// errRemoteListener means Serve was given a TCP listener that is reachable
+	// from other hosts while Config.AllowRemoteListener is off.
+	errRemoteListener = errors.New("processor: refusing a listener that is not loopback; set AllowRemoteListener to serve on it anyway")
+
+	// errServiceDesc means the generated ServiceDesc no longer carries the
+	// CheckResponse method under the expected name, so the size refusals of the
+	// transport could not be observed. Serve refuses to run rather than serve
+	// without the marking (fail closed).
+	errServiceDesc = errors.New("processor: generated service has no CheckResponse method to wrap")
+)
 
 // Serve runs the ExtMCP gRPC service on lis until ctx is cancelled, then stops
 // gracefully (finishing in-flight hooks for a few seconds, then closing what
@@ -45,6 +67,19 @@ var errRemoteListener = errors.New("processor: refusing a listener that is not l
 // listener that only the gateway can reach. A TCP listener on any other
 // address is refused unless Config.AllowRemoteListener is set, and then only
 // Config.Secret stands between the port and the gateway's tool list.
+//
+// A tools/list page over the payload cap never reaches CheckResponse: gRPC
+// refuses the message with ResourceExhausted from its length prefix, the
+// gateway sees a failed hook and fails the listing closed. The processor
+// observes that refusal on the CheckResponse decoder (serviceDesc) and, before
+// the status is written, marks every catalog tool of the snapshot as
+// conflicting exactly as CheckResponse does for an oversized page it reads
+// itself, so the evidence older listings left cannot outlive a page the
+// processor could not read (D15). The refused message's secret and service
+// names are inside the bytes that were never read, so the marking cannot be
+// gated by them: whoever can reach the listener can mark (deny) tools until
+// the next clean listing, never pass one, which is one more reason the
+// listener is loopback.
 func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
 	if lis == nil {
 		return errors.New("processor: nil listener")
@@ -52,12 +87,16 @@ func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
 	if err := s.checkListener(lis.Addr()); err != nil {
 		return err
 	}
+	desc, err := s.serviceDesc()
+	if err != nil {
+		return err
+	}
 	gs := grpc.NewServer(
 		grpc.MaxRecvMsgSize(maxRecvMsgSize),
 		grpc.MaxConcurrentStreams(maxConcurrentHooks),
 		grpc.KeepaliveEnforcementPolicy(enforcementPolicy()),
 	)
-	api.RegisterExtMcpServer(gs, s)
+	gs.RegisterService(desc, s)
 
 	done := make(chan error, 1)
 	go func() { done <- gs.Serve(lis) }()
@@ -69,6 +108,44 @@ func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
 	case <-ctx.Done():
 		stopWithin(gs, shutdownGrace)
 		return serveResult(ctx, <-done)
+	}
+}
+
+// serviceDesc is a copy of the generated ServiceDesc whose CheckResponse
+// method decodes the request through watchRefusal, so a message the transport
+// refuses for size is reported to pageRefused before the handler returns the
+// error and gRPC writes the status. gRPC's own hooks are too late or too
+// early for this: a unary interceptor runs after the request was decoded, so
+// it never sees a refused one, and a stats handler sees the RPC end only after
+// the status was written, which would leave a window in which a tools/call
+// passes on the older evidence. The generated variable is never modified; the
+// methods slice is cloned before the one entry is replaced.
+func (s *Server) serviceDesc() (*grpc.ServiceDesc, error) {
+	desc := api.ExtMcp_ServiceDesc
+	desc.Methods = slices.Clone(desc.Methods)
+	i := slices.IndexFunc(desc.Methods, func(m grpc.MethodDesc) bool { return m.MethodName == checkResponseMethod })
+	if i < 0 {
+		return nil, errServiceDesc
+	}
+	inner := desc.Methods[i].Handler
+	desc.Methods[i].Handler = func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+		return inner(srv, ctx, s.watchRefusal(ctx, dec), interceptor)
+	}
+	return &desc, nil
+}
+
+// watchRefusal wraps the request decoder of one CheckResponse call: a decode
+// that fails with ResourceExhausted is the transport refusing the message for
+// size (the handler itself never returns a gRPC status, and the send limit is
+// unbounded), and the page behind it is treated as one the processor could
+// not read. Any other outcome is passed through untouched.
+func (s *Server) watchRefusal(ctx context.Context, dec func(any) error) func(any) error {
+	return func(m any) error {
+		err := dec(m)
+		if err != nil && status.Code(err) == codes.ResourceExhausted {
+			s.pageRefused(ctx, err)
+		}
+		return err
 	}
 }
 

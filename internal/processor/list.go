@@ -34,9 +34,11 @@ func (s *Server) CheckResponse(ctx context.Context, resp *api.McpResponse) (*api
 	}
 	raw := resp.GetMcpResponse()
 	if len(raw) > maxPayloadBytes {
-		// Never parsed, so evidence about nothing: every servable tool of the
+		// Never parsed, so evidence about nothing: every catalog tool of the
 		// snapshot is marked before the page is denied, as for any page the
-		// processor cannot read through to the end (D14).
+		// processor cannot read through to the end (D14, D15). Over the wire
+		// the transport refuses such a message first and pageRefused does the
+		// same; this branch is the rule for a caller that hands the page in.
 		s.markPageUnread(ctx, cur)
 		return s.denyList(ctx, api.AuthorizationError_INVALID, reasonListUnverifiable, errPayloadSize), nil
 	}
@@ -52,6 +54,34 @@ func (s *Server) CheckResponse(ctx context.Context, resp *api.McpResponse) (*api
 	return mutatedResponse(page.out), nil
 }
 
+// pageRefused is the processor's side of a CheckResponse message the gRPC
+// transport refused for size (serve.go, watchRefusal). The message was never
+// read, so nothing about it is known, not even its method; under the emitted
+// configuration the gateway sends CheckResponse for tools/list only, and a
+// page the processor could not read through to the end is evidence about
+// nothing (D14), so every catalog tool of the snapshot is marked exactly as
+// CheckResponse marks for an oversized page it reads itself, and the refusal
+// is counted and logged as a denied tools/list. The gateway has already seen
+// the hook fail and fails the listing closed; the marking is what keeps the
+// evidence of older listings from outliving the page (D15). The catalog is
+// read first, as in CheckResponse: a refusal while the catalog is unreadable
+// is a source error like any other hook and marks nothing. The hook's context
+// carries the gateway's deadline, which must not cut the marking short, so
+// the catalog is read under the processor's own timeout alone. No concurrency
+// slot is taken: the marking carries no payload and must not be skipped for
+// want of one.
+func (s *Server) pageRefused(ctx context.Context, cause error) {
+	ctx = context.WithoutCancel(ctx)
+	cur, err := s.current(ctx)
+	if err != nil {
+		s.noteSourceError(ctx, methodToolsList, err)
+		s.stats.listsDenied.Add(1)
+		return
+	}
+	s.markPageUnread(ctx, cur)
+	s.noteListDenied(ctx, reasonListUnverifiable, cause)
+}
+
 // refuseList turns an admission denial into a result. For tools/list it is a
 // counted denial of the page; for any other method the hook is refused
 // without touching the list counters, because it was never about a list.
@@ -65,9 +95,15 @@ func (s *Server) refuseList(ctx context.Context, hooked bool, d *denial) *api.Mc
 
 // denyList counts and logs a refused tools/list and builds the error result.
 func (s *Server) denyList(ctx context.Context, code api.AuthorizationError_Code, reason string, err error) *api.McpResponseResult {
+	s.noteListDenied(ctx, reason, err)
+	return denyResponse(code, reason)
+}
+
+// noteListDenied counts and logs one refused tools/list, whether the hook
+// built the denial itself or the transport refused the page before it ran.
+func (s *Server) noteListDenied(ctx context.Context, reason string, err error) {
 	s.stats.listsDenied.Add(1)
 	s.log.InfoContext(ctx, "tools/list denied", "server", s.server, "reason", reason, "err", quoteErr(err))
-	return denyResponse(code, reason)
 }
 
 // countServed accounts for one served page.

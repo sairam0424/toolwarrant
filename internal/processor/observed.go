@@ -18,11 +18,12 @@ const (
 	observedConflict = "conflict"
 
 	// trackedMargin is the headroom the observed table keeps above the tool
-	// count of the snapshot it was sized for. Only servable tools of the
-	// current snapshot are ever recorded, so the table never needs more than
-	// that count; the margin absorbs a hook that judged against the previous
-	// snapshot and records a tool both snapshots carry while the newer one is
-	// being installed.
+	// count of the snapshot it was sized for. Only catalog tools of the
+	// snapshot the hooks judge against are ever recorded (and, while the
+	// snapshot is empty, names the table already tracks), so the table never
+	// needs more than that count; the margin absorbs a hook that judged against
+	// the previous snapshot and records a tool both snapshots carry while the
+	// newer one is being installed.
 	trackedMargin = 16
 
 	// evictionSample bounds how many entries observe inspects when it looks
@@ -69,6 +70,12 @@ const (
 // judgeCall denies every servable tool that has no listing evidence, because
 // the missing entry could be the contradiction that was lost.
 //
+// While the snapshot is empty (a paused server) a tracked name is updated in
+// place under the approval it was recorded with, since the empty snapshot has
+// none to compare with and the pause keeps the table (install); a name the
+// table does not track is not evidence about anything a resumed server could
+// serve and is not recorded (D15).
+//
 // The table is sized from the snapshot at every reload (install), so with the
 // default MaxTracked it is never full; the eviction and the drop exist for a
 // catalog larger than the configured bound.
@@ -76,11 +83,19 @@ func (s *Server) observe(name, digest string) observeOutcome {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
 	c := s.cache.Load()
-	if c == nil || !stillListed(c, name) {
-		return observeStored // dropped on purpose: the catalog no longer has the tool
+	if c == nil {
+		return observeStored
+	}
+	prev, tracked := s.observed[name]
+	if !stillListed(c, name) {
+		if len(c.snap.Tools) > 0 || !tracked {
+			return observeStored // dropped on purpose: the catalog no longer has the tool
+		}
+		s.observed[name] = observation{digest: digest, approved: prev.approved, seenAt: s.now()}
+		return observeStored
 	}
 	outcome := observeStored
-	if _, tracked := s.observed[name]; !tracked && len(s.observed) >= s.obsLimit {
+	if !tracked && len(s.observed) >= s.obsLimit {
 		if !s.evictAgreeing(c.snap) {
 			s.stats.evidenceDropped.Add(1)
 			return observeDropped
@@ -131,6 +146,31 @@ func stillListed(c *cachedSnapshot, name string) bool {
 	return ok
 }
 
+// tracked reports whether the table holds evidence under name. The filter
+// asks while the snapshot is empty (a paused server), when the tracked names
+// are all a page can be evidence about (D15).
+func (s *Server) tracked(name string) bool {
+	s.obsMu.Lock()
+	defer s.obsMu.Unlock()
+	_, ok := s.observed[name]
+	return ok
+}
+
+// markTracked replaces the evidence of every tracked entry with the conflict
+// marker, under the approval each was recorded with. It is what a page the
+// processor could not read to the end says while the snapshot is empty (a
+// paused server): there is no snapshot to mark, and the names the table
+// tracks are the only ones the page can be evidence against, so the agreeing
+// digests older listings left must not outlive it (D15).
+func (s *Server) markTracked() {
+	s.obsMu.Lock()
+	defer s.obsMu.Unlock()
+	now := s.now()
+	for name, o := range s.observed {
+		s.observed[name] = observation{digest: observedConflict, approved: o.approved, seenAt: now}
+	}
+}
+
 // observedDigest returns what the most recent tools/list that included the
 // named tool showed for it: a digest or observedConflict. Evidence older than
 // MaxEvidenceAge is not returned, because a digest the gateway listed long ago
@@ -159,9 +199,11 @@ func (s *Server) observedDigest(name string) (string, bool) {
 // contradiction is denied as changed until a listing records what the
 // upstream serves under the name. An empty snapshot is a paused server and
 // leaves the table alone: pause refuses crawls, so what the gateway listed
-// before the pause is the only evidence the resumed server can be judged on
-// (D14). The capacity becomes the larger of the snapshot's tool count and the
-// entries kept, plus trackedMargin, never more than MaxTracked.
+// before the pause, and what it lists during the pause about those same
+// names (observe, markTracked), is the only evidence the resumed server can
+// be judged on (D14, D15). The capacity becomes the larger of the snapshot's
+// tool count and the entries kept, plus trackedMargin, never more than
+// MaxTracked.
 func (s *Server) install(c *cachedSnapshot) {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()

@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,10 +39,15 @@ func TestServe_RecvLimitIsThePayloadCap(t *testing.T) {
 
 // A page over the cap is refused from its length header, before the body is
 // read, so this holds whatever the machine does: the gateway sees a failed hook
-// (fail closed), never a passed one, and the hook never runs. The status names
-// the exact limit, which pins that the server was built with maxRecvMsgSize.
+// (fail closed), never a passed one, and CheckResponse never runs. The status
+// names the exact limit, which pins that the server was built with
+// maxRecvMsgSize. Since D15 the refusal is still the processor's business: it
+// is counted as a denied tools/list, logged with the transport's error, and
+// every catalog tool of the snapshot is marked, so the page the processor could
+// not read leaves the same trace as one CheckResponse refused itself.
 func TestServe_RefusesAPageOverTheRecvLimit(t *testing.T) {
-	s, _ := newTestServer(newFakeSource(nil))
+	d1 := mustDigest(t, echoV1)
+	s, logs := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
 	client, _ := startServer(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
 	defer cancel()
@@ -54,8 +60,106 @@ func TestServe_RefusesAPageOverTheRecvLimit(t *testing.T) {
 	if msg := status.Convert(err).Message(); !strings.Contains(msg, strconv.Itoa(maxRecvMsgSize)) {
 		t.Errorf("the refusal should name the %d byte limit: %q", maxRecvMsgSize, msg)
 	}
-	if st := s.Stats(); st.ListsServed != 0 || st.ListsDenied != 0 {
-		t.Errorf("the hook ran on a page the transport should have refused: %+v", st)
+	if st := s.Stats(); st.ListsServed != 0 || st.ListsDenied != 1 || st.SourceErrors != 0 {
+		t.Errorf("stats = %+v, want the refused page counted as one denied list", st)
+	}
+	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+		t.Errorf("evidence for echo after the refused page = %q, %v; want the conflict marker", seen, ok)
+	}
+	if !strings.Contains(logs.String(), "tools/list denied") || !strings.Contains(logs.String(), "ResourceExhausted") {
+		t.Errorf("the refusal should be logged as a denied list with the transport's error:\n%s", logs.String())
+	}
+}
+
+// D15 (f), from the fifth review (core-2, processor-emit-1): D14 (g) marked
+// every servable tool before an oversized page was denied, but only when
+// CheckResponse was called in process. Over the wire the transport refused the
+// message first and nothing was marked, so the digest of the last clean
+// listing kept tools/call passing for a tool the upstream had since changed,
+// which is the fourth review's decoy case one layer down. The refusal is now
+// observed on the CheckResponse decoder: a payload of exactly the cap (the
+// smallest the transport refuses, since the message carries the method and
+// the service name on top of it) and a page one byte over it both mark every
+// catalog tool before the status is written, the call is denied as changed,
+// and a clean listing restores it. A tools/call request over the cap is
+// refused by the transport as well and marks nothing: the watch is on
+// CheckResponse only.
+func TestServe_OversizedPageOverTheWireMarksEveryCatalogTool(t *testing.T) {
+	echo1 := tool("echo", "e1")
+	d1 := mustDigest(t, echo1)
+	s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
+	client, _ := startServer(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
+	defer cancel()
+
+	cleanListing := func() {
+		t.Helper()
+		res, err := client.CheckResponse(ctx, listMsg(listBody("", echo1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := servedNames(t, res); !reflect.DeepEqual(got, []string{"echo"}) {
+			t.Fatalf("served %v, want [echo]", got)
+		}
+		res2, err := client.CheckRequest(ctx, callReq("echo"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireAllowed(t, res2)
+	}
+	refused := func(page []byte) {
+		t.Helper()
+		if _, err := client.CheckResponse(ctx, listMsg(page)); status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("a payload of %d bytes: err = %v, want ResourceExhausted from the transport", len(page), err)
+		}
+		if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+			t.Fatalf("evidence for echo after the refused page = %q, %v; want the conflict marker", seen, ok)
+		}
+		res, err := client.CheckRequest(ctx, callReq("echo"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireCallDenied(t, res, "echo", causeChanged)
+	}
+
+	cleanListing()
+	refused(make([]byte, maxPayloadBytes))
+	cleanListing()
+	refused(oversizedPage())
+	cleanListing()
+	if st := s.Stats(); st.ListsDenied != 2 || st.ListsServed != 3 || st.SourceErrors != 0 {
+		t.Errorf("stats = %+v, want two refused pages counted as denied lists", st)
+	}
+
+	// The same size on the request hook is the transport's business alone.
+	_, err := client.CheckRequest(ctx, rawCallReq(string(make([]byte, 9<<20))))
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("9 MiB tools/call: err = %v, want ResourceExhausted", err)
+	}
+	if seen, ok := s.observedDigest("echo"); !ok || seen != d1 {
+		t.Errorf("a refused tools/call marked echo: %q, %v", seen, ok)
+	}
+	if st := s.Stats(); st.ListsDenied != 2 {
+		t.Errorf("stats = %+v, want no list denial for a refused request", st)
+	}
+}
+
+// A refusal while the catalog is unreadable is a source error like any other
+// hook, as for an oversized page CheckResponse reads itself (D14): counted,
+// and nothing marked because there is no snapshot to mark against.
+func TestServe_RefusedPageWithAnUnreadableCatalogIsASourceError(t *testing.T) {
+	src := newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(mustDigest(t, echoV1))})
+	src.failGeneration(context.DeadlineExceeded)
+	s, _ := newTestServer(src)
+	client, _ := startServer(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), serveStopTimeout)
+	defer cancel()
+
+	if _, err := client.CheckResponse(ctx, listMsg(oversizedPage())); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("err = %v, want ResourceExhausted", err)
+	}
+	if st := s.Stats(); st.SourceErrors != 1 || st.ListsDenied != 1 || s.trackedCount() != 0 {
+		t.Errorf("stats = %+v, tracked %d; want one source error, one denied list, nothing tracked", st, s.trackedCount())
 	}
 }
 

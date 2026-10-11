@@ -11,42 +11,69 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// Third review, core-2: evidence about a tool that can never be served is
-// never consulted (judgeCall denies such a tool before it looks), so recording
-// it only let never-served names crowd a bounded table and push out the
-// evidence the call rule depends on. With MaxTracked=2 the page [p1 pending,
-// p2 pending, add changed] used to hide add as mismatched and then forget the
-// contradiction, so the following tools/call add passed on the crawl's word.
-func TestCheckResponse_EvidenceIsKeptOnlyForServableTools(t *testing.T) {
+// D15 (g), from the fifth review (core-3), reversing the third review's
+// core-2 rule: evidence used to be kept only for tools the snapshot could
+// serve, because judgeCall never consults a non-servable tool's evidence and
+// recording it let never-served names crowd a bounded table. That discarded
+// the newest word on a disabled or pending tool, so an enable or an approval
+// brought the tool back judged on an older listing. Every catalog tool a page
+// names is now recorded; the table is sized from the snapshot's whole tool
+// count, so under the default bound a non-servable tool costs a slot it
+// already has. A table smaller than the catalog still never lets a changed
+// tool pass: when non-servable names fill it, the changed tool's evidence is
+// dropped and the drop rule denies it as not yet verified.
+func TestCheckResponse_EvidenceIsKeptForEveryCatalogTool(t *testing.T) {
 	p1, p2 := tool("p1", "x"), tool("p2", "y")
 	add1 := tool("add", "a1")
 	add2 := tool("add", "a2: changed upstream")
 	off := tool("off", "disabled")
+	dAdd2 := mustDigest(t, add2)
 	tools := map[string]catalog.ToolPolicy{
 		"p1":  policy(lifecycle.PendingReview, "", mustDigest(t, p1)),
 		"p2":  policy(lifecycle.PendingReview, "", mustDigest(t, p2)),
 		"off": policy(lifecycle.Disabled, mustDigest(t, off), mustDigest(t, off)),
 		"add": servedPolicy(mustDigest(t, add1)),
 	}
-	s, _ := newTestServer(newFakeSource(tools), func(c *Config) { c.MaxTracked = 2 })
-	if got := servedNames(t, list(t, s, listBody("", p1, p2, off, add2))); len(got) != 0 {
-		t.Fatalf("served %v, want nothing: p1, p2 and off are not servable, add is changed", got)
-	}
-	if st := s.Stats(); st.ToolsMismatched != 1 || st.ToolsUnapproved != 3 || st.EvidenceDropped != 0 {
-		t.Fatalf("stats = %+v", st)
-	}
-	for _, name := range []string{"p1", "p2", "off"} {
-		if _, ok := s.observedDigest(name); ok {
-			t.Errorf("evidence was recorded for %s, which can never be served", name)
+	page := listBody("", p1, p2, off, add2)
+
+	t.Run("default bound", func(t *testing.T) {
+		s, _ := newTestServer(newFakeSource(tools))
+		if got := servedNames(t, list(t, s, page)); len(got) != 0 {
+			t.Fatalf("served %v, want nothing: p1, p2 and off are not servable, add is changed", got)
 		}
-	}
-	if seen, ok := s.observedDigest("add"); !ok || seen != mustDigest(t, add2) {
-		t.Fatalf("evidence for add = %q, %v; want the changed digest", seen, ok)
-	}
-	if n := s.trackedCount(); n != 1 {
-		t.Errorf("tracked %d names, want 1", n)
-	}
-	requireCallDenied(t, call(t, s, callReq("add")), "add", causeChanged)
+		if st := s.Stats(); st.ToolsMismatched != 1 || st.ToolsUnapproved != 3 || st.EvidenceDropped != 0 {
+			t.Fatalf("stats = %+v", st)
+		}
+		for name, raw := range map[string][]byte{"p1": p1, "p2": p2, "off": off, "add": add2} {
+			if seen, ok := s.observedDigest(name); !ok || seen != mustDigest(t, raw) {
+				t.Errorf("evidence for %s = %q, %v; want the digest the page showed", name, seen, ok)
+			}
+		}
+		if n := s.trackedCount(); n != 4 {
+			t.Errorf("tracked %d names, want the four catalog tools", n)
+		}
+		requireCallDenied(t, call(t, s, callReq("add")), "add", causeChanged)
+	})
+
+	t.Run("a table smaller than the catalog fails closed", func(t *testing.T) {
+		s, _ := newTestServer(newFakeSource(tools), func(c *Config) { c.MaxTracked = 2 })
+		if got := servedNames(t, list(t, s, page)); len(got) != 0 {
+			t.Fatalf("served %v", got)
+		}
+		if n := s.trackedCount(); n != 2 {
+			t.Errorf("tracked %d names, want the bound of 2", n)
+		}
+		if st := s.Stats(); st.EvidenceDropped == 0 {
+			t.Fatalf("stats = %+v: the two slots hold contradictions, so the rest must have been dropped", st)
+		}
+		if seen, ok := s.observedDigest("add"); ok && seen != dAdd2 {
+			t.Fatalf("evidence for add = %q; if kept it must be the changed digest", seen)
+		}
+		res := call(t, s, callReq("add"))
+		if res.GetPass() != nil {
+			t.Fatal("tools/call add passed although the page showed a changed definition")
+		}
+	})
 }
 
 // Third review, processor-emit-3 and core-2: at the MaxTracked ceiling a new

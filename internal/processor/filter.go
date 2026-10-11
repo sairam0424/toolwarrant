@@ -42,14 +42,24 @@ type filtered struct {
 // duplicate is known before any evidence is recorded, and a page that is
 // denied for any reason leaves the conflict marker behind (markConflicts): on
 // every catalog tool it listed when the page could be read to the end, and on
-// every servable tool of the snapshot when it could not (an entry without a
+// every catalog tool of the snapshot when it could not (an entry without a
 // string name, no tools array, more entries than the cap, or a page over the
 // payload cap that was never parsed), so a decoy in any position cannot keep
 // older evidence alive for a changed tool.
+//
+// Evidence is kept for every catalog tool a page names, servable or not (D15):
+// a tool that is disabled or awaiting review today may be served tomorrow, and
+// what the gateway listed for it in the meantime is the newest word on what
+// the upstream binds the name to. While the snapshot is empty (a paused
+// server) there are no catalog tools to compare with, so the page is judged
+// against the names the observed table already tracks from the listings before
+// the pause: a readable page records what it shows for them and an unreadable
+// page marks every one of them.
 type listFilter struct {
 	ctx        context.Context
 	srv        *Server
 	cur        *cachedSnapshot
+	paused     bool           // the snapshot is empty: the page is judged against the tracked names
 	count      int            // tools seen so far in the current pass
 	seen       map[string]int // name -> occurrences, pass one
 	dupes      []string       // names that occur more than once, in first-seen order
@@ -62,7 +72,7 @@ type listFilter struct {
 }
 
 func newListFilter(ctx context.Context, srv *Server, cur *cachedSnapshot) *listFilter {
-	return &listFilter{ctx: ctx, srv: srv, cur: cur, seen: make(map[string]int)}
+	return &listFilter{ctx: ctx, srv: srv, cur: cur, paused: len(cur.snap.Tools) == 0, seen: make(map[string]int)}
 }
 
 // run performs both passes. The result is only meaningful when err is nil. A
@@ -139,13 +149,31 @@ func (f *listFilter) collect(name string, _ []byte) error {
 	f.seen[name]++
 	switch f.seen[name] {
 	case 1:
-		if _, inCatalog := f.cur.snap.Tools[name]; inCatalog {
+		if _, ok := f.subject(name); ok {
 			f.present = append(f.present, name)
 		}
 	case 2:
 		f.dupes = append(f.dupes, name)
 	}
 	return nil
+}
+
+// subject says whether a page entry is about a tool the processor keeps
+// evidence for, and returns the policy it is judged against: a tool of the
+// snapshot, or, while the snapshot is empty (a paused server), a name the
+// observed table still tracks from the listings before the pause, with the
+// zero policy, since a paused server serves nothing. Any other name is
+// ignored unhashed: its content cannot change the answer, and a hostile
+// upstream must not be able to spend our CPU, or deny the whole page, with
+// tools we never serve.
+func (f *listFilter) subject(name string) (catalog.ToolPolicy, bool) {
+	if policy, inCatalog := f.cur.snap.Tools[name]; inCatalog {
+		return policy, true
+	}
+	if f.paused && f.srv.tracked(name) {
+		return catalog.ToolPolicy{}, true
+	}
+	return catalog.ToolPolicy{}, false
 }
 
 // decide is the pass-two callback: whether one tool is shown. mcpwire's
@@ -160,18 +188,15 @@ func (f *listFilter) decide(name string, tool []byte) bool {
 		f.failure = err
 		return false
 	}
-	// A tool the catalog has never heard of is hidden without being hashed:
-	// its content cannot change the answer, and a hostile upstream must not be
-	// able to spend our CPU, or deny the whole page, with tools we never serve.
-	policy, inCatalog := f.cur.snap.Tools[name]
-	if !inCatalog {
+	policy, ok := f.subject(name)
+	if !ok {
 		return false
 	}
 	// Nothing this large was ever approved, so it is hidden unhashed; and it
 	// is evidence that the upstream is not serving the approved definition.
 	if len(tool) > maxToolBytes {
 		f.report.oversized++
-		f.record(name, policy, observedConflict)
+		f.record(name, observedConflict)
 		return false
 	}
 	// The failure text goes to the log only, and the name is quoted there, so an
@@ -183,7 +208,7 @@ func (f *listFilter) decide(name string, tool []byte) bool {
 		f.failure = fmt.Errorf("tool %s: %w", quoteName(name), err)
 		return false
 	}
-	f.record(name, policy, digest)
+	f.record(name, digest)
 	return f.judgeListed(name, policy, digest)
 }
 
@@ -197,6 +222,8 @@ func (f *listFilter) decide(name string, tool []byte) bool {
 // latest crawl recorded another real digest (a revert or rollback the crawl
 // has not caught up with) or when its listing evidence was dropped from a
 // full table, until a crawl or a listing records the digest the gateway shows.
+// A tool of a paused server has no policy in the snapshot and is hidden as
+// unapproved: nothing of a paused server is served.
 func (f *listFilter) judgeListed(name string, policy catalog.ToolPolicy, digest string) bool {
 	switch {
 	case !f.cur.snap.Serves(name, digest):
@@ -214,16 +241,15 @@ func (f *listFilter) judgeListed(name string, policy catalog.ToolPolicy, digest 
 	return true
 }
 
-// record stores evidence about a catalog tool the snapshot could serve, and
-// counts what the table had to evict or lose to take it. Evidence about a
-// tool that can never be served is not kept: judgeCall denies such a tool
-// before it looks at the evidence, so storing it would only let never-served
-// names crowd out the entries the call rule depends on. Names outside the
-// catalog never reach this function.
-func (f *listFilter) record(name string, policy catalog.ToolPolicy, digest string) {
-	if !f.cur.snap.Serves(name, policy.Approved) {
-		return
-	}
+// record stores evidence about a catalog tool, servable or not, and counts
+// what the table had to evict or lose to take it. Evidence about a tool that
+// cannot be served today is kept because the tool may be served tomorrow (an
+// enable without re-review, an approval, a resume), and judgeCall must then
+// weigh what the gateway listed in the meantime, not only what it listed
+// before (D15). The table is sized from the snapshot's whole tool count, so a
+// non-servable tool costs one slot it already has. Names outside the catalog
+// never reach this function.
+func (f *listFilter) record(name, digest string) {
 	switch f.srv.observe(name, digest) {
 	case observeEvicted:
 		f.evicted++
@@ -241,19 +267,24 @@ func (f *listFilter) record(name string, policy catalog.ToolPolicy, digest strin
 // array, an entry without a string name wherever it sits, more entries than
 // the per-page cap, or a page over the payload cap) is evidence about nothing:
 // the processor cannot know which tools were behind the part it did not read,
-// so every servable tool of the snapshot is marked. Either way, evidence
+// so every catalog tool of the snapshot is marked, and, while the snapshot is
+// empty (a paused server), every entry the table tracks. Either way, evidence
 // recorded earlier must not survive a page that contradicts it: with a decoy
 // first on the page, the changed tool behind it would otherwise keep its
 // approved digest from an earlier listing.
 func (f *listFilter) markConflicts() {
-	if f.unreadable {
-		for name, policy := range f.cur.snap.Tools {
-			f.record(name, policy, observedConflict)
+	if !f.unreadable {
+		for _, name := range f.present {
+			f.record(name, observedConflict)
 		}
 		return
 	}
-	for _, name := range f.present {
-		f.record(name, f.cur.snap.Tools[name], observedConflict)
+	if f.paused {
+		f.srv.markTracked()
+		return
+	}
+	for name := range f.cur.snap.Tools {
+		f.record(name, observedConflict)
 	}
 }
 
@@ -266,11 +297,13 @@ func (s *Server) filterList(ctx context.Context, cur *cachedSnapshot, raw []byte
 	return page, err
 }
 
-// markPageUnread records the conflict marker on every servable tool of the
-// snapshot for a page the processor did not parse at all because it was over
-// the payload cap. Like a page that stops at an unreadable entry it is
-// evidence about nothing, and the evidence older listings left must not
-// outlive it (D14).
+// markPageUnread records the conflict marker for a page the processor did not
+// parse at all: a payload CheckResponse found over the cap, or a message the
+// gRPC transport refused for size before CheckResponse ran (pageRefused).
+// Like a page that stops at an unreadable entry it is evidence about nothing,
+// so every catalog tool of the snapshot is marked (every tracked entry while
+// the snapshot is empty), and the evidence older listings left must not
+// outlive it (D14, D15).
 func (s *Server) markPageUnread(ctx context.Context, cur *cachedSnapshot) {
 	f := newListFilter(ctx, s, cur)
 	f.unreadable = true

@@ -12,7 +12,15 @@ import (
 const (
 	// maxPayloadBytes is the largest MCP payload the processor will parse. It
 	// equals the gRPC receive limit, so the two layers agree on "too big". A
-	// page over this cannot be verified in bounded time and memory.
+	// page over this cannot be verified in bounded time and memory. Over the
+	// wire the transport is the layer that refuses it: the hook message is the
+	// payload plus the method and the service names, so a page at or over the
+	// cap is answered with ResourceExhausted from its length prefix and never
+	// reaches CheckResponse. The refusal is observed on the CheckResponse
+	// decoder (serve.go) and treated as a page the processor could not read:
+	// every catalog tool of the snapshot is marked and the denial is counted and
+	// logged like any other (D15). CheckResponse's own check of the length is
+	// the same rule for a caller that hands the page in without the transport.
 	maxPayloadBytes = 8 << 20
 
 	// maxToolsPerPage caps the tool entries in one tools/list page. It is
