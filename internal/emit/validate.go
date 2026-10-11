@@ -89,6 +89,14 @@ type validated struct {
 // leave the second one with every tool denied and nothing in the config to
 // say why. The comparison is textual; two spellings of one listener are the
 // operator's problem to avoid.
+//
+// A processor address may not be one of the gateway's own sockets either: a
+// loopback, localhost or wildcard host with the serving port or a listener
+// port is the socket the gateway binds itself, so the gateway would dial its
+// own HTTP listener for every hook (fail closed, every route of that server
+// dark) or, if the processor started first, fail to bind. --validate-only
+// accepts the collision (TestGatewayAcceptsAProcessorOnItsOwnSocket), so this
+// check is the only one between emit and the reload.
 func validate(in Input) (validated, error) {
 	if in.ListenPort < minPort || in.ListenPort > maxPort {
 		return validated{}, invalid("listen port %d is outside %d-%d", in.ListenPort, minPort, maxPort)
@@ -97,7 +105,7 @@ func validate(in Input) (validated, error) {
 	if err != nil {
 		return validated{}, err
 	}
-	listeners, err := validateListeners(in)
+	listeners, reserved, err := validateListeners(in)
 	if err != nil {
 		return validated{}, err
 	}
@@ -108,7 +116,7 @@ func validate(in Input) (validated, error) {
 	processors := make(map[string]string, len(in.Servers))
 	out := make([]Server, 0, len(in.Servers))
 	for _, s := range in.Servers {
-		if err := validateServer(s); err != nil {
+		if err := validateServer(s, reserved); err != nil {
 			return validated{}, err
 		}
 		if _, dup := names[s.Name]; dup {
@@ -125,14 +133,16 @@ func validate(in Input) (validated, error) {
 	return validated{servers: out, bind: bind, listeners: listeners}, nil
 }
 
-func validateServer(s Server) error {
+// validateServer checks one server; reserved is the port map validateListeners
+// returned. The name is checked first so that every later error can carry it.
+func validateServer(s Server, reserved map[int]string) error {
 	if err := validateServerName(s.Name); err != nil {
 		return err
 	}
 	if err := validateUpstreamURL(s.URL); err != nil {
 		return invalid("server %s: %v", s.Name, err)
 	}
-	if err := validateProcessorAddr(s.ProcessorAddr); err != nil {
+	if err := validateProcessorAddr(s.ProcessorAddr, reserved); err != nil {
 		return invalid("server %s: %v", s.Name, err)
 	}
 	if err := validateSecret(s.Secret); err != nil {
@@ -202,14 +212,21 @@ func isURLByte(c byte) bool {
 }
 
 // validateProcessorAddr requires host:port with a DNS-name or IPv4 host and a
-// decimal port in range. agentgateway's --validate-only also accepts http://,
+// decimal port in range, and refuses the gateway's own sockets (reserved maps
+// each port the gateway binds for itself to the socket's name). The socket
+// rule runs before the host-shape rule so that an IPv6 loopback spelling such
+// as "[::1]:15000", which the shape rule refuses anyway, is reported as the
+// collision it is. agentgateway's --validate-only also accepts http://,
 // https:// and unix:// forms in this field, but its schema documents the field
 // only as "Hostname or IP address", so those forms stay refused until an
 // end-to-end run proves what the gateway does with them.
-func validateProcessorAddr(addr string) error {
+func validateProcessorAddr(addr string, reserved map[int]string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return errors.New("processor address must be host:port")
+	}
+	if err := refuseGatewaySocket(addr, host, port, reserved); err != nil {
+		return err
 	}
 	if len(host) > maxHostLen || !hostPattern.MatchString(host) {
 		return errors.New("processor host must be a DNS name or IPv4 address")
@@ -218,6 +235,38 @@ func validateProcessorAddr(addr string) error {
 		return fmt.Errorf("processor port must be %d-%d", minPort, maxPort)
 	}
 	return nil
+}
+
+// refuseGatewaySocket is the rule that keeps a processor off the gateway's
+// own listeners: a host that means this host (see isThisHost) with a port in
+// reserved is the socket the gateway binds itself. A port the port rule will
+// refuse is left to it. Hosts are compared as a class, not as addresses, like
+// the listeners' distinct-port rule: "127.0.0.2" with the admin port is
+// refused although the admin API binds 127.0.0.1, because two spellings of
+// one host are not worth telling apart here. A specific address of this host
+// that is not loopback cannot be recognised and is not refused.
+func refuseGatewaySocket(addr, host, portText string, reserved map[int]string) error {
+	port, ok := parsePort(portText)
+	if !ok {
+		return nil
+	}
+	name, taken := reserved[port]
+	if !taken || !isThisHost(host) {
+		return nil
+	}
+	return fmt.Errorf("processor address %s is the gateway's own %s socket (port %d): the gateway would dial its own listener for every hook; use a port the gateway does not bind", shown(addr), name, port)
+}
+
+// isThisHost reports whether a processor host names the gateway's own host
+// for the socket rule: "localhost" in any case or a loopback literal (see
+// isLoopbackHost), or a wildcard address, which connects to loopback when it
+// is dialled.
+func isThisHost(host string) bool {
+	if isLoopbackHost(host) {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsUnspecified()
 }
 
 // validateSecret accepts an empty secret (the check is off) or printable ASCII

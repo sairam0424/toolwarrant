@@ -95,9 +95,12 @@ func listenerInputs(in Input) []listenerInput {
 // two have no business being public. The serving port and the listeners must
 // use distinct ports (compared as ports, whatever the hosts): the gateway's
 // --validate-only accepts a collision and the gateway then fails at start-up.
-func validateListeners(in Input) ([]listener, error) {
+// The returned map is every port the gateway binds for itself, the serving
+// port and each listener that is not off, keyed to the socket's name; validate
+// uses it to keep every processor off those sockets.
+func validateListeners(in Input) ([]listener, map[int]string, error) {
 	if in.DisableAdmin && in.AdminAddr != "" {
-		return nil, invalid("AdminAddr %s and DisableAdmin contradict each other; set one of them", shown(in.AdminAddr))
+		return nil, nil, invalid("AdminAddr %s and DisableAdmin contradict each other; set one of them", shown(in.AdminAddr))
 	}
 	ports := map[int]string{in.ListenPort: servingName}
 	inputs := listenerInputs(in)
@@ -107,17 +110,17 @@ func validateListeners(in Input) ([]listener, error) {
 		if !li.off {
 			addr, port, err := validateListenerAddr(li.name, li.raw, li.fallback, in.AllowAllInterfaces)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if other, dup := ports[port]; dup {
-				return nil, invalid("the %s and the %s both use port %d; the gateway's listeners need distinct ports", li.name, other, port)
+				return nil, nil, invalid("the %s and the %s both use port %d; the gateway's listeners need distinct ports", li.name, other, port)
 			}
 			ports[port] = li.name
 			l.addr, l.port = addr, port
 		}
 		out = append(out, l)
 	}
-	return out, nil
+	return out, ports, nil
 }
 
 // validateListenerAddr parses one listener address (fallback when raw is

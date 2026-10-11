@@ -19,7 +19,17 @@
 //     never match, not an absent one.
 //   - Every route names exactly one processor with failureMode failClosed, and
 //     one processor address belongs to exactly one server, so a processor can
-//     refuse hooks that name any other target.
+//     refuse hooks that name any other target. A processor address on one of
+//     the gateway's own sockets (a loopback, localhost or wildcard host with
+//     the serving port or a listener port) is refused: the gateway would dial
+//     its own listener for every hook, and --validate-only does not notice.
+//   - Every processor entry carries the gateway's request-header filter
+//     (requestHeaders): of the client's HTTP headers that ride each hook to
+//     the processor only the :method pseudo-header is forwarded, and
+//     authorization, cookie and proxy-authorization are denied by name as
+//     well. Without the filter agentgateway forwards every header of the
+//     client's request, bearer tokens and cookies included, and the processor
+//     reads none of them.
 //   - Every string that comes from the catalog is written as an escaped,
 //     double-quoted scalar, so it cannot add keys, lines or CEL syntax. A
 //     dollar sign is always written as its \u0024 escape, because the gateway
@@ -95,6 +105,13 @@
 //	      - host: "<processor host:port>"
 //	        kind: "remote"
 //	        failureMode: "failClosed"
+//	        requestHeaders:
+//	          allowed:
+//	          - ":method"
+//	          disallowed:
+//	          - "authorization"
+//	          - "cookie"
+//	          - "proxy-authorization"
 //	        metadata:
 //	          toolwarrant_secret: "\"<secret>\""
 //	        methods:
@@ -108,9 +125,10 @@
 //	          host: "<upstream URL>"
 //
 // The allow rule is the literal "false" when the server has no approved tool;
-// the metadata block is present only when Server.Secret is set; the bind
-// address and the listener addresses are written in canonical form (an IPv6
-// listener as "[::1]:15000"); adminAddr is the literal "off" when
+// the metadata block is present only when Server.Secret is set; the
+// requestHeaders block is always present and never depends on the input; the
+// bind address and the listener addresses are written in canonical form (an
+// IPv6 listener as "[::1]:15000"); adminAddr is the literal "off" when
 // Input.DisableAdmin is set. Four comment lines precede the body: the
 // generated-file warning (two lines), the schema hint, and
 // "# toolwarrant-sha256: <hex>" with the digest of the body. The gateways form
@@ -126,22 +144,28 @@
 // The gateway's --validate-only mode, which the tests run, proves that the
 // file parses, that bindAddress is read as an IP literal, that the listener
 // addresses parse and that "off" is read as a switch, that every route's
-// gateways reference resolves, that the CEL rules are well formed, and that
-// the names and URLs this package refuses are refused by the gateway too (or
-// are refused here on purpose). It proves nothing about runtime: that the
-// sockets really are bound to those addresses, that the routes attached by
-// name are served, which methods the rules filter and how mcp.tool.name binds
-// are observable only with the gateway running as a server, and are covered
-// by the end-to-end test (package e2e), not here. --validate-only also
-// accepts two listeners on one port, so the emitter refuses that itself.
-// Processor addresses are limited to host:port: the schema describes
-// processors[].host as "Hostname or IP address" and documents no unix:// or
-// https:// form (--validate-only accepts both, but it also accepts unknown
-// CEL variables, so that proves nothing); TLS towards a processor is the
-// separate processors[].policies.backendTLS block, which this version does
-// not write. The gateway name is a constant, and editing the file by hand
-// fails Verify. A secret is written into the file in clear, so a file that
-// carries one must be readable by the gateway alone.
+// gateways reference resolves, that the CEL rules are well formed, that the
+// request-header filter is read as two lists of header names (a scalar, an
+// unknown key or an invalid name is refused), and that the names and URLs
+// this package refuses are refused by the gateway too (or are refused here on
+// purpose). It proves nothing about runtime: that the sockets really are
+// bound to those addresses, that the routes attached by name are served,
+// which methods the rules filter, how mcp.tool.name binds, and which headers
+// the gateway puts on the wire towards the processor are observable only with
+// the gateway running as a server, and are covered by the end-to-end test
+// (package e2e), not here. By the gateway's own module documentation the
+// filter leaves the processor exactly one header, the :method pseudo-header;
+// the wire has not been observed in this package. --validate-only also
+// accepts two listeners on one port and a processor address that is one of
+// the gateway's own sockets, so the emitter refuses both itself. Processor
+// addresses are limited to host:port: the schema describes processors[].host
+// as "Hostname or IP address" and documents no unix:// or https:// form
+// (--validate-only accepts both, but it also accepts unknown CEL variables, so
+// that proves nothing); TLS towards a processor is the separate
+// processors[].policies.backendTLS block, which this version does not write.
+// The gateway name is a constant, and editing the file by hand fails Verify. A
+// secret is written into the file in clear, so a file that carries one must be
+// readable by the gateway alone.
 package emit
 
 import (
@@ -168,9 +192,11 @@ type Server struct {
 	URL string
 	// ProcessorAddr is the host:port of the toolwarrant ExtMCP processor that
 	// enforces strict mode for this upstream. Every server needs its own,
-	// because a processor serves exactly one target and denies the rest. A
-	// host that is not "localhost" or a loopback literal adds a line to
-	// Output.Warning: the hooks then cross the network.
+	// because a processor serves exactly one target and denies the rest, and
+	// none may be one of the gateway's own sockets: a loopback, localhost or
+	// wildcard host with Input.ListenPort or with the admin, stats or
+	// readiness port is refused. A host that is not "localhost" or a loopback
+	// literal adds a line to Output.Warning: the hooks then cross the network.
 	ProcessorAddr string
 	// Secret, when set, is sent to the processor with every hook as the
 	// metadata entry SecretMetadataKey, so the processor can refuse hooks that
@@ -185,7 +211,8 @@ type Server struct {
 // Input is everything the emitter needs; the result depends on nothing else.
 type Input struct {
 	// ListenPort is the single port the gateway binds for serving. It must
-	// differ from the ports of the admin, stats and readiness listeners.
+	// differ from the ports of the admin, stats and readiness listeners, and
+	// no processor on this host may use it.
 	ListenPort int
 	// BindAddress is the IPv4 or IPv6 literal the gateway binds ListenPort on.
 	// Empty means DefaultBindAddress; "::1" is the IPv6 loopback. A wildcard
@@ -261,13 +288,11 @@ type Output struct {
 // drift apart.
 const SecretMetadataKey = "toolwarrant_secret"
 
-const (
-	generatedHeader = "# Generated by toolwarrant. Do not edit by hand: changes are overwritten\n" +
-		"# the next time approvals change.\n" +
-		"# yaml-language-server: $schema=https://agentgateway.dev/schema/config\n"
-	routePathPrefix = "/"
-	routePathSuffix = "/mcp"
-)
+// generatedHeader is the three comment lines before the hash line; the
+// $schema token is the one dollar sign the gateway's substitution exempts.
+const generatedHeader = "# Generated by toolwarrant. Do not edit by hand: changes are overwritten\n" +
+	"# the next time approvals change.\n" +
+	"# yaml-language-server: $schema=https://agentgateway.dev/schema/config\n"
 
 // AgentGateway renders the gateway configuration for in. It validates all
 // input first and returns an error wrapping ErrInvalidInput without producing
@@ -311,46 +336,6 @@ func writeGateway(w *yamlWriter, bind netip.Addr, port int) {
 	w.line(2, gatewayName+":")
 	w.line(4, "port: "+strconv.Itoa(port))
 	w.line(4, "bindAddress: "+quote(bind.String()))
-}
-
-// writeRoute appends one route block. Every route names the gateway, so a
-// route without that line is refused by the gateway rather than attached to a
-// default. The allow rule is written unconditionally and comes first in the
-// policies so a reader sees it. The secret is a CEL string literal inside a
-// YAML scalar, quoted once per layer, exactly like the tool names inside the
-// allow rule.
-func writeRoute(w *yamlWriter, s Server, allowed []string) {
-	w.line(0, "- name: "+quote(s.Name))
-	w.line(2, "gateways: "+quote(gatewayName))
-	w.line(2, "matches:")
-	w.line(2, "- path:")
-	w.line(6, "exact: "+quote(routePath(s.Name)))
-	w.line(2, "policies:")
-	w.line(4, "mcpAuthorization:")
-	w.line(6, "rules:")
-	w.line(6, "- allow: "+quote(allowExpression(allowed)))
-	w.line(4, "mcpGuardrails:")
-	w.line(6, "processors:")
-	w.line(6, "- host: "+quote(s.ProcessorAddr))
-	w.line(8, "kind: "+quote("remote"))
-	w.line(8, "failureMode: "+quote("failClosed"))
-	if s.Secret != "" {
-		w.line(8, "metadata:")
-		w.line(10, SecretMetadataKey+": "+quote(quote(s.Secret)))
-	}
-	w.line(8, "methods:")
-	w.line(10, "tools/call: "+quote("request"))
-	w.line(10, "tools/list: "+quote("response"))
-	w.line(2, "backends:")
-	w.line(2, "- mcp:")
-	w.line(6, "targets:")
-	w.line(6, "- name: "+quote(s.Name))
-	w.line(8, "mcp:")
-	w.line(10, "host: "+quote(s.URL))
-}
-
-func routePath(name string) string {
-	return routePathPrefix + name + routePathSuffix
 }
 
 // sortServers orders servers by name. Names are unique by now, so the order
