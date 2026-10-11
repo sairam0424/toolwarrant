@@ -58,11 +58,12 @@ In scope:
   processor behaviour of `toolwarrant serve` against agentgateway v1.6.0.
 - The canary (`toolwarrant verify-gateway`): a served tool it does not report as
   LEAK, a live configuration that differs from the emitted file in any
-  top-level section, listener address, gateway or route (an added route or
-  `binds` listener, a route moved to another path, a processor removed, its
-  `requestHeaders` filter or metadata changed) that it does not report with
-  `--admin`, a body hash that differs from the recorded one that it does not
-  report with `--expect-body-hash`, an id-less `tools/call` the probe does not
+  non-empty top-level section, `config` field, listener address, gateway or
+  route (an added route or `binds` listener, a route moved to another path, a
+  processor removed, its `requestHeaders` filter or metadata changed, a route
+  key, policy, match or backend the emitted file cannot carry) that it does
+  not report with `--admin`, a body hash that differs from the recorded one
+  that it does not report with `--expect-body-hash`, an id-less `tools/call` the probe does not
   detect or calls healthy without the gateway's own refusal, and a `--config`
   path that makes the canary block or exit 0 without a verdict.
 - The scripts under `scripts/`, the CI workflow, and this documentation where it
@@ -77,17 +78,22 @@ permitted by design: the target was approved by someone before, see decision D4
 and `internal/lifecycle/decide.go`); the crawler reaching an address or scheme
 the egress policy forbids; an edit to the database that the catalog's integrity
 checks do not report (the digest re-check, the newest-decision rule and the
-newest audit entry for every approved version, the chain pin, the catalog
-identity and file identity, the guard definitions and the absence of foreign
-triggers, views and unique indexes, all applied at open and on every snapshot
-load, the audit chain, and `Store.Integrity`'s cross-check of every mutable
-column the log describes and every subject the log describes against the
-rows, which `audit verify` runs after the chain check and when the chain is
-broken), with one stated boundary: an entry appended to the audit log by
-whoever can write the 0600 file, correctly sealed, is not detectable inside
-the file and is detected by the recorded head, the git export and backups
-(decision D14, known limit L19); a processor that keeps serving after the
-catalog file at its path was replaced; upstream text reaching a terminal, a
+newest audit entry for every approved version, the rule that the serving and
+decision paths trust an audit entry only when it is part of the chain the
+`Store` verified at open and extended on every reload, the chain pin, the
+catalog identity and file identity compared on every read, the guard, table
+and index definitions and the absence of foreign triggers, views, unique
+indexes and unaccounted automatic indexes, all applied at open and on every
+snapshot load, the audit chain, and `Store.Integrity`'s verification of every
+entry's seal and link and its cross-check of every mutable column the log
+describes and every subject the log describes against the rows, which
+`audit verify` runs after the chain check and when the chain is broken), with
+one stated boundary: an entry appended to the audit log by whoever can write
+the 0600 file, correctly sealed, is not detectable inside the file, and
+neither is a chain rewritten completely, head included, before any `Store`
+opens it; both are detected by the recorded head, the git export and backups
+(decisions D14 and D15, known limit L19); a processor that keeps serving
+after the catalog file at its path was replaced; upstream text reaching a terminal, a
 log line or a file name
 unescaped; a bearer token, shared secret or credential-bearing URL printed,
 stored, logged or written into a file that is not owner-only; anything under
@@ -128,7 +134,7 @@ test or seam result that proves it, is in [docs/threat-model.md](docs/threat-mod
 Its second table lists the residual risks and what an operator can do about
 each. The spike findings F1 to F5 and the design decisions are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md);
-the design decisions run to D14.
+the design decisions run to D15.
 
 ## Operator hardening checklist
 
@@ -138,7 +144,10 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
 
 - Run every processor on a loopback address or a unix socket:
   `serve --listen 127.0.0.1:PORT` or `serve --listen unix:/path` (the socket is
-  created owner-only, 0600). `serve` refuses a non-loopback TCP address unless
+  created owner-only, 0600). `serve` refuses a non-loopback TCP address (a
+  loopback literal, `localhost` and the loopback aliases common resolvers map
+  without DNS, such as `localhost.localdomain` and `ip6-loopback`, count as
+  loopback since the sixth round, decision D15) unless
   `--allow-non-loopback` is given, and with that flag refuses to listen without
   `--secret-env` unless `--insecure-no-secret` is passed as well; the pairing
   is enforced, not advised. Use it only on a network nobody but the gateway can
@@ -166,13 +175,18 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   own network namespace when other local users exist, and run the canary with
   `--admin` so a replaced configuration is reported as LIVE-CONFIG-MISMATCH:
   the comparison decodes the live document as a map of top-level sections and
-  reports every section other than `config`, `gateways` and `routes` (a
-  `binds` listener or a top-level `mcp` shortcut carries routes with no
-  processor), a changed listener address, an added route or gateway, a route
+  reports every non-empty section other than `config`, `gateways` and
+  `routes` (a `binds` listener or a top-level `mcp` shortcut carries routes
+  with no processor), a `config` field other than the three listener
+  addresses, a changed listener address, an added route or gateway, a route
   moved to another path, a removed processor, a changed allow rule, a changed
-  or removed `requestHeaders` filter and changed processor metadata (compared
-  as a hash, never printed), not only a change inside the named route
-  (decisions D13 and D14); or turn
+  or removed `requestHeaders` filter, changed processor metadata (compared as
+  a hash, never printed), and in every live route any key other than `name`,
+  `gateways`, `matches`, `policies` and `backends`, any policy other than
+  `mcpAuthorization` and `mcpGuardrails`, a match that is not a single exact
+  path and a backend that is not the one `mcp` backend with the emitted
+  target, not only a change inside the named route (decisions D13, D14 and
+  D15); or turn
   the admin API off (`emit --disable-admin`, the gateway's own
   `adminAddr: off`) and accept that the live comparison then has nothing to
   query. Rotate the secret whenever another user could have reached
@@ -189,7 +203,9 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   processor of a catalog file before you delete or replace it and start them
   after `init`: a processor detects a replaced or removed file and denies every
   hook until it is restarted (decision D14). `init` refuses a database path
-  that is a symbolic link or whose directory is reached through one.
+  that is a symbolic link, and a component of its directory that is a
+  symbolic link not owned by root (links the operating system installs, such
+  as `/var` on macOS, are tolerated; decision D14).
 - Keep the emitted configuration readable by the gateway's user only. `emit`
   writes the file 0600 whatever it carries (decision D13; before the fourth
   round a file without a secret and without a query string was written 0644,
@@ -226,6 +242,11 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   log was not replaced or extended by someone who can write the file, since a
   correctly sealed entry that approves a definition can be appended by anyone
   with write access and nothing inside the file can refute it (decision D14).
+  Inside the file an audit entry is trusted only when it is part of the chain
+  the `Store` verified when it opened, so a forger must rewrite every entry
+  from the forged one to the head, which changes the head a running `Store`
+  pinned and the head you recorded; a chain rewritten completely before any
+  `Store` opens it is caught only by the recorded head (decision D15).
   Keep the git export of approved definitions (`export --dir`) and backups as
   the other two anchors. `audit log ok` in forensic mode means the chain is
   consistent, not that the file is intact; every other command, `list` and
@@ -289,8 +310,9 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   strips, and the canary probe re-checks whether id-less calls are still
   forwarded and whether the shapes the probe calls healthy are still the
   gateway's own refusals (a 2xx answer with a body that is not a plain 202,
-  and a 400 whose body is a JSON-RPC error, are PROBE-INCONCLUSIVE, decisions
-  D13 and D14).
+  and a 400 whose body parses as JSON, object or array, are PROBE-INCONCLUSIVE;
+  only an empty or non-JSON 400 body is the gateway's own refusal; decisions
+  D13, D14 and D15).
 
 ## Release integrity plan
 

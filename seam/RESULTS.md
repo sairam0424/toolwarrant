@@ -635,3 +635,101 @@ the round changed in the statements of this file:
   (README L1, L6, L17, L18 and L19; threat-model rows 4, 7, 10, 11, 15, 16,
   18, 20, 21, 22, 25 and 26; the operations guide's processor, canary, audit,
   recovery and re-emit sections; CLAUDE.md names schema v5).
+
+### Corrections after the fifth review (2026-10-12)
+
+The fifth hostile review ran against a369090, the tree the corrections after
+the fourth review describe; its fixes are the sixth round, recorded as
+decision D15 in docs/decisions.md. Every statement above was true of the tree
+it names. What the round changed in the statements of this file:
+
+- "The trust boundary that every bullet above left implicit is now stated
+  once ... the controls inside the catalog file detect rewrites of history",
+  and the first bullet of the fourth-review corrections, "a Store pins the
+  newest audit entry it has verified and refuses a file in which that entry
+  or the suffix since it changed (D14 a and b)". Is: the anchor of D14 a
+  re-sealed the newest approval entry against its predecessor only, the pin
+  verified the head and the suffix after it only, and the verifier memory was
+  keyed by the hash column the forger writes, so the fifth review rewrote one
+  approval entry in place below the head (a new after_hash or actor with the
+  hash recomputed from the real prev_hash; after_hash alone while the memory
+  was warm), kept the head unchanged, and a running Store, a fresh read-only
+  Store and a fresh read-write Store all served it with Integrity clean, while
+  only the full chain walk of audit verify broke at the successor; the same
+  rewrite of version.proposed entries laundered the proposer rule. Since D15 a
+  Store verifies the whole chain once when it opens and pins the head, keeps
+  the hash it computed itself for every decision entry and for the head,
+  verifies the suffix after the pin on every reload, and the serving path and
+  the decision path trust an entry only when the hash computed from its fields
+  equals the one that walk recorded; the stored hash column is never consulted
+  for trust. A forger must rewrite every entry from the forged one to the
+  head, which changes the head a running Store pinned and the head the
+  operator recorded; a chain rewritten completely before a Store opens is
+  caught only by the recorded head (the pin-bootstrap limit). Store.Integrity
+  verifies every entry's seal and link as it streams the log (D15 c), the
+  catalog identity is compared on every read, not only by Generation (D15 d),
+  every table's DDL is compared with the schema's, an automatic index the
+  schema's tables do not account for is a foreign object, and the ErrCorrupt
+  for a constraint failure names the table and the constraint (D15 e).
+- "The processor-level rule ... a page over the payload cap is marked the
+  same way before it is denied (D14 g)". Is: over the gRPC transport such a
+  page is refused for size before the hook runs, so the marking inside the
+  hook was unreachable in the shipped runtime (the fifth review's padded page
+  left a changed tool's older evidence alive with nothing counted or logged);
+  since D15 f the processor observes the transport's refusal of a
+  CheckResponse call and marks every servable tool of the snapshot from it.
+  README L1 and threat-model row 11 listed "more than 10000 tools" among the
+  pages read to the end; since the fifth round the survey stops at the
+  per-page cap, so such a page is unreadable and marks every servable tool,
+  and the documents now say so. Listing evidence is recorded for every
+  catalog tool a page names, servable or not, and a page seen while the
+  snapshot is empty is judged against the names already tracked (D15 g; the
+  fifth review listed a changed definition during a pause and the processor,
+  judging against the empty snapshot, discarded it).
+- "The emitter's socket rule ... (D14 h)". Is: the rule knew one name,
+  localhost; the loopback aliases common resolvers map without DNS
+  (localhost.localdomain, localhost4, localhost4.localdomain4, localhost6,
+  localhost6.localdomain6, ip6-localhost, ip6-loopback) passed with the
+  serving and the admin port, warned about as non-loopback. Since D15 h a
+  processor whose host is a name rather than an IP literal is refused on any
+  port the gateway binds, and the aliases count as loopback in the emitter
+  and in serve.
+- "The comparison covers the whole document ... every top-level section, the
+  header filter and the metadata (D14 i)". Is: the comparison decoded the
+  known fields of each route and of config only, so an extProc policy, a
+  requestMirror, a response transformation, a urlRewrite, a second host
+  backend and a config.mcp block, each accepted by the pinned binary's
+  --validate-only, compared as a match. Since D15 i every live route, backend
+  and config field is decoded generically and anything the emitted file
+  cannot carry (a route key other than name, gateways, matches, policies and
+  backends; a policy other than mcpAuthorization and mcpGuardrails; a match
+  that is not a single exact path; a backend that is not the one mcp backend
+  with the emitted target; a config field other than the three listener
+  addresses) is a LIVE-CONFIG-MISMATCH line of its own; a top-level section
+  counts only when it is non-empty, which the code always did and the
+  documents now say.
+- "Processor addresses live in the catalog ... written by emit (D14 i)". Is:
+  emit recorded them before the file was validated and written, so a refused
+  emit left the address and its server.processor_set entry behind for a file
+  that never existed and the next emit printed no "is new" line; since D15 j
+  the addresses are recorded only after the file was renamed into place.
+- "The probe rule of D13 h ... a 400 is healthy only when its body is not a
+  JSON-RPC error (D14 i)". Is: a 400 is healthy only when its body is empty
+  or is not JSON; a body that parses as JSON, object or array (a JSON-RPC
+  batch of errors included, which the old check did not recognise), is
+  PROBE-INCONCLUSIVE (D15 k).
+- Smaller corrections of the round: the CI test-full job runs
+  internal/processor as well, because TestServe_AcceptsAPageOverGRPCsDefaultLimit
+  is the sixth test -short skips, and CLAUDE.md names all six (D15 l); three
+  sentences that over-stated a rule were corrected: init tolerates a
+  root-owned symbolic link in the directory part of the database path, the
+  live comparison reports every non-empty extra section, and the printed
+  serve command's --allow-non-loopback is accepted with --secret-env or the
+  explicit --insecure-no-secret (D15 m).
+- Decisions added since: D15, in docs/decisions.md, with the chain rule
+  stated exactly (README "Trust model", "The audit log" and L19; threat-model
+  row 21 and L19; the operations guide's audit and recovery sections) and the
+  document corrections of the round (README "Pause and resume", L1, L17 and
+  L18; threat-model rows 4, 7, 10, 11, 15, 18, 20, 25 and 26 and limits L1,
+  L17 and L18; the operations guide's processor, canary, pause and re-emit
+  sections; SECURITY.md's scope and checklist; CLAUDE.md and ci.yml).

@@ -73,12 +73,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # -short skips the three Unicode walks of internal/textdiff and two slow
-      # catalog tests; the test-full job runs those on their own.
+      # -short skips six tests: the three Unicode walks of internal/textdiff
+      # (TestEscape_everyRune, TestEscape_coversEveryRuneTheToolNameRuleForbids,
+      # TestNames_noSuspiciousRuneHasAnEmptyName), two slow catalog tests
+      # (TestVerifyAudit_PagesThroughLargeLogs,
+      # TestRecordCrawl_LargeCrawlDoesNotBlockADecision) and the processor's
+      # gRPC size test (TestServe_AcceptsAPageOverGRPCsDefaultLimit); the
+      # test-full job runs those three packages without -short.
       - run: go test -race -short -count=1 -timeout 900s -cover ./...
 
   test-full:
-    name: full textdiff Unicode walk and slow catalog tests
+    name: full textdiff Unicode walk, slow catalog tests and the processor gRPC size test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, SHA pinned
@@ -86,7 +91,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/
+      # The three packages with a testing.Short() skip, run in full. CLAUDE.md
+      # names the six tests this covers.
+      - run: go test -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/ ./internal/processor/
 
   govulncheck:
     name: govulncheck

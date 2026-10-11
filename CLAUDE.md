@@ -18,7 +18,7 @@ make vuln                                             # govulncheck ./... (insta
 make e2e                                              # go test -tags e2e -count=1 -timeout 900s -v ./e2e against the real gateway
 make demo                                             # demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
 go build -o bin/ ./cmd/...                            # binaries; bin/ is gitignored
-go test -short -race -count=1 -timeout 900s ./...     # skips the three Unicode walks and two slow catalog tests
+go test -short -race -count=1 -timeout 900s ./...     # skips six tests, named below
 go test -race -count=1 -run 'TestCheckRequest_DeniesWhatIsNotApproved' ./internal/processor/
 go test -run '^$' -fuzz FuzzCheckResponse -fuzztime 20s ./internal/processor/
 go generate ./internal/extmcpv1                       # regenerate the ExtMCP stubs; refuses other protoc/plugin versions
@@ -27,9 +27,17 @@ scripts/gen-third-party-notices.sh --check            # must pass whenever go.mo
 seam/run.sh guarded; seam/day5.sh; seam/day34-paging-latency.sh; seam/day34-sessions.sh; seam/day34-reload.sh
 ```
 
+`-short` skips six tests: the three Unicode walks of `internal/textdiff`
+(`TestEscape_everyRune`, `TestEscape_coversEveryRuneTheToolNameRuleForbids`,
+`TestNames_noSuspiciousRuneHasAnEmptyName`), two slow catalog tests
+(`TestVerifyAudit_PagesThroughLargeLogs`,
+`TestRecordCrawl_LargeCrawlDoesNotBlockADecision`) and the processor's gRPC size
+test (`TestServe_AcceptsAPageOverGRPCsDefaultLimit`); the CI `test-full` job
+runs those three packages without `-short`.
+
 The seam scripts and the end-to-end test need the v1.6.0 release binary at `.cache/agentgateway-darwin-arm64` (gitignored; `TOOLWARRANT_GATEWAY_BIN` overrides the path) and the seam scripts need the four seam binaries in `bin/`. Outside the seam scripts and `make e2e` (which starts the gateway on loopback ports it picks itself and stops it) the gateway binary may only be run with `--validate-only`. The e2e scenarios share one stack and depend on each other's end state, so run the whole `TestEndToEnd`, not one subtest. Anything over two minutes runs in the background with output to a file.
 
-The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint, vet and build, the short test suite under `-race`, the full textdiff walk and the slow catalog tests, govulncheck, gitleaks, the notices check, and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only and needs the owner to record the checksum of the linux gateway binary. Run the documentation checks by hand with:
+The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint, vet and build, the short test suite under `-race`, the three packages whose tests `-short` skips (`internal/textdiff`, `internal/catalog`, `internal/processor`) in full, govulncheck, gitleaks, the notices check, and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only and needs the owner to record the checksum of the linux gateway binary. Run the documentation checks by hand with:
 
 ```sh
 for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sort -u); do grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.cache --exclude-dir=.git . || echo "missing test: $n"; done
@@ -39,14 +47,14 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 
 - `cmd/toolwarrant`: operator CLI, a thin client of the internal packages; `run()` is driven in-process by tests, `main` only exits.
 - `cmd/mockupstream`, `cmd/seamclient`, `cmd/seamgate`, `cmd/seamprocessor`: spike scaffolding for the seam tests and the e2e test; never deployed.
-- `internal/catalog`: SQLite registry (schema v5; a v2, v3 or v4 file from an unreleased build is refused with `ErrSchema` and must be re-initialised, there is no migration); the only writer of lifecycle state and the audit log, in one transaction; per-crawl and per-server caps and the per-crawl cap on rejected entries, quarantine, proposal budget and its reset, each server's processor address, integrity checks (guard DDL, no-delete guards and the absence of foreign triggers, views and unique indexes; the newest-decision rule and the newest chained audit entry for every approved version; the pin on the newest verified audit entry; the catalog identity and the file's device and inode against a replaced file; the audit cross-check of every mutable column and every subject the log describes). The trust boundary is D14: whoever can write the file can append a correctly sealed entry, and only the recorded head, the git export and backups catch that.
+- `internal/catalog`: SQLite registry (schema v5; a v2, v3 or v4 file from an unreleased build is refused with `ErrSchema` and must be re-initialised, there is no migration); the only writer of lifecycle state and the audit log, in one transaction; per-crawl and per-server caps and the per-crawl cap on rejected entries, quarantine, proposal budget and its reset, each server's processor address, integrity checks (guard and table DDL, no-delete guards and the absence of foreign triggers, views, unique indexes and unaccounted automatic indexes; the newest-decision rule and the newest audit entry for every approved version; the whole chain verified once at open and the suffix after the pin on every reload, with the locally computed hash of every decision entry kept in memory, so that the serving path and the decision path trust an audit entry only when its hash computed from its fields equals the one that walk recorded, never the stored hash column; the catalog identity and the file's device and inode compared on every read against a replaced file; `Integrity` verifying every entry's seal and link as it streams the log and cross-checking every mutable column and every subject the log describes). The trust boundary is D14 and D15: whoever can write the file can append a correctly sealed entry, a forger who rewrites an entry must rewrite every entry from it to the head, which changes the pinned and the recorded head, and a chain rewritten completely before a `Store` opens is caught only by the recorded head, the git export and backups.
 - `internal/lifecycle`: pure state machine (states, commands, events, `Serves`) and the exported digest-shape rule (`IsDigest`, `LastSeenVerifiable`) that the processor and the canary share; property-tested invariants.
 - `internal/gate`: RFC 8785 canonicalisation and SHA-256 digest, profile `full-v1`; refuses inexact numbers and non-UTF-8.
-- `internal/audit`: hash chain over audit entries (`Seal`, `Verify`, `Head`).
+- `internal/audit`: hash chain over audit entries (`Seal`, `Verify`, `VerifyFrom`, `Head`).
 - `internal/crawl`: raw MCP Streamable HTTP `tools/list` client; vets every tool, quarantines, never approves.
 - `internal/fetch`: the only egress path; SSRF-hardened dialer (connect-time address checks, DNS pinning, caps).
-- `internal/processor`: ExtMCP gRPC processor; list filtering, call rule, caps, shared secret, digest cache, observed-evidence table sized from the snapshot and kept across a pause; an oversized or unreadable page marks every servable tool; a replaced catalog file is a source error.
-- `internal/emit`: agentgateway v1.6.0 config emitter; gateways form with a loopback bind, listener inputs, explicit allow rules, failClosed, sha256 header, `Verify`, validation with the gateway binary, the request-header filter on every processor entry, refusal of a processor address on one of the gateway's own sockets (compared with the input's own bind and listener addresses) and of a numeric-looking host that is not an IP literal.
+- `internal/processor`: ExtMCP gRPC processor; list filtering, call rule, caps, shared secret, digest cache, observed-evidence table sized from the snapshot, holding evidence for every catalog tool a page names (servable or not) and kept across a pause; an unreadable page marks every servable tool, a page the gRPC transport refuses for size is observed on the `CheckResponse` call and marks them too, and a page seen while the snapshot is empty (paused server) is judged against the names already tracked; a replaced catalog file is a source error.
+- `internal/emit`: agentgateway v1.6.0 config emitter; gateways form with a loopback bind, listener inputs, explicit allow rules, failClosed, sha256 header, `Verify`, validation with the gateway binary, the request-header filter on every processor entry, refusal of a processor address on one of the gateway's own sockets (compared with the input's own bind and listener addresses; a host that is a name rather than an IP literal is refused on any port the gateway binds, since a name may resolve to this host) and of a numeric-looking host that is not an IP literal; the loopback aliases common resolvers map without DNS count as loopback.
 - `internal/export`: write-only mirror of approved definitions into a directory and git; crash-safe manifest.
 - `internal/textdiff`: escaped diff renderer and invisible-character findings for approvers.
 - `internal/toolname`: the one tool-name rule shared by crawler, catalog, processor and emitter.
@@ -56,7 +64,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
-- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D14), `docs/operations.md`.
+- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D15), `docs/operations.md`.
 - `.github/workflows/ci.yml`: the CI workflow.
 
 ## Rules
@@ -66,7 +74,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - Nothing is pushed, tagged, published or registered without the owner.
 - Keep "MCP" out of the product name; "toolwarrant for MCP" is the permitted form.
 - Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
-- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D14 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/liveadmin.go`.
+- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D15 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/liveadmin.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.
 - Test files must not contain literal invisible or format characters: build them at run time or use `\u` escapes, then check with `grep -P`.

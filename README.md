@@ -89,10 +89,12 @@ until a named person has approved an exact digest; a catalog miss, an unreadable
 page, an unreachable catalog or a hook from another backend all deny. The catalog
 hands out an approval only when the newest approve or rollback decision about
 the tool, in the append-only approvals table, names that exact version and
-digest (decision D13) and the newest approval or rollback entry in the
-hash-chained audit log carries the same digest and seals correctly from its
-predecessor (decision D14), so a forged approval must re-chain the log, which
-the head you recorded betrays. A crawl never approves anything: it records proposals,
+digest (decision D13) and the newest approval or rollback entry about the tool
+in the hash-chained audit log carries the same digest and is part of the chain
+the catalog verified from its first entry when it opened (decision D15), so a
+forged approval must rewrite every entry from the forged one to the head,
+which changes the head a running catalog pinned and the head you recorded. A
+crawl never approves anything: it records proposals,
 drift, reverts, absences and unusable definitions, and the person who ran the
 crawl that proposed a version cannot approve that version. Whoever can reach the
 processor without the shared secret, or the gateway's admin listener, decides
@@ -154,10 +156,11 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 # 5. Write the gateway configuration and start the processor it names.
 #    A server with no processor address yet gets the next free port from
 #    127.0.0.1:9001 up, and the address is stored in the catalog (server list
-#    shows it), so a later emit keeps every server's address and adding a
-#    server never moves the others; emit prints every address that is new or
-#    changed and never reads addresses from the file it replaces. The route
-#    is /<server>/mcp on port 3000 bound to 127.0.0.1.
+#    shows it) once the file has been validated and renamed into place, so a
+#    later emit keeps every server's address, adding a server never moves the
+#    others, and a refused emit records nothing; emit prints every address
+#    that is new or changed and never reads addresses from the file it
+#    replaces. The route is /<server>/mcp on port 3000 bound to 127.0.0.1.
 #    The file is always written 0600: make it readable by the user the
 #    gateway runs as (chown, or a read ACL) and by nobody else. Record the
 #    "body sha256" line emit prints; the canary compares the file with it.
@@ -251,7 +254,14 @@ pinned gateway version.
   resume NAME`; decisions keep working while it is paused (e2e scenario E).
   The processor keeps what the gateway's listings told it across the pause, so
   a tool whose live definition had changed stays uncallable after the resume
-  until a clean listing or a crawl records the approved digest (decision D14).
+  until a clean listing or a crawl records the approved digest (decision D14),
+  and a listing the gateway makes during the pause counts too: a readable page
+  records its digests for the names the processor already tracks and an
+  unreadable page marks every tracked entry (decision D15; before the sixth
+  round a page seen while the snapshot was empty was judged against that
+  empty snapshot and recorded nothing, so a changed definition listed during
+  the pause left the older agreeing digest in place and the call passed after
+  the resume).
 - Missing and deprecated. A tool absent from a successful crawl is flagged
   `MISSING`; after three consecutive misses (the default policy) it is
   `deprecated` and never served. A failed crawl is not a removal. A tool whose
@@ -298,17 +308,47 @@ carry `hash_seen` equal to its digest (decision D13; before the fourth round
 any historic approve row about the version counted, so a pointer flipped back
 to a superseded version reached the serving path); and the newest
 `version.approved` or `version.rolled_back` entry about the tool in the audit
-log must carry the same digest and must seal correctly from its predecessor
-(decision D14; before the fifth round a definition and its `hash_seen`
-rewritten together under two dropped and re-created guard triggers reached the
-serving path, because the approvals table was the only evidence). The serving
-snapshot also pins the newest audit entry it has verified and refuses a file in
-which that entry or anything after it changed, and refuses a file that was
-deleted or replaced under it (a random identity written by `init` and the
-file's device and inode are re-checked on every read, decision D14). A file
+log must carry the same digest and must be part of the chain the catalog
+verified (decision D14 for the entry, D15 for the chain; before the fifth
+round a definition and its `hash_seen` rewritten together under two dropped
+and re-created guard triggers reached the serving path, because the approvals
+table was the only evidence). What "part of the verified chain" means, since
+the sixth round: a `Store` verifies the whole audit chain once when it opens,
+from the first entry to the head, and pins the head; it keeps in memory the
+hash it computed itself for every decision entry it walked
+(`version.proposed`, `version.superseded`, `version.rejected`,
+`version.approved`, `version.rolled_back`, `tool.budget_reset` and
+`server.processor_set`) and for the head; every reload verifies the suffix
+after the pin and extends that memory; and the serving path (`Snapshot`,
+`Approved`, `Versions`, `Tools`, `Tool`) and the decision path (every `Apply`,
+the proposer list `approve` consults included) trust an audit entry only when
+the hash computed from its fields equals the hash the walk recorded for its
+sequence number. The hash column stored in the file is never consulted for
+trust and never keys a memory; a mismatch is `ErrCorrupt` (decision D15;
+before the sixth round the entry was re-sealed against its predecessor only,
+the pin verified the head and the suffix after it only, and the verifier
+memory was keyed by the stored hash column, so the fifth review rewrote one
+approval entry in place below the head, re-sealed from its real predecessor,
+and the serving path, the decision path and `Store.Integrity` all accepted
+it while only the full walk of `audit verify` broke at the successor). The
+serving snapshot refuses a file that was deleted or replaced under it: the
+random identity `init` wrote and the file's device and inode are compared on
+every read (decision D14 for the device and inode, D15 for the identity on
+every read; before the sixth round only the generation read compared the
+stored identity). The stored DDL of every table is compared with the schema's,
+as the triggers and indexes are, and an automatic index that the schema's own
+tables do not account for is a foreign object (decision D15; the fifth review
+re-created `audit_log` with an extra `UNIQUE` constraint, which gave SQLite an
+automatic index with no DDL text that no check saw, and every later write
+failed with an `ErrCorrupt` that named no cause while `audit verify` was
+clean; the error now names the table and the constraint). A file
 that fails any of these is reported as corrupt and nothing is served, listed
 or shown from it: `list` and `show` apply the same evidence as the serving
-path (decision D14). `Store.Integrity` in `internal/catalog` goes further and
+path (decision D14). `Store.Integrity` in `internal/catalog` goes further: it
+verifies every audit entry's seal from its predecessor and its link to its
+successor as it streams the log and reports each break as a problem (decision
+D15; before, it read the entries without verifying them, so its cross-checks
+agreed with rewritten entries), and it
 cross-checks every mutable column the log describes (the approved digest, the
 last-seen digest, the state and the proposal budget of every tool; the status
 and the proposers of every version; the paused flag, the allow-private flag
@@ -327,8 +367,12 @@ and nothing inside the file can prove that an entry was not appended by
 whoever can write the file: such a person can append a correctly sealed entry
 that approves a definition, and only the head you recorded, the git export of
 approved definitions (`export --dir`) and your backups betray it (decision
-D14, known limit L19). The checks above force that person to re-chain the
-whole log suffix, which is what the recorded head catches. `audit verify`
+D14, known limit L19). Since the sixth round an entry is trusted only when it
+is part of the chain the `Store` verified, so that person must rewrite every
+entry from the forged one to the head, which changes the head a running
+`Store` pinned and the head you recorded; a chain rewritten completely before
+any `Store` opens it is caught only by the recorded head (the pin-bootstrap
+limit, decision D15). `audit verify`
 prints the head after every successful check, and
 `audit verify --expect-head HASH` fails unless the head equals the one you
 recorded. `audit list [--after N] [--limit N] [--json]` prints entries in
@@ -371,20 +415,36 @@ until a later version says otherwise.
   upstream until either source is refreshed (seam test 4, finding F1; e2e
   scenario C measured both paths: denied 1.5 ms after another session listed
   the drifted definition, and otherwise as soon as the crawl recorded it). A
-  page the processor reads but denies as a whole (a repeated name, a tool it
-  cannot hash, or more than 10000 tools) leaves a conflict marker on every
-  catalog tool it listed, and a page it cannot read through to the end (an
-  entry without a string name, a `tools` member that is not an array) is
-  evidence about nothing, so every servable catalog tool of the server gets
-  the marker (decision D13; the third review placed an unreadable decoy in front of a
-  changed tool and the changed tool kept its older evidence), and so does a
-  page over the 8 MiB payload cap (decision D14; the fourth review's oversized
-  page was denied before the marking step). So a decoy in any position cannot
-  keep a changed tool's older evidence alive: its calls are denied until a
-  clean page shows the approved digest. The table that holds this evidence is
-  sized from the catalog snapshot, records only tools the catalog could serve,
-  survives a pause of the server (it is pruned only against a non-empty
-  snapshot, decision D14), and when full evicts an entry that agrees with its
+  page the processor reads but denies as a whole (a repeated name, or a tool
+  it cannot hash) leaves a conflict marker on every catalog tool it listed,
+  and a page it cannot read through to the end (an entry without a string
+  name, a `tools` member that is not an array, or more than 10000 tools, since
+  the survey stops at the per-page cap before it reads the entry past it) is
+  evidence about nothing, so every catalog tool of the server, servable or
+  not, gets the marker (decision D13; the third review placed an unreadable decoy in
+  front of a changed tool and the changed tool kept its older evidence; the
+  over-cap page moved to this list in the fifth round and the documents
+  followed in the sixth). A `CheckResponse` call whose message the gRPC transport refuses for size
+  is observed by the processor, which marks every catalog tool of the snapshot
+  from the refusal (decision D15). That marking covers a gateway that forwards
+  such a page; agentgateway v1.6.0 does not: e2e scenario J pads a page past
+  the cap next to a changed tool, and the gateway answers the client HTTP 500
+  on `tools/list` before the hook runs (pages of 6 MiB and 9 MiB alike, the
+  processor logging nothing), so nothing is marked, the listing fails closed,
+  and a session that listed the clean page earlier keeps calling the changed
+  tool until the next clean listing or crawl (limit L1). A decoy the gateway
+  does forward cannot keep a changed tool's older evidence alive: its calls
+  are denied until a clean page shows the approved digest. The table that holds this evidence is
+  sized from the catalog snapshot, records evidence for every catalog tool a
+  page names, servable or not (a disabled or pending tool's contradiction
+  costs one slot and the table has a margin; decision D15, before which
+  evidence seen while a tool could not be served was discarded, so a listing
+  during a pause or while a tool was disabled left the older agreeing digest
+  in place and the call passed after the resume or the enable), never for a
+  name the catalog does not know, survives a pause of the server (it is
+  pruned only against a non-empty snapshot, decision D14, and a page seen
+  while the snapshot is empty is judged against the names already in the
+  table, decision D15), and when full evicts an entry that agrees with its
   approval, never a contradiction; when no agreeing entry is left the new
   evidence is dropped and counted (`Stats.EvidenceDropped`), and a servable
   tool with no listing evidence is then denied until a listing records it.
@@ -516,11 +576,14 @@ until a later version says otherwise.
   cannot judge a message the gateway never shows it. The control is the
   canary's probe: every `verify-gateway` check sends such a call for a name no
   catalog can hold and reports UNHOOKED-CALLS, exit 1, when the gateway answers
-  202 instead of rejecting it; HTTP 400 is the healthy answer when its body is
-  not a JSON-RPC error, and a 400 with a JSON-RPC error body, like any other
-  2xx answer with a body, is PROBE-INCONCLUSIVE, exit 1, because a JSON-RPC
-  error in such an answer may have come from the upstream through a forwarding
-  gateway rather than from the gateway's own refusal (decisions D13 and D14).
+  202 instead of rejecting it; HTTP 400 is the healthy answer only when its
+  body is empty or is not JSON, and a 400 whose body parses as JSON (an object
+  or an array: a JSON-RPC error or a batch of them), like any other 2xx answer
+  with a body, is PROBE-INCONCLUSIVE, exit 1, because such an answer may have
+  come from the upstream through a forwarding gateway rather than from the
+  gateway's own refusal (decisions D13, D14 and D15; before the sixth round
+  only a single JSON-RPC error object was recognised, so a JSON-RPC batch of
+  errors on a 400 was called healthy).
   On the
   pinned gateway the probe therefore fails every check: run it once, record the
   limit, pass `--no-probe` until the pin moves, and re-run the probe on every
@@ -542,15 +605,30 @@ until a later version says otherwise.
   and the admin API can be turned off (`emit --disable-admin`, the gateway's
   own `adminAddr: off`) at the price of the live-configuration comparison;
   `verify-gateway --admin` (with `--config`) compares the live configuration
-  (`GET /api/config`) with the emitted file: every top-level section other
-  than `config`, `gateways` and `routes` is a mismatch on its own (the pinned
-  gateway loads fourteen sections, and a `binds` listener or a top-level `mcp`
-  shortcut carries routes with no processor); the admin, stats and readiness
-  addresses must be the emitted ones; every emitted gateway and route must be
-  present exactly once with the same fields, including each processor's
-  `requestHeaders` filter and a hash of its metadata (never printed), and
-  match path; nothing the file does not carry may exist; no path may appear
-  twice; and the `--url` path must be the emitted route's match
+  (`GET /api/config`) with the emitted file: every non-empty top-level section
+  other than `config`, `gateways` and `routes` is a mismatch on its own (the
+  pinned gateway loads fourteen sections, and a `binds` listener or a
+  top-level `mcp` shortcut carries routes with no processor); the `config`
+  block may carry only the admin, stats and readiness addresses, which must be
+  the emitted ones, and any other field in it is a mismatch; every emitted
+  gateway and route must be present exactly once with the same fields,
+  including each processor's `requestHeaders` filter and a hash of its
+  metadata (never printed), and match path; every live route is decoded
+  generically and may carry only `name`, `gateways`, `matches`, `policies` and
+  `backends`, only the policies `mcpAuthorization` and `mcpGuardrails`, a
+  single exact-path match and the one `mcp` backend with the emitted target,
+  and anything else in it is a mismatch, one line per item with names escaped
+  (decision D15; the fifth review posted the emitted document plus an
+  `extProc` policy, a `requestMirror` to another host, a response
+  transformation, a `urlRewrite`, a second host backend and a `config.mcp`
+  block, each of which the pinned binary's `--validate-only` accepted while
+  the comparison, which decoded the known fields only, called each a match;
+  the line reads, for example, `policy requestMirror: not in the emitted
+  file; the gateway applies it to this route`, and e2e scenario P posts such
+  a policy and a second backend through the admin API and records what the
+  running gateway does with each); nothing the file does not carry may exist;
+  no path may appear twice; and the `--url` path must be the emitted route's
+  match
   (LIVE-CONFIG-MISMATCH; decision D13, after the third review added a route
   that owned the path and a second gateway and the comparison of the named
   route alone called both healthy; decision D14, after the fourth review's
@@ -585,8 +663,14 @@ until a later version says otherwise.
   database can append a new, correctly sealed audit entry that approves a
   definition, and nothing inside the file can refute it; the audit head you
   recorded, the git export of approved definitions and your backups are the
-  controls, and the chain anchor on the serving path makes such a forger
-  re-chain the log suffix those anchors catch (decision D14).
+  controls. Inside the file the rule since the sixth round is that an audit
+  entry is trusted only when it is part of the chain the `Store` verified, so
+  a forger must rewrite every entry from the forged one to the head, which
+  changes the head a running `Store` pinned and the head you recorded; a chain
+  rewritten completely before any `Store` opens it is caught only by the
+  recorded head (the pin-bootstrap limit, decision D15; decision D14's anchor
+  re-sealed the newest approval entry against its predecessor only, so the
+  fifth review rewrote that entry in place below the head and it was served).
 
 The residual-risk table in [docs/threat-model.md](docs/threat-model.md) says what
 an operator can do about each of these.
@@ -599,8 +683,10 @@ of every package pass under `-race` (`make test`, which prints per-package
 coverage), and the end-to-end test passes against the real gateway (`make e2e`;
 `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The GitHub
 Actions workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs
-lint, vet and build, the short test suite under `-race`, the full Unicode walk
-of `internal/textdiff` and the slow catalog tests, govulncheck, gitleaks, the
+lint, vet and build, the short test suite under `-race`, the six tests that
+`-short` skips (the three Unicode walks of `internal/textdiff`, the two slow
+catalog tests and the processor's gRPC size test, run with their packages in
+full), govulncheck, gitleaks, the
 third-party notices check and the documentation checks (every cited test name
 and every relative link must exist) on every pull request and every push to
 main, and the end-to-end job on manual dispatch once the owner has recorded the
@@ -608,7 +694,7 @@ checksum of the linux gateway binary; it has not run yet because the repository
 has not been pushed. The security policy, including how to report a problem once
 the repository is public and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D14 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D15 are in
 [docs/decisions.md](docs/decisions.md).
 
 ## Licence

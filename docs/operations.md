@@ -13,7 +13,13 @@ The fourth round (the fixes after the third review, 2026-10-11, decision D13 in
 the fourth review, 2026-10-12, decision D14) changed what the canary compares,
 where processor addresses live, what `list` and `show` refuse, what a running
 processor does when the catalog file is replaced, and the recovery procedures
-again; the sections below describe the behaviour since then.
+again. The sixth round (the fixes after the fifth review, 2026-10-12,
+decision D15) changed what a store verifies when it opens and what it trusts
+afterwards, what the canary compares inside every route and in `config`, when
+`emit` records processor addresses and which processor hosts it refuses, how
+the processor marks a page the transport refuses and judges a listing it sees
+during a pause, and the probe's healthy shape; the sections below describe the
+behaviour since then.
 
 Global flags come before the command: `--db PATH` (or `TOOLWARRANT_DB`, default
 `./toolwarrant.db`), `--as NAME` (or `TOOLWARRANT_ACTOR`; the name `crawler` is
@@ -34,7 +40,10 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
 ```
 
 - `--listen` takes `host:port` or `unix:/path`. A TCP address must be loopback
-  unless `--allow-non-loopback` is given, and with that flag `serve` still
+  (a loopback literal, `localhost` or one of the loopback aliases common
+  resolvers map without DNS, such as `localhost.localdomain` and
+  `ip6-loopback`; D15) unless `--allow-non-loopback` is given, and with that
+  flag `serve` still
   refuses to listen without `--secret-env` unless `--insecure-no-secret` is
   passed as well, because anyone who reaches an unauthenticated processor
   decides what the gateway serves; a `--secret-env` always wins over
@@ -68,18 +77,27 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
 - The processor reloads its snapshot only when the catalog's generation counter
   moves, so approvals, rejects, rollbacks, disables and pauses take effect on
   the very next hook without a restart while the file is the same (scenarios
-  D and E). Every reload re-checks the guard objects, refuses a trigger, view
-  or unique index the schema did not create, requires the newest approve or
-  rollback decision about every approved tool to name the approved version and
-  digest (D13) and the newest `version.approved` or `version.rolled_back`
-  audit entry about it to carry that digest and re-seal from its predecessor,
-  and checks that the newest audit entry the store had verified before still
-  has the same hash and that the entries since it re-seal (the chain pin,
-  D14); a catalog it cannot read or trust denies every hook (`source errors`).
+  D and E). When its store opens it verifies the whole audit chain once, from
+  the first entry to the head, and pins the head (D15; the read `audit verify`
+  already pays). Every reload re-checks the guard objects and every table's
+  DDL, refuses a trigger, view, unique index or unaccounted automatic index
+  the schema did not create, requires the newest approve or rollback decision
+  about every approved tool to name the approved version and digest (D13) and
+  the newest `version.approved` or `version.rolled_back` audit entry about it
+  to carry that digest (D14), verifies the entries after the pin and advances
+  it, and trusts an audit entry only when the hash computed from its fields
+  equals the hash its own verified walk recorded for that sequence number,
+  never the hash column stored in the file (D15; before the sixth round the
+  entry was re-sealed against its predecessor only and the pin covered the
+  head and the suffix after it only, so an approval entry rewritten in place
+  below the head was served); a catalog it cannot read or trust denies every
+  hook (`source errors`).
 - The file must stay the same file. `init` writes a random catalog identity
   into the database and the processor's store records it together with the
-  file's device and inode when it opens; every generation read re-checks both,
-  so a catalog file that was deleted, replaced or re-initialised under a
+  file's device and inode when it opens; every read re-checks both (D15;
+  before the sixth round the generation read compared the identity and every
+  other read the device and inode alone), so a catalog file that was deleted,
+  replaced or re-initialised under a
   running processor is refused (`ErrReplaced`, which is also `ErrCorrupt`):
   every hook is denied with the reason `catalog unavailable`, counted under
   `source errors`, and `catalog unavailable, denying` is logged at Error until
@@ -96,25 +114,44 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   `init`; the recovery procedures below say so at each step where a file is
   deleted.
 - The evidence the processor remembers from the gateway's own listings lives
-  in a table sized from the snapshot. It records only tools the catalog could
-  serve, and when it is full it evicts an entry that agrees with its approval,
+  in a table sized from the snapshot. It records evidence for every catalog
+  tool a page names, servable or not (D15; before the sixth round evidence
+  seen while a tool could not be served was discarded, so a listing while a
+  tool was disabled or its server paused left the older agreeing digest in
+  place), never for a name the catalog does not know, and when it is full it
+  evicts an entry that agrees with its approval,
   never a conflict marker or a changed digest (D13), so a full table cannot
   make a changed tool callable; when nothing agreeing is left the new evidence
   is dropped and counted (`Stats.EvidenceDropped`), and while that count is
   above zero a servable tool with no listing evidence is denied as not yet
   verified until a listing records it. A page the processor cannot read through
-  to the end, and a page over the 8 MiB payload cap, marks every servable
-  catalog tool of the server as conflicting until a clean page shows the
-  approved digest (D13 and D14); expect `tools/call` denials with the reason
-  `changed since approval` after such a page until the upstream serves a clean
-  listing (limit L1). The table is pruned only against a non-empty snapshot
-  and never loses a contradiction, so a `server pause` followed by a
-  `server resume` keeps every marker and changed digest the gateway's listings
-  recorded (D14; before the fifth round the empty snapshot of a paused server
-  emptied the table, and a resumed server was judged on the last crawl's
-  digest alone; processor
+  to the end (one of more than 10000 tools included) marks every
+  catalog tool of the server, servable or not, as conflicting until a clean page shows the
+  approved digest (D13), and so does a `CheckResponse` call the gRPC transport refuses
+  for size (D15), when a gateway forwards such a page at all: agentgateway
+  v1.6.0 answers the client HTTP 500 on `tools/list` before the hook runs for
+  a page over its own limit (e2e scenario J, 6 MiB and 9 MiB pages, the
+  processor logging nothing), so such a page marks nothing and a client that
+  listed earlier keeps its evidence until the next clean listing or crawl;
+  expect `tools/call` denials with the reason `changed since approval` after a
+  page the processor did read and deny, until the upstream serves a clean
+  listing (limit L1). The table is pruned only
+  against a non-empty snapshot and never loses a contradiction, so a
+  `server pause` followed by a `server resume` keeps every marker and changed
+  digest the gateway's listings recorded (D14; before the fifth round the
+  empty snapshot of a paused server emptied the table, and a resumed server
+  was judged on the last crawl's digest alone), and a listing the gateway
+  makes during the pause is judged against the names already in the table: a
+  readable page records its digests for them and an unreadable page marks
+  every one (D15; before the sixth round the empty snapshot made every name a
+  catalog miss and such a page recorded nothing; processor
   `TestCheckResponse_OversizedPageMarksEveryServableToolBeforeDenial`,
-  `TestCache_PauseAndResumeKeepTheListingEvidence`).
+  `TestServe_OversizedPageOverTheWireMarksEveryCatalogTool`,
+  `TestCheckResponse_EvidenceIsKeptForEveryCatalogTool`,
+  `TestCache_ListingWhileDisabledDeniesTheEnabledCallUntilACleanListing`,
+  `TestCache_PauseAndResumeKeepTheListingEvidence`; e2e scenario J pads a page
+  past the cap next to a changed tool and checks that the session which listed
+  the clean page is denied on its next call).
 - Logs are JSON lines on stderr. Tool names in log lines are quoted, so a name
   cannot forge a log line. Denials and hides are logged; the shared secret and
   catalog contents never are.
@@ -221,21 +258,56 @@ Verdicts, one line per tool or per check:
   the address given to `emit --admin-addr`, default `127.0.0.1:15000`), the
   configuration the gateway is running (`GET /api/config`) is not the file
   named by `--config`. What is compared, exactly: the live document is decoded
-  as a map of top-level sections, and every section other than `config`,
-  `gateways` and `routes` is a mismatch on its own, one line per section,
+  as a map of top-level sections, and every non-empty section other than
+  `config`, `gateways` and `routes` is a mismatch on its own, one line per
+  section (a section that is null, an empty object or an empty array is not
+  reported),
   because the pinned gateway loads fourteen top-level sections (its own
   `--validate-only` lists them: `config`, `binds`, `frontendPolicies`,
   `policies`, `workloads`, `services`, `backends`, `routeGroups`, `gateways`,
   `routes`, `tcpRoutes`, `llm`, `mcp`, `ui`) and a `binds` listener or a
   top-level `mcp` shortcut carries routes with no processor; the `config`
-  block's admin, stats and readiness addresses must be the emitted ones; every
+  block's admin, stats and readiness addresses must be the emitted ones and no
+  other field may be in that block; every
   gateway and every route the file carries must be present exactly once with
   the same bind address, port, allow rules, backend hosts and match path, and
   with the same processors, each compared by host, kind, failure mode,
   methods, `requestHeaders` filter (the allowed and the disallowed list) and a
   hash of its canonical metadata, which holds the shared secret and is never
-  printed; nothing the file does not carry may exist (an added route, an added
-  gateway); no path may appear twice; and the path of `--url` must be the
+  printed; every live route is decoded generically, and a route key other than
+  `name`, `gateways`, `matches`, `policies` and `backends`, a policy other
+  than `mcpAuthorization` and `mcpGuardrails`, a match that is not a single
+  exact path and a backend that is not the one `mcp` backend with the emitted
+  target are each a mismatch of their own, one line per item with the names
+  escaped (D15; the fifth review posted the emitted document plus an
+  `extProc` policy, a `requestMirror` to another host, a response
+  transformation, a `urlRewrite`, a second host backend and a `config.mcp`
+  block, each of which the pinned binary's `--validate-only` accepts, and the
+  comparison, which decoded the known fields only, reported nothing; such a
+  policy on the route would put a body processor or a mirror of every client
+  request next to the hook). The line for such an item names its place:
+  `policy requestMirror: not in the emitted file; the gateway applies it to
+  this route` for a policy on the route of `--server` (`route NAME: ` is
+  prefixed for another emitted route), `field KEY: not in the emitted file`
+  for a route key, `match 1: field KEY: not in the emitted file` for a match,
+  `backend 2: field host: not in the emitted file` for a backend,
+  `config KEY: not in the emitted file` for a `config` field and
+  `gateway NAME: field KEY: not in the emitted file` for a gateway field; a
+  place that is not the object or list the file has there is reported as a
+  whole (`not an object as in the emitted file`), keys are escaped and values
+  are never shown (cmd
+  `TestLiveComparisonReportsWhatTheFileCannotCarryInsideAKnownSection`,
+  `TestCompareDocumentsReportsAPolicyOrBackendTheFileCannotCarry`,
+  `TestShapeWalkFailsClosedOnWhatItCannotRead`;
+  `TestGatewayAcceptsExtraRoutePoliciesAndBackends` shows that the pinned
+  binary loads them; e2e scenario P posts a `requestMirror` policy and a
+  second backend through the admin API and records what the running gateway
+  does with each against a mirror target it runs; on agentgateway v1.6.0 the
+  `requestMirror` policy made new sessions on the route fail, the canary's own
+  listing included, and the comparison still named the policy because since
+  the sixth round it runs even when the listing fails). Nothing the file does not
+  carry may exist (an added route, an added gateway); no path may appear
+  twice; and the path of `--url` must be the
   match of the emitted route for `--server` (D13 and D14; before the fourth
   round only the route named after the server was compared, so a shadow route
   that owned the path compared healthy, and before the fifth round only the
@@ -276,13 +348,16 @@ Verdicts, one line per tool or per check:
   with `--no-probe` the OK line said `unhooked-call probe skipped
   (--no-probe)`.
 - `PROBE-INCONCLUSIVE`: the gateway answered the probe with a 2xx status other
-  than 202 and a body, or with a 400 whose body is a JSON-RPC error. A JSON-RPC
-  error in such an answer may be the gateway's own refusal or an upstream's
-  reply relayed by a forwarding gateway, status included, and the canary
-  cannot tell which, so it reports that it proved nothing and fails the check
-  (D13 and D14). Exit code 1. The one-line account then reads `id-less
-  tools/call answered by someone (PROBE-INCONCLUSIVE)`. A 400 is healthy only
-  when its body is not a JSON-RPC error. Not reachable on agentgateway v1.6.0,
+  than 202 and a body, or with a 400 whose body parses as JSON (an object or an
+  array: a JSON-RPC error, or a batch of them). Such a body may be the
+  gateway's own refusal or an upstream's reply relayed by a forwarding
+  gateway, status included, and the canary cannot tell which, so it reports
+  that it proved nothing and fails the check (D13, D14 and D15; before the
+  sixth round only a single JSON-RPC error object was recognised, so a batch
+  of errors on a 400 was called healthy). Exit code 1. The one-line account
+  then reads `id-less tools/call answered by someone (PROBE-INCONCLUSIVE)`. A
+  400 is healthy only when its body is empty or is not JSON. Not reachable on
+  agentgateway v1.6.0,
   which answers 202 itself; after a move of the pin it means the probe's
   healthy shapes must be re-derived against that release (limit L7). Any other
   answer (a non-2xx status other than 400, or a 2xx without a body) is a
@@ -291,6 +366,7 @@ Verdicts, one line per tool or per check:
   a body of M bytes`; D14; before the fifth round it said "without a body"
   whatever the body was; cmd
   `TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive`,
+  `TestProbeReportsA400WithABatchOfJSONRPCErrorsAsInconclusive`,
   `TestProbeErrorSaysWhetherTheAnswerHadABody`).
 - `OK: the gateway serves N tool(s), N approved and current; live configuration
   matches the emitted file; unhooked-call probe skipped (--no-probe)` is the
@@ -298,7 +374,8 @@ Verdicts, one line per tool or per check:
   gains counts such as `, 1 approved but not listed (MISSING)` when there are
   any, the second reads `live configuration not compared (no --admin)` without
   `--admin`, and the third reads `id-less tools/call rejected by the gateway`
-  when the probe ran and the gateway answered 400. Exit code 0 is OK or
+  when the probe ran and the gateway answered 400 with an empty or non-JSON
+  body. Exit code 0 is OK or
   MISSING only.
 
 Why a canary and not a one-off check: the gateway binds the processor chain per
@@ -414,7 +491,11 @@ from such an open. Read `audit log ok` in that mode as "the chain is
 consistent", not as "the file is intact": every other command refuses a database
 whose guard objects are missing or do not have the definition `init` wrote, or
 that holds a foreign trigger, view or unique index (`ErrCorrupt`), and
-`audit verify` runs `Store.Integrity`'s cross-check after the chain check:
+`audit verify` runs `Store.Integrity`'s cross-check after the chain check: it
+verifies every entry's seal from its predecessor and its link to its successor
+as it streams the log and reports each break as a problem (D15; before the
+sixth round it read the entries without verifying them, so its cross-checks
+agreed with a rewritten log), then compares
 every approved digest against the newest decision and the newest
 `version.approved` or `version.rolled_back` entry, every tool's last-seen
 digest, state and proposal budget and every server's paused flag,
@@ -423,13 +504,17 @@ approval row against the decision entries, every version's status against the
 status the log implies and its proposers against its `version.proposed`
 entries, every subject the log describes against the rows that exist (a
 vanished tool row, a tool row the log never discovered, a second discovery of
-one subject, a version whose tool is gone), and the guard objects and foreign
-objects against the schema (D13 and D14). It prints `integrity ok: guard
+one subject, a version whose tool is gone), and the guard objects, every
+table's DDL and the foreign objects (an automatic index the schema's tables do
+not account for included) against the schema (D13, D14 and D15). It prints
+`integrity ok: guard
 objects intact, every approval recorded in the log` or one
 `integrity problem:` line per disagreement (`tool X: state is disabled but the
 latest audit entry (seq N) left it as enabled`, `server X: paused is false but
 the latest server entry (seq N) left it as true`, `unexpected trigger X: the
-schema did not create it`) with exit code 1. The report runs whether or not
+schema did not create it`, and since the sixth round `audit entry N does not
+re-seal: its hash is not the hash of its fields; the entry was rewritten in
+place`) with exit code 1. The report runs whether or not
 `--expect-head` matched, and also when the chain itself is broken: a head that
 moved or a broken entry is exactly when you want to know which rows disagree
 with the log and which foreign objects exist, so both findings are printed
@@ -462,15 +547,34 @@ fifth round are pinned by catalog
 `TestOpen_ForeignUniqueIndexIsCorrupt` and `TestInTx_ConstraintFailureIsCorrupt`;
 the chain anchor and the pin by `TestSnapshot_RewritingHashSeenUnderRecreatedGuardsIsCorrupt`,
 `TestSnapshot_ReChainedLogIsCaughtByThePinAndTheRecordedHead` and
-`TestSnapshot_LogChangedAfterThePinIsCorrupt`.
+`TestSnapshot_LogChangedAfterThePinIsCorrupt`; the verified chain of the sixth
+round by `TestOpen_VerifiesTheWholeChainAndPagesThroughIt`,
+`TestSnapshot_InPlaceRewriteOfTheApprovalEntryBelowTheHeadIsCorrupt`,
+`TestSnapshot_InPlaceEditOfAfterHashUnderAWarmMemoryIsCorrupt`,
+`TestApprove_ProposerLaunderedByInPlaceRewriteIsCorrupt`,
+`TestOpen_RewrittenHeadEntryIsCaughtOnlyByThePinAndTheRecordedHead` (the
+pin-bootstrap limit) and `TestIntegrity_ReportsEveryChainBreak`, the identity
+on every read by `TestSnapshot_ComparesTheStoredIdentityOnEveryRead`, and the
+table DDL and automatic indexes by
+`TestOpen_TableRecreatedWithAnExtraConstraintIsCorrupt`,
+`TestSchema_AutomaticIndexesArePinned` and
+`TestDisable_CheckConstraintFromARecreatedTableIsNamed` (D15).
 
 What the checks inside the file cannot do: whoever can write the 0600 file can
 append a new, correctly sealed audit entry that approves a definition, and
-nothing inside the file can refute it. The chain anchor on the serving path and
-the pin a running processor keeps (D14) force such a forger to re-chain the
-log suffix, and that is exactly what the head you recorded betrays; the git
-export of approved definitions (`export --dir`) and your backups are the other
-two anchors. Record the head, keep the export, keep backups.
+nothing inside the file can refute it. Since the sixth round an audit entry is
+trusted only when it is part of the chain the store verified: a store verifies
+the whole chain once when it opens and the suffix after its pin on every
+reload, and the serving path and the decision path accept an entry only when
+the hash computed from its fields equals the one that walk recorded for its
+sequence number (D15; before, the newest approval entry was re-sealed against
+its predecessor only, so the fifth review rewrote it in place below the head
+and it was served). A forger must therefore rewrite every entry from the
+forged one to the head, which changes the head a running store pinned and the
+head you recorded; a chain rewritten completely before any store opens it is
+caught only by the recorded head (the pin-bootstrap limit). The git export of
+approved definitions (`export --dir`) and your backups are the other two
+anchors. Record the head, keep the export, keep backups.
 
 ## Recovering from ErrCorrupt and ErrSchema
 
@@ -478,15 +582,25 @@ two anchors. Record the head, keep the export, keep backups.
 contradicts itself: a stored definition no longer hashes to its digest, an
 approved pointer dangles or points at a version that is not what the newest
 approve or rollback decision about the tool names or what the newest
-`version.approved` or `version.rolled_back` audit entry about it says, that
-entry does not re-seal from its predecessor, the newest audit entry a running
+`version.approved` or `version.rolled_back` audit entry about it says, the
+audit chain does not verify when the store opens, an audit entry the serving
+or decision path relies on does not hash to the value the store's verified
+walk recorded for its sequence number (D15), the newest audit entry a running
 store had verified changed or the entries since it do not re-seal (the chain
-pin), a status disagrees with its tool row, a guard trigger or index is
+pin), a status disagrees with its tool row, a guard trigger, table or index is
 missing or has another definition than the one `init` wrote, a constraint on
-a guarded table failed inside a write, or the file holds a trigger, view or
-unique index that `init` never created (D13 and D14: a foreign trigger can
-undo a decision inside the operator's own transaction, so one is never
-benign). It is also what a processor reports when the catalog file at its path
+a guarded table failed inside a write (the error names the table and the
+constraint SQLite reported, for example `a write to table audit_log failed a
+constraint (UNIQUE constraint failed: audit_log.event): the schema's own
+writes never do, so the table was re-created with another definition or a bug
+wrote the row`, D15; before the sixth round it named no cause, so a table
+re-created with an extra constraint was invisible until a write failed, and
+`audit verify` now reports such a table as redefined and its automatic index
+as a foreign object), or the file holds a trigger, view, unique index or
+unaccounted automatic index that `init` never created (D13, D14 and D15: a
+foreign trigger can undo a decision inside the operator's own transaction, so
+one is never benign). It is also what a processor reports when the catalog
+file at its path
 was deleted, replaced or re-initialised while it ran (the catalog identity or
 the file's device and inode no longer match the ones it opened; D14): the
 remedy for that case is to restart the processor, after checking why the file
@@ -501,8 +615,10 @@ Procedure:
    and at which entry it breaks, which registry columns disagree with the log
    and which foreign objects exist (the integrity report is printed whether or
    not the chain verified, D14), and `audit list` to see the last entries.
-   Compare the head with the one you recorded. Do not read `list` or `show` as
-   evidence: they refuse the file like every other command.
+   Compare the head with the one you recorded: a chain rewritten completely
+   before any store opened it verifies clean, and only that head catches it
+   (the pin-bootstrap limit, D15). Do not read `list` or `show` as evidence:
+   they refuse the file like every other command.
 3. Restore the most recent backup whose `audit verify` head equals a head you
    recorded, re-run the crawls, and review anything the audit log shows between
    the backup and the corruption.
@@ -637,7 +753,14 @@ and `server.resumed` audit entries; a paused flag flipped by plain SQL is
 reported by `audit verify` (D13). The processor keeps the evidence of the
 gateway's listings across a pause, so a contradiction it recorded before the
 pause still denies the call after the resume until a clean listing or a crawl
-records the approved digest (D14). Use pause when an upstream is compromised
+records the approved digest (D14), and a listing the gateway makes during the
+pause is judged against the names the processor already tracks: a readable
+page records its digests for them and an unreadable page marks every one, so
+a definition that changed during the pause is denied after the resume as well
+(D15; before the sixth round such a page was judged against the empty
+snapshot of the paused server and recorded nothing, so the pre-pause agreeing
+digest survived and the call passed after the resume). Use pause when an
+upstream is compromised
 or under investigation and you want nothing of it served without disabling
 every tool one by one, and as the first step of the growth-cap recovery above
 (catalog `TestPauseAndResumeServer`, cmd `TestPauseBlocksCrawlingAndServing`,
@@ -670,7 +793,14 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   `TestEmitKeepsProcessorAddressesAcrossReEmits`). A
   server with no address yet takes the next free port at or above
   `--processor-base-port` and above every port already in use;
-  `--processor` wins over the stored address and is stored in turn. `emit`
+  `--processor` wins over the stored address and is stored in turn. The
+  addresses are recorded, and their `server.processor_set` entries written,
+  only after the file was validated and renamed into place, so an emit the
+  gateway refuses or that cannot write the file records nothing and the next
+  emit still prints its change lines (D15; before the sixth round the record
+  came first, so a refused emit left the address and the entry behind for a
+  file that never existed and the next emit printed no change line; cmd
+  `TestEmitRecordsProcessorAddressesOnlyAfterTheFileIsWritten`). `emit`
   prints `processor address of server NAME is new: ADDR` for a server that
   had none and `processor address of server NAME changed from OLD to NEW;
   restart its processor on the new address` for a moved one, so you know
@@ -699,11 +829,23 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   `0x7f.0.0.1` and `2130706433`, which the resolver reads as 127.0.0.1, and a
   processor on the exact address given to `--bind-address`; emit
   `TestAmbiguousProcessorHostSpellingsAreRefused`,
-  `TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused`). An override that
-  names a host other than `localhost` or a loopback literal makes that
+  `TestProcessorOnTheGatewaysOwnSpecificAddressIsRefused`). A processor whose
+  host is a name rather than an IP literal is refused when its port is one the
+  gateway binds, because a name may resolve to this host (D15; the fifth
+  review passed `localhost.localdomain`, `localhost4`, `localhost6` and
+  `ip6-loopback`, which resolvers map to loopback from the hosts file without
+  DNS, with the serving and the admin port, each with a wrong non-loopback
+  warning; emit `TestProcessorNameOnAGatewayPortIsRefused`,
+  `TestLoopbackAliasOnAGatewaySocketIsRefused`,
+  `TestLoopbackAliasOnAFreePortIsQuiet`). An override that names a host other
+  than a loopback literal,
+  `localhost` or one of the loopback aliases (`localhost.localdomain`,
+  `localhost4`, `localhost4.localdomain4`, `localhost6`,
+  `localhost6.localdomain6`, `ip6-localhost`, `ip6-loopback`; D15) makes that
   processor reachable from the network: `emit` prints a warning for it and the
   printed `serve` command carries `--allow-non-loopback`, which `serve`
-  accepts only together with `--secret-env` (limit L11).
+  accepts only together with `--secret-env` or the explicit
+  `--insecure-no-secret` (limit L11).
 - `--bind-address ADDR` (default `127.0.0.1`) is the address the gateway binds
   the serving port to (`gateways.bindAddress`). A wildcard (`0.0.0.0` or `::`)
   also needs `--allow-all-interfaces`, a permission that changes nothing for
@@ -728,8 +870,9 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
 - `--gateway-binary PATH` (or the environment variable
   `TOOLWARRANT_AGENTGATEWAY`) stages the file under a temporary name, runs the
   gateway's own `--validate-only` on it and renames it into place only if the
-  gateway accepts it; a refusal exits 1, prints the gateway's message and
-  leaves no file. Without it a file the gateway cannot load would freeze every
+  gateway accepts it; a refusal exits 1, prints the gateway's message, leaves
+  no file and records no processor address (D15). Without it a file the
+  gateway cannot load would freeze every
   server's configuration on the next reload (the gateway keeps its previous
   state) with nothing in `emit`'s output to say so.
 - Server names and upstream URLs follow the gateway's rules, which are
@@ -819,8 +962,9 @@ after a rollback.
   check with a failing verdict without `--keep-going`, a `crawl --every`
   run stopped by a catalog error or with no complete crawl, `emit` when the
   gateway binary refuses the file, a processor address falls on one of the
-  gateway's own sockets or its host does not parse as an IP literal although
-  it looks like one, or the path at `--out` is not a regular file,
+  gateway's own sockets, its host does not parse as an IP literal although
+  it looks like one or is a name on a port the gateway binds (D15), or the
+  path at `--out` is not a regular file,
   `crawl --strict` with a rejected or unusable tool, `audit verify` with a
   broken chain, another head or integrity problems, `init` on a path whose
   directory is reached through a symbolic link that root does not own (cmd

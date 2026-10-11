@@ -1,4 +1,4 @@
-# Design decisions D1 to D14
+# Design decisions D1 to D15
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
@@ -9,7 +9,8 @@ which state D11 and D12 and the catalog integrity changes recorded in
 [threat-model.md](threat-model.md) rows 20 and 21, and the commits of the fourth
 round (2026-10-11, the fixes after the third review), which state D13, and
 the commits of the fifth round (2026-10-12, the fixes after the fourth review),
-which state D14. The
+which state D14, and the commits of the sixth round (2026-10-12, the fixes
+after the fifth review), which state D15. The
 post-review sections of [../seam/RESULTS.md](../seam/RESULTS.md) quote the same
 decisions and record the corrections they forced to the spike's findings. Each
 record gives the context (what a review found), the decision, its consequences
@@ -125,10 +126,12 @@ agentgateway v1.6.0 binary (`make e2e`; `demo/run.sh` keeps the last run in
   callable until a clean crawl records the approved digest, and since the
   fourth round the canary applies the same rule through the shared predicate
   `lifecycle.LastSeenVerifiable` (D13). A page the processor reads to the end
-  but denies as a whole (a repeated name, a tool it cannot hash, more than
-  10000 tools) leaves the conflict marker on every catalog tool it listed, and
-  a page it cannot read through to the end (an entry without a string name, a
-  `tools` member that is not an array) is evidence about nothing, so every
+  but denies as a whole (a repeated name, a tool it cannot hash) leaves the
+  conflict marker on every catalog tool it listed, and a page it cannot read
+  through to the end (an entry without a string name, a `tools` member that is
+  not an array, more than 10000 tools since the fifth round, when the survey
+  began to stop at the per-page cap before reading the entry past it) is
+  evidence about nothing, so every
   catalog tool of the snapshot gets the marker (D13; the third round's rule
   marked only the tools read before the failure, so the third review placed an
   unreadable decoy in front of a changed tool and that tool kept its older
@@ -648,7 +651,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   re-emits a side file as servers are added in an order that would have
   renumbered them and checks that no address moves. A processor address on one
   of the gateway's own sockets (a loopback, localhost or wildcard host with the
-  serving port or a listener port) is refused by the emitter; the gateway's
+  serving port or a listener port; since D15 (h) any host that is a name rather
+  than an IP literal) is refused by the emitter; the gateway's
   `--validate-only` accepts such a file. `verify-gateway` gains
   `--expect-body-hash HEX` (needs `--config`), mirroring `audit verify
   --expect-head`: the body hash `emit` printed, recorded off the host, is
@@ -727,7 +731,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `internal/emit/route.go` (the request-header filter). Tests: processor
   `TestCheckResponse_UnreadablePageMarksEveryServableToolOfTheSnapshot`,
   `TestCheckResponse_FullObservedTableEvictsAgreeingEvidenceNeverAContradiction`,
-  `TestCheckResponse_EvidenceIsKeptOnlyForServableTools`,
+  `TestCheckResponse_EvidenceIsKeptForEveryCatalogTool` (renamed in the sixth round, when evidence began to be kept for every catalog tool, D15 g),
   `TestCheckRequest_DroppedEvidenceDeniesUnlistedToolsUntilListed`,
   `TestReload_SizesTheObservedTableFromTheSnapshot` (d); emit
   `TestProcessorOnAGatewaySocketIsRefused`,
@@ -849,7 +853,11 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   (which the recorded head betrays), lets a running processor pin the chain
   prefix it has verified, so that history cannot change under it, and states
   the remaining limit in one sentence in README L19, threat-model row 21 and
-  here.
+  here. Corrected by D15: re-sealing one entry against its predecessor does
+  not force a re-chain, because the forger recomputes that one hash from the
+  real `prev_hash` and leaves the head alone; since the sixth round an entry
+  is trusted only when it is part of the chain the `Store` verified, and the
+  forger must rewrite every entry from the forged one to the head.
 - Decision (a): the serving-path evidence reaches the chain. For every
   approved version, `Snapshot`, `Approved` and `Versions` read the newest
   `version.approved` or `version.rolled_back` audit entry about the tool,
@@ -859,7 +867,14 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   entry hash, so the price is one indexed read and one seal per approved tool
   per ten minutes per `Store`. A forger who rewrites a definition and its
   `hash_seen` under re-created guards must now also rewrite and re-chain the
-  log suffix, which `audit verify --expect-head` betrays.
+  log suffix, which `audit verify --expect-head` betrays. Corrected by D15 (a)
+  and (b): the re-seal against the predecessor alone accepted an entry
+  rewritten in place (a new `after_hash` or actor, the hash recomputed from
+  the real `prev_hash`) with the head unchanged, and the verifier memory keyed
+  by the stored hash column accepted a rewritten `after_hash` alone while the
+  memory was warm; the fifth review served such an entry from a long-lived
+  `Store` and from a fresh one, with `Integrity` clean. Since the sixth round
+  the entry must be part of the chain the `Store` verified.
 - Decision (b): chain pinning. A `Store` remembers the sequence number and
   hash of the newest audit entry it has verified; every `Snapshot` verifies
   that the entry still has that hash and that the suffix since it re-seals,
@@ -870,7 +885,12 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   from its predecessor only, because verifying the whole chain on every start
   of a processor or a canary would cost a full read of the log; a rewrite
   before the `Store` opened is what `audit verify` with the recorded head is
-  for.
+  for. Corrected by D15 (a): verifying the head's seal alone at open left
+  every entry below the head unverified, so the pin caught nothing rewritten
+  below it; since the sixth round the `Store` verifies the whole chain once at
+  open (the read `audit verify` already pays) and keeps the hash it computed
+  for every decision entry, and the limit that remains is a chain rewritten
+  completely before the `Store` opens, which only the recorded head catches.
 - Decision (c): `Store.Integrity` gains passes that the log makes possible: a
   subject the log describes whose `tools` row is gone; a `tools` row with no
   `tool.discovered` entry; a second `tool.discovered` entry for one subject
@@ -915,8 +935,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   database. A forensic open accepts a database whose journal mode is not WAL
   (it opens with `mode=ro` and `immutable=1`), so `audit verify` and
   `audit list` work on a file whose tamperer also switched the journal mode.
-- Decision (g): processor. An oversized page marks every servable tool of the
-  snapshot before it is denied, like every other page the processor cannot
+- Decision (g): processor. An oversized page marks every catalog tool of the
+  snapshot, servable or not, before it is denied, like every other page the processor cannot
   read through to the end. The observed-evidence table is pruned only against
   a non-empty snapshot and never loses a contradiction, so a pause followed by
   a resume keeps every conflict marker and changed digest the gateway's
@@ -924,12 +944,34 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   page with a streaming decoder and stops at the per-page cap before the array
   is materialised, so a page of tiny entries cannot allocate many times its
   bytes. The three comments that still said listed equals callable now state
-  the one-way rule of D9.
+  the one-way rule of D9. Corrected by D15 (f) and (g): over the gRPC
+  transport a page over the payload cap is refused for size before the hook
+  runs, so the marking inside the hook was unreachable in the shipped runtime
+  (the fifth review's padded page left a changed tool's older evidence alive
+  with nothing counted or logged); since the sixth round the processor
+  observes the transport's refusal of a `CheckResponse` call and marks every
+  catalog tool of the snapshot from it, which applies to a gateway that
+  forwards such a page; agentgateway v1.6.0 answers the client HTTP 500 before
+  the hook for a page over its own limit (e2e scenario J, 6 MiB and 9 MiB), so
+  there nothing is marked and the window is the crawl cadence (L1). The pause rule kept only the evidence
+  recorded before the pause: a listing during the pause was judged against
+  the empty snapshot and discarded, and so was a listing about a disabled
+  tool; since the sixth round evidence is recorded for every catalog tool a
+  page names, servable or not, and a page seen while the snapshot is empty is
+  judged against the names already tracked.
 - Decision (h): emit. A processor host that is all digits, dotted digits or
   hex-looking must parse with `netip.ParseAddr` or is refused, so a loopback
   spelling the resolver would accept cannot pass the socket rule as a name;
   the socket rule compares the processor address with the input's own bind
-  address and listener addresses, not only with the loopback class.
+  address and listener addresses, not only with the loopback class. Corrected
+  by D15 (h): the rule knew one name, `localhost`, so the loopback aliases
+  common resolvers map without DNS (`localhost.localdomain`, `localhost4`,
+  `localhost4.localdomain4`, `localhost6`, `localhost6.localdomain6`,
+  `ip6-localhost`, `ip6-loopback`) passed with the serving or the admin port
+  and were warned about as non-loopback; since the sixth round a processor
+  whose host is a name rather than an IP literal is refused on any port the
+  gateway binds, and those aliases count as loopback in the emitter and in
+  `serve`.
 - Decision (i): CLI. The live comparison decodes `GET /api/config` into a map
   of top-level sections and fails closed on any non-empty section other than
   `config`, `gateways` and `routes`, one LIVE-CONFIG-MISMATCH line per extra
@@ -970,7 +1012,32 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   that is a symbolic link not owned by root (links the operating system
   installs in its own directories, such as `/var` on macOS, are tolerated),
   so a link planted in a shared working directory cannot redirect where the
-  private file is created.
+  private file is created. Corrected by D15 (i), (j), (k) and (m): the live
+  comparison decoded the known fields of each route and of `config` only, so
+  a route policy, backend or `config` field the emitted file cannot carry
+  compared as a match (the fifth review's `extProc`, `requestMirror`,
+  transformation, `urlRewrite`, second host backend and `config.mcp` block,
+  each accepted by `--validate-only`); since the sixth round every live route,
+  backend and `config` field is decoded generically and anything the file
+  cannot carry is a mismatch, and the documents say "every non-empty
+  top-level section", which is what the code always compared. `emit` recorded
+  the processor addresses before the file was validated and written, so a
+  refused emit left the address and its audit entry behind and the next emit
+  printed no `is new` line; since the sixth round the addresses are recorded
+  after the rename. The probe recognised a single JSON-RPC error object only,
+  so a JSON-RPC batch of errors on a 400 was healthy; since the sixth round a
+  400 whose body parses as JSON, object or array, is PROBE-INCONCLUSIVE and
+  only an empty or non-JSON body is healthy. SECURITY.md said `init` refuses
+  every linked directory, which omits the root-owned exception above, and the
+  `emit --processor` help and the operations guide said `serve` accepts
+  `--allow-non-loopback` only with `--secret-env`, which omits the explicit
+  `--insecure-no-secret`; both sentences were corrected.
+  The comparison runs even when the canary's own listing failed: a policy
+  posted through the admin API can break the route for new sessions (a
+  `requestMirror` did, on agentgateway v1.6.0, in e2e scenario P); the
+  LIVE-CONFIG-MISMATCH lines are printed and named next to the listing failure
+  and the run exits 1
+  (`TestVerifyGatewayComparesTheLiveConfigurationWhenTheListingFails`).
 - Decision (j): `textdiff` escapes a quotation mark inside a quoted changed
   span as `\"`, the way it already did inside a key, so a span can only end at
   the renderer's own closing quote. Landed in the commit after this round's
@@ -1084,3 +1151,258 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   re-initialised under two running processors). The fixed finding about the
   stale unusable marker is pinned by `TestModel_StoreFollowsTheLifecycleModel`
   and `TestRecordCrawl_DeprecatedToolWithAMarkerIsClearedOnce`.
+
+## D15. The sixth round: the verified chain, the whole-route live comparison, the transport-refused page and the pin-bootstrap limit
+
+- Context. The fifth hostile review (2026-10-12, four reviewers over the
+  areas ingest, CLI and documents, core, and processor and emit, each finding
+  re-run by an independent verifier against a369090) confirmed fifteen
+  findings, three of them high and three medium after verification; the
+  in-place rewrite of an audit entry was reported from two areas and the
+  over-cap page from two. In the order of the sub-decisions below: the chain
+  anchor of D14 (a) re-sealed the newest approval entry against its
+  predecessor only, the pin of D14 (b) verified the head and the suffix after
+  the pin only, and the verifier memory of `RecheckTTL` was keyed by the hash
+  column the forger writes, so a forger with file write access rewrote one
+  approval entry in place below the head (a new `after_hash` or actor with
+  the hash recomputed from the real `prev_hash`, or `after_hash` alone while
+  the memory was warm), kept the head unchanged, and a long-lived `Store`, a
+  fresh read-only `Store` and a fresh read-write `Store` all served the
+  rewritten digest under the approver's name, `Approved` exported the
+  poisoned bytes, the decision path accepted it, and `Store.Integrity`
+  reported nothing, while only the full chain walk of `VerifyAudit` broke at
+  the successor; the same rewrite of every `version.proposed` entry about a
+  tool, together with the proposer tables under re-created guards, laundered
+  the proposer rule of D4 with `Integrity` clean, so the proposer approved;
+  `Store.Integrity` read the audit entries without verifying them, so its
+  cross-checks agreed with a rewritten log; the documents' sentence "a forger
+  must re-chain the log suffix, which the recorded head betrays" was
+  therefore false; the stored catalog identity was compared by `Generation`
+  alone while `Snapshot`, `Approved`, `Versions`, `Tools` and `Tool` compared
+  the device and inode only, so an identity changed in `meta` gave
+  `ErrReplaced` from one read and success from the others; the guard check
+  and `Integrity` compared triggers, indexes and views but never a table's
+  DDL and ignored an index without DDL text, so `audit_log` re-created with an
+  extra `UNIQUE (event)` passed every check while every later `RecordCrawl`
+  failed with an `ErrCorrupt` that named no cause; over the gRPC transport a
+  `tools/list` page over the payload cap was refused with `ResourceExhausted`
+  before `CheckResponse` ran (the receive limit equals the cap and the message
+  is larger than its payload), so the marking D14 (g) added to the hook was
+  unreachable in the shipped runtime, nothing was counted or logged, and a
+  padded page next to a changed tool kept the older evidence alive, which is
+  the fourth review's finding one layer down; listing evidence seen while a
+  tool could not be served was discarded (a paused server's empty snapshot
+  made every name a catalog miss, and `record` skipped a disabled tool), so a
+  listing during a pause or while disabled that showed the changed definition
+  left the pre-pause agreeing digest in place and the call passed after the
+  resume or the enable; the socket rule knew one host name, `localhost`, so
+  `localhost.localdomain`, `localhost4`, `localhost4.localdomain4`,
+  `localhost6`, `localhost6.localdomain6`, `ip6-localhost` and `ip6-loopback`,
+  which resolvers map to loopback from the hosts file without DNS, passed with
+  the serving or the admin port, were warned about as non-loopback, and the
+  gateway loaded the file; the live comparison read a fixed set of fields
+  inside the three known sections and `json.Unmarshal` dropped every other
+  key, so the emitted document plus an `extProc` policy, a `requestMirror` to
+  another host at percentage 100, a response transformation, a `urlRewrite`,
+  a second host backend next to the `mcp` one and a `config.mcp` block, each
+  of which agentgateway v1.6.0 accepts (it lists thirty-two route policies and
+  thirty-seven config fields), compared as a match and the canary printed OK;
+  `emit` recorded the processor addresses and their `server.processor_set`
+  entries before the file was validated and written, so a refused emit left
+  them behind for a file that never existed and the next emit printed no
+  `is new` line; the probe recognised a single JSON-RPC error object only, so
+  a 400 carrying a JSON-RPC batch of errors was called healthy; the CI
+  `test-full` job ran `internal/textdiff` and `internal/catalog` only while
+  `TestServe_AcceptsAPageOverGRPCsDefaultLimit` also skips under `-short`, and
+  CLAUDE.md counted five skips where there are six; three sentences stated a
+  rule more strongly than the code enforces it (SECURITY.md's `init` and
+  symbolic links, "every top-level section" where the code compares non-empty
+  ones, the printed `serve` command needing `--secret-env` where
+  `--insecure-no-secret` is also accepted); and the documents listed the
+  over-cap page of more than 10000 tools among the pages read to the end,
+  which the fifth round's streaming survey had stopped doing.
+- The trust boundary, restated. Whoever can write the 0600 file can append a
+  new, correctly sealed audit entry that approves a definition, and nothing
+  inside the file can refute it (D14). Inside the file, an audit entry is
+  trusted only when it is part of the chain the `Store` verified: a forger
+  who rewrites an entry must rewrite every entry from the forged one to the
+  head, which changes the head a running `Store` pinned and the head the
+  operator recorded. A chain rewritten completely, head included, before any
+  `Store` opens it is caught only by the recorded head: the pin-bootstrap
+  limit. README "The audit log" and L19, threat-model row 21 and L19 and the
+  operations guide state the rule in these words.
+- Decision (a): the whole chain, once, at open. A `Store` verifies the whole
+  audit chain when it opens (`audit.VerifyFrom` from the first entry over a
+  streamed read, the read `audit verify` already pays) and pins the head. It keeps in memory the hash
+  it computed itself for every decision entry it walked (`version.proposed`,
+  `version.superseded`, `version.rejected`, `version.approved`,
+  `version.rolled_back`, `tool.budget_reset`, `server.processor_set`) and for
+  the head. Every reload verifies the suffix after the pin with
+  `audit.VerifyFrom` and extends the memory. `audit.HashOf` exposes the seal
+  computation over an entry's fields alone, ignoring the hash column it was
+  stored with.
+- Decision (b): trust comes from the walk. The serving path (`Snapshot`,
+  `Approved`, `Versions`, `Tools`, `Tool`) and the decision path (every
+  `Apply`, the proposer list `Approve` consults included) trust an audit entry
+  only when the hash computed locally from its fields equals the hash the
+  verified walk recorded for its sequence number. The stored hash column is
+  never consulted for trust and never keys a memory. A mismatch is
+  `ErrCorrupt`, which the processor turns into a source-error denial of every
+  hook.
+- Decision (c): `Store.Integrity` verifies every entry's seal from its
+  predecessor and its link to its successor as it streams the log and reports
+  each break as a problem, so its cross-checks are meaningful on their own.
+- Decision (d): the stored catalog identity is compared in `checkFile` too,
+  so every read compares it, as the documents said.
+- Decision (e): the guard check and `Integrity` compare the stored DDL of
+  every table with the schema (the same normalisation as for triggers and
+  indexes) and account for every automatic index (`sql IS NULL`) that the
+  schema's own tables create, reporting any other as a foreign object; the
+  `ErrCorrupt` raised for a constraint failure names the table and the
+  constraint when SQLite reports them.
+- Decision (f): processor. A `CheckResponse` call whose message the gRPC
+  transport refuses for size (`ResourceExhausted` from the length prefix) is
+  observed on the call's request decoder, and before the status is written
+  the processor marks every catalog tool of the snapshot (every tracked entry
+  while the snapshot is empty), counts the denial and logs it, exactly as it
+  does for an oversized page it reads itself; marking needs no payload, so the
+  refused message's secret and service names, which were never read, cannot
+  gate it. The documents say what the shipped runtime does: on agentgateway v1.6.0
+  a page over the gateway's own limit never reaches the processor at all (HTTP
+  500 to the client before the hook; e2e scenario J with 6 MiB and 9 MiB
+  pages), so the refusal marks only for a gateway that forwards such a page.
+- Decision (g): listing evidence is recorded for every catalog tool the page
+  names, servable or not (a contradiction costs one slot and the table is
+  sized from the snapshot's whole tool count with a margin), never for a name
+  the catalog does not know. A page seen while the snapshot is empty (a paused
+  server) is judged against the names already in the observed table: a
+  readable page records its digests for the tracked names and an unreadable
+  page marks every tracked entry.
+- Decision (h): emit. A processor whose host is a name rather than an IP
+  literal is refused when its port is one the gateway binds, because a name
+  may resolve to this host (`processor address NAME:PORT has a host that is
+  not an IP literal and may resolve to this host, so it may be the gateway's
+  own SOCKET socket (port N): the gateway would dial its own listener for
+  every hook; write the processor's IP address or use a port the gateway does
+  not bind`). The loopback aliases common resolvers map without DNS
+  (`localhost.localdomain`, `localhost4`, `localhost4.localdomain4`,
+  `localhost6`, `localhost6.localdomain6`, `ip6-localhost`, `ip6-loopback`)
+  count as loopback in `isThisHost`, in the emitter's warning
+  (`emit.IsLoopbackName`) and in the CLI's `isLoopbackHost`, one list for
+  both; any other name is not resolved.
+- Decision (i): the live comparison decodes every live route, backend and
+  `config` field generically against the shape the emitted file can carry and
+  fails closed on anything else: a route key other than `name`, `gateways`,
+  `matches`, `policies` and `backends`; a policy other than
+  `mcpAuthorization` and `mcpGuardrails`; a match that is not a single exact
+  path; a backend that is not the one `mcp` backend with the emitted target;
+  a `config` field other than the three listener addresses; one
+  LIVE-CONFIG-MISMATCH line per item with names escaped and values never
+  shown (`policy requestMirror: not in the emitted file; the gateway applies
+  it to this route`, `field KEY: not in the emitted file`, `match 1: field
+  KEY: not in the emitted file`, `backend 2: field host: not in the emitted
+  file`, `config KEY: not in the emitted file`, `gateway NAME: field KEY: not
+  in the emitted file`; a place that is not the object or list the file has
+  there is reported as a whole). A top-level section counts only when it is
+  non-empty, which the code always did and the documents now say.
+- Decision (j): `emit` records processor addresses in the catalog only after
+  the file was validated and renamed into place, so a refused or failed emit
+  records nothing and the next emit still prints its change lines.
+- Decision (k): the probe treats a 400 as healthy only when its body is empty
+  or is not JSON; a 400 whose body parses as JSON (an object or an array, a
+  JSON-RPC error or a batch of them, a bare scalar included) is
+  PROBE-INCONCLUSIVE, because the probe cannot tell who wrote it.
+- Decision (l): CI. The `test-full` job runs `./internal/processor/` next to
+  `./internal/textdiff/` and `./internal/catalog/`, and CLAUDE.md names the
+  six tests `-short` skips.
+- Decision (m): the three over-stated sentences are corrected (SECURITY.md:
+  `init` refuses a directory component that is a symbolic link not owned by
+  root; "every non-empty top-level section"; the printed `serve` command's
+  `--allow-non-loopback` is accepted with `--secret-env` or the explicit
+  `--insecure-no-secret`), and the over-cap page of more than 10000 tools is
+  listed among the unreadable shapes everywhere.
+- Decision (n): README "The audit log", D14 (a) and (b) as corrected above,
+  threat-model row 21 and the operations guide state the rule exactly: an
+  entry is trusted only when it is part of the chain the `Store` verified; a
+  forger must rewrite every entry from the forged one to the head, which
+  changes the head a running `Store` pinned and the head the operator
+  recorded; a chain rewritten completely before a `Store` opens is caught only
+  by the recorded head (the pin-bootstrap limit).
+- How the round was run. Each area was fixed by one agent that edited only its
+  own paths and reported to the lead in its final message; no agent messaged
+  another, and the documents were written against the decisions above and
+  checked against the tree at the end.
+- Consequence. Operators: opening a `Store` (every command, every processor
+  start, every canary run) now reads the whole audit log once, the cost
+  `audit verify` already had; the schema stays v5 and no file needs
+  re-initialising; record the audit head after every verify, because a chain
+  rewritten completely before any `Store` opens it is caught by that head
+  alone; expect a `tools/call` denial with the reason `changed since
+  approval` after a page the transport refused, until a clean page shows the
+  approved digest, and expect the processor's `lists denied` counter to count
+  such a page; a listing during a pause now counts as evidence; `emit`
+  refuses a processor host that is a name on a port the gateway binds (write
+  the IP address or move the port) and no longer warns about the loopback
+  aliases; `verify-gateway --admin` reports any route policy, match, backend,
+  route key or `config` field the emitted file cannot carry, so a gateway
+  whose live document carries one on purpose cannot pass the canary; a
+  refused `emit` records no address; a 400 probe answer with any JSON body
+  fails the check. Document corrections of the round are listed in the
+  corrections subsection of [../seam/RESULTS.md](../seam/RESULTS.md).
+- Where. `internal/catalog/chain.go`, `internal/catalog/anchor.go`,
+  `internal/catalog/approved.go`, `internal/catalog/load.go`,
+  `internal/catalog/recheck.go`, `internal/catalog/snapshot.go` and
+  `internal/catalog/proposers.go` (a, b; `pin.go` is gone),
+  `internal/audit/audit.go` (`HashOf`), `internal/catalog/integrity_audit.go`
+  (c), `internal/catalog/chain.go` (`checkFile`) and
+  `internal/catalog/identity.go` (d), `internal/catalog/schemaobjects.go`,
+  `internal/catalog/guards.go` and `internal/catalog/store.go` (e);
+  `internal/processor/serve.go` (`watchRefusal`, `pageRefused`),
+  `internal/processor/list.go`, `internal/processor/filter.go` and
+  `internal/processor/observed.go` (f, g); `internal/emit/socket.go` and
+  `internal/emit/warning.go` (`IsLoopbackName`, h);
+  `cmd/toolwarrant/liveshape.go`,
+  `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go` and
+  `cmd/toolwarrant/liveconfig.go` (i), `cmd/toolwarrant/emit.go` and
+  `cmd/toolwarrant/emitports.go` (j), `cmd/toolwarrant/probe.go` (k),
+  `cmd/toolwarrant/serve.go` (h), `.github/workflows/ci.yml` and CLAUDE.md
+  (l). Tests: catalog `TestOpen_VerifiesTheWholeChainAndPagesThroughIt`,
+  `TestSnapshot_InPlaceRewriteOfTheApprovalEntryBelowTheHeadIsCorrupt` (a
+  long-lived `Store` with a warm memory and a fresh open),
+  `TestSnapshot_InPlaceEditOfAfterHashUnderAWarmMemoryIsCorrupt`,
+  `TestOpen_RewrittenHeadEntryIsCaughtOnlyByThePinAndTheRecordedHead` (the
+  pin-bootstrap limit), `TestInTx_RefusesToAppendAfterTheChainWasEdited` (a),
+  `TestApprove_ProposerLaunderedByInPlaceRewriteIsCorrupt`,
+  `TestDecisions_TrustEntriesAnotherHandleAppended` (b),
+  `TestIntegrity_ReportsEveryChainBreak` (c),
+  `TestSnapshot_ComparesTheStoredIdentityOnEveryRead` (d),
+  `TestOpen_TableRecreatedWithAnExtraConstraintIsCorrupt`,
+  `TestSchema_AutomaticIndexesArePinned`,
+  `TestDisable_CheckConstraintFromARecreatedTableIsNamed` (e); audit
+  `TestHashOf_IsTheSealComputationAndIgnoresTheHashField`
+  (a); processor `TestServe_OversizedPageOverTheWireMarksEveryCatalogTool`,
+  `TestServe_RefusedPageWithAnUnreadableCatalogIsASourceError` (f),
+  `TestCheckResponse_EvidenceIsKeptForEveryCatalogTool`,
+  `TestCache_ListingWhileDisabledDeniesTheEnabledCallUntilACleanListing`,
+  `TestCache_PauseAndResumeKeepTheListingEvidence` (g); emit
+  `TestProcessorNameOnAGatewayPortIsRefused`,
+  `TestProcessorNameRuleFollowsTheListenerInputs`,
+  `TestLoopbackAliasOnAGatewaySocketIsRefused`,
+  `TestLoopbackAliasOnAFreePortIsQuiet`, `TestIsLoopbackName`,
+  `TestGatewayAcceptsAProcessorNamedForItsOwnSocket` (the binary loads the
+  name; h); cmd `TestLiveComparisonReportsWhatTheFileCannotCarryInsideAKnownSection`,
+  `TestCompareDocumentsReportsAPolicyOrBackendTheFileCannotCarry`,
+  `TestShapeWalkFailsClosedOnWhatItCannotRead`,
+  `TestGatewayAcceptsExtraRoutePoliciesAndBackends` (the binary loads the
+  extra policies and the second backend; i),
+  `TestEmitRecordsProcessorAddressesOnlyAfterTheFileIsWritten` (j),
+  `TestProbeReportsA400WithABatchOfJSONRPCErrorsAsInconclusive` (k),
+  `TestCheckListenAddrPolicy` (h); e2e scenario J (a page padded past the
+  payload cap next to a changed tool is refused by the gateway itself with
+  HTTP 500 before the hook, at 6 MiB as at 9 MiB, so the processor marks
+  nothing and the earlier session's next call stays allowed, recorded as the
+  shipped runtime's behaviour), scenario N (a processor restarted on a long log walks the whole chain
+  at open and serves exactly what the stopped one served) and scenario P (a
+  `requestMirror` policy and a second backend posted through the admin API,
+  each LIVE-CONFIG-MISMATCH, with what the running gateway did recorded
+  against a mirror target).
