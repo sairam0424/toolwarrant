@@ -2,199 +2,212 @@ package main
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/sairam0424/toolwarrant/internal/emit"
 	"github.com/sairam0424/toolwarrant/internal/fetch"
 )
 
-// adminDoc is testdata/admin_config.json, the shape GET /api/config returned
-// on the real gateway, with its pinned values replaced by the ones the
-// fixture's emitted file holds, so the live configuration can be made to
-// agree with the file or to differ from it in exactly one field. Every
-// replacement must hit, so a stale testdata file fails loudly.
-func adminDoc(t *testing.T, upstreamURL string, edits ...string) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "admin_config.json"))
+// The emitted-file reader is pinned to what internal/emit writes today: a
+// freshly emitted file with a shared secret and two servers yields every
+// gateway and every route with exactly the fields the comparison needs, and
+// never the secret.
+func TestEmittedConfigReadsWhatEmitWrites(t *testing.T) {
+	out, err := emit.AgentGateway(emit.Input{ListenPort: 8080, BindAddress: "::1", Servers: []emit.Server{
+		{Name: "beta", URL: "http://127.0.0.1:3002/mcp?q=" + plant("query"), ProcessorAddr: "127.0.0.1:9002", Secret: plant("shared"), ApprovedTools: []string{"b"}},
+		{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: plant("shared"), ApprovedTools: []string{"x", "a"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := string(data)
-	replace := func(old, repl string) {
-		if !strings.Contains(doc, old) {
-			t.Fatalf("the live configuration lacks %q:\n%s", old, doc)
+	doc, err := emittedConfig(out.YAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.gateways) != 1 || doc.gateways["toolwarrant"] != (gatewayConfig{bindAddress: "::1", port: "8080"}) {
+		t.Errorf("gateways: %+v", doc.gateways)
+	}
+	if len(doc.routes) != 2 || doc.routes[0].name != "alpha" || doc.routes[1].name != "beta" {
+		t.Fatalf("routes: %+v", doc.routes)
+	}
+	rc, n := doc.route("alpha")
+	if n != 1 || rc.gateway != "toolwarrant" || joinPaths(rc.paths) != "/alpha/mcp" || len(rc.rules) != 1 || rc.rules[0] != `mcp.tool.name == "a" || mcp.tool.name == "x"` {
+		t.Errorf("route alpha: %d %+v", n, rc)
+	}
+	if len(rc.processors) != 1 || rc.processors[0].host != "127.0.0.1:9001" || rc.processors[0].kind != "remote" || rc.processors[0].failureMode != "failClosed" ||
+		describeMethods(rc.processors[0].methods) != "tools/call=request,tools/list=response" {
+		t.Errorf("processor: %+v", rc.processors)
+	}
+	if len(rc.backendHosts) != 1 || rc.backendHosts[0] != "http://127.0.0.1:3001/mcp" {
+		t.Errorf("backends: %q", rc.backendHosts)
+	}
+	beta, n := doc.route("beta")
+	if n != 1 || len(beta.backendHosts) != 1 || !strings.Contains(beta.backendHosts[0], plant("query")) || len(beta.processors) != 1 || beta.processors[0].host != "127.0.0.1:9002" {
+		t.Errorf("route beta: %d %+v", n, beta)
+	}
+	for _, p := range beta.processors {
+		for k, v := range p.methods {
+			if strings.Contains(k, canary) || strings.Contains(v, canary) {
+				t.Errorf("the shared secret was read into the methods: %q=%q", k, v)
+			}
 		}
-		doc = strings.ReplaceAll(doc, old, repl)
 	}
-	replace(`"mock"`, `"s1"`)
-	replace(`"/mock/mcp"`, `"/s1/mcp"`)
-	replace(`"port": 63902`, `"port": 3000`)
-	replace(`"127.0.0.1:63941"`, `"127.0.0.1:9001"`)
-	replace(`mcp.tool.name == \"add\" || mcp.tool.name == \"echo\"`, `mcp.tool.name == \"echo\"`)
-	replace(`"http://127.0.0.1:63905/mcp"`, `"`+upstreamURL+`"`)
-	for i := 0; i+1 < len(edits); i += 2 {
-		replace(edits[i], edits[i+1])
+	if _, n := doc.route("gamma"); n != 0 {
+		t.Errorf("absent route found %d time(s)", n)
 	}
-	return doc
-}
-
-// adminAPI serves one fixed answer at the admin API's config path and counts
-// the requests it saw.
-type adminAPI struct {
-	srv  *httptest.Server
-	hits atomic.Int64
-}
-
-func serveAdmin(t *testing.T, status int, body string) *adminAPI {
-	t.Helper()
-	a := &adminAPI{}
-	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		a.hits.Add(1)
-		if r.URL.Path != adminConfigPath || r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
+	if _, err := emittedRouteOf(doc, "gamma"); err == nil || !strings.Contains(err.Error(), "has no route for server gamma") {
+		t.Errorf("absent route: %v", err)
+	}
+	for name, file := range map[string]string{
+		"route twice":           "routes:\n- name: \"x\"\n- name: \"x\"\n",
+		"gateway twice":         "gateways:\n  toolwarrant:\n    port: 1\n  toolwarrant:\n    port: 2\n",
+		"unquoted scalar":       "routes:\n- name: x\n",
+		"bad escape":            "routes:\n- name: \"x\\q\"\n",
+		"unquoted bind":         "gateways:\n  toolwarrant:\n    bindAddress: 127.0.0.1\n",
+		"item outside routes":   "config:\n- name: \"x\"\n",
+		"key outside a gateway": "gateways:\n    port: 1\n",
+		"unquoted gateway ref":  "routes:\n- name: \"x\"\n  gateways: toolwarrant\n",
+		"unquoted path":         "routes:\n- name: \"x\"\n  matches:\n  - path:\n      exact: /x/mcp\n",
+	} {
+		if _, err := emittedConfig([]byte(file)); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
-		w.Header().Set("Content-Type", mediaJSON)
-		w.WriteHeader(status)
-		_, _ = io.WriteString(w, body)
-	}))
-	t.Cleanup(a.srv.Close)
-	return a
+	}
 }
 
-// hostPort is the admin API as emit --admin-addr and verify-gateway --admin
-// take it.
-func (a *adminAPI) hostPort() string { return strings.TrimPrefix(a.srv.URL, "http://") }
+// route is a routeConfig for the comparison tests.
+func route(name, gateway, path string, processors ...processorConfig) routeConfig {
+	return routeConfig{name: name, gateway: gateway, paths: []string{path}, rules: []string{`mcp.tool.name == "echo"`}, processors: processors, backendHosts: []string{"http://127.0.0.1:1/mcp"}}
+}
 
-// Decision D12: with --admin the configuration the gateway is running is
-// compared with the emitted file, field by field, and every difference is
-// LIVE-CONFIG-MISMATCH with exit 1; a processor-less route in steady state
-// looks exactly like that. The fixture is the shape the real gateway returned.
-func TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile(t *testing.T) {
-	c, u := fixture(t)
-	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
-	g := newUpstream(t, map[string]string{"echo": echoV1})
-	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
-	c.ok("emit", "--out", cfg)
-	healthy := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
-	out := c.ok("verify-gateway", "--server", "s1", "--url", g.url(), "--config", cfg, "--admin", healthy.hostPort())
-	wantContains(t, "stdout", out, verdictOK+": the gateway serves 1 tool(s), 1 approved and current; live configuration matches the emitted file; id-less tools/call rejected by the gateway")
-	wantNotContains(t, "stdout", out, verdictLiveConfig)
-	out = c.ok("verify-gateway", "--server", "s1", "--url", g.url(), "--config", cfg, "--admin", healthy.srv.URL+"/")
-	wantContains(t, "stdout as url", out, "live configuration matches the emitted file")
-	if healthy.hits.Load() != 2 {
-		t.Errorf("admin API hits = %d, want one per check", healthy.hits.Load())
+// Decision D13 (e): the comparison covers the whole document and names every
+// difference once, with every live value escaped and no backend host shown.
+func TestCompareDocumentsNamesEveryDifference(t *testing.T) {
+	proc := processorConfig{host: "127.0.0.1:9001", kind: "remote", failureMode: "failClosed", methods: map[string]string{"tools/list": "response"}}
+	emitted := configDoc{gateways: map[string]gatewayConfig{"toolwarrant": {bindAddress: "127.0.0.1", port: "3000"}},
+		routes: []routeConfig{route("s1", "toolwarrant", "/s1/mcp", proc), route("s2", "toolwarrant", "/s2/mcp", proc)}}
+	if diffs := compareDocuments(emitted, emitted, "s1", "/s1/mcp"); len(diffs) != 0 {
+		t.Errorf("identical documents differ: %q", diffs)
 	}
-	out = c.ok("verify-gateway", "--server", "s1", "--url", g.url(), "--config", cfg)
-	wantContains(t, "stdout without --admin", out, "live configuration not compared (no --admin)")
-
 	cases := map[string]struct {
-		old, repl string
-		want      []string
+		live    func() configDoc
+		urlPath string
+		want    []string
 	}{
-		"bind address":       {`"bindAddress": "127.0.0.1"`, `"bindAddress": "0.0.0.0"`, []string{"bind address: emitted 127.0.0.1, live 0.0.0.0"}},
-		"serving port":       {`"port": 3000`, `"port": 3001`, []string{"serving port: emitted 3000, live 3001"}},
-		"allow rule":         {`mcp.tool.name == \"echo\"`, `true`, []string{`allow rule: emitted mcp.tool.name == "echo", live true`}},
-		"no allow rule":      {`"mcpAuthorization"`, `"mcpAuthorizationGone"`, []string{"allow rules: emitted 1, live 0"}},
-		"processor host":     {`"127.0.0.1:9001"`, `"127.0.0.1:9999"`, []string{"processor host: emitted 127.0.0.1:9001, live 127.0.0.1:9999"}},
-		"processor kind":     {`"kind": "remote"`, `"kind": "local"`, []string{"processor kind: emitted remote, live local"}},
-		"failure mode":       {`"failClosed"`, `"failOpen"`, []string{"processor failureMode: emitted failClosed, live failOpen"}},
-		"methods":            {`"tools/call": "request",`, ``, []string{"processor methods: emitted tools/call=request,tools/list=response, live tools/list=response"}},
-		"no processor":       {`"mcpGuardrails"`, `"mcpGuardrailsGone"`, []string{"processor: the live route has none (emitted 127.0.0.1:9001); every new session on this route is served by the allow rule alone"}},
-		"unknown gateway":    {`"gateways": "toolwarrant"`, `"gateways": "other"`, []string{"bind address: emitted 127.0.0.1, live (none)", "serving port: emitted 3000, live (none)"}},
-		"no route":           {`"routes": [`, `"routes": [], "was": [`, []string{"the live configuration has no route for the server (or lists it twice)"}},
-		"another upstream":   {`"` + u.url() + `"`, `"http://127.0.0.1:1/mcp?q=` + plant("query") + `"`, []string{"backend host: the live route points at another upstream (values withheld"}},
-		"no backend targets": {`"targets"`, `"targetsGone"`, []string{"backend targets: emitted 1, live 0"}},
+		"gateway missing": {func() configDoc { d := emitted; d.gateways = map[string]gatewayConfig{}; return d }, "/s1/mcp",
+			[]string{"gateway toolwarrant: not in the live configuration (emitted bind address 127.0.0.1, serving port 3000)"}},
+		"gateway added": {func() configDoc {
+			d := emitted
+			d.gateways = map[string]gatewayConfig{"toolwarrant": emitted.gateways["toolwarrant"], "open": {bindAddress: "0.0.0.0", port: "3001"}}
+			return d
+		}, "/s1/mcp", []string{"gateway open: not in the emitted file (live bind address 0.0.0.0, serving port 3001); every route attached to it is served without the emitted guards"}},
+		"gateway fields": {func() configDoc {
+			d := emitted
+			d.gateways = map[string]gatewayConfig{"toolwarrant": {bindAddress: "0.0.0.0", port: ""}}
+			return d
+		}, "/s1/mcp", []string{"gateway toolwarrant: bind address: emitted 127.0.0.1, live 0.0.0.0", "gateway toolwarrant: serving port: emitted 3000, live (none)"}},
+		"route missing": {func() configDoc { d := emitted; d.routes = emitted.routes[:1]; return d }, "/s1/mcp",
+			[]string{"route s2: not in the live configuration; its path /s2/mcp is served by nothing or by another route"}},
+		"route twice": {func() configDoc {
+			d := emitted
+			d.routes = append(append([]routeConfig{}, emitted.routes...), emitted.routes[0])
+			return d
+		}, "/s1/mcp",
+			[]string{"route s1: listed 2 times in the live configuration, so which one the gateway serves cannot be told", "path /s1/mcp: matched by 2 live routes (s1, s1)"}},
+		"route added without a processor": {func() configDoc {
+			d := emitted
+			d.routes = append(append([]routeConfig{}, emitted.routes...), route("s1-shadow", "toolwarrant", "/s1/mcp"))
+			return d
+		}, "/s1/mcp", []string{"route s1-shadow: not in the emitted file (gateway toolwarrant, path /s1/mcp); the gateway serves it without the emitted guards", "path /s1/mcp: matched by 2 live routes (s1, s1-shadow)"}},
+		"own route moved": {func() configDoc {
+			d := emitted
+			moved := route("s1", "other", "/s1/mcp-parked", proc)
+			d.routes = []routeConfig{moved, emitted.routes[1]}
+			return d
+		}, "/s1/mcp", []string{"gateway: emitted toolwarrant, live other", "match path: emitted /s1/mcp, live /s1/mcp-parked"}},
+		"other route edited": {func() configDoc {
+			d := emitted
+			edited := route("s2", "toolwarrant", "/s2/mcp")
+			d.routes = []routeConfig{emitted.routes[0], edited}
+			return d
+		}, "/s1/mcp", []string{"route s2: processor: the live route has none (emitted 127.0.0.1:9001); every new session on this route is served by the allow rule alone"}},
+		"prefix match": {func() configDoc {
+			d := emitted
+			prefixed := route("s1", "toolwarrant", nonExactPath, proc)
+			d.routes = []routeConfig{prefixed, emitted.routes[1]}
+			return d
+		}, "/s1/mcp", []string{"match path: emitted /s1/mcp, live (not an exact path)"}},
+		"url on another path": {func() configDoc { return emitted }, "/s1/other",
+			[]string{"the path of --url (/s1/other) is not the match of the emitted route (/s1/mcp); the listing above tested another route"}},
+		"url without a path": {func() configDoc { return emitted }, "",
+			[]string{"the path of --url ((none)) is not the match of the emitted route (/s1/mcp)"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), tc.old, tc.repl))
-			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url(), "--config", cfg, "--admin", admin.hostPort())
-			for _, want := range tc.want {
-				wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+want)
+			diffs := compareDocuments(emitted, tc.live(), "s1", tc.urlPath)
+			if len(diffs) != len(tc.want) {
+				t.Errorf("got %d difference(s), want %d:\n%s", len(diffs), len(tc.want), strings.Join(diffs, "\n"))
 			}
-			wantNotContains(t, "stdout", r.stdout, verdictOK, canary, "q=")
-			wantContains(t, "stderr", r.stderr, "differs from the emitted file in", "place(s), listed above", "find out who changed it")
-			wantNotContains(t, "stderr", r.stderr, canary, "q=")
+			for _, want := range tc.want {
+				wantContains(t, "diffs", strings.Join(diffs, "\n"), want)
+			}
 		})
 	}
 }
 
-// An admin API the canary cannot reach or read is an error, never OK, and
-// the comparison does not even run against a file that is not what emit
-// wrote or that cannot be read: the check already fails as CONFIG-EDITED.
-func TestVerifyGatewayLiveComparisonFailsClosed(t *testing.T) {
-	c, u := fixture(t)
-	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
-	g := newUpstream(t, map[string]string{"echo": echoV1})
-	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
-	c.ok("emit", "--out", cfg)
-	verify := func(admin string) result {
-		return c.run("verify-gateway", "--server", "s1", "--url", g.url(), "--config", cfg, "--admin", admin)
+// Live values are hostile until escaped, a route listed twice in the live
+// document is never taken as the compared one, and the admin API client fails
+// closed on an address it cannot reach.
+func TestCompareRoutesEscapesAndFailsClosed(t *testing.T) {
+	proc := processorConfig{host: "h:1", kind: "remote", failureMode: "failClosed", methods: map[string]string{"tools/list": "response"}}
+	emitted := route("s1", "toolwarrant", "/s1/mcp", proc)
+	if diffs := compareRoutes(emitted, emitted); len(diffs) != 0 {
+		t.Errorf("identical routes differ: %q", diffs)
 	}
-	closed := serveAdmin(t, http.StatusOK, "{}")
-	closed.srv.Close()
-	for name, tc := range map[string]struct {
-		admin string
-		want  string
-	}{
-		"unreachable": {closed.hostPort(), "admin api: connection refused"},
-		"not json":    {serveAdmin(t, http.StatusOK, "<html>admin</html>").hostPort(), "admin api: the answer is not the configuration JSON"},
-		"http 500":    {serveAdmin(t, http.StatusInternalServerError, "{}").hostPort(), "admin api: http status 500"},
-		"too large":   {serveAdmin(t, http.StatusOK, strings.Repeat(" ", adminMaxBody+1)).hostPort(), "admin api: the configuration is larger than the cap"},
-		"wrong path":  {serveAdmin(t, http.StatusOK, "{}").srv.URL + "/elsewhere", "admin api: http status 404"},
-	} {
-		r := verify(tc.admin)
-		if r.code != exitFailure {
-			t.Errorf("%s: exit %d, want %d\n%s", name, r.code, exitFailure, r.stdout)
-		}
-		wantContains(t, name, r.stderr, tc.want)
-		wantNotContains(t, name, r.stdout, verdictOK)
+	two := emitted
+	two.processors = []processorConfig{proc, proc}
+	if diffs := compareRoutes(emitted, two); len(diffs) != 1 || diffs[0] != "processors: emitted 1, live 2" {
+		t.Errorf("two processors: %q", diffs)
 	}
-	// An empty document has no route: LIVE-CONFIG-MISMATCH, not OK.
-	r := verify(serveAdmin(t, http.StatusOK, "{}").hostPort())
-	if r.code != exitFailure {
-		t.Errorf("empty document: exit %d", r.code)
+	hostile := emitted
+	hostile.rules = []string{"r" + esc + "[31m"}
+	hostile.paths = []string{"/s1/mcp" + esc + "[0m"}
+	diffs := compareRoutes(emitted, hostile)
+	if len(diffs) != 2 || !strings.Contains(diffs[0], `\u{001B}`) || !strings.Contains(diffs[1], `\u{001B}`) || strings.Contains(strings.Join(diffs, ""), esc) {
+		t.Errorf("hostile route: %q", diffs)
 	}
-	wantContains(t, "empty document", r.stdout, verdictLiveConfig+" s1: the live configuration has no route")
-
-	// A file that is not what emit wrote: CONFIG-EDITED, and the admin API
-	// is never asked.
-	untouched := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
-	edited := strings.Replace(readFile(t, cfg), "failClosed", "failOpen", 1)
-	if err := os.WriteFile(cfg, []byte(edited), 0o644); err != nil {
+	live := configDoc{gateways: map[string]gatewayConfig{}, routes: []routeConfig{{name: "s1" + esc}, {name: "x"}, {name: "x"}}}
+	all := strings.Join(compareDocuments(configDoc{gateways: map[string]gatewayConfig{}}, live, "s1", "/s1/mcp"), "\n")
+	wantContains(t, "escaped names", all, `route s1\u{001B}: not in the emitted file`, "route x: not in the emitted file")
+	wantNotContains(t, "escaped names", all, esc)
+	if got := describeMethods(nil); got != noneShown {
+		t.Errorf("describeMethods(nil) = %q", got)
+	}
+	doc := liveConfigDoc{Routes: []liveRouteDoc{{Name: "x"}, {Name: "x"}}}
+	if _, n := doc.config().route("x"); n != 2 {
+		t.Errorf("a route listed twice was counted %d time(s)", n)
+	}
+	bare := liveConfigDoc{Routes: []liveRouteDoc{{Name: "x", Gateways: "none"}}}.config()
+	if rc, n := bare.route("x"); n != 1 || rc.gateway != "none" || rc.paths != nil || rc.rules != nil || rc.processors != nil {
+		t.Errorf("route without matches or policies: %d %+v", n, rc)
+	}
+	client, err := fetch.NewClient(fetch.Policy{AllowPrivate: true})
+	if err != nil {
 		t.Fatal(err)
 	}
-	r = verify(untouched.hostPort())
-	if r.code != exitFailure {
-		t.Errorf("edited file: exit %d", r.code)
+	if _, err := fetchLiveConfig(context.Background(), client, "http://127.0.0.1:1"); err == nil || !strings.HasPrefix(err.Error(), "admin api: ") {
+		t.Errorf("unreachable admin api: %v", err)
 	}
-	wantContains(t, "edited file", r.stdout, verdictConfigEdited)
-	wantNotContains(t, "edited file", r.stdout, verdictLiveConfig, verdictOK)
-	if err := os.Remove(cfg); err != nil {
-		t.Fatal(err)
+	if _, err := fetchLiveConfig(context.Background(), client, "::bad url"); err == nil {
+		t.Error("bad admin url accepted")
 	}
-	r = verify(untouched.hostPort())
-	wantContains(t, "missing file", r.stdout, verdictConfigEdited, "could not be read")
-	if untouched.hits.Load() != 0 {
-		t.Errorf("the admin API was asked %d time(s) although the file failed its check", untouched.hits.Load())
+	if got := routePathOf("http://127.0.0.1:3000/s1/mcp?x=1"); got != "/s1/mcp" {
+		t.Errorf("routePathOf = %q", got)
 	}
-
-	// A file without a route for the server: an error, not a match.
-	c.ok("emit", "--out", cfg)
-	c.ok("server", "add", "s2", u.url(), "--allow-private")
-	r = c.run("verify-gateway", "--server", "s2", "--url", g.url(), "--config", cfg, "--admin", untouched.hostPort())
-	if r.code != exitFailure {
-		t.Errorf("server without a route: exit %d", r.code)
+	if got := routePathOf("::bad"); got != "::bad" {
+		t.Errorf("routePathOf(bad) = %q", got)
 	}
-	wantContains(t, "server without a route", r.stderr, "has no route for server s2", "run emit again")
 }
 
 // The skip reasons of the live comparison, which only the --every summary
@@ -213,100 +226,13 @@ func TestCompareLiveSkipsWhatItCannotTrust(t *testing.T) {
 	if err := v.compareLive(context.Background(), []byte("routes:\n- name: x\n"), &res); err == nil || !strings.Contains(err.Error(), "unquoted scalar") {
 		t.Errorf("unparseable file: %v", err)
 	}
+	if err := v.compareLive(context.Background(), []byte("routes:\n- name: \"s1\"\n- name: \"s1\"\n"), &res); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("route twice: %v", err)
+	}
 	none := &verifier{}
 	if err := none.compareLive(context.Background(), nil, &res); err != nil || res.live.compared || res.live.skipped != "" || res.live.diffs != nil {
 		t.Errorf("without --admin: %v %+v", err, res.live)
 	}
 	wantContains(t, "skipped summaries", verdicts{live: liveCheck{skipped: liveSkippedEdited}}.summary(), "not what emit wrote")
 	wantContains(t, "skipped summaries", verdicts{live: liveCheck{skipped: liveSkippedUnreadable}}.summary(), "could not be read")
-}
-
-// The emitted-file reader is pinned to what internal/emit writes today: a
-// freshly emitted file with a shared secret and two servers yields exactly
-// the fields the comparison needs, and never the secret.
-func TestEmittedRouteReadsWhatEmitWrites(t *testing.T) {
-	out, err := emit.AgentGateway(emit.Input{ListenPort: 8080, BindAddress: "::1", Servers: []emit.Server{
-		{Name: "beta", URL: "http://127.0.0.1:3002/mcp?q=" + plant("query"), ProcessorAddr: "127.0.0.1:9002", Secret: plant("shared"), ApprovedTools: []string{"b"}},
-		{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: plant("shared"), ApprovedTools: []string{"x", "a"}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rc, err := emittedRoute(out.YAML, "alpha")
-	if err != nil || !rc.found {
-		t.Fatalf("route alpha: %v %+v", err, rc)
-	}
-	if rc.bindAddress != "::1" || rc.port != "8080" || len(rc.rules) != 1 || rc.rules[0] != `mcp.tool.name == "a" || mcp.tool.name == "x"` {
-		t.Errorf("gateway and rule: %+v", rc)
-	}
-	if len(rc.processors) != 1 || rc.processors[0].host != "127.0.0.1:9001" || rc.processors[0].kind != "remote" || rc.processors[0].failureMode != "failClosed" ||
-		describeMethods(rc.processors[0].methods) != "tools/call=request,tools/list=response" {
-		t.Errorf("processor: %+v", rc.processors)
-	}
-	if len(rc.backendHosts) != 1 || rc.backendHosts[0] != "http://127.0.0.1:3001/mcp" {
-		t.Errorf("backends: %q", rc.backendHosts)
-	}
-	beta, err := emittedRoute(out.YAML, "beta")
-	if err != nil || len(beta.backendHosts) != 1 || !strings.Contains(beta.backendHosts[0], plant("query")) || len(beta.processors) != 1 || beta.processors[0].host != "127.0.0.1:9002" {
-		t.Errorf("route beta: %v %+v", err, beta)
-	}
-	for _, p := range beta.processors {
-		for k, v := range p.methods {
-			if strings.Contains(k, canary) || strings.Contains(v, canary) {
-				t.Errorf("the shared secret was read into the methods: %q=%q", k, v)
-			}
-		}
-	}
-	if gamma, err := emittedRoute(out.YAML, "gamma"); err != nil || gamma.found {
-		t.Errorf("absent route: %v %+v", err, gamma)
-	}
-	for name, file := range map[string]string{
-		"route twice":     "routes:\n- name: \"x\"\n- name: \"x\"\n",
-		"unquoted scalar": "routes:\n- name: x\n",
-		"bad escape":      "routes:\n- name: \"x\\q\"\n",
-		"unquoted bind":   "gateways:\n  toolwarrant:\n    bindAddress: 127.0.0.1\n",
-	} {
-		if _, err := emittedRoute([]byte(file), "x"); err == nil {
-			t.Errorf("%s: accepted", name)
-		}
-	}
-}
-
-func TestCompareRoutesNamesEveryDifference(t *testing.T) {
-	proc := processorConfig{host: "h:1", kind: "remote", failureMode: "failClosed", methods: map[string]string{"tools/list": "response"}}
-	emitted := routeConfig{found: true, bindAddress: "127.0.0.1", port: "3000", rules: []string{"r"}, processors: []processorConfig{proc}, backendHosts: []string{"u"}}
-	if diffs := compareRoutes(emitted, emitted); len(diffs) != 0 {
-		t.Errorf("identical routes differ: %q", diffs)
-	}
-	two := emitted
-	two.processors = []processorConfig{proc, proc}
-	if diffs := compareRoutes(emitted, two); len(diffs) != 1 || diffs[0] != "processors: emitted 1, live 2" {
-		t.Errorf("two processors: %q", diffs)
-	}
-	hostile := emitted
-	hostile.rules = []string{"r" + esc + "[31m"}
-	diffs := compareRoutes(emitted, hostile)
-	if len(diffs) != 1 || !strings.Contains(diffs[0], `\u{001B}`) || strings.Contains(diffs[0], esc) {
-		t.Errorf("hostile rule: %q", diffs)
-	}
-	if got := describeMethods(nil); got != noneShown {
-		t.Errorf("describeMethods(nil) = %q", got)
-	}
-	doc := liveConfigDoc{Routes: []liveRouteDoc{{Name: "x"}, {Name: "x"}}}
-	if rc := liveRoute(doc, "x"); rc.found {
-		t.Error("a route listed twice was taken as found")
-	}
-	if rc := liveRoute(liveConfigDoc{Routes: []liveRouteDoc{{Name: "x", Gateways: "none"}}}, "x"); !rc.found || rc.port != "" || rc.bindAddress != "" || rc.rules != nil || rc.processors != nil {
-		t.Errorf("route without gateway or policies: %+v", rc)
-	}
-	client, err := fetch.NewClient(fetch.Policy{AllowPrivate: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fetchLiveConfig(context.Background(), client, "http://127.0.0.1:1"); err == nil || !strings.HasPrefix(err.Error(), "admin api: ") {
-		t.Errorf("unreachable admin api: %v", err)
-	}
-	if _, err := fetchLiveConfig(context.Background(), client, "::bad url"); err == nil {
-		t.Error("bad admin url accepted")
-	}
 }

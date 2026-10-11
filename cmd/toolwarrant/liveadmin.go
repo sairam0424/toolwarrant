@@ -7,11 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
-	"strings"
-
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // The admin API as the comparison reads it.
@@ -25,12 +21,16 @@ const (
 	adminMaxBody = 4 << 20
 	// noneShown stands for an absent value in a difference line.
 	noneShown = "(none)"
+	// nonExactPath stands for a live route match that is not an exact path
+	// (a prefix, a regex, or no path at all): it cannot equal an emitted match
+	// and it still owns whatever it matches.
+	nonExactPath = "(not an exact path)"
 )
 
 // liveConfigDoc is the pinned subset of GET /api/config: the gateways with
-// their bind and port, and every route with its policies and backends. Fields
-// the comparison does not read are left out; an unknown field in the answer
-// is ignored, a missing one compares as empty.
+// their bind and port, and every route with its matches, policies and
+// backends. Fields the comparison does not read are left out; an unknown
+// field in the answer is ignored, a missing one compares as empty.
 type liveConfigDoc struct {
 	Gateways map[string]struct {
 		Port        int    `json:"port"`
@@ -43,6 +43,11 @@ type liveConfigDoc struct {
 type liveRouteDoc struct {
 	Name     string `json:"name"`
 	Gateways string `json:"gateways"`
+	Matches  []struct {
+		Path struct {
+			Exact string `json:"exact"`
+		} `json:"path"`
+	} `json:"matches"`
 	Policies struct {
 		McpAuthorization *struct {
 			Rules []struct {
@@ -100,135 +105,48 @@ func fetchLiveConfig(ctx context.Context, client *http.Client, admin string) (li
 	return doc, nil
 }
 
-// liveRoute reduces the live configuration to the route of server. A route
-// listed twice is reported as absent: the comparison cannot know which one
-// the gateway serves.
-func liveRoute(doc liveConfigDoc, server string) routeConfig {
-	var rc routeConfig
-	matches := 0
-	var route liveRouteDoc
-	for _, r := range doc.Routes {
-		if r.Name == server {
-			matches++
-			route = r
+// config reduces the live document to the shape the comparison works on:
+// every gateway and every route, in document order, nothing dropped. A port
+// of zero means the gateway declared none.
+func (d liveConfigDoc) config() configDoc {
+	out := configDoc{gateways: map[string]gatewayConfig{}}
+	for name, gw := range d.Gateways {
+		port := ""
+		if gw.Port != 0 {
+			port = strconv.Itoa(gw.Port)
+		}
+		out.gateways[name] = gatewayConfig{bindAddress: gw.BindAddress, port: port}
+	}
+	for _, r := range d.Routes {
+		out.routes = append(out.routes, r.config())
+	}
+	return out
+}
+
+// config reduces one live route to the compared fields.
+func (r liveRouteDoc) config() routeConfig {
+	rc := routeConfig{name: r.Name, gateway: r.Gateways}
+	for _, m := range r.Matches {
+		if m.Path.Exact == "" {
+			rc.paths = append(rc.paths, nonExactPath)
+			continue
+		}
+		rc.paths = append(rc.paths, m.Path.Exact)
+	}
+	if r.Policies.McpAuthorization != nil {
+		for _, rule := range r.Policies.McpAuthorization.Rules {
+			rc.rules = append(rc.rules, rule.Allow)
 		}
 	}
-	if matches != 1 {
-		return rc
-	}
-	rc.found = true
-	if gw, ok := doc.Gateways[route.Gateways]; ok {
-		rc.bindAddress, rc.port = gw.BindAddress, strconv.Itoa(gw.Port)
-	}
-	if route.Policies.McpAuthorization != nil {
-		for _, r := range route.Policies.McpAuthorization.Rules {
-			rc.rules = append(rc.rules, r.Allow)
-		}
-	}
-	if route.Policies.McpGuardrails != nil {
-		for _, p := range route.Policies.McpGuardrails.Processors {
+	if r.Policies.McpGuardrails != nil {
+		for _, p := range r.Policies.McpGuardrails.Processors {
 			rc.processors = append(rc.processors, processorConfig{host: p.Host, kind: p.Kind, failureMode: p.FailureMode, methods: p.Methods})
 		}
 	}
-	for _, b := range route.Backends {
+	for _, b := range r.Backends {
 		for _, t := range b.Mcp.Targets {
 			rc.backendHosts = append(rc.backendHosts, t.Mcp.Host)
 		}
 	}
 	return rc
-}
-
-// compareRoutes names every field in which the configuration the gateway is
-// running differs from the emitted file. Values are escaped; backend hosts
-// are never shown, because an upstream URL may carry a credential.
-func compareRoutes(emitted, live routeConfig) []string {
-	if !live.found {
-		return []string{"the live configuration has no route for the server (or lists it twice); its path is served by nothing or by another route"}
-	}
-	var diffs []string
-	diffs = appendDiff(diffs, "bind address", emitted.bindAddress, live.bindAddress)
-	diffs = appendDiff(diffs, "serving port", emitted.port, live.port)
-	diffs = append(diffs, compareRules(emitted.rules, live.rules)...)
-	diffs = append(diffs, compareProcessors(emitted.processors, live.processors)...)
-	diffs = append(diffs, compareHosts(emitted.backendHosts, live.backendHosts)...)
-	return diffs
-}
-
-// appendDiff adds a line when two scalar values differ.
-func appendDiff(diffs []string, field, emitted, live string) []string {
-	if emitted == live {
-		return diffs
-	}
-	return append(diffs, fmt.Sprintf("%s: emitted %s, live %s", field, shown(emitted), shown(live)))
-}
-
-// shown renders a value for a difference line.
-func shown(v string) string {
-	if v == "" {
-		return noneShown
-	}
-	return textdiff.Escape(v)
-}
-
-// compareRules compares the allow rules; emit writes exactly one.
-func compareRules(emitted, live []string) []string {
-	if len(emitted) != len(live) {
-		return []string{fmt.Sprintf("allow rules: emitted %d, live %d", len(emitted), len(live))}
-	}
-	var diffs []string
-	for i := range emitted {
-		diffs = appendDiff(diffs, "allow rule", emitted[i], live[i])
-	}
-	return diffs
-}
-
-// compareProcessors compares the processors; a live route without one is the
-// F3 case the canary exists for.
-func compareProcessors(emitted, live []processorConfig) []string {
-	switch {
-	case len(live) == 0 && len(emitted) > 0:
-		return []string{fmt.Sprintf("processor: the live route has none (emitted %s); every new session on this route is served by the allow rule alone", shown(emitted[0].host))}
-	case len(emitted) != len(live):
-		return []string{fmt.Sprintf("processors: emitted %d, live %d", len(emitted), len(live))}
-	}
-	var diffs []string
-	for i := range emitted {
-		diffs = appendDiff(diffs, "processor host", emitted[i].host, live[i].host)
-		diffs = appendDiff(diffs, "processor kind", emitted[i].kind, live[i].kind)
-		diffs = appendDiff(diffs, "processor failureMode", emitted[i].failureMode, live[i].failureMode)
-		diffs = appendDiff(diffs, "processor methods", describeMethods(emitted[i].methods), describeMethods(live[i].methods))
-	}
-	return diffs
-}
-
-// compareHosts compares the backend hosts without showing them.
-func compareHosts(emitted, live []string) []string {
-	if len(emitted) != len(live) {
-		return []string{fmt.Sprintf("backend targets: emitted %d, live %d", len(emitted), len(live))}
-	}
-	var diffs []string
-	for i := range emitted {
-		if emitted[i] != live[i] {
-			diffs = append(diffs, "backend host: the live route points at another upstream (values withheld: an upstream URL may carry a credential)")
-		}
-	}
-	return diffs
-}
-
-// describeMethods renders a processor's method map in a fixed order, for a
-// difference line. The result is escaped once more by shown.
-func describeMethods(m map[string]string) string {
-	if len(m) == 0 {
-		return noneShown
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+m[k])
-	}
-	return strings.Join(parts, ",")
 }

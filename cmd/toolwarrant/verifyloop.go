@@ -10,20 +10,29 @@ import (
 )
 
 // loopTally counts the checks of a scheduled run so that the run fails at the
-// end when any check failed, and when no check ever completed: a canary that
-// printed "check failed" until it was stopped has proven nothing.
+// end when any check failed, when any failing verdict line was printed, and
+// when no check ever completed: a canary that printed "check failed" until it
+// was stopped has proven nothing, and one that printed a LEAK and was stopped
+// a moment later has proven a leak (D13 f).
 type loopTally struct {
 	completed, failedVerdicts, errored int
+	// verdictLines is how many failing verdict lines the run printed; the
+	// third review found a LEAK on stdout and exit 0 when the stop signal
+	// arrived while the admin API fetch of the same check was in flight.
+	verdictLines int
 }
 
-// record counts one check.
-func (t *loopTally) record(res verdicts, err error) {
+// record counts one check. A check that found a failing verdict is a failed
+// check whatever else happened to it; a check that found none and was cut
+// short by the stop signal proved nothing either way and is not counted.
+func (t *loopTally) record(res verdicts, err error, interrupted bool) {
 	switch {
-	case err != nil:
-		t.errored++
 	case res.failed():
 		t.completed++
 		t.failedVerdicts++
+	case err != nil && interrupted:
+	case err != nil:
+		t.errored++
 	default:
 		t.completed++
 	}
@@ -36,36 +45,41 @@ func (t loopTally) outcome() error {
 	switch {
 	case t.completed == 0:
 		return fmt.Errorf("no check of this run completed (%d could not run); nothing was proven about the gateway", t.errored)
-	case t.failedVerdicts+t.errored > 0:
-		return fmt.Errorf("%d of %d check(s) in this run failed: at least one check of this run found a %s or %s, a %s or %s, or could not run; the lines above say which",
-			t.failedVerdicts+t.errored, t.completed+t.errored, verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked)
+	case t.failedVerdicts+t.errored > 0 || t.verdictLines > 0:
+		return fmt.Errorf("%d of %d check(s) in this run failed: at least one check of this run found a %s or %s, a %s, %s or %s, or could not run; the lines above say which",
+			t.failedVerdicts+t.errored, t.completed+t.errored, verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive)
 	}
 	return nil
 }
 
 // isFatalCheckError recognises the errors that no later check can recover
 // from: the server is not in the catalog, or the catalog itself cannot be
-// trusted. A canary that kept going would print "check failed" for ever.
+// trusted. A canary or a crawl schedule that kept going would print a failure
+// for ever, or keep writing into a file every other command refuses.
 func isFatalCheckError(err error) bool {
 	return errors.Is(err, catalog.ErrNotFound) || errors.Is(err, catalog.ErrCorrupt) || errors.Is(err, catalog.ErrSchema)
 }
 
-// loop repeats the check until the context ends. A listing failure (the
-// gateway is down for a while) is printed, counted and does not stop the
-// schedule; a catalog error or an unknown server stops it at once; a failed
-// check stops it unless keepGoing, and a file --config cannot read stops it
-// even then, whether or not the listing of that check succeeded. The run as a
-// whole fails at the end if any check failed or none completed.
+// loop repeats the check until the context ends. Every check is tallied before
+// the stop signal is looked at, so a check that printed a verdict and was then
+// interrupted still fails the run. A listing failure (the gateway is down for
+// a while) is printed, counted and does not stop the schedule; a catalog error
+// or an unknown server stops it at once; a failed check stops it unless
+// keepGoing, and a file --config cannot read stops it even then, whether or
+// not the listing of that check succeeded. The run as a whole fails at the end
+// if any check failed, any failing verdict line was printed, or none
+// completed.
 func (v *verifier) loop(ctx context.Context, every time.Duration, keepGoing bool) error {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	var tally loopTally
 	for {
 		res, err := v.check(ctx)
+		tally.record(res, err, ctx.Err() != nil)
+		tally.verdictLines = v.failingLines
 		if ctx.Err() != nil {
 			break
 		}
-		tally.record(res, err)
 		stamp := time.Now().UTC().Format(time.RFC3339)
 		switch {
 		case err != nil:

@@ -60,10 +60,20 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 		"run one processor per server", programName+" --db "+abs+" serve --server s1 --target s1 --listen 127.0.0.1:9002")
 	wantNotContains(t, "stdout", stdout, u.url()+"?", "--secret-env")
 
-	c.ok("emit", "--out", out, "--processor", "s1=127.0.0.1:9100", "--listen-port", "8080", "--processor-base-port", "7000")
+	// A re-emit to the same file keeps every server's processor address
+	// (D13 g): the override moves s1, s0 stays where its processor listens
+	// whatever the base port says, and the move is printed.
+	stdout = c.ok("emit", "--out", out, "--processor", "s1=127.0.0.1:9100", "--listen-port", "8080", "--processor-base-port", "7000")
 	yaml = readFile(t, out)
-	wantContains(t, "yaml", yaml, "port: 8080", `host: "127.0.0.1:9100"`, `host: "127.0.0.1:7000"`)
-	wantNotContains(t, "yaml", yaml, "9002")
+	wantContains(t, "yaml", yaml, "port: 8080", `host: "127.0.0.1:9100"`, `host: "127.0.0.1:9001"`)
+	wantNotContains(t, "yaml", yaml, `host: "127.0.0.1:9002"`, `host: "127.0.0.1:7000"`)
+	wantContains(t, "stdout", stdout, "processor address of server s1 changed from 127.0.0.1:9002 to 127.0.0.1:9100; restart its processor on the new address")
+	wantNotContains(t, "stdout", stdout, "server s0 changed", "is new")
+	// A first emit to another file numbers from the base port.
+	fresh := filepath.Join(t.TempDir(), "fresh.yaml")
+	stdout = c.ok("emit", "--out", fresh, "--processor", "s1=127.0.0.1:9100", "--processor-base-port", "7000")
+	wantContains(t, "yaml", readFile(t, fresh), `host: "127.0.0.1:9100"`, `host: "127.0.0.1:7000"`)
+	wantNotContains(t, "stdout", stdout, "processor address of server")
 
 	r := c.fail(exitUsage, "emit", "--out", out, "--processor", "nope=127.0.0.1:1")
 	wantContains(t, "stderr", r.stderr, "unknown server nope")
@@ -96,8 +106,8 @@ func TestEmitWithASecretWritesAPrivateFileAndWiresServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != secretConfigFileMode {
-		t.Errorf("config mode %o, want %o when it carries a secret", fi.Mode().Perm(), secretConfigFileMode)
+	if fi.Mode().Perm() != configFileMode {
+		t.Errorf("config mode %o, want %o when it carries a secret", fi.Mode().Perm(), configFileMode)
 	}
 	wantContains(t, "stderr", r.stderr, "warning: "+out+" contains the processor secret", secretVar, "0600")
 	wantContains(t, "stdout", r.stdout, "serve --server s1 --target s1 --listen 127.0.0.1:9001 --secret-env "+secretVar, "body sha256 ")
@@ -116,17 +126,17 @@ func TestEmitWithNoServersFailsAndSkippedToolsAreWarnedAbout(t *testing.T) {
 	r := c.fail(exitFailure, "emit", "--out", filepath.Join(t.TempDir(), "g.yaml"))
 	wantContains(t, "stderr", r.stderr, "no servers")
 
-	u := newUpstream(t, map[string]string{"héllo": "Non-ASCII name.", "echo": echoV1})
+	u := newUpstream(t, map[string]string{"h\u00e9llo": "Non-ASCII name.", "echo": echoV1})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
 	c.ok("crawl", "s1")
-	c.approve("alice", "s1", "héllo", c.tool("s1", "héllo").Pending)
+	c.approve("alice", "s1", "h\u00e9llo", c.tool("s1", "h\u00e9llo").Pending)
 	out := filepath.Join(t.TempDir(), "g.yaml")
 	r = c.run("emit", "--out", out)
 	if r.code != exitOK {
 		t.Fatalf("emit: exit %d: %s", r.code, r.stderr)
 	}
-	wantContains(t, "stderr", r.stderr, "warning: s1/héllo is approved but left out", "stays hidden")
-	wantNotContains(t, "yaml", readFile(t, out), "héllo")
+	wantContains(t, "stderr", r.stderr, "warning: s1/h\u00e9llo is approved but left out", "stays hidden")
+	wantNotContains(t, "yaml", readFile(t, out), "h\u00e9llo")
 	wantContains(t, "stdout", r.stdout, "s1")
 }
 

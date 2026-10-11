@@ -112,17 +112,21 @@ func probeToolName() (string, error) {
 }
 
 // classifyProbe turns the gateway's answer to the id-less tools/call into a
-// verdict: 202 forwarded it, 400 or a JSON-RPC error refused it.
+// verdict (D13 h): 202 forwarded it, 400 refused it, and any other 2xx that
+// carries a body is inconclusive, because a gateway that forwarded the call
+// and relayed the upstream's answer looks exactly like a gateway that refused
+// it with a JSON-RPC error of its own; a 2xx without a body and every other
+// status is an error, since the probe then proved nothing either way.
 func classifyProbe(resp rawResponse) (probeOutcome, error) {
 	switch {
 	case resp.status == http.StatusAccepted:
 		return probeUnhooked, nil
 	case resp.status == http.StatusBadRequest:
 		return probeHealthy, nil
-	case resp.status/100 == 2 && hasRPCError(resp.messages()):
-		return probeHealthy, nil
+	case resp.status/100 == 2 && len(resp.body) > 0:
+		return probeInconclusive, nil
 	}
-	return probeSkipped, fmt.Errorf("unhooked-call probe: the gateway answered http status %d without a json-rpc error, so whether it forwards id-less calls is unknown", resp.status)
+	return probeSkipped, fmt.Errorf("unhooked-call probe: the gateway answered http status %d without a body, so whether it forwards id-less calls is unknown", resp.status)
 }
 
 // initialize opens the session and records the negotiated protocol version
@@ -281,16 +285,4 @@ func findResult(messages [][]byte, id int) (json.RawMessage, bool) {
 		return env.Result, true
 	}
 	return nil, false
-}
-
-// hasRPCError reports whether any message carries a JSON-RPC error object,
-// which is how a gateway that refuses an id-less request may answer it.
-func hasRPCError(messages [][]byte) bool {
-	for _, m := range messages {
-		var env rpcEnvelope
-		if json.Unmarshal(m, &env) == nil && len(env.Error) > 0 && string(env.Error) != "null" {
-			return true
-		}
-	}
-	return false
 }

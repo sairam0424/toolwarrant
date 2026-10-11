@@ -1,16 +1,23 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/sairam0424/toolwarrant/internal/catalog"
 )
 
 // mismatchLine is the LEAK line for the approved, enabled tool whose live
 // digest differs from the approved one: both digests, then the sub-label.
 var mismatchLine = regexp.MustCompile(`LEAK echo live [0-9a-f]{12} approved [0-9a-f]{12} \(MISMATCH:`)
+
+// bodyHashLine is the line emit prints with the hash the header records.
+var bodyHashLine = regexp.MustCompile(`body sha256 ([0-9a-f]{64})`)
 
 func TestVerifyGatewayReportsLeaksAgainstAPassThroughUpstream(t *testing.T) {
 	c, u := fixture(t)
@@ -79,6 +86,47 @@ func TestVerifyGatewayOKMissingAndMismatch(t *testing.T) {
 	c.fail(exitUsage, "verify-gateway", "--server", "s1", "--url", gateway.url(), "--bearer-env", "UNSET_VAR")
 }
 
+// Third review (cli-docs-5): the canary's oracle ignored the unusable marker
+// the processor enforces. After the proposal budget is spent (limit L6), a
+// revert and one more change, the tool shows UNUSABLE with state enabled and
+// the approved digest kept; the processor hides it whatever the gateway shows,
+// but a route that served the approved bytes without its processor was
+// counted "1 approved and current", exit 0, and the tool was never MISSING
+// when a working processor hid it. The canary now applies
+// lifecycle.LastSeenVerifiable (D13 j): a LEAK with the UNVERIFIED sub-label
+// when served, nothing when absent.
+func TestVerifyGatewayReportsAnUnverifiedToolAsALeak(t *testing.T) {
+	c, u := fixture(t)
+	v1 := c.tool("s1", "echo").Pending
+	c.approve("alice", "s1", "echo", v1)
+	for i := 0; i < catalog.MaxProposalsPerDecision; i++ {
+		u.set("echo", fmt.Sprintf("Garbage %02d.", i))
+		c.ok("crawl", "s1")
+	}
+	u.set("echo", echoV1)
+	c.ok("crawl", "s1")
+	u.set("echo", echoV2)
+	wantContains(t, "over budget", c.ok("crawl", "s1"), "UNUSABLE")
+	tv := c.tool("s1", "echo")
+	if !tv.Unusable || tv.Approved != v1 || tv.State != "enabled" {
+		t.Fatalf("fixture: %+v", tv.toolJSON)
+	}
+
+	// A route without its processor serves the approved bytes of a tool the
+	// processor would hide as unverified.
+	g := newUpstream(t, map[string]string{"echo": echoV1})
+	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url(), "--no-probe")
+	wantContains(t, "stdout", r.stdout, verdictLeak+" echo live "+v1[:shortDigestLen]+" approved "+v1[:shortDigestLen]+" ("+verdictUnverified+": the latest crawl left the marker unusable")
+	wantNotContains(t, "stdout", r.stdout, "1 approved and current", verdictOK, verdictMismatch)
+	wantContains(t, "stderr", r.stderr, "1 tool(s) leak")
+
+	// A working processor hides it: not MISSING, the check is OK.
+	hidden := newUpstream(t, nil)
+	out := c.ok("verify-gateway", "--server", "s1", "--url", hidden.url(), "--no-probe")
+	wantContains(t, "stdout", out, verdictOK+": the gateway serves 0 tool(s), 0 approved and current;")
+	wantNotContains(t, "stdout", out, verdictMissing)
+}
+
 func TestVerifyGatewayChecksTheEmittedConfig(t *testing.T) {
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
@@ -91,7 +139,7 @@ func TestVerifyGatewayChecksTheEmittedConfig(t *testing.T) {
 
 	// The edit that fails open: the processor's failure mode.
 	edited := strings.Replace(readFile(t, cfg), "failClosed", "failOpen", 1)
-	if err := os.WriteFile(cfg, []byte(edited), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte(edited), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gateway.url(), "--config", cfg)
@@ -100,7 +148,7 @@ func TestVerifyGatewayChecksTheEmittedConfig(t *testing.T) {
 	wantNotContains(t, "stdout", r.stdout, verdictOK)
 
 	// A file without the header at all.
-	if err := os.WriteFile(cfg, []byte("routes: []\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("routes: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gateway.url(), "--config", cfg)
@@ -116,6 +164,51 @@ func TestVerifyGatewayChecksTheEmittedConfig(t *testing.T) {
 	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", u.url(), "--config", missing)
 	wantContains(t, "stdout", r.stdout, verdictConfigEdited+" "+missing, verdictLeak+" add live ", verdictLeak+" wipe_database live ")
 	wantContains(t, "stderr", r.stderr, "2 tool(s) leak", "could not be read")
+}
+
+// Third review (processor-emit-5): no command compared the body hash emit
+// prints with a recorded value, so the control the documents describe against
+// a replacement that recomputes the header hash (limit L19) was manual.
+// --expect-body-hash HEX mirrors audit verify --expect-head: a file that
+// verifies but hashes to anything else is CONFIG-EDITED, in --every mode too,
+// and the live comparison then has nothing trustworthy to compare with.
+func TestVerifyGatewayComparesTheRecordedBodyHash(t *testing.T) {
+	c, u, gw, cfg := liveFixture(t)
+	m := bodyHashLine.FindStringSubmatch(c.ok("emit", "--out", cfg))
+	if m == nil {
+		t.Fatal("emit printed no body sha256 line")
+	}
+	recorded := m[1]
+	out := c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--expect-body-hash", strings.ToUpper(recorded), "--no-probe")
+	wantContains(t, "stdout", out, verdictOK)
+	wantNotContains(t, "stdout", out, verdictConfigEdited)
+
+	// Another server approved and the file re-emitted: a legitimate change
+	// the operator has not recorded yet looks exactly like a replacement.
+	c.approve("alice", "s1", "add", c.tool("s1", "add").Pending)
+	c.ok("emit", "--out", cfg)
+	admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
+	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--expect-body-hash", recorded, "--no-probe")
+	wantContains(t, "stdout", r.stdout, verdictConfigEdited+" "+cfg+": the body sha256 is ", ", not the recorded "+recorded+"; the file verifies, so whoever replaced it recomputed the header hash (known limit L19)")
+	wantNotContains(t, "stdout", r.stdout, verdictOK, verdictLiveConfig)
+	wantContains(t, "stderr", r.stderr, "not the one recorded with --expect-body-hash", "find out who changed it")
+	if admin.hits.Load() != 0 {
+		t.Errorf("the admin API was asked %d time(s) although the body hash did not match", admin.hits.Load())
+	}
+	// In --every mode the first failing check stops the run without
+	// --keep-going.
+	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--expect-body-hash", recorded, "--every", loopEvery.String(), "--no-probe")
+	wantContains(t, "stdout", r.stdout, verdictConfigEdited, "not the recorded "+recorded)
+	wantContains(t, "stderr", r.stderr, "--expect-body-hash")
+
+	for name, args := range map[string][]string{
+		"without --config": {"--expect-body-hash", recorded},
+		"not hex":          {"--config", cfg, "--expect-body-hash", strings.Repeat("z", 64)},
+		"too short":        {"--config", cfg, "--expect-body-hash", recorded[:16]},
+	} {
+		r = c.fail(exitUsage, append([]string{"verify-gateway", "--server", "s1", "--url", gw}, args...)...)
+		wantContains(t, name, r.stderr, "--expect-body-hash")
+	}
 }
 
 // Each scheduled check opens a fresh MCP session for the listing and another
@@ -153,6 +246,6 @@ func TestVerifyGatewayEveryStopsAtTheFirstLeakUnlessKeepGoing(t *testing.T) {
 	if code := stop(); code != exitFailure {
 		t.Fatalf("verify-gateway --keep-going with leaks: exit %d, want %d\n%s", code, exitFailure, out.String())
 	}
-	wantContains(t, "stderr", errb.String(), "check(s) in this run failed", "at least one check of this run found a "+verdictLeak+" or "+verdictConfigEdited, verdictLiveConfig, verdictUnhooked)
+	wantContains(t, "stderr", errb.String(), "check(s) in this run failed", "at least one check of this run found a "+verdictLeak+" or "+verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive)
 	wantContains(t, "stdout", out.String(), verdictLeak+" wipe_database")
 }

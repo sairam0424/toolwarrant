@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -16,11 +18,14 @@ import (
 // alone also occurs inside UNHOOKED-CALLS.
 const okLine = verdictOK + ": "
 
-// Decision D12: every check sends one tools/call without an id for a name no
-// catalog can hold. A gateway that refuses it (400, or a JSON-RPC error in
-// JSON or in an event stream) is healthy; one that accepts it (202) forwarded
-// it to the upstream unhooked and fails the check; any other answer is an
-// error, never OK; --no-probe sends nothing.
+// Decision D12 and D13 (h): every check sends one tools/call without an id for
+// a name no catalog can hold. A gateway that refuses it with HTTP 400 is
+// healthy; one that accepts it (202) forwarded it to the upstream unhooked and
+// fails the check; any other 2xx answer that carries a body (a JSON-RPC error
+// in JSON or in an event stream, or a result) is PROBE-INCONCLUSIVE and fails
+// the check too, because the gateway or the upstream may have written it; any
+// other answer is an error, never OK; --no-probe sends nothing. The test
+// upstream's five modes cover the three outcomes.
 func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
@@ -39,19 +44,18 @@ func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 		t.Error("the probe's session was not ended with a DELETE")
 	}
 
-	for name, mode := range map[string]int32{"json-rpc error": probeModeRPCError, "event stream error": probeModeSSEError} {
+	for name, mode := range map[string]int32{"json-rpc error": probeModeRPCError, "event stream error": probeModeSSEError, "result without error": probeModeSilent} {
 		g.probeMode.Store(mode)
-		wantContains(t, name, c.ok("verify-gateway", "--server", "s1", "--url", g.url()), okLine, "rejected by the gateway")
+		r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
+		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the gateway answered a tools/call without an id with a 2xx status and a body instead of HTTP 400", "the gateway or the upstream may have written that answer")
+		wantNotContains(t, name+" stdout", r.stdout, okLine, verdictUnhooked, verdictLeak)
+		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until it answers HTTP 400")
 	}
 	g.probeMode.Store(probeModeForward)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
 	wantContains(t, "stdout", r.stdout, verdictUnhooked+" s1: the gateway accepted a tools/call without an id (HTTP 202) and forwarded it to the upstream", "known limit L17")
-	wantNotContains(t, "stdout", r.stdout, okLine, verdictLeak)
+	wantNotContains(t, "stdout", r.stdout, okLine, verdictLeak, verdictInconclusive)
 	wantContains(t, "stderr", r.stderr, "forwards a tools/call without an id to the upstream unhooked", verdictUnhooked, "L17", "bypasses the approval")
-	g.probeMode.Store(probeModeSilent)
-	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
-	wantContains(t, "stderr", r.stderr, "unhooked-call probe", "http status 200 without a json-rpc error", "unknown")
-	wantNotContains(t, "stdout", r.stdout, okLine, verdictUnhooked)
 
 	seen := len(g.probeNames())
 	out = c.ok("verify-gateway", "--server", "s1", "--url", g.url(), "--no-probe")
@@ -63,6 +67,39 @@ func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 	if len(names) != 5 || names[0] == names[1] {
 		t.Errorf("probe names = %q, want five distinct random names", names)
 	}
+}
+
+// Third review (cli-docs-9): a 2xx answer carrying a JSON-RPC error was taken
+// as the gateway's refusal whoever produced it. A stand-in gateway that
+// forwards every request to the upstream, in front of an upstream that
+// answers the id-less tools/call with HTTP 200 and an error object, relayed
+// the upstream's answer and the canary called the probe healthy although the
+// probe had reached the upstream (its name is in the upstream's log). Now that
+// answer is PROBE-INCONCLUSIVE, exit 1. Not the pinned gateway's behaviour
+// (v1.6.0 answers 202 itself); the rule matters on every move of the pin (L7).
+func TestProbeReportsARelayedUpstreamAnswerAsInconclusive(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	up := newUpstream(t, map[string]string{"echo": echoV1})
+	up.probeMode.Store(probeModeRPCError)
+	target, err := url.Parse(up.url())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1
+	gw := httptest.NewServer(proxy)
+	t.Cleanup(gw.Close)
+
+	before := len(up.probeNames())
+	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw.URL)
+	names := up.probeNames()
+	if len(names) != before+1 || !strings.HasPrefix(names[len(names)-1], probeToolPrefix) {
+		t.Fatalf("the probe did not reach the upstream through the forwarding stand-in: %q", names)
+	}
+	wantContains(t, "stdout", r.stdout, verdictInconclusive+" s1:")
+	wantNotContains(t, "stdout", r.stdout, okLine, "rejected by the gateway")
+	wantContains(t, "stderr", r.stderr, verdictInconclusive)
 }
 
 // scripted is a gateway that answers each JSON-RPC method with a fixed
@@ -127,17 +164,19 @@ func TestProbeFailsClosedOnAGatewayItCannotRead(t *testing.T) {
 		want    probeOutcome
 		err     string
 	}{
-		"healthy 400":      {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusBadRequest)}, probeHealthy, ""},
-		"forwarded 202":    {scripted{healthy, http.StatusOK, answerStatus(http.StatusAccepted)}, probeUnhooked, ""},
-		"call 500":         {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusInternalServerError)}, probeSkipped, "http status 500 without a json-rpc error"},
-		"call 200 silent":  {scripted{healthy, http.StatusAccepted, answerJSON(http.StatusOK, "session-1", `{"jsonrpc":"2.0","id":null,"result":{}}`)}, probeSkipped, "http status 200 without a json-rpc error"},
-		"initialize 500":   {scripted{answerStatus(http.StatusInternalServerError), http.StatusAccepted, nil}, probeSkipped, "http status 500 on initialize"},
-		"no result":        {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"no"}}`), http.StatusAccepted, nil}, probeSkipped, "no initialize result"},
-		"other id":         {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18"}}`), http.StatusAccepted, nil}, probeSkipped, "no initialize result"},
-		"no protocol":      {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":1,"result":{}}`), http.StatusAccepted, nil}, probeSkipped, "no usable protocol version"},
-		"hostile protocol": {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025\r\nX: y"}}`), http.StatusAccepted, nil}, probeSkipped, "no usable protocol version"},
-		"hostile session":  {scripted{answerJSON(http.StatusOK, strings.Repeat("s", maxHeaderValueLen+1), initResult), http.StatusAccepted, nil}, probeSkipped, "unusable session id"},
-		"initialized 500":  {scripted{healthy, http.StatusInternalServerError, nil}, probeSkipped, "http status 500 on notifications/initialized"},
+		"healthy 400":        {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusBadRequest)}, probeHealthy, ""},
+		"forwarded 202":      {scripted{healthy, http.StatusOK, answerStatus(http.StatusAccepted)}, probeUnhooked, ""},
+		"call 200 with body": {scripted{healthy, http.StatusAccepted, answerJSON(http.StatusOK, "session-1", `{"jsonrpc":"2.0","id":null,"result":{}}`)}, probeInconclusive, ""},
+		"call 200 empty":     {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusOK)}, probeSkipped, "http status 200 without a body"},
+		"call 204":           {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusNoContent)}, probeSkipped, "http status 204 without a body"},
+		"call 500":           {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusInternalServerError)}, probeSkipped, "http status 500 without a body"},
+		"initialize 500":     {scripted{answerStatus(http.StatusInternalServerError), http.StatusAccepted, nil}, probeSkipped, "http status 500 on initialize"},
+		"no result":          {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"no"}}`), http.StatusAccepted, nil}, probeSkipped, "no initialize result"},
+		"other id":           {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18"}}`), http.StatusAccepted, nil}, probeSkipped, "no initialize result"},
+		"no protocol":        {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":1,"result":{}}`), http.StatusAccepted, nil}, probeSkipped, "no usable protocol version"},
+		"hostile protocol":   {scripted{answerJSON(http.StatusOK, "s", `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025\r\nX: y"}}`), http.StatusAccepted, nil}, probeSkipped, "no usable protocol version"},
+		"hostile session":    {scripted{answerJSON(http.StatusOK, strings.Repeat("s", maxHeaderValueLen+1), initResult), http.StatusAccepted, nil}, probeSkipped, "unusable session id"},
+		"initialized 500":    {scripted{healthy, http.StatusInternalServerError, nil}, probeSkipped, "http status 500 on notifications/initialized"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -196,18 +235,19 @@ func TestProbeHelpers(t *testing.T) {
 	if _, ok := findResult([][]byte{[]byte("not json")}, 1); ok {
 		t.Error("findResult read garbage")
 	}
-	if !hasRPCError(sse.messages()) || hasRPCError(plain.messages()) || hasRPCError([][]byte{[]byte(`{"error":null}`), []byte("garbage")}) {
-		t.Error("hasRPCError wrong")
-	}
 	cases := []struct {
 		resp rawResponse
 		want probeOutcome
 		err  bool
 	}{
 		{rawResponse{status: http.StatusAccepted}, probeUnhooked, false},
+		{rawResponse{status: http.StatusAccepted, body: []byte("{}")}, probeUnhooked, false},
 		{rawResponse{status: http.StatusBadRequest}, probeHealthy, false},
-		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"error":{"code":1}}`)}, probeHealthy, false},
-		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"result":{}}`)}, probeSkipped, true},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":{"code":1}}`)}, probeHealthy, false},
+		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"error":{"code":1}}`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"result":{}}`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusOK, contentType: mediaSSE, body: []byte("data: {\"error\":{\"code\":1}}\n\n")}, probeInconclusive, false},
+		{rawResponse{status: http.StatusOK}, probeSkipped, true},
 		{rawResponse{status: http.StatusNoContent}, probeSkipped, true},
 		{rawResponse{status: http.StatusInternalServerError}, probeSkipped, true},
 		{rawResponse{status: http.StatusUnauthorized, body: []byte(`{"error":{"code":1}}`)}, probeSkipped, true},
@@ -215,7 +255,7 @@ func TestProbeHelpers(t *testing.T) {
 	for _, tc := range cases {
 		got, err := classifyProbe(tc.resp)
 		if got != tc.want || (err != nil) != tc.err {
-			t.Errorf("classifyProbe(%d) = %d, %v", tc.resp.status, got, err)
+			t.Errorf("classifyProbe(%d, %d bytes) = %d, %v", tc.resp.status, len(tc.resp.body), got, err)
 		}
 	}
 }

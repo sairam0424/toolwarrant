@@ -211,7 +211,7 @@ func warnLooseSocketDir(path string, warn *stream) {
 // in the catalog); the remainder is tools the catalog has never heard of.
 // docs/operations.md quotes this line, so the two must change together.
 func writeStats(w *stream, st processor.Stats) {
-	w.printf("stats: lists served=%d denied=%d, tools hidden=%d (mismatched=%d unapproved=%d oversized=%d unverified=%d), calls allowed=%d denied=%d, wrong backend=%d, unauthenticated=%d, throttled=%d, source errors=%d\n",
+	w.printf("stats: lists served=%d denied=%d, tools hidden=%d (mismatched=%d unapproved=%d oversized=%d unverified=%d), calls allowed=%d denied=%d, wrong backend=%d, unauthenticated=%d, throttled=%d, source errors=%d, evidence dropped=%d\n",
 		st.ListsServed, st.ListsDenied, st.ToolsHidden, st.ToolsMismatched, st.ToolsUnapproved, st.ToolsOversized, st.ToolsUnverified,
-		st.CallsAllowed, st.CallsDenied, st.WrongBackend, st.Unauthenticated, st.Throttled, st.SourceErrors)
+		st.CallsAllowed, st.CallsDenied, st.WrongBackend, st.Unauthenticated, st.Throttled, st.SourceErrors, st.EvidenceDropped)
 }

@@ -1,0 +1,224 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/sairam0424/toolwarrant/internal/textdiff"
+)
+
+// compareDocuments names every way in which the configuration the gateway is
+// running differs from the emitted file, over the whole document (D13 e):
+// every emitted gateway and route must be present exactly once with the same
+// fields and match path, nothing the file does not carry may exist, no path
+// may appear twice, and the path of --url must be the emitted route's match
+// for --server. The third review showed why one route is not enough: a live
+// document that keeps the server's route intact, parks it on another path and
+// adds a processor-less route owning the client's path compared as a match.
+// Every value shown is escaped; backend hosts are never shown, because an
+// upstream URL may carry a credential.
+func compareDocuments(emitted, live configDoc, server, urlPath string) []string {
+	var diffs []string
+	diffs = append(diffs, compareGateways(emitted.gateways, live.gateways)...)
+	diffs = append(diffs, compareRouteSets(emitted, live, server)...)
+	diffs = append(diffs, duplicatePaths(live.routes)...)
+	diffs = append(diffs, compareURLPath(emitted, server, urlPath)...)
+	return diffs
+}
+
+// compareGateways requires the live gateways to be exactly the emitted ones,
+// each with the same bind address and port: a gateway the file does not carry
+// serves every route attached to it without the emitted guards.
+func compareGateways(emitted, live map[string]gatewayConfig) []string {
+	var diffs []string
+	for _, name := range sortedKeys(emitted) {
+		e := emitted[name]
+		l, ok := live[name]
+		if !ok {
+			diffs = append(diffs, fmt.Sprintf("gateway %s: not in the live configuration (emitted bind address %s, serving port %s)", cell(name), shown(e.bindAddress), shown(e.port)))
+			continue
+		}
+		diffs = appendDiff(diffs, "gateway "+cell(name)+": bind address", e.bindAddress, l.bindAddress)
+		diffs = appendDiff(diffs, "gateway "+cell(name)+": serving port", e.port, l.port)
+	}
+	for _, name := range sortedKeys(live) {
+		if _, ok := emitted[name]; ok {
+			continue
+		}
+		l := live[name]
+		diffs = append(diffs, fmt.Sprintf("gateway %s: not in the emitted file (live bind address %s, serving port %s); every route attached to it is served without the emitted guards", cell(name), shown(l.bindAddress), shown(l.port)))
+	}
+	return diffs
+}
+
+// compareRouteSets requires the live routes to be exactly the emitted ones by
+// name, each present once and with the same fields. The server's own route
+// keeps its lines unprefixed, because the verdict line already names the
+// server; every other route is named.
+func compareRouteSets(emitted, live configDoc, server string) []string {
+	var diffs []string
+	emittedNames := map[string]bool{}
+	for _, e := range emitted.routes {
+		emittedNames[e.name] = true
+		l, n := live.route(e.name)
+		switch {
+		case n == 0:
+			diffs = append(diffs, fmt.Sprintf("route %s: not in the live configuration; its path %s is served by nothing or by another route", cell(e.name), shown(joinPaths(e.paths))))
+		case n > 1:
+			diffs = append(diffs, fmt.Sprintf("route %s: listed %d times in the live configuration, so which one the gateway serves cannot be told", cell(e.name), n))
+		default:
+			prefix := ""
+			if e.name != server {
+				prefix = "route " + cell(e.name) + ": "
+			}
+			for _, d := range compareRoutes(e, l) {
+				diffs = append(diffs, prefix+d)
+			}
+		}
+	}
+	for _, l := range live.routes {
+		if !emittedNames[l.name] {
+			diffs = append(diffs, fmt.Sprintf("route %s: not in the emitted file (gateway %s, path %s); the gateway serves it without the emitted guards", cell(l.name), shown(l.gateway), shown(joinPaths(l.paths))))
+		}
+	}
+	return diffs
+}
+
+// duplicatePaths names every exact path that more than one live route
+// matches: which route the gateway picks for a client is not something the
+// canary can tell, and the other one may carry no processor.
+func duplicatePaths(routes []routeConfig) []string {
+	owners := map[string][]string{}
+	for _, r := range routes {
+		for _, p := range r.paths {
+			if p != nonExactPath {
+				owners[p] = append(owners[p], cell(r.name))
+			}
+		}
+	}
+	var diffs []string
+	for _, p := range sortedKeys(owners) {
+		if names := owners[p]; len(names) > 1 {
+			diffs = append(diffs, fmt.Sprintf("path %s: matched by %d live routes (%s); which one the gateway serves cannot be told", cell(p), len(names), strings.Join(names, ", ")))
+		}
+	}
+	return diffs
+}
+
+// compareURLPath checks that the route the canary listed through is the one
+// the file emits for the server: a --url on another path tests another route,
+// whatever the document says about this one. A missing emitted route is
+// reported by the caller before the comparison runs.
+func compareURLPath(emitted configDoc, server, urlPath string) []string {
+	e, n := emitted.route(server)
+	if n != 1 {
+		return nil
+	}
+	if len(e.paths) == 1 && e.paths[0] == urlPath {
+		return nil
+	}
+	return []string{fmt.Sprintf("the path of --url (%s) is not the match of the emitted route (%s); the listing above tested another route", shown(urlPath), shown(joinPaths(e.paths)))}
+}
+
+// compareRoutes names every field in which one live route differs from the
+// emitted route of the same name.
+func compareRoutes(emitted, live routeConfig) []string {
+	var diffs []string
+	diffs = appendDiff(diffs, "gateway", emitted.gateway, live.gateway)
+	diffs = appendDiff(diffs, "match path", joinPaths(emitted.paths), joinPaths(live.paths))
+	diffs = append(diffs, compareRules(emitted.rules, live.rules)...)
+	diffs = append(diffs, compareProcessors(emitted.processors, live.processors)...)
+	diffs = append(diffs, compareHosts(emitted.backendHosts, live.backendHosts)...)
+	return diffs
+}
+
+// appendDiff adds a line when two scalar values differ.
+func appendDiff(diffs []string, field, emitted, live string) []string {
+	if emitted == live {
+		return diffs
+	}
+	return append(diffs, fmt.Sprintf("%s: emitted %s, live %s", field, shown(emitted), shown(live)))
+}
+
+// shown renders a value for a difference line.
+func shown(v string) string {
+	if v == "" {
+		return noneShown
+	}
+	return textdiff.Escape(v)
+}
+
+// joinPaths renders a route's match paths; emit writes exactly one.
+func joinPaths(paths []string) string {
+	return strings.Join(paths, ",")
+}
+
+// sortedKeys is the keys of a map in a fixed order, so difference lines come
+// out the same on every run.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// compareRules compares the allow rules; emit writes exactly one.
+func compareRules(emitted, live []string) []string {
+	if len(emitted) != len(live) {
+		return []string{fmt.Sprintf("allow rules: emitted %d, live %d", len(emitted), len(live))}
+	}
+	var diffs []string
+	for i := range emitted {
+		diffs = appendDiff(diffs, "allow rule", emitted[i], live[i])
+	}
+	return diffs
+}
+
+// compareProcessors compares the processors; a live route without one is the
+// F3 case the canary exists for.
+func compareProcessors(emitted, live []processorConfig) []string {
+	switch {
+	case len(live) == 0 && len(emitted) > 0:
+		return []string{fmt.Sprintf("processor: the live route has none (emitted %s); every new session on this route is served by the allow rule alone", shown(emitted[0].host))}
+	case len(emitted) != len(live):
+		return []string{fmt.Sprintf("processors: emitted %d, live %d", len(emitted), len(live))}
+	}
+	var diffs []string
+	for i := range emitted {
+		diffs = appendDiff(diffs, "processor host", emitted[i].host, live[i].host)
+		diffs = appendDiff(diffs, "processor kind", emitted[i].kind, live[i].kind)
+		diffs = appendDiff(diffs, "processor failureMode", emitted[i].failureMode, live[i].failureMode)
+		diffs = appendDiff(diffs, "processor methods", describeMethods(emitted[i].methods), describeMethods(live[i].methods))
+	}
+	return diffs
+}
+
+// compareHosts compares the backend hosts without showing them.
+func compareHosts(emitted, live []string) []string {
+	if len(emitted) != len(live) {
+		return []string{fmt.Sprintf("backend targets: emitted %d, live %d", len(emitted), len(live))}
+	}
+	var diffs []string
+	for i := range emitted {
+		if emitted[i] != live[i] {
+			diffs = append(diffs, "backend host: the live route points at another upstream (values withheld: an upstream URL may carry a credential)")
+		}
+	}
+	return diffs
+}
+
+// describeMethods renders a processor's method map in a fixed order, for a
+// difference line. The result is escaped once more by shown.
+func describeMethods(m map[string]string) string {
+	if len(m) == 0 {
+		return noneShown
+	}
+	parts := make([]string, 0, len(m))
+	for _, k := range sortedKeys(m) {
+		parts = append(parts, k+"="+m[k])
+	}
+	return strings.Join(parts, ",")
+}

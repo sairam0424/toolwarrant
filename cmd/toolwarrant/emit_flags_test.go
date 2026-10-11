@@ -76,13 +76,10 @@ func TestEmitWritesListenerAddressesAndRefusesCollisions(t *testing.T) {
 		"warning: stats endpoint listens on 203.0.113.7:15020, an address other hosts can reach")
 }
 
-// A server URL with a query string is where a credential lives, so the file
-// that carries it is owner-only and the warning names the server, never the
-// URL; the planted value appears nowhere in the output.
-func TestEmitWritesAPrivateFileWhenAServerURLCarriesAQuery(t *testing.T) {
-	c, _ := fixture(t)
-	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
-	c.ok("server", "add", "queried", "http://127.0.0.1:3002/mcp?q="+plant("query"))
+// emitMode emits the catalog to a fresh file and returns the file's mode and
+// the run's stderr.
+func emitMode(t *testing.T, c *cli) (os.FileMode, string, string) {
+	t.Helper()
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
 	r := c.run("emit", "--out", out)
 	if r.code != exitOK {
@@ -92,21 +89,42 @@ func TestEmitWritesAPrivateFileWhenAServerURLCarriesAQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != secretConfigFileMode {
-		t.Errorf("config mode %o, want %o when a server URL carries a query string", fi.Mode().Perm(), secretConfigFileMode)
-	}
-	wantContains(t, "stderr", r.stderr, "warning: the URL of server queried carries a query string", "where credentials live", "0600")
-	wantNotContains(t, "output", r.stdout+r.stderr, canary, "q=")
-	wantContains(t, "yaml", readFile(t, out), plant("query"))
+	return fi.Mode().Perm(), r.stderr, readFile(t, out)
+}
 
-	// The same catalog without the queried URL is world-readable again.
-	c2, _ := fixture(t)
-	c2.approve("alice", "s1", "echo", c2.tool("s1", "echo").Pending)
-	plain := filepath.Join(t.TempDir(), "gateway.yaml")
-	c2.ok("emit", "--out", plain)
-	if fi, err = os.Stat(plain); err != nil || fi.Mode().Perm() != configFileMode {
-		t.Errorf("plain config mode %v (%v), want %o", fi.Mode(), err, configFileMode)
+// Decision D13 (g): the emitted file is always owner-only. The third review
+// (cli-docs-7) showed why a heuristic cannot decide: a hosted server's
+// credential sits in a path segment, which safeURL keeps and nothing treats
+// as secret, so such a URL went into a world-readable file in silence. The
+// query-string warning stays and names the server, never the URL; the planted
+// values appear nowhere in the output.
+func TestEmitAlwaysWritesAnOwnerOnlyFile(t *testing.T) {
+	plainCatalog, _ := fixture(t)
+	plainCatalog.approve("alice", "s1", "echo", plainCatalog.tool("s1", "echo").Pending)
+	if mode, stderr, _ := emitMode(t, plainCatalog); mode != configFileMode || configFileMode != 0o600 || strings.Contains(stderr, "warning") {
+		t.Errorf("plain catalog: mode %o, want 0600 and no warning:\n%s", mode, stderr)
 	}
+
+	queried, _ := fixture(t)
+	queried.approve("alice", "s1", "echo", queried.tool("s1", "echo").Pending)
+	queried.ok("server", "add", "queried", "http://127.0.0.1:3002/mcp?q="+plant("query"))
+	mode, stderr, yaml := emitMode(t, queried)
+	if mode != 0o600 {
+		t.Errorf("queried URL: mode %o, want 0600", mode)
+	}
+	wantContains(t, "stderr", stderr, "warning: the URL of server queried carries a query string", "where credentials live", "0600")
+	wantNotContains(t, "stderr", stderr, canary, "q=")
+	wantContains(t, "yaml", yaml, plant("query"))
+
+	hosted, _ := fixture(t)
+	hosted.approve("alice", "s1", "echo", hosted.tool("s1", "echo").Pending)
+	hosted.ok("server", "add", "hosted", "http://127.0.0.1:3002/s/"+plant("path-token")+"/mcp")
+	mode, stderr, yaml = emitMode(t, hosted)
+	if mode != 0o600 {
+		t.Errorf("a URL carrying a token in its path was written with mode %o, want 0600", mode)
+	}
+	wantNotContains(t, "stderr", stderr, canary, "query string")
+	wantContains(t, "yaml", yaml, plant("path-token"))
 }
 
 // A --processor override that names a host other hosts can reach is accepted

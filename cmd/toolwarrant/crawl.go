@@ -50,7 +50,13 @@ type crawler struct {
 }
 
 // crawlFailure is a listing that failed and was recorded as incomplete.
-type crawlFailure struct{ server, class string }
+// refused marks the one the catalog turned down as a whole (a cap), as
+// opposed to an upstream that could not be listed: a schedule counts the two
+// apart, because a refusal means rows that were never recorded.
+type crawlFailure struct {
+	server, class string
+	refused       bool
+}
 
 func (e *crawlFailure) Error() string {
 	return fmt.Sprintf("crawl of %s failed: %s; the failure was recorded and no tool changed", e.server, e.class)
@@ -187,7 +193,7 @@ func (cr *crawler) crawl(ctx context.Context) (catalog.CrawlReport, error) {
 	}
 	if !report.Complete {
 		// the catalog refused the listing as a whole (a cap) and recorded that
-		return report, &crawlFailure{server: cr.server.Name, class: report.Error}
+		return report, &crawlFailure{server: cr.server.Name, class: report.Error, refused: true}
 	}
 	return report, nil
 }
@@ -279,34 +285,6 @@ func sentinelClass(err error) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// loop crawls until the context ends, surviving failures: an upstream that is
-// down for a while must not stop the schedule. Only --strict stops it, at the
-// first crawl that lists something unservable, because that is what the flag
-// asks for.
-func (cr *crawler) loop(ctx context.Context, every time.Duration) error {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-	for {
-		report, err := cr.crawl(ctx)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if werr := cr.printLine(report, err); werr != nil {
-			return werr
-		}
-		if err == nil {
-			if serr := cr.checkStrict(report); serr != nil {
-				return serr
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-	}
 }
 
 // checkStrict is the --strict rule: a crawl that reports a rejected entry or

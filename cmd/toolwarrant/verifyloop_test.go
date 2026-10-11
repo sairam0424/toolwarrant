@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
@@ -86,6 +90,53 @@ func TestVerifyGatewayEveryCountsListingFailures(t *testing.T) {
 	wantContains(t, "stderr", run.stderr.String(), "no check of this run completed", "could not run", "nothing was proven about the gateway")
 }
 
+// Third review (cli-docs-2): the stop signal arrived while the admin API
+// fetch of a check was in flight, after the listing of that same check had
+// found a LEAK; the LEAK line was printed, the check was never tallied, and a
+// --keep-going run whose earlier checks were healthy exited 0 with a LEAK on
+// stdout. Now every check is tallied before the signal is looked at, the LEAK
+// line is printed before the admin API is asked, and a run that printed any
+// failing verdict line exits 1 (D13 f). The test's admin API answers the
+// healthy document once, then holds every request open until the canary is
+// stopped, while the stand-in gateway starts serving a poisoned echo.
+func TestKeepGoingExits1WhenStoppedDuringACheckThatFoundALeak(t *testing.T) {
+	c, u, _, cfg := liveFixture(t)
+	g := newUpstream(t, map[string]string{"echo": echoV1})
+	gw := g.url() + routePath
+	var stall atomic.Bool
+	stalled := make(chan struct{}, 1)
+	healthy := adminDoc(t, u.url())
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if stall.Load() {
+			select {
+			case stalled <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", mediaJSON)
+		_, _ = io.WriteString(w, healthy)
+	}))
+	t.Cleanup(admin.Close)
+
+	run := c.launch("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", strings.TrimPrefix(admin.URL, "http://"), "--every", loopEvery.String(), "--keep-going", "--no-probe")
+	waitFor(t, "a healthy check", func() bool {
+		return strings.Contains(run.stdout.String(), "live configuration matches the emitted file")
+	})
+	g.set("echo", echoV2)
+	stall.Store(true)
+	<-stalled
+	// The LEAK line is already on stdout while the admin fetch is held open.
+	wantContains(t, "stdout while stalled", run.stdout.String(), verdictLeak+" echo live ")
+	code := run.stop()
+	out := run.stdout.String()
+	if code != exitFailure {
+		t.Errorf("a --keep-going run printed a LEAK and exited %d, want %d\nstdout: %s\nstderr: %s", code, exitFailure, out, run.stderr.String())
+	}
+	wantContains(t, "stderr", run.stderr.String(), "check(s) in this run failed", verdictLeak)
+}
+
 func TestIsFatalCheckError(t *testing.T) {
 	for _, err := range []error{catalog.ErrNotFound, catalog.ErrCorrupt, catalog.ErrSchema} {
 		if !isFatalCheckError(fmt.Errorf("open database: %w", err)) {
@@ -97,20 +148,39 @@ func TestIsFatalCheckError(t *testing.T) {
 			t.Errorf("%v is fatal", err)
 		}
 	}
+}
+
+// The tally fails a run that never completed a check, that had a check error
+// or fail, or that printed a failing verdict line; a check cut short by the
+// stop signal before it found anything is not counted either way.
+func TestLoopTallyOutcome(t *testing.T) {
 	var tally loopTally
 	if tally.outcome() == nil {
 		t.Error("a run without a completed check must fail")
 	}
-	tally.record(verdicts{}, nil)
+	tally.record(verdicts{}, nil, false)
 	if tally.outcome() != nil {
 		t.Error("a run with one clean check must pass")
 	}
-	tally.record(verdicts{}, errors.New("down"))
+	tally.record(verdicts{}, context.Canceled, true)
+	if tally.outcome() != nil || tally.errored != 0 {
+		t.Errorf("an interrupted clean check must not count: %+v", tally)
+	}
+	tally.record(verdicts{}, errors.New("down"), false)
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "1 of 2 check(s) in this run failed") {
 		t.Errorf("one errored check: %v", err)
 	}
-	tally.record(verdicts{probe: probeUnhooked}, nil)
+	tally.record(verdicts{probe: probeUnhooked}, nil, false)
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "2 of 3 check(s) in this run failed") {
 		t.Errorf("one failed verdict: %v", err)
+	}
+	tally.record(verdicts{leaks: []leak{{}}}, context.Canceled, true)
+	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "3 of 4 check(s) in this run failed") {
+		t.Errorf("an interrupted check that found a leak: %v", err)
+	}
+	wantContains(t, "outcome", tally.outcome().Error(), verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive)
+	printed := loopTally{completed: 1, verdictLines: 1}
+	if err := printed.outcome(); err == nil || !strings.Contains(err.Error(), "0 of 1 check(s) in this run failed") {
+		t.Errorf("a run that printed a verdict line: %v", err)
 	}
 }

@@ -20,6 +20,8 @@ func TestAuditVerifyAndList(t *testing.T) {
 	c.ok("audit", "verify", "--expect-head", strings.ToUpper(head))
 	r := c.fail(exitFailure, "audit", "verify", "--expect-head", strings.Repeat("0", 64))
 	wantContains(t, "stderr", r.stderr, "audit head mismatch", head)
+	wantContains(t, "stdout", r.stdout, "integrity ok")
+	wantNotContains(t, "stdout", r.stdout, headReminder)
 
 	out = c.ok("audit", "list")
 	wantContains(t, "audit list", out, "SEQ", "server.added", "crawl.completed", "tool.discovered", "s1/echo", "crawler", "system", "human")
@@ -100,4 +102,23 @@ func TestAuditVerifyReportsIntegrityProblemsTheChainCannotSee(t *testing.T) {
 	r = c2.fail(exitFailure, "audit", "verify")
 	wantContains(t, "stdout", r.stdout, "audit log ok", "integrity problem: guard trigger audit_log_no_update is missing")
 	wantContains(t, "stderr", r.stderr, "1 problem(s) listed above")
+}
+
+// Third review (cli-docs-4): with --expect-head and a head that no longer
+// matched, audit verify returned before the integrity report ran, so the run
+// an operator makes when they suspect tampering showed the one symptom (the
+// head moved) and withheld the diagnosis (which rows disagree with the log).
+// Both are reported now, in one error, and the head reminder stays withheld.
+func TestAuditVerifyReportsIntegrityWhenTheHeadMismatches(t *testing.T) {
+	c, _ := fixture(t)
+	v1 := c.tool("s1", "echo").Pending
+	c.approve("alice", "s1", "echo", v1)
+	execSQL(t, c.db, "UPDATE tools SET last_seen_digest = 'unusable' WHERE name = 'echo'")
+	r := c.fail(exitFailure, "audit", "verify", "--expect-head", strings.Repeat("0", 64))
+	wantContains(t, "stdout", r.stdout, "audit log ok", "integrity problem: ", `"s1/echo"`, "last_seen_digest")
+	wantNotContains(t, "stdout", r.stdout, "integrity ok", headReminder)
+	wantContains(t, "stderr", r.stderr, "audit head mismatch", "1 problem(s) listed above", adviceCorrupt)
+	if n := strings.Count(r.stderr, programName+": "); n != 1 {
+		t.Errorf("both findings must be one error line, got %d:\n%s", n, r.stderr)
+	}
 }

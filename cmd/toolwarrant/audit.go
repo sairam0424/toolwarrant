@@ -25,8 +25,12 @@ func auditCommands() []*command {
 	}
 }
 
-// runAuditVerify checks the whole chain and, when asked, that the head is the
-// one the operator recorded.
+// runAuditVerify checks the whole chain, then, when asked, that the head is
+// the one the operator recorded, then the registry against the log. The
+// integrity report runs even when the head does not match, because a head
+// that moved is exactly when an operator wants to know which rows disagree
+// with the log (third review); both findings are reported together, and the
+// head reminder is withheld when either fails.
 func runAuditVerify(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	expect := fs.String("expect-head", "", "fail unless the head equals this hash you recorded earlier")
@@ -47,11 +51,18 @@ func runAuditVerify(a *app, c *command, args []string) (err error) {
 		return err
 	}
 	a.stdout.printf("audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)
+	var headErr error
 	if *expect != "" && !strings.EqualFold(*expect, summary.Head) {
-		return fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", textdiff.Escape(*expect), summary.Head)
+		headErr = fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", textdiff.Escape(*expect), summary.Head)
 	}
-	if err := a.reportIntegrity(store); err != nil {
-		return err
+	integrityErr := a.reportIntegrity(store)
+	switch {
+	case headErr != nil && integrityErr != nil:
+		return fmt.Errorf("%w; %w", headErr, integrityErr)
+	case headErr != nil:
+		return headErr
+	case integrityErr != nil:
+		return integrityErr
 	}
 	a.stdout.printf("%s\n", headReminder)
 	return a.stdout.broken()

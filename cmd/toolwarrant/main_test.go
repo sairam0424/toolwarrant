@@ -17,7 +17,7 @@ func TestHelpAndVersion(t *testing.T) {
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
 		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
 		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]",
-		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR]] [--no-probe] [--every DURATION] [--keep-going]",
+		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe] [--every DURATION] [--keep-going]",
 		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
@@ -30,10 +30,12 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious")
 	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
 	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going", "-admin", "-no-probe", "GET "+adminConfigPath, verdictLiveConfig,
-		probeToolPrefix, "HTTP 202", verdictUnhooked, "the probe reaches the upstream exactly when the gateway behaves this way", "L17")
+		probeToolPrefix, "HTTP 202", verdictUnhooked, "the probe reaches the upstream exactly when the gateway behaves this way", "L17",
+		"-expect-body-hash", "L19", verdictInconclusive, "HTTP 400 is healthy", "as a whole document", "the path of --url must be the emitted route's match", "printed a verdict line")
 	wantContains(t, "help crawl", c.ok("help", "crawl"), "-strict", "-every")
 	wantContains(t, "help emit", c.ok("help", "emit"), "-secret-env", "-bind-address", `(default "127.0.0.1")`, "-allow-all-interfaces", "a permission, not a request",
-		"-admin-addr", "-disable-admin", "-stats-addr", "-readiness-addr", "-gateway-binary", envGatewayBinary, validateOnlyFlag)
+		"-admin-addr", "-disable-admin", "-stats-addr", "-readiness-addr", "-gateway-binary", envGatewayBinary, validateOnlyFlag,
+		"always written with mode 0600", "keeps every server's processor address", "wins over the address kept from the existing file")
 	wantContains(t, "help budget", c.ok("help", "budget"), "subcommands", "budget reset SERVER TOOL [--by NAME]")
 	wantContains(t, "help budget reset", c.ok("help", "budget", "reset"), "-by", systemActorName)
 	wantContains(t, "help audit verify", c.ok("help", "audit", "verify"), "-expect-head")
@@ -72,6 +74,8 @@ func TestUsageErrors(t *testing.T) {
 		{"verify admin without config", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--admin", "127.0.0.1:15000"}, "--admin needs --config"},
 		{"verify admin with user info", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--admin", "http://u:p@127.0.0.1:15000"}, "without user info"},
 		{"verify admin with a query", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--admin", "127.0.0.1:15000/?x=1"}, "without user info, query or fragment"},
+		{"verify expect-body-hash without config", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--expect-body-hash", strings.Repeat("a", 64)}, "--expect-body-hash needs --config"},
+		{"verify expect-body-hash not hex", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--expect-body-hash", "nothex"}, "64 hex digits of the body sha256"},
 		{"audit negative limit", []string{"audit", "list", "--limit", "-1"}, "must not be negative"},
 		{"rollback without to", []string{"rollback", "s1", "echo"}, "--to is required"},
 		{"reject without hash", []string{"reject", "s1", "echo"}, "--hash is required"},
