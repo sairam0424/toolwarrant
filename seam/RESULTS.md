@@ -287,8 +287,8 @@ The results table and findings F1 to F5 are again left exactly as written.
   approve or rollback record for every approved version (a forged approval
   through the mutable `tools` and `tool_versions.status` columns had been
   served), and `Store.Integrity` cross-checks the registry against the
-  approvals table and the audit log (no command runs it yet; wiring it into
-  `audit verify` is a later step).
+  approvals table and the audit log (`audit verify` runs it after the chain
+  check and exits 1 on any problem).
 - D1 as stated above, was: "refuses invalid UTF-8 and lone surrogate escapes
   (ErrNotUTF8)". The second review found that at 21164fd a lone or ill-paired
   surrogate escape was refused by the RFC 8785 step with only the
