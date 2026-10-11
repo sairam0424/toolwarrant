@@ -428,6 +428,31 @@ be run (two usage-policy refusals); the e2e harness on the real gateway is the
 system-level evidence. A fifth review of this round follows; the GO stands and
 v0.1 waits for its triage.
 
+**Note added 2026-10-12 05:25 IST.** The fifth review (15 findings on a369090, three high)
+was fixed as the sixth round (commits 01673cf to f392ab1, decisions D15): a
+Store verifies the whole audit chain when it opens and afterwards trusts an
+entry only when the hash computed from its fields is the one its own walk
+recorded, so an entry rewritten in place is refused on every serving and
+decision path; Integrity verifies seals and links as it streams; tables and
+automatic indexes are compared like the other guards; a page the gRPC
+transport refuses for size marks the snapshot; listing evidence is kept for
+unservable tools and during a pause; the live comparison fails closed on every
+field a route, backend or the config block carries that the emitted file does
+not, and runs even when the canary's own listing fails; a 400 with any JSON
+body is PROBE-INCONCLUSIVE. The remaining limit is stated once: a chain
+rewritten completely before a Store opens is caught only by the head the
+operator recorded. Two assumptions of the round were corrected on the real
+gateway and written down: agentgateway v1.6.0 answers the client HTTP 500 on
+tools/list before the ExtMCP hook for a page over its own limit (6 MiB and
+9 MiB in scenario J), so such a page marks nothing and the call window stays at
+the crawl cadence (L1); and a requestMirror policy posted on the route through
+the admin API breaks the route for new sessions, the canary's own listing
+included, which is why the comparison now runs regardless. Re-checked on
+f392ab1: the full race suite (not -short) green on every package; `make e2e`
+twice, 25.5 s and 27.7 s, exit 0; `demo/run.sh` twice, 30 s and 33 s, both
+exit 0 (condition 4 holds); scenario M added p50 +0.24 ms list, +0.22 ms call.
+The GO stands; the owner decides whether a further review round precedes v0.1.
+
 ### Corrections after the third review (2026-10-11)
 
 The third hostile review ran against d28e0e3 and 9cc8f28, the tree the week-2
