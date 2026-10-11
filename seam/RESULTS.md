@@ -410,6 +410,24 @@ usage-policy refusal, then two server-side failures of the model API); it is
 part of the fourth review, which starts on a96672e. The GO stands; v0.1 waits
 for that review's triage.
 
+**Note added 2026-10-12 03:07 IST.** The fourth review (26 findings on a96672e) was fixed
+as the fifth round (commits 369a0ba to 53e96b9, decisions D14): the serving
+path is anchored to the audit chain and a Store pins the chain prefix it has
+verified; Integrity covers subjects, orphans, proposers and version statuses
+and the tools table cannot be deleted from; the audit log has a per-crawl cap
+on rejected entries; a replaced catalog file is detected and every hook denied;
+the live comparison covers every top-level section, the header filter and the
+processor metadata; processor addresses live in the catalog; the schema is v5.
+The trust boundary is stated once in D14: controls inside the file detect
+rewrites of history, and a forged sealed append by whoever can write the file
+is detected only by anchors outside it. Re-checked on 53e96b9: the full race
+suite (not -short) green on every package; `make e2e` 19.8 s exit 0;
+`demo/run.sh` twice, 25 s and 24 s, both exit 0 (condition 4 holds); scenario
+M added p50 +0.18 ms list, +0.14 ms call. The whole-system LLM review could not
+be run (two usage-policy refusals); the e2e harness on the real gateway is the
+system-level evidence. A fifth review of this round follows; the GO stands and
+v0.1 waits for its triage.
+
 ### Corrections after the third review (2026-10-11)
 
 The third hostile review ran against d28e0e3 and 9cc8f28, the tree the week-2
