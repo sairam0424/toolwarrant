@@ -4,7 +4,7 @@ toolwarrant is a control plane in front of the agentgateway v1.6.0 MCP gateway: 
 
 ## Stack
 
-Go 1.27 (`go.mod`: `go 1.27`, `toolchain go1.27.2`), one module `github.com/sairam0424/toolwarrant`, pure Go (modernc.org/sqlite, no cgo). Dependencies: gowebpki/jcs (RFC 8785), modernc.org/sqlite, google.golang.org/grpc v1.86.0-dev, google.golang.org/protobuf v1.36.12, golang.org/x/text, modelcontextprotocol/go-sdk v1.8.0 (seam tools and tests only), pgregory.net/rapid (tests only, MPL-2.0). Lint: golangci-lint v2.13.2 with the repository `.golangci.yml`. Licence Apache-2.0; `THIRD_PARTY_NOTICES.md` is generated.
+Go 1.27 (`go.mod`: `go 1.27`, `toolchain go1.27.2`), one module `github.com/sairam0424/toolwarrant`, pure Go (modernc.org/sqlite, no cgo). Dependencies: gowebpki/jcs (RFC 8785), modernc.org/sqlite, google.golang.org/grpc v1.86.0-dev, google.golang.org/protobuf v1.36.12, golang.org/x/text, modelcontextprotocol/go-sdk v1.8.0 (seam tools and tests only), pgregory.net/rapid (tests only, MPL-2.0). Lint: golangci-lint v2.14.0 with the repository `.golangci.yml`. Licence Apache-2.0; `THIRD_PARTY_NOTICES.md` is generated.
 
 ## Commands
 
@@ -74,4 +74,4 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 
 ## Pinned external versions
 
-agentgateway v1.6.0 (ExtMCP proto and config schema); modelcontextprotocol/go-sdk v1.8.0; MCP revision 2026-07-28; google.golang.org/grpc v1.86.0-dev (GO-2026-6443 fix; move to v1.85.0 when tagged); protoc v7.36.2 (libprotoc 36.2), protoc-gen-go v1.36.12, protoc-gen-go-grpc v1.6.2; golangci-lint v2.13.2.
+agentgateway v1.6.0 (ExtMCP proto and config schema); modelcontextprotocol/go-sdk v1.8.0; MCP revision 2026-07-28; google.golang.org/grpc v1.86.0-dev (GO-2026-6443 fix; move to v1.85.0 when tagged); protoc v7.36.2 (libprotoc 36.2), protoc-gen-go v1.36.12, protoc-gen-go-grpc v1.6.2; golangci-lint v2.14.0.
