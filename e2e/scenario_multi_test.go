@@ -18,7 +18,10 @@ import (
 // page is listed (D3). A side file emitted without --processor as mockb and
 // then hostile are added shows that no existing server's processor address
 // moves (hostile sorts before mock, so name order would have renumbered both
-// mocks; decision D13).
+// mocks; decision D13) and that every address is the catalog's; the closing
+// step shows the addresses in server list and the audit log, a re-emit from
+// the catalog alone, and a forged file at --out that changes none of them
+// (decision D14 i).
 func scenarioJ(t *testing.T, s *stack) {
 	side := s.emitSide(t)
 	s.addMock(t, "mockb")
@@ -78,6 +81,7 @@ func scenarioJ(t *testing.T, s *stack) {
 	hostile.hostile.setPage(hostileEcho(echoV1))
 	cs = s.eventuallyServes(t, "hostile", "echo")
 	s.expectAllowed(t, cs, "echo", hostileReply)
+	scenarioJAddresses(t, s)
 }
 
 // scenarioK: the emitted allow rule alone, with every processor block

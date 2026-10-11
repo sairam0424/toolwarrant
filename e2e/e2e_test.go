@@ -16,7 +16,8 @@ import (
 // scenario leaves the stack in the state the next one starts from; running a
 // single subtest with -run is therefore not supported. The names are the ones
 // README.md and docs/ cite. Scenario N runs last, after O and P, because it
-// stops every processor and the two canary scenarios need them running.
+// deletes and re-initialises the catalog and stops every processor, and the
+// two canary scenarios need both as they are.
 func TestEndToEnd(t *testing.T) {
 	if h.skip != "" {
 		t.Skip(h.skip)

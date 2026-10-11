@@ -21,6 +21,11 @@ export GOFLAGS=-mod=readonly
 LOG=demo/last-run.log
 GATEWAY="${TOOLWARRANT_GATEWAY_BIN:-.cache/agentgateway-darwin-arm64}"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/toolwarrant-e2e.XXXXXX")"
+# Resolved through symbolic links (macOS keeps TMPDIR under /var, a link to
+# /private/var): init refuses a catalog path whose directory is reached through
+# a link (decision D14), and the harness resolves the directory the same way,
+# so the path the processes carry on their command lines is this one.
+WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 export TOOLWARRANT_E2E_WORKDIR="$WORKDIR"
 export TOOLWARRANT_E2E_REPORT_FILE="$PWD/$LOG"
 START=$(date +%s)

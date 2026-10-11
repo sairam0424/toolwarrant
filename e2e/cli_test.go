@@ -50,10 +50,13 @@ type toolRow struct {
 	Versions      int    `json:"versions"`
 }
 
-// serverRow is one entry of server list --json.
+// serverRow is one entry of server list --json. The processor address is the
+// catalog's record of where the server's processor listens (decision D14 i);
+// emit writes the file from it and never from the file at --out.
 type serverRow struct {
-	Name   string `json:"name"`
-	Paused bool   `json:"paused"`
+	Name          string `json:"name"`
+	Paused        bool   `json:"paused"`
+	ProcessorAddr string `json:"processor_addr"`
 }
 
 // tw runs the CLI as a subprocess against the stack's catalog, with extra

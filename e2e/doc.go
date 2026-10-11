@@ -7,10 +7,11 @@
 // operator and an MCP client would: the CLI as a subprocess with a temporary
 // catalog, MCP through the gateway with the go-sdk client, the upstream's
 // definitions changed behind the gateway's back, the gateway's file edited by
-// hand and its running configuration replaced through the admin API. Every
+// hand and its running configuration replaced through the admin API, and the
+// catalog deleted and initialised again under the running processors. Every
 // "to be verified by the end-to-end test" statement in README.md and docs/ is
 // covered by a named subtest of TestEndToEnd (scenarios A to P; N runs last
-// because it stops every processor).
+// because it re-initialises the catalog and stops every processor).
 //
 // The gateway's serving port and its admin, stats and readiness listeners are
 // all ports the test picks at run time and passes through emit (--listen-port,

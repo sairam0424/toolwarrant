@@ -101,34 +101,3 @@ func formatLatency(guarded, plain latencySample, n int) string {
 		added,
 	}, "\n")
 }
-
-// scenarioN: every processor stops cleanly on SIGTERM, exits 0 and prints its
-// counters. mock's processor received mockb's hooks in scenario J (wrong
-// backend) and hostile's hid vendor_tool in scenario L (mismatched); the
-// counters must say so.
-func scenarioN(t *testing.T, s *stack) {
-	for _, name := range s.names {
-		u := s.servers[name]
-		if u.processor == nil || !u.processor.running() {
-			t.Errorf("processor %s is not running at shutdown", name)
-			continue
-		}
-		out := s.stopProcessor(t, name)
-		stats := lastLineWith(out, "stats:")
-		if stats == "" {
-			t.Errorf("processor %s printed no stats line on SIGTERM:\n%s", name, out)
-			continue
-		}
-		s.note(t, "N: processor %s on SIGTERM: %s", name, stats)
-		switch name {
-		case "mock":
-			if n := statValue(t, stats, "wrong backend"); n == 0 {
-				t.Errorf("mock's processor counted no wrong-backend hooks although scenario J pointed mockb's route at it")
-			}
-		case "hostile":
-			if n := statValue(t, stats, "mismatched"); n == 0 {
-				t.Errorf("hostile's processor counted no mismatched tools although scenario L served vendor_tool")
-			}
-		}
-	}
-}

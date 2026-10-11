@@ -94,7 +94,11 @@ func newHarness() (*harness, error) {
 
 // prepareWorkdir uses the caller's directory when one is named (demo/run.sh
 // names one so it can clean up after a killed run) and a fresh temporary
-// directory otherwise.
+// directory otherwise. The directory is resolved through symbolic links
+// because init refuses a catalog path whose directory is reached through one
+// (decision D14 i) and macOS keeps temporary directories under /var, a link
+// to /private/var; the resolved path is also what every process the harness
+// starts carries on its command line, which demo/run.sh matches afterwards.
 func (hh *harness) prepareWorkdir() error {
 	if dir := os.Getenv(workdirEnv); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -108,6 +112,11 @@ func (hh *harness) prepareWorkdir() error {
 		}
 		hh.workdir, hh.ownsWorkdir = dir, true
 	}
+	resolved, err := filepath.EvalSymlinks(hh.workdir)
+	if err != nil {
+		return fmt.Errorf("resolve the work directory %s: %w", hh.workdir, err)
+	}
+	hh.workdir = resolved
 	hh.logDir = filepath.Join(hh.workdir, "logs")
 	return os.MkdirAll(hh.logDir, 0o755)
 }

@@ -245,7 +245,22 @@ func (s *stack) emit(t *testing.T, env []string, extra ...string) cliResult {
 	for _, name := range s.names {
 		args = append(args, "--processor", name+"="+s.processorAddr(name))
 	}
-	args = append(args, extra...)
+	return s.emitArgs(t, env, append(args, extra...))
+}
+
+// emitFromCatalog re-emits the watched file without any --processor flag, so
+// every processor address must come from the catalog (decision D14 i), and
+// waits for the reload.
+func (s *stack) emitFromCatalog(t *testing.T) cliResult {
+	t.Helper()
+	return s.emitArgs(t, nil, s.emitBaseArgs())
+}
+
+// emitArgs runs one emit of the watched file with the given arguments,
+// records the body hash it printed, checks that the file and the catalog pin
+// every processor at the stack's address and waits for the gateway's reload.
+func (s *stack) emitArgs(t *testing.T, env, args []string) cliResult {
+	t.Helper()
 	mark := s.mark()
 	r := s.tw(t, env, args...)
 	if r.code != exitOK {
