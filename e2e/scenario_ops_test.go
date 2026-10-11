@@ -44,23 +44,31 @@ const okSummary = "mock: the gateway serves 2 tool(s), 2 approved and current"
 // the approved digest, so the catalog has no record of drift (decision D12).
 const mismatchLabel = "(MISMATCH:"
 
-// scenarioF: verify-gateway passes on the emitted file; a hand edit that
-// strips the processor block is reloaded by the gateway, and after a drift a
-// new session sees the drifted definition. verify-gateway --config reports
-// CONFIG-EDITED and a LEAK line at once, exit code 1: before the crawl records
-// the drift the LEAK carries the MISMATCH sub-label (the latest crawl saw the
-// approved digest), after it the plain LEAK (decision D12; before the third
-// round the first check printed a non-failing MISMATCH). A canary loop
-// (--every 1s --keep-going) running throughout prints the same verdicts as
-// they happen and exits 1 when stopped. Restoring the file restores the guard.
+// zeroDigest is a well-formed digest no file or audit log can have, for the
+// checks that hand verify-gateway and audit verify a wrong recorded value.
+const zeroDigest = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// scenarioF: verify-gateway passes on the emitted file, with and without
+// --expect-body-hash set to the body hash the latest emit printed; a hand edit
+// that strips the processor block is reloaded by the gateway, and after a
+// drift a new session sees the drifted definition. verify-gateway --config
+// reports CONFIG-EDITED and a LEAK line at once, exit code 1: before the crawl
+// records the drift the LEAK carries the MISMATCH sub-label (the latest crawl
+// saw the approved digest), after it the plain LEAK (decision D12; before the
+// third round the first check printed a non-failing MISMATCH). A canary loop
+// (--every 1s --keep-going --expect-body-hash) running throughout prints the
+// same verdicts as they happen and exits 1 when stopped. Restoring the file
+// restores the guard, and on the restored file a recorded hash that differs
+// from the body is CONFIG-EDITED on its own (decision D13, limit L19).
 func scenarioF(t *testing.T, s *stack) {
 	r := s.verifyGateway(t, "mock")
 	if r.code != exitOK {
 		t.Fatalf("verify-gateway before the edit: exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
 	mustContain(t, "verify-gateway", r.stdout, "OK: the gateway serves 2 tool(s)")
+	s.expectBodyHash(t, "before the edit, with the hash emit printed", s.bodyHash, exitOK, "OK:")
 	canaryCmd := append([]string{"--db", s.db}, s.canaryArgs("mock", false, s.cfg)...)
-	canaryCmd = append(canaryCmd, "--every", "1s", "--keep-going")
+	canaryCmd = append(canaryCmd, "--every", "1s", "--keep-going", "--expect-body-hash", s.bodyHash)
 	canary := s.spawn(t, "canary", nil, s.h.toolwarrant, canaryCmd...)
 	waitForOutput(t, canary, okSummary, 1)
 	original := s.config(t)
@@ -88,6 +96,7 @@ func scenarioF(t *testing.T, s *stack) {
 	mustContain(t, "verify-gateway before the crawl", r.stdout, "CONFIG-EDITED", "LEAK echo", mismatchLabel)
 	mustContain(t, "verify-gateway stderr before the crawl", r.stderr, "leak", "edited")
 	s.note(t, "F: before the crawl recorded the drift, verify-gateway printed: %s", strings.TrimSpace(r.stdout))
+	s.expectBodyHash(t, "on the edited file, with the hash emit printed", s.bodyHash, exitFailure, "CONFIG-EDITED", "LEAK echo")
 	mustContain(t, "crawl", s.twOK(t, "crawl", "mock"), "DRIFT")
 	r = s.verifyGateway(t, "mock")
 	if r.code != exitFailure {
@@ -99,18 +108,29 @@ func scenarioF(t *testing.T, s *stack) {
 	s.note(t, "F: after the crawl recorded the drift, verify-gateway printed: %s", strings.TrimSpace(r.stdout))
 	waitForOutput(t, canary, "LEAK echo", 0)
 	waitForOutput(t, canary, "CONFIG-EDITED", 0)
+	scenarioFRestore(t, s, canary, original)
+}
 
+// scenarioFRestore puts the emitted file back, proves the guard is back (echo
+// denied until the upstream reverts and a crawl records it), checks the
+// recorded body hash both ways on the restored file and stops the canary,
+// which must exit 1 for the verdicts it printed.
+func scenarioFRestore(t *testing.T, s *stack, canary *proc, original []byte) {
+	t.Helper()
 	healthyBefore := countIn(canary.stdout, okSummary)
 	s.writeConfig(t, original)
-	cs = s.eventuallyServes(t, "mock", "add")
+	cs := s.eventuallyServes(t, "mock", "add")
 	s.expectDenied(t, cs, "echo")
 	s.describe(t, "mock", "echo", echoV1)
 	mustContain(t, "crawl after restore", s.twOK(t, "crawl", "mock"), "reverted=1")
 	cs = s.eventuallyServes(t, "mock", "add", "echo")
 	s.expectAllowed(t, cs, "echo", "hello")
-	if r = s.verifyGateway(t, "mock"); r.code != exitOK {
+	if r := s.verifyGateway(t, "mock"); r.code != exitOK {
 		t.Errorf("verify-gateway after restoring the file: exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
+	s.expectBodyHash(t, "on the restored file, with the hash emit printed", s.bodyHash, exitOK, "OK:")
+	r := s.expectBodyHash(t, "on the restored file, with another recorded hash", zeroDigest, exitFailure, "CONFIG-EDITED")
+	mustNotContain(t, "verify-gateway --expect-body-hash with another recorded hash", r.stdout, "LEAK")
 	waitForOutput(t, canary, okSummary, healthyBefore)
 	if code := canary.stop(); code != exitFailure {
 		t.Errorf("verify-gateway --every --keep-going exit %d after seeing a LEAK, want 1\nstdout:\n%s\nstderr:\n%s", code, canary.output(canary.stdout), canary.output(canary.stderr))
@@ -118,6 +138,20 @@ func scenarioF(t *testing.T, s *stack) {
 	mustContain(t, "canary stderr", canary.output(canary.stderr), "check(s) in this run failed")
 	s.note(t, "F: the --every 1s --keep-going canary printed %d healthy checks, %d LEAK lines (%d of them with the MISMATCH sub-label) and %d CONFIG-EDITED lines across the edit, and exited 1 on SIGTERM",
 		countIn(canary.stdout, okSummary), countIn(canary.stdout, "LEAK echo"), countIn(canary.stdout, mismatchLabel), countIn(canary.stdout, "CONFIG-EDITED"))
+}
+
+// expectBodyHash runs verify-gateway --config with --expect-body-hash HASH,
+// the comparison of the recorded body hash the documents describe for limit
+// L19 (decision D13), and requires the exit code and the output.
+func (s *stack) expectBodyHash(t *testing.T, when, hash string, wantCode int, want ...string) cliResult {
+	t.Helper()
+	r := s.verifyGateway(t, "mock", "--expect-body-hash", hash)
+	if r.code != wantCode {
+		t.Errorf("verify-gateway --expect-body-hash %s: exit %d, want %d\nstdout: %s\nstderr: %s", when, r.code, wantCode, r.stdout, r.stderr)
+	}
+	mustContain(t, "verify-gateway --expect-body-hash "+when, r.stdout, want...)
+	s.note(t, "F: verify-gateway --expect-body-hash %s printed: %s", when, strings.TrimSpace(r.stdout))
+	return r
 }
 
 // scenarioG: with the processor stopped, failClosed makes tools/list and
@@ -145,8 +179,10 @@ func scenarioG(t *testing.T, s *stack) {
 // scenarioH: emit and serve share one value from the environment and
 // everything works, which proves the gateway delivers metadata_context on both
 // hooks (D8); a processor holding another value denies every hook and the
-// gateway fails closed; the emitted file is 0600 and carries the metadata
-// line. The stack is returned to its unauthenticated state afterwards.
+// gateway fails closed; the emitted file carries the metadata line and is
+// 0600, as it is without a shared value too (decision D13: every emitted file
+// is owner-only). The stack is returned to its unauthenticated state
+// afterwards.
 func scenarioH(t *testing.T, s *stack) {
 	shared, other := randomToken(t), randomToken(t)
 	env := []string{sharedEnvVar + "=" + shared}
@@ -185,8 +221,8 @@ func scenarioH(t *testing.T, s *stack) {
 	s.startProcessor(t, "mock", nil)
 	r = s.emit(t, nil)
 	mustNotContain(t, "emit without a shared value", r.stderr, "secret")
-	if fi, err = os.Stat(s.cfg); err != nil || fi.Mode().Perm() != 0o644 {
-		t.Errorf("file mode %v (%v), want 0644 without a shared value", fi.Mode(), err)
+	if fi, err = os.Stat(s.cfg); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode %v (%v), want 0600 without a shared value too: emit writes every file owner-only (decision D13)", fi.Mode(), err)
 	}
 	cs = s.eventuallyServes(t, "mock", "add", "echo")
 	s.expectAllowed(t, cs, "echo", "hello")

@@ -33,6 +33,14 @@ const (
 	// headerPrefix starts every file emit writes; whether a file the gateway
 	// rewrote still starts with it is part of what scenario P records.
 	headerPrefix = "# "
+	// extraRouteName and extraRoutePath are the route scenario P adds next to
+	// mock's: another path, no allow rule, no processor, the same upstream.
+	extraRouteName = "mock-extra"
+	extraRoutePath = "/mock/mcp2"
+	// shadowRouteName owns mock's client path in the shadow-route step of
+	// scenario P while mock's own route is parked at parkedRoutePath.
+	shadowRouteName = "mock-shadow"
+	parkedRoutePath = "/mock/mcp-parked"
 )
 
 // scenarioO: the unhooked-call probe. verify-gateway sends one tools/call
@@ -40,10 +48,12 @@ const (
 // answers HTTP 202 and forwards it to the upstream without the processor or
 // the allow rule (limit L17), so the check reports UNHOOKED-CALLS, exits 1,
 // and the hostile upstream's request log shows the probe arriving. A gateway
-// that refuses the id-less call (HTTP 400 or a JSON-RPC error) makes the check
-// pass; the scenario then records that the gateway now refuses id-less calls
-// and passes too, because noticing that change is what the probe is for. With
-// --no-probe the summary says the probe was skipped.
+// that refuses the id-less call (HTTP 400) makes the check pass; the scenario
+// then records that the gateway now refuses id-less calls and passes too,
+// because noticing that change is what the probe is for. Any other answer is
+// PROBE-INCONCLUSIVE (decision D13), which on the pinned gateway would be a
+// failure of this scenario. With --no-probe the summary says the probe was
+// skipped.
 func scenarioO(t *testing.T, s *stack) {
 	hostileLog := s.servers["hostile"].hostile.log.Name()
 	before := countIn(hostileLog, probeMarker)
@@ -56,7 +66,7 @@ func scenarioO(t *testing.T, s *stack) {
 		}
 	case r.code == exitFailure && strings.Contains(r.stdout, unhookedLine):
 		mustContain(t, "verify-gateway stderr with the probe", r.stderr, "forwards a tools/call without an id")
-		mustNotContain(t, "verify-gateway with the probe", r.stdout, "LEAK", "CONFIG-EDITED")
+		mustNotContain(t, "verify-gateway with the probe", r.stdout, "LEAK", "CONFIG-EDITED", "PROBE-INCONCLUSIVE")
 		n := countIn(hostileLog, probeMarker)
 		if n <= before {
 			t.Errorf("verify-gateway reported UNHOOKED-CALLS but the hostile upstream's request log shows no probe (%d before, %d after): %s", before, n, hostileLog)
@@ -75,73 +85,155 @@ func scenarioO(t *testing.T, s *stack) {
 	s.note(t, "O: verify-gateway --no-probe printed: %s", strings.TrimSpace(r.stdout))
 }
 
+// liveLab is what the replacement steps of scenario P share: the bytes emit
+// wrote as the gateway watches them, a byte-identical copy of them apart from
+// the watched file, the document the gateway was running before any
+// replacement and how many routes that document carries.
+type liveLab struct {
+	original []byte
+	copyPath string
+	doc      []byte
+	routes   int
+}
+
 // scenarioP: the live-configuration comparison. With --admin, verify-gateway
 // fetches the configuration the gateway is running from the admin API and
-// compares the route with the file named by --config. The check is healthy
-// first. Then the running configuration is replaced through the
-// unauthenticated admin API (POST /api/config, limit L18) with the gateway's
-// own document minus every mcpGuardrails policy, the way a local user of the
-// gateway host could; against a byte-identical copy of the file emit wrote
-// the check reports LIVE-CONFIG-MISMATCH, exit 1, naming the missing
-// processor. What the gateway did to the watched file is recorded, and so is
-// the check against that file. The original document is posted back, the
-// emitted bytes are put back on disk if the gateway rewrote them, and the
-// check is healthy again, so later scenarios start from the emitted state.
+// compares the whole document with the file named by --config (decision
+// D13). The check is healthy first. Then the running configuration is
+// replaced three times through the unauthenticated admin API (POST
+// /api/config, limit L18), the way a local user of the gateway host could:
+// with the gateway's own document minus every mcpGuardrails policy, with the
+// original document plus one route on another path without a rule or a
+// processor, and with mock's route parked on another path while a route under
+// another name owns mock's client path with the allow rule copied and no
+// processor (the shadow route of finding cli-docs-1). Against a byte-identical
+// copy of the file emit wrote every replacement is LIVE-CONFIG-MISMATCH, exit
+// 1, naming the missing processor or the route the file does not carry. The
+// original document is posted back after each step, the emitted bytes are put
+// back on disk if the gateway rewrote them, and the check is healthy again,
+// so later scenarios start from the emitted state.
 func scenarioP(t *testing.T, s *stack) {
-	r := s.verifyGateway(t, "mock", "--admin", s.adminAddr())
-	if r.code != exitOK {
-		t.Fatalf("verify-gateway --admin before the replacement: exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
-	}
-	mustContain(t, "verify-gateway --admin before the replacement", r.stdout, "OK:", liveMatchesLine)
-	s.note(t, "P: with the gateway running the emitted file, verify-gateway --admin printed: %s", strings.TrimSpace(r.stdout))
-
+	s.expectLiveHealthy(t, "with the gateway running the emitted file")
 	original := s.config(t)
 	emittedCopy := filepath.Join(s.h.workdir, emittedCopyName)
-	if err := os.WriteFile(emittedCopy, original, 0o644); err != nil {
+	if err := os.WriteFile(emittedCopy, original, 0o600); err != nil {
 		t.Fatalf("write %s: %v", emittedCopy, err)
 	}
 	liveDoc := s.liveConfig(t)
-	stripped, err := withoutGuardrails(liveDoc)
+	routes, err := routeCount(liveDoc)
+	if err != nil {
+		t.Fatalf("count the live routes: %v", err)
+	}
+	lab := liveLab{original: original, copyPath: emittedCopy, doc: liveDoc, routes: routes}
+	scenarioPNoProcessor(t, s, lab)
+	scenarioPExtraRoute(t, s, lab)
+	scenarioPShadowRoute(t, s, lab)
+	s.eventuallyServes(t, "mock", "add", "echo")
+}
+
+// scenarioPNoProcessor: the gateway's own document minus every mcpGuardrails
+// policy. What the gateway did to the watched file is recorded, and so is the
+// check against that file: CONFIG-EDITED when the gateway rewrote it,
+// LIVE-CONFIG-MISMATCH when it left the emitted bytes alone.
+func scenarioPNoProcessor(t *testing.T, s *stack, lab liveLab) {
+	stripped, err := withoutGuardrails(lab.doc)
 	if err != nil {
 		t.Fatalf("remove the processors from the live configuration: %v", err)
 	}
 	s.replaceLive(t, stripped)
 	s.awaitLiveProcessor(t, "mock", false)
 	onDisk := s.config(t)
-	s.note(t, "P: after the replacement the watched file %s", describeWatchedFile(onDisk, original, stripped, stripGuardrails(original)))
+	s.note(t, "P: after the replacement the watched file %s", describeWatchedFile(onDisk, lab.original, stripped, stripGuardrails(lab.original)))
+	s.expectLiveMismatch(t, lab.copyPath, "with every processor removed", noProcessorLine)
 
-	r = s.tw(t, nil, append(s.canaryArgs("mock", false, emittedCopy), "--admin", s.adminAddr())...)
-	if r.code != exitFailure {
-		t.Errorf("verify-gateway --admin against the emitted copy: exit %d, want 1\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
-	}
-	mustContain(t, "verify-gateway --admin against the emitted copy", r.stdout, liveMismatchLine, noProcessorLine)
-	mustNotContain(t, "verify-gateway --admin against the emitted copy", r.stdout, "CONFIG-EDITED", "LEAK")
-	mustContain(t, "verify-gateway stderr against the emitted copy", r.stderr, "differs from the emitted file")
-	s.note(t, "P: with --config naming a byte-identical copy of the file emit wrote, verify-gateway --admin printed: %s", strings.TrimSpace(r.stdout))
-
-	r = s.verifyGateway(t, "mock", "--admin", s.adminAddr())
+	r := s.verifyGateway(t, "mock", "--admin", s.adminAddr())
 	if r.code != exitFailure {
 		t.Errorf("verify-gateway --admin against the watched file: exit %d, want 1\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
 	want := liveMismatchLine
-	if !bytes.Equal(onDisk, original) {
+	if !bytes.Equal(onDisk, lab.original) {
 		want = "CONFIG-EDITED"
 	}
 	mustContain(t, "verify-gateway --admin against the watched file", r.stdout, want)
 	s.note(t, "P: with --config naming the watched file, verify-gateway --admin printed: %s", strings.TrimSpace(r.stdout))
+	s.restoreLive(t, lab, "after the processor removal")
+}
 
-	s.replaceLive(t, liveDoc)
-	s.awaitLiveProcessor(t, "mock", true)
-	if !bytes.Equal(s.config(t), original) {
-		s.writeConfig(t, original)
+// scenarioPExtraRoute: the original document plus one route on another path
+// with no allow rule and no processor (finding processor-emit-2). mock's own
+// route is untouched, so a comparison of that route alone passed; the
+// whole-document comparison names the route the file does not carry.
+func scenarioPExtraRoute(t *testing.T, s *stack, lab liveLab) {
+	doc, err := withExtraRoute(lab.doc, "mock", extraRouteName, extraRoutePath)
+	if err != nil {
+		t.Fatalf("add a route to the live configuration: %v", err)
 	}
-	r = s.verifyGateway(t, "mock", "--admin", s.adminAddr())
+	s.replaceLive(t, doc)
+	s.awaitLiveRouteCount(t, lab.routes+1)
+	s.expectLiveMismatch(t, lab.copyPath, "with a route added on "+extraRoutePath, extraRouteName)
+	s.restoreLive(t, lab, "after the added route")
+}
+
+// scenarioPShadowRoute: mock's route keeps every field but its match, which
+// moves to another path, and a route under another name owns mock's client
+// path with the allow rule copied and no processor (finding cli-docs-1). A new
+// session on the client path still lists exactly the approved names, because
+// the allow rule hides the rest, so only the live comparison can show that the
+// path is served without the processor.
+func scenarioPShadowRoute(t *testing.T, s *stack, lab liveLab) {
+	doc, err := withShadowRoute(lab.doc, "mock", shadowRouteName, parkedRoutePath)
+	if err != nil {
+		t.Fatalf("build the shadow-route document: %v", err)
+	}
+	s.replaceLive(t, doc)
+	s.awaitLiveRouteCount(t, lab.routes+1)
+	cs := s.eventuallyServes(t, "mock", "add", "echo")
+	s.note(t, "P: with the shadow route owning %s a new session listed the approved names and tools/call echo -> %s", s.routeURL("mock"), callTool(cs, "echo"))
+	s.expectLiveMismatch(t, lab.copyPath, "with mock's route parked at "+parkedRoutePath+" and "+shadowRouteName+" owning its path", shadowRouteName)
+	s.restoreLive(t, lab, "after the shadow route")
+}
+
+// expectLiveHealthy runs verify-gateway --admin against the watched file and
+// requires OK with the live configuration matching the emitted file.
+func (s *stack) expectLiveHealthy(t *testing.T, when string) {
+	t.Helper()
+	r := s.verifyGateway(t, "mock", "--admin", s.adminAddr())
 	if r.code != exitOK {
-		t.Fatalf("verify-gateway --admin after the restore: exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+		t.Fatalf("verify-gateway --admin %s: exit %d\nstdout: %s\nstderr: %s", when, r.code, r.stdout, r.stderr)
 	}
-	mustContain(t, "verify-gateway --admin after the restore", r.stdout, "OK:", liveMatchesLine)
-	s.note(t, "P: after posting the original document back, verify-gateway --admin printed: %s", strings.TrimSpace(r.stdout))
-	s.eventuallyServes(t, "mock", "add", "echo")
+	mustContain(t, "verify-gateway --admin "+when, r.stdout, "OK:", liveMatchesLine)
+	s.note(t, "P: %s, verify-gateway --admin printed: %s", when, strings.TrimSpace(r.stdout))
+}
+
+// expectLiveMismatch runs verify-gateway --admin against the byte-identical
+// copy of the emitted file and requires LIVE-CONFIG-MISMATCH, exit 1, with
+// every substring in naming on stdout and neither CONFIG-EDITED nor LEAK: the
+// file is what emit wrote and nothing drifted, so the live comparison is the
+// only thing that can see the replacement.
+func (s *stack) expectLiveMismatch(t *testing.T, emittedCopy, when string, naming ...string) {
+	t.Helper()
+	r := s.tw(t, nil, append(s.canaryArgs("mock", false, emittedCopy), "--admin", s.adminAddr())...)
+	if r.code != exitFailure {
+		t.Errorf("verify-gateway --admin %s: exit %d, want 1\nstdout: %s\nstderr: %s", when, r.code, r.stdout, r.stderr)
+	}
+	mustContain(t, "verify-gateway --admin "+when, r.stdout, append([]string{liveMismatchLine}, naming...)...)
+	mustNotContain(t, "verify-gateway --admin "+when, r.stdout, "CONFIG-EDITED", "LEAK")
+	mustContain(t, "verify-gateway stderr "+when, r.stderr, "differs from the emitted file")
+	s.note(t, "P: %s, with --config naming a byte-identical copy of the file emit wrote, verify-gateway --admin printed: %s", when, strings.TrimSpace(r.stdout))
+}
+
+// restoreLive posts the original document back, waits until the gateway runs
+// the original routes with mock's processor in place, puts the emitted bytes
+// back on disk if the gateway rewrote them and proves a healthy check.
+func (s *stack) restoreLive(t *testing.T, lab liveLab, when string) {
+	t.Helper()
+	s.replaceLive(t, lab.doc)
+	s.awaitLiveRouteCount(t, lab.routes)
+	s.awaitLiveProcessor(t, "mock", true)
+	if !bytes.Equal(s.config(t), lab.original) {
+		s.writeConfig(t, lab.original)
+	}
+	s.expectLiveHealthy(t, when+", with the original document posted back")
 }
 
 // replaceLive replaces the running configuration through the admin API and

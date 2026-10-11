@@ -178,7 +178,7 @@ func scenarioD(t *testing.T, s *stack) {
 	mustContain(t, "audit verify", out, "audit log ok:", "head", "record this head outside the database")
 	head := lastField(lastLineWith(out, "audit log ok:"))
 	s.twOK(t, "audit", "verify", "--expect-head", head)
-	r := s.twFail(t, exitFailure, "audit", "verify", "--expect-head", "0000000000000000000000000000000000000000000000000000000000000000")
+	r := s.twFail(t, exitFailure, "audit", "verify", "--expect-head", zeroDigest)
 	mustContain(t, "wrong head", r.stderr, "audit head mismatch")
 }
 

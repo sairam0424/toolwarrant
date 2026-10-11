@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +37,13 @@ const (
 	// stackPorts is how many distinct ports one gateway needs: the serving
 	// port and the admin, stats and readiness listeners.
 	stackPorts = 4
+	// bodyHashPrefix starts the line emit prints with the SHA-256 of the body
+	// it wrote; the stack records the hash so scenario F can hand it back to
+	// verify-gateway --expect-body-hash the way an operator would.
+	bodyHashPrefix = "body sha256 "
+	// hexDigestLen is the length of a SHA-256 digest in hex, the shape of
+	// every digest the CLI prints and accepts.
+	hexDigestLen = 64
 )
 
 // listeners are the gateway's process-level listeners as the emitted file
@@ -78,6 +86,9 @@ type stack struct {
 	// measures how a client that never re-lists is treated after a drift.
 	existing *mcp.ClientSession
 	notes    []string
+	// bodyHash is the body SHA-256 the latest emit printed, the value an
+	// operator records and hands to verify-gateway --expect-body-hash.
+	bodyHash string
 }
 
 // reloadMark is the gateway's reload counters at one moment.
@@ -128,6 +139,19 @@ func (s *stack) listenerPorts() []int {
 	return []int{s.ports.admin, s.ports.stats, s.ports.readiness}
 }
 
+// freeProcPort picks a processor port that is none of the gateway's own
+// sockets. emit refuses a processor address on the serving port or a listener
+// port, so a port the kernel happens to hand out twice must not fail a run.
+func (s *stack) freeProcPort(t *testing.T) int {
+	t.Helper()
+	for {
+		p := freePort(t)
+		if p != s.gwPort && !slices.Contains(s.listenerPorts(), p) {
+			return p
+		}
+	}
+}
+
 // spawn starts a process whose life ends with the root test, not with the
 // subtest that started it.
 func (s *stack) spawn(t *testing.T, name string, env []string, bin string, args ...string) *proc {
@@ -151,7 +175,7 @@ func (s *stack) addMock(t *testing.T, name string) *upstream {
 	addr := loopback(freePort(t))
 	p := s.spawn(t, "mock-"+name, nil, s.h.mockupstream, "-addr", addr)
 	waitPort(t, p, addr)
-	u := &upstream{name: name, url: "http://" + addr + "/mcp", admin: "http://" + addr + "/admin/describe", procPort: freePort(t), mock: p}
+	u := &upstream{name: name, url: "http://" + addr + "/mcp", admin: "http://" + addr + "/admin/describe", procPort: s.freeProcPort(t), mock: p}
 	s.register(t, u)
 	return u
 }
@@ -160,7 +184,7 @@ func (s *stack) addMock(t *testing.T, name string) *upstream {
 func (s *stack) addHostile(t *testing.T, name string) *upstream {
 	t.Helper()
 	hs := startHostile(t, s, name)
-	u := &upstream{name: name, url: hs.url, procPort: freePort(t), hostile: hs}
+	u := &upstream{name: name, url: hs.url, procPort: s.freeProcPort(t), hostile: hs}
 	s.register(t, u)
 	return u
 }
@@ -227,6 +251,11 @@ func (s *stack) emit(t *testing.T, env []string, extra ...string) cliResult {
 	if r.code != exitOK {
 		t.Fatalf("toolwarrant %v: exit %d\nstdout: %s\nstderr: %s", args, r.code, r.stdout, r.stderr)
 	}
+	s.bodyHash = lastField(lastLineWith(r.stdout, bodyHashPrefix))
+	if len(s.bodyHash) != hexDigestLen {
+		t.Fatalf("emit printed no %q line with a 64-hex digest:\n%s", bodyHashPrefix, r.stdout)
+	}
+	s.assertProcessorsPinned(t)
 	s.awaitReload(t, mark)
 	return r
 }

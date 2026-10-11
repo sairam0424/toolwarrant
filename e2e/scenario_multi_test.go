@@ -15,12 +15,17 @@ import (
 // edited to do it anyway still has mockb's echo denied, by the processor's
 // service_names check (D2). A hostile upstream whose page lists echo twice has
 // the page denied as a whole and the following call denied until a clean
-// page is listed (D3).
+// page is listed (D3). A side file emitted without --processor as mockb and
+// then hostile are added shows that no existing server's processor address
+// moves (hostile sorts before mock, so name order would have renumbered both
+// mocks; decision D13).
 func scenarioJ(t *testing.T, s *stack) {
+	side := s.emitSide(t)
 	s.addMock(t, "mockb")
 	mustContain(t, "crawl mockb", s.twOK(t, "crawl", "mockb"), "new=3")
 	s.startProcessor(t, "mockb", nil)
 	s.emit(t, nil)
+	side = s.reemitSide(t, side)
 	if a, b := s.tool(t, "mock", "echo"), s.tool(t, "mockb", "echo"); b.Live != a.Approved {
 		t.Fatalf("mockb's echo digest %s differs from mock's approved %s; the two mocks should serve byte-identical definitions", b.Live, a.Approved)
 	}
@@ -57,6 +62,7 @@ func scenarioJ(t *testing.T, s *stack) {
 	s.approve(t, "hostile", "echo", s.tool(t, "hostile", "echo").Pending)
 	s.startProcessor(t, "hostile", nil)
 	s.emit(t, nil)
+	s.reemitSide(t, side)
 	cs = s.eventuallyServes(t, "hostile", "echo")
 	s.expectAllowed(t, cs, "echo", hostileReply)
 
