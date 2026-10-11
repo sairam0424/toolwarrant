@@ -105,7 +105,7 @@ N; `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The spike
 in [seam/RESULTS.md](seam/RESULTS.md) ran the same shape with a prototype
 processor, not with this CLI.
 
-Prerequisites: Go 1.27 (go.mod pins toolchain go1.27.1) and the agentgateway
+Prerequisites: Go 1.27 (go.mod pins toolchain go1.27.2) and the agentgateway
 v1.6.0 release binary for your platform, downloaded from the agentgateway
 repository on GitHub (github.com/agentgateway/agentgateway, release v1.6.0) and
 checked against its published SHA-256. The seam scripts and the end-to-end test

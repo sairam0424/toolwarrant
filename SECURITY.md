@@ -201,7 +201,7 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
 
 - Every dependency is pinned in `go.mod` and `go.sum`; every build runs with
   `GOFLAGS=-mod=readonly`. The Go toolchain is pinned (`go 1.27`,
-  `toolchain go1.27.1`).
+  `toolchain go1.27.2`).
 - `govulncheck ./...` runs as the `govulncheck` job of
   [.github/workflows/ci.yml](.github/workflows/ci.yml) on every push and pull
   request once the repository is on GitHub, and before every release. The last
