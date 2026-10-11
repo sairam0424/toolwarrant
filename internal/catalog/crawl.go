@@ -33,8 +33,11 @@ import (
 // budget.
 //
 // A deprecated tool is neither loaded nor reported unless the listing names
-// it, so the cost of a crawl follows the live set and not the server's history
-// (D13); a sighting of a deprecated name loads that tool and it reappears.
+// it or it still carries the unusable marker from an earlier sighting, so the
+// cost of a crawl follows the live set and not the server's history (D13); a
+// sighting of a deprecated name loads that tool and it reappears, and the
+// first crawl that does not list a marked deprecated tool clears the marker
+// (one missing line) and then leaves it alone.
 //
 // All digesting and validation happen before the transaction begins; inside
 // it there are only inserts and updates, so the write lock is held briefly.

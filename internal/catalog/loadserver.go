@@ -12,23 +12,29 @@ import (
 // server (a listed one is observed, an absent one is missing) but not the
 // deprecated rows: a deprecated tool that stays away changes nothing, and an
 // upstream that lists fresh names on every crawl would otherwise make every
-// later crawl read every row the server ever had (D13). A deprecated tool the
-// listing names again is loaded on demand so that it can reappear.
+// later crawl read every row the server ever had (D13). Two exceptions keep
+// the lifecycle rules exact: a deprecated tool the listing names again is
+// loaded on demand so that it can reappear, and a deprecated tool that still
+// carries the unusable marker from an earlier sighting is loaded once more,
+// because the lifecycle clears that marker the first time a crawl does not
+// list the tool (observeMissing); after that its LastSeen is empty and it is
+// skipped like the rest.
 
 // inChunk is how many ids or names one IN (...) query carries. The rows stream
 // through one at a time, so the chunk bounds the statement, not the memory.
 const inChunk = 256
 
 const (
-	liveToolsOfServer = `SELECT ` + toolCols + ` FROM tools t WHERE t.server_id = ? AND t.state <> ?`
+	liveToolsOfServer = `SELECT ` + toolCols + ` FROM tools t WHERE t.server_id = ? AND (t.state <> ? OR t.last_seen_digest <> '')`
 	toolsByName       = `SELECT ` + toolCols + ` FROM tools t WHERE t.server_id = ? AND t.name IN (%s)`
 	versionsByTool    = `SELECT ` + versionCols + ` FROM tool_versions v WHERE v.tool_id IN (%s) ORDER BY v.tool_id, v.version_no`
 	proposersByTool   = `SELECT ` + proposerCols + ` FROM tool_version_proposers p JOIN tool_versions v ON v.id = p.version_id
 		WHERE v.tool_id IN (%s) ORDER BY p.version_id, p.position`
 )
 
-// loadCrawlTools loads the live tools of the server and any deprecated tool
-// among the listed names, keyed by name.
+// loadCrawlTools loads the live tools of the server, every deprecated tool
+// that still carries a LastSeen marker, and any deprecated tool among the
+// listed names, keyed by name.
 func loadCrawlTools(ctx context.Context, q queryer, serverID int64, listed []string) (map[string]*toolRec, error) {
 	trs, err := queryToolRows(ctx, q, liveToolsOfServer, serverID, string(lifecycle.Deprecated))
 	if err != nil {

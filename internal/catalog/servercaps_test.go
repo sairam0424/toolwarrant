@@ -198,3 +198,38 @@ func TestServerCaps_Constants(t *testing.T) {
 		}
 	}
 }
+
+// A deprecated tool keeps its row out of every crawl, except while it still
+// carries the unusable marker from a sighting: the lifecycle clears that
+// marker the first time a crawl does not list the tool (observeMissing), so
+// the store must load it once more for that crawl and may skip it afterwards.
+// Without this the store and the lifecycle model diverge (the model test found
+// it: store LastSeen unusable, model LastSeen empty).
+func TestRecordCrawl_DeprecatedToolWithAMarkerIsClearedOnce(t *testing.T) {
+	s, _ := newStoreAt(t, lifecycle.DefaultPolicy())
+	mustAddServer(t, s, "alpha")
+	mustCrawl(t, s, "alpha", tool("gone", "v1"), tool("keep", "v1"))
+	for i := 0; i < lifecycle.DefaultPolicy().DeprecateAfter; i++ {
+		mustCrawl(t, s, "alpha", tool("keep", "v1"))
+	}
+	if st := stateOf(t, s, "alpha", "gone"); st != lifecycle.Deprecated {
+		t.Fatalf("precondition: state = %s, want deprecated", st)
+	}
+	in := CrawlInput{Server: "alpha", Complete: true, Tools: []CrawledTool{tool("keep", "v1")}, Unusable: []UnusableTool{unusableOf("gone", "not-canonical")}}
+	if rep := mustCrawlInput(t, s, in); kindsOf(rep)["gone"] != ChangeUnusable {
+		t.Fatalf("unusable sighting of the deprecated tool = %+v", rep.Changes)
+	}
+	if v := mustTool(t, s, "alpha", "gone"); v.State != lifecycle.Deprecated || v.LastSeen != lifecycle.UnusableDigest || !v.Unusable {
+		t.Fatalf("after the sighting: %+v, want deprecated with the unusable marker", v)
+	}
+	rep := mustCrawl(t, s, "alpha", tool("keep", "v1"))
+	if len(rep.Changes) != 2 || kindsOf(rep)["gone"] != ChangeMissing {
+		t.Errorf("first crawl without the marked tool = %+v, want a missing line for it", rep.Changes)
+	}
+	if v := mustTool(t, s, "alpha", "gone"); v.State != lifecycle.Deprecated || v.LastSeen != "" || v.Unusable {
+		t.Errorf("after the clearing crawl: %+v, want deprecated with an empty LastSeen", v)
+	}
+	if rep := mustCrawl(t, s, "alpha", tool("keep", "v1")); len(rep.Changes) != 1 {
+		t.Errorf("second crawl without the tool = %+v, want the deprecated tool skipped", rep.Changes)
+	}
+}

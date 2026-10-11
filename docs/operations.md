@@ -402,13 +402,16 @@ server over either cap is recorded as a failed crawl under its own class
 cap, and adds no rows; nothing already stored changes, nothing is approved or served that was
 not, and the next crawl is refused the same way until the live set shrinks
 below the cap, which an upstream that lists fresh names on every crawl never
-does. Deprecated rows are not loaded on every crawl, so the cost of a crawl
-follows the live set, not the history (D13; the third review listed 1500 fresh
+does. Deprecated rows are not loaded on every crawl (a deprecated tool that
+still carries the unusable marker is loaded once more, by the first crawl that
+does not list it, which clears the marker), so the cost of a crawl follows the
+live set, not the history (D13; the third review listed 1500 fresh
 names per crawl and reached 9000 rows and an 18 MB file in six crawls while
 each crawl held the write lock longer than the one before; catalog
 `TestRecordCrawl_RenamedToolsStopAtTheServerCap`,
 `TestRecordCrawl_NewDefinitionsStopAtTheServerByteCap`,
-`TestRecordCrawl_DeprecatedToolsAreLoadedOnlyWhenListed`).
+`TestRecordCrawl_DeprecatedToolsAreLoadedOnlyWhenListed`,
+`TestRecordCrawl_DeprecatedToolWithAMarkerIsClearedOnce`).
 
 There is no prune in v0.1: versions are immutable and the history tables are
 append-only by design, so nothing reclaims the rows. The recovery is:

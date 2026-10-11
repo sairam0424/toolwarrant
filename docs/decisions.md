@@ -593,7 +593,9 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   recorded as a failed crawl under its own class (`server-tools-cap`,
   `server-bytes-cap`) and adds no row, like a listing over a per-crawl cap;
   only a crawl that adds rows or bytes pays for the counts. Crawl cost follows
-  the live set: deprecated rows are not loaded on every crawl. The recovery is
+  the live set: deprecated rows are not loaded on every crawl, except a
+  deprecated tool that still carries the unusable marker, which the first crawl
+  that does not list it loads once more to clear the marker. The recovery is
   `server pause`, then a fresh `init` and a re-crawl; there is no prune in
   v0.1, because versions are immutable and the log is append-only.
 - Decision (d): a `tools/list` page the processor cannot read through to the

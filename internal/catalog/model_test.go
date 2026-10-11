@@ -285,10 +285,12 @@ func (m *model) crawl(force map[string]string) {
 		m.rt.Fatalf("report rejected %d entries, model %d", len(rep.Rejected), rejected)
 	}
 	// A deprecated tool the crawl did not list is neither loaded nor reported
-	// (D13); every other tool the model knows has one line.
+	// (D13), unless it still carried the unusable marker, which this crawl
+	// clears with one missing line; every other tool the model knows has one
+	// line.
 	var names []string
 	for _, n := range sortedNames(next) {
-		if seen[n] != absent || m.tools[n].State != lifecycle.Deprecated {
+		if seen[n] != absent || m.tools[n].State != lifecycle.Deprecated || m.tools[n].LastSeen != "" {
 			names = append(names, n)
 		}
 	}

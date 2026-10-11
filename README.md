@@ -402,8 +402,9 @@ until a later version says otherwise.
   `server-bytes-cap`) and adds no rows (decision D13; the third review listed
   1500 fresh names on every crawl, grew the file by 18 MB in six crawls and
   made every later crawl slower, while this item said the upstream could not
-  grow the database). Deprecated rows are not loaded on every crawl, so crawl
-  cost follows the live set. There is no prune in v0.1: the recovery from a
+  grow the database). Deprecated rows are not loaded on every crawl (except
+  one that still carries the unusable marker, which the first crawl that does
+  not list it clears), so crawl cost follows the live set. There is no prune in v0.1: the recovery from a
   server that hit a cap is `server pause`, then a fresh `init` and a re-crawl
   ([docs/operations.md](docs/operations.md)).
 - L7. agentgateway is pinned to v1.6.0. The project ships breaking changes about
