@@ -46,6 +46,11 @@ func TestEvents_TransitionsEmitTheNamedEvent(t *testing.T) {
 		},
 		{"disable", enabledTool(dA), lc.Disable{Actor: bob}, p, lc.EvDisabled, ""},
 		{
+			"disabling a deprecated tool retires its approval",
+			toolOf(lc.Deprecated, dA, "", deprecateAfterThree, ver(dA, lc.VersionApproved, alice, true)),
+			lc.Disable{Actor: bob}, p, lc.EvSuperseded, dA,
+		},
+		{
 			"enable",
 			toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)),
 			lc.Enable{Actor: bob}, p, lc.EvEnabled, "",

@@ -216,9 +216,16 @@ type Reject struct {
 	Actor  string
 }
 
-// Disable switches the tool off. Only the state changes: LastSeen,
-// MissingCrawls and every version stay as they are, so that Enable cannot
-// read a vanished tool as present.
+// Disable switches the tool off. LastSeen and MissingCrawls stay as they are,
+// so that Enable cannot read a vanished tool as present, and so does every
+// version, with one exception: a deprecated tool's retained approval is
+// retired on the way out (its version becomes superseded, with an event),
+// exactly as a reappearance would retire it. The deprecation had already
+// withdrawn that approval in effect; making it final here means that Enable
+// needs a fresh review under either policy, where Disable, a crawl that listed
+// the old definition while the tool was off (a sighting of the approved digest
+// on a disabled tool reverts rather than proposes), and Enable without
+// re-review once restored it unreviewed.
 type Disable struct{ Actor string }
 
 // Enable brings a disabled tool back. With Policy.ReEnableRequiresReview the
@@ -228,8 +235,10 @@ type Disable struct{ Actor string }
 // event is emitted for it); a person has to approve it. Without it the retained
 // approval is restored, except when LastSeen is "" or UnusableDigest: with no
 // live definition to compare, the approval is retired and the tool waits in
-// pending_review for the next crawl and a fresh approval. Enable never changes
-// LastSeen or MissingCrawls.
+// pending_review for the next crawl and a fresh approval. A tool that was
+// deprecated before it was disabled has no retained approval (Disable retired
+// it), so it comes back to pending_review under either policy and only a fresh
+// approval serves it again. Enable never changes LastSeen or MissingCrawls.
 type Enable struct{ Actor string }
 
 // Rollback re-approves a version that was approved before.

@@ -78,6 +78,9 @@ func TestMeta_InvariantCheckerCatchesPlantedViolations(t *testing.T) {
 		{"disable touches more than the state", plantedRecord(
 			enabledTool(dA), lc.Disable{Actor: bob}, plain,
 			toolOf(lc.Disabled, "", dA, 0, ver(dA, lc.VersionSuperseded, alice, true)))},
+		{"disable keeps a deprecated tool's approval", plantedRecord(
+			toolOf(lc.Deprecated, dA, "", deprecateAfterThree, ver(dA, lc.VersionApproved, alice, true)), lc.Disable{Actor: bob}, plain,
+			toolOf(lc.Disabled, dA, "", deprecateAfterThree, ver(dA, lc.VersionApproved, alice, true)), lc.Event{Kind: lc.EvDisabled})},
 		{"Disable deprecates", plantedRecord(
 			enabledTool(dA), lc.Disable{Actor: bob}, plain,
 			toolOf(lc.Deprecated, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)))},

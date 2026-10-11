@@ -59,22 +59,37 @@ func TestCheckResponse_RepeatedNameDeniesThePageAndTheCallsUntilACleanPage(t *te
 	}
 }
 
-// A repeated name the catalog does not know denies the page but records
-// nothing: evidence is only ever kept for catalog tools, and no tool of a page
-// is observed when the page as a whole cannot be trusted. The crawl's word
-// alone then carries a call.
-func TestCheckResponse_RepeatedUnknownNameRecordsNoEvidence(t *testing.T) {
+// A repeated name the catalog does not know denies the page and records
+// nothing for itself: evidence is only ever kept for catalog tools. The
+// catalog tools the denied page lists are marked conflicting, as on any
+// denied page, so the crawl's word alone does not carry a call until a clean
+// page shows what the upstream serves. Before this round such a page recorded
+// nothing at all, which let a decoy keep older approved evidence alive (see
+// decoy_test.go); the change is this round's decision on denied pages.
+func TestCheckResponse_RepeatedUnknownNameRecordsNothingForItselfButMarksTheCatalogTools(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
 	s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
 	junk := tool("zzz", "z")
 	requireListDenied(t, list(t, s, listBody("", echoV1, junk, junk)), api.AuthorizationError_INVALID)
-	if n := s.trackedCount(); n != 0 {
-		t.Fatalf("%d observations recorded from a denied page, want none", n)
+	if n := s.trackedCount(); n != 1 {
+		t.Fatalf("%d observations recorded from the denied page, want one (the catalog tool)", n)
 	}
+	if _, ok := s.observedDigest("zzz"); ok {
+		t.Fatal("a name outside the catalog was recorded")
+	}
+	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+		t.Fatalf("evidence for echo after the denied page = %q, %v; want the conflict marker", seen, ok)
+	}
+	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
+	servedNames(t, list(t, s, listBody("", echoV1)))
 	requireAllowed(t, call(t, s, callReq("echo")))
 }
 
-// D6: more tools than the per-page cap is refused before any tool is looked at.
+// D6: more tools than the per-page cap is refused before any tool is hashed.
+// The catalog tools on such a page, wherever they sit, are marked conflicting
+// without being looked at (this round's decision on denied pages), so a cap
+// decoy cannot keep older evidence alive for a changed tool listed behind it.
+// Before this round a tool past the cap was never recorded at all.
 func TestCheckResponse_PagesOverTheToolCapAreDenied(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
 	s, logs := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
@@ -86,15 +101,19 @@ func TestCheckResponse_PagesOverTheToolCapAreDenied(t *testing.T) {
 	if got := servedNames(t, list(t, s, listBody("", tiny...))); len(got) != 0 {
 		t.Fatalf("served %v", got)
 	}
-	// One over: denied, and the approved tool listed last was never looked at.
+	// One over: denied, and the approved tool listed last is marked, not hashed.
 	over := append(append([][]byte{}, tiny...), echoV1)
 	e := requireListDenied(t, list(t, s, listBody("", over...)), api.AuthorizationError_INVALID)
 	if e.GetReason() != reasonListUnverifiable {
 		t.Errorf("reason = %q", e.GetReason())
 	}
-	if _, ok := s.observedDigest("echo"); ok {
-		t.Error("a tool on a page over the cap was observed")
+	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+		t.Errorf("evidence for the tool past the cap = %q, %v; want the conflict marker", seen, ok)
 	}
+	if n := s.digests.size(); n != 0 {
+		t.Errorf("%d definitions were hashed on pages that decided nothing", n)
+	}
+	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
 	if !strings.Contains(logs.String(), "more tools than the limit") {
 		t.Errorf("the log should say why:\n%s", logs.String())
 	}

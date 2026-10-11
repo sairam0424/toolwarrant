@@ -17,8 +17,8 @@
 // other. CanonicalTool therefore refuses a definition whose number tokens do
 // not denote exactly the value their canonical form denotes (ErrNumberPrecision);
 // such a definition can be neither approved nor served. Likewise a definition
-// that is not valid UTF-8 (ErrNotUTF8), or one with a lone or ill-paired
-// surrogate escape in a key or a value, is refused instead of being hashed as
+// that is not valid UTF-8, or one with a lone or ill-paired surrogate escape
+// in a key or a value, is refused (both ErrNotUTF8) instead of being hashed as
 // its U+FFFD look-alike: encoding/json would quietly substitute U+FFFD in keys,
 // so the original bytes, never a re-encoding, are what gets canonicalised.
 //
@@ -55,9 +55,11 @@ var VolatileKeys []string
 // Errors returned by CanonicalTool and Digest, so callers can tell a hostile
 // definition from a broken one.
 var (
-	// ErrNotUTF8 means the definition is not valid UTF-8. A JSON decoder would
-	// read the bad bytes as U+FFFD and two different byte strings would share a
-	// digest, so the definition is refused.
+	// ErrNotUTF8 means the definition does not spell a UTF-8 string: its bytes
+	// are not valid UTF-8, or a \u escape names a lone or ill-paired surrogate.
+	// A JSON decoder would read either as U+FFFD and two different byte strings
+	// would share a digest, so the definition is refused. For a surrogate the
+	// error also wraps the RFC 8785 step's own refusal.
 	ErrNotUTF8 = errors.New("gate: tool definition is not valid UTF-8")
 	// ErrNumberPrecision means a number in the definition is not exact in IEEE
 	// 754 double precision: RFC 8785 would canonicalise it to a different
@@ -93,8 +95,13 @@ func CanonicalTool(tool []byte) ([]byte, error) {
 	// step refuses a lone or ill-paired surrogate escape and a malformed UTF-8
 	// sequence in a key as well as in a value, where a round trip through a Go
 	// map would have replaced them with U+FFFD before anything could notice.
+	// Such a refusal is reported as ErrNotUTF8 (D1), with the step's own error
+	// wrapped alongside, so a caller can tell it from a structural fault.
 	canon, err := canonicalize(tool)
 	if err != nil {
+		if hasIllPairedSurrogate(tool) {
+			return nil, fmt.Errorf("gate: canonicalize tool: %w: %w", ErrNotUTF8, err)
+		}
 		return nil, fmt.Errorf("gate: canonicalize tool: %w", err)
 	}
 	if err := checkNumbers(tool); err != nil {

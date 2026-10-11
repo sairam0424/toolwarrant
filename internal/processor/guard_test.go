@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestAdmit_HooksAboutAnotherBackendAreDenied(t *testing.T) {
 	}
 }
 
-// Only the first mismatch is logged, at Debug, with the exact value the
+// Only the first mismatch is logged, at Warn, with the exact value the
 // gateway sent, so an operator can fix Target without the log being flooded.
 func TestAdmit_FirstWrongBackendIsLoggedOnce(t *testing.T) {
 	s, logs := newTestServer(newFakeSource(nil))
@@ -88,15 +89,37 @@ func TestAdmit_FirstWrongBackendIsLoggedOnce(t *testing.T) {
 		requireRefused(t, call(t, s, req), api.AuthorizationError_PERMISSION_DENIED, causeWrongBackend)
 	}
 	out := logs.String()
-	if n := strings.Count(out, `level=DEBUG msg="hook names another backend"`); n != 1 {
-		t.Errorf("the first mismatch should be logged exactly once at Debug, got %d:\n%s", n, out)
+	if n := strings.Count(out, `level=WARN msg="hook names another backend"`); n != 1 {
+		t.Errorf("the first mismatch should be logged exactly once at Warn, got %d:\n%s", n, out)
 	}
 	if !strings.Contains(out, `other\\nbackend`) || !strings.Contains(out, `target="\"mock\""`) {
 		t.Errorf("the log should carry the quoted names and the target:\n%s", out)
 	}
-	// Five denials and one debug line: a name cannot inject a sixth record.
+	// Five denials and one warning: a name cannot inject a sixth record.
 	if lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n"); len(lines) != 6 {
 		t.Errorf("got %d log lines, want 6:\n%s", len(lines), out)
+	}
+}
+
+// The CLI builds its logger with the handler's default level (Info), so a
+// mismatch logged at Debug never reached the operator that docs/operations.md
+// sends to it: every hook was denied with "wrong backend" and the one line
+// naming the gateway's value was dropped. That line must survive the default
+// level, exactly once; the denials themselves stay at Info. Before this round
+// the line was logged at Debug.
+func TestAdmit_WrongBackendIsVisibleAtTheDefaultLogLevel(t *testing.T) {
+	logs := &syncBuffer{}
+	s := New(newFakeSource(nil), Config{Server: testServer, Logger: slog.New(slog.NewTextHandler(logs, nil))})
+	req := &api.McpRequest{Method: methodToolsCall, ServiceNames: []string{"mock-route"}, McpRequest: []byte(`{"name":"echo"}`)}
+	for i := 0; i < 3; i++ {
+		requireRefused(t, call(t, s, req), api.AuthorizationError_PERMISSION_DENIED, causeWrongBackend)
+	}
+	out := logs.String()
+	if n := strings.Count(out, `msg="hook names another backend"`); n != 1 {
+		t.Fatalf("the first mismatch should reach a default-level logger exactly once, got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, `service_names="\"mock-route\""`) || !strings.Contains(out, `target="\"mock\""`) {
+		t.Errorf("the line should carry the gateway's value and the configured target:\n%s", out)
 	}
 }
 

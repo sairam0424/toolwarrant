@@ -73,6 +73,7 @@ func (s *Server) countServed(page filtered) {
 	s.stats.toolsMismatched.Add(uint64(len(page.report.mismatched)))
 	s.stats.toolsUnapproved.Add(uint64(page.report.unapproved))
 	s.stats.toolsOversized.Add(uint64(page.report.oversized))
+	s.stats.toolsUnverified.Add(uint64(page.report.unverified))
 }
 
 // logList reports one served page: at Info when something was hidden, at
@@ -91,5 +92,5 @@ func (s *Server) logList(ctx context.Context, page filtered) {
 	}
 	s.log.Log(ctx, level, "tools/list filtered",
 		"server", s.server, "hidden", len(page.hidden), "hidden_tools", quoteNames(page.hidden),
-		"unapproved", page.report.unapproved, "oversized", page.report.oversized)
+		"unapproved", page.report.unapproved, "oversized", page.report.oversized, "unverified", page.report.unverified)
 }

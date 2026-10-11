@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -69,19 +70,59 @@ func TestJudgeCall_RuleTable(t *testing.T) {
 }
 
 // The catalog marks a tool whose live definition it could not use with a
-// LastSeen that is not a digest. Such a tool is listed when the gateway shows
-// the approved bytes (the list hook judges bytes, not crawl history) but no
-// call goes through: the crawl could not verify what the upstream binds the
-// name to, and any marker shape is treated the same way.
-func TestJudgeCall_NonDigestLastSeenMarkersDenyAsUnverified(t *testing.T) {
+// LastSeen that is not a digest (the "unusable" marker: an invalid or
+// duplicated definition, or an exhausted proposal budget). Such a tool is
+// hidden even while the gateway shows the approved bytes, and no call goes
+// through: the crawl could not verify what the upstream binds the name to, so
+// what is listed is exactly what is callable, as README and the threat model
+// promise ("marked UNUSABLE and never served"). Any marker shape is treated
+// the same way, in both servable states. Before this round the list hook
+// judged bytes alone and listed a tool whose every call it then denied.
+func TestJudgeCall_NonDigestLastSeenMarkersHideTheToolAndDenyCalls(t *testing.T) {
 	d1 := mustDigest(t, echoV1)
 	markers := []string{lifecycle.UnusableDigest, "UNUSABLE", "x", d1[:63], strings.ToUpper(d1), d1 + "0", observedConflict}
 	for _, marker := range markers {
-		s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": policy(lifecycle.Enabled, d1, marker)}))
-		if got := servedNames(t, list(t, s, listBody("", echoV1))); len(got) != 1 {
-			t.Fatalf("marker %q: the approved bytes were not listed: %v", marker, got)
+		for _, state := range []lifecycle.State{lifecycle.Enabled, lifecycle.ChangedPendingReapproval} {
+			s, logs := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": policy(state, d1, marker)}))
+			if got := servedNames(t, list(t, s, listBody("", echoV1))); len(got) != 0 {
+				t.Fatalf("marker %q in state %s: listed %v although every call to it is denied", marker, state, got)
+			}
+			if st := s.Stats(); st.ToolsHidden != 1 || st.ToolsUnverified != 1 || st.ToolsMismatched != 0 || st.ToolsUnapproved != 0 {
+				t.Errorf("marker %q in state %s: stats = %+v", marker, state, st)
+			}
+			if !strings.Contains(logs.String(), "unverified=1") {
+				t.Errorf("marker %q: the page summary should count the hide:\n%s", marker, logs.String())
+			}
+			requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeUnverified)
 		}
-		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeUnverified)
+	}
+}
+
+// Listed and callable move together: a clean crawl that records the approved
+// digest lifts the hide and the denial at once, and "" (absent at the latest
+// crawl) is not a marker, so the gateway's own listing carries the tool in
+// both hooks (D9).
+func TestCheckResponse_ListedAndCallableCoincideAcrossCrawlEvidence(t *testing.T) {
+	d1 := mustDigest(t, echoV1)
+	src := newFakeSource(map[string]catalog.ToolPolicy{"echo": policy(lifecycle.Enabled, d1, lifecycle.UnusableDigest)})
+	s, _ := newTestServer(src)
+	if got := servedNames(t, list(t, s, listBody("", echoV1))); len(got) != 0 {
+		t.Fatalf("served %v while the crawl says unusable", got)
+	}
+	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeUnverified)
+	src.publish(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)})
+	if got := servedNames(t, list(t, s, listBody("", echoV1))); !reflect.DeepEqual(got, []string{"echo"}) {
+		t.Fatalf("served %v after a clean crawl, want [echo]", got)
+	}
+	requireAllowed(t, call(t, s, callReq("echo")))
+
+	absent, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": policy(lifecycle.Enabled, d1, "")}))
+	if got := servedNames(t, list(t, absent, listBody("", echoV1))); !reflect.DeepEqual(got, []string{"echo"}) {
+		t.Fatalf("served %v with LastSeen \"\", want [echo]", got)
+	}
+	requireAllowed(t, call(t, absent, callReq("echo")))
+	if st := absent.Stats(); st.ToolsUnverified != 0 || st.ToolsHidden != 0 {
+		t.Errorf("stats = %+v", st)
 	}
 }
 

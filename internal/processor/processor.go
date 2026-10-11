@@ -101,7 +101,7 @@ type Stats struct {
 	ListsDenied uint64
 	// ToolsHidden counts tool definitions removed from served lists, for any
 	// reason. Tools the catalog has never heard of have no counter of their
-	// own: they are ToolsHidden minus the three categories below.
+	// own: they are ToolsHidden minus the four categories below.
 	ToolsHidden uint64
 	// ToolsMismatched counts hidden tools that are approved and enabled but
 	// whose live definition hashes to another digest: drift, or a definition
@@ -112,6 +112,13 @@ type Stats struct {
 	// ToolsOversized counts hidden tools whose raw definition exceeded the
 	// per-tool cap and were hidden without being hashed.
 	ToolsOversized uint64
+	// ToolsUnverified counts hidden tools whose live definition hashes to the
+	// approved digest while the latest crawl recorded a marker, not a digest,
+	// in LastSeen (the catalog's "unusable": an invalid or duplicated
+	// definition, or an exhausted proposal budget). Such a tool is hidden so
+	// that what is listed is exactly what judgeCall lets through: every call
+	// to it is denied as not yet verified until a clean crawl records a digest.
+	ToolsUnverified uint64
 	// CallsAllowed counts tools/call requests passed to the upstream.
 	CallsAllowed uint64
 	// CallsDenied counts tools/call requests refused for any reason.
@@ -136,6 +143,7 @@ type counters struct {
 	toolsMismatched atomic.Uint64
 	toolsUnapproved atomic.Uint64
 	toolsOversized  atomic.Uint64
+	toolsUnverified atomic.Uint64
 	callsAllowed    atomic.Uint64
 	callsDenied     atomic.Uint64
 	wrongBackend    atomic.Uint64
@@ -232,6 +240,7 @@ func (s *Server) Stats() Stats {
 		ToolsMismatched: s.stats.toolsMismatched.Load(),
 		ToolsUnapproved: s.stats.toolsUnapproved.Load(),
 		ToolsOversized:  s.stats.toolsOversized.Load(),
+		ToolsUnverified: s.stats.toolsUnverified.Load(),
 		CallsAllowed:    s.stats.callsAllowed.Load(),
 		CallsDenied:     s.stats.callsDenied.Load(),
 		WrongBackend:    s.stats.wrongBackend.Load(),

@@ -3,7 +3,9 @@ package lifecycle_test
 // Disable and Enable tables, derived from the specification:
 //
 //	Disable{Actor}: allowed from every state except disabled
-//	(ErrInvalidTransition); only the state changes.
+//	(ErrInvalidTransition); only the state changes, except that a deprecated
+//	tool's retained approval is retired on the way out (superseded, with an
+//	event), so that Enable needs a fresh review under either policy.
 //
 //	Enable{Actor}: only from disabled. With policy.ReEnableRequiresReview the
 //	retained approval is retired and the digest in LastSeen, if it is a real
@@ -33,15 +35,66 @@ func TestDisable_FromEveryStateButDisabled(t *testing.T) {
 			res := applyOK(t, start, lc.Disable{Actor: bob}, plainPolicy())
 			want := cloneTool(start)
 			want.State = lc.Disabled
-			if !sameTool(res.Tool, want) {
-				t.Errorf("Disable must change only the state\n got: %+v\nwant: %+v", res.Tool, want)
+			kinds := []lc.EventKind{lc.EvDisabled}
+			if start.State == lc.Deprecated {
+				// The deprecation withdrew the approval in effect; Disable
+				// makes that final so that Enable cannot restore it.
+				retireApproval(&want)
+				kinds = append(kinds, lc.EvSuperseded)
 			}
-			requireKinds(t, res, lc.EvDisabled)
+			if !sameTool(res.Tool, want) {
+				t.Errorf("Disable must change only the state (retiring a deprecated tool's approval)\n got: %+v\nwant: %+v", res.Tool, want)
+			}
+			requireKinds(t, res, kinds...)
 			if res.Tool.Serves(start.Approved) {
 				t.Error("a disabled tool must not be served")
 			}
 		})
 	}
+}
+
+// Second hostile review: a deprecated tool kept its approval through Disable,
+// and a crawl that listed the old definition while the tool was off took the
+// revert path instead of reappear(), so Enable without re-review restored an
+// approval the deprecation had withdrawn. Disable from deprecated now retires
+// the approval, as a reappearance would; a pending proposal is left alone and
+// a tool with nothing approved changes only its state.
+func TestDisable_FromDeprecatedRetiresTheApproval(t *testing.T) {
+	deprecated := toolOf(lc.Deprecated, dA, "", deprecateAfterThree, ver(dA, lc.VersionApproved, alice, true))
+	unapproved := toolOf(lc.Deprecated, "", "", deprecateAfterThree, ver(dA, lc.VersionPending, alice, false))
+	runApplyCases(t, []applyCase{
+		{
+			name:  "the approval is retired and its version superseded",
+			start: deprecated,
+			cmd:   lc.Disable{Actor: bob},
+			pol:   plainPolicy(),
+			want:  toolOf(lc.Disabled, "", "", deprecateAfterThree, ver(dA, lc.VersionSuperseded, alice, true)),
+		},
+		{
+			name: "a pending proposal survives, the approval does not",
+			start: toolOf(lc.Deprecated, dA, "", deprecateAfterThree,
+				ver(dA, lc.VersionApproved, alice, true),
+				ver(dB, lc.VersionPending, carol, false)),
+			cmd: lc.Disable{Actor: bob},
+			pol: reviewPolicy(),
+			want: toolOf(lc.Disabled, "", "", deprecateAfterThree,
+				ver(dA, lc.VersionSuperseded, alice, true),
+				ver(dB, lc.VersionPending, carol, false)),
+		},
+		{
+			name:  "nothing approved: only the state changes",
+			start: unapproved,
+			cmd:   lc.Disable{Actor: bob},
+			pol:   plainPolicy(),
+			want:  toolOf(lc.Disabled, "", "", deprecateAfterThree, ver(dA, lc.VersionPending, alice, false)),
+		},
+	})
+	res := applyOK(t, deprecated, lc.Disable{Actor: bob}, plainPolicy())
+	requireKinds(t, res, lc.EvSuperseded, lc.EvDisabled)
+	if !hasEvent(res, lc.EvSuperseded, dA) {
+		t.Errorf("the superseded event must name the retired digest: %+v", res.Events)
+	}
+	requireKinds(t, applyOK(t, unapproved, lc.Disable{Actor: bob}, plainPolicy()), lc.EvDisabled)
 }
 
 func TestDisable_Errors(t *testing.T) {

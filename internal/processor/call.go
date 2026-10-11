@@ -140,6 +140,16 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	}
 }
 
+// crawlVerifiable reports whether a LastSeen value can be weighed as evidence
+// at all: a digest, or "" for a tool the latest crawl did not list, which D9
+// does not count against the gateway's own listing. Anything else is a marker
+// the catalog uses to say the live definition could not be verified; such a
+// tool is neither listed (judgeListed) nor callable (judgeCall) until a clean
+// crawl records a digest, so what a client sees is exactly what it may call.
+func crawlVerifiable(lastSeen string) bool {
+	return lastSeen == "" || isDigest(lastSeen)
+}
+
 // isDigest reports whether s has the shape of a gate digest: SHA-256 as 64
 // lowercase hex characters. Anything else stored in LastSeen is a marker the
 // catalog uses to say the live definition could not be verified.

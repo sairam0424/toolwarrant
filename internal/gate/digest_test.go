@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -148,6 +149,11 @@ func TestCanonicalTool_RejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
+// D1: a lone or ill-paired surrogate escape is refused, and the refusal is
+// reported as ErrNotUTF8 with the RFC 8785 step's own error wrapped alongside,
+// so a classifier written from docs/decisions.md tells it from a structural
+// fault such as a nested duplicate key. Before this round the error wrapped
+// the RFC 8785 message alone and errors.Is(err, ErrNotUTF8) was false.
 func TestCanonicalTool_RejectsLoneSurrogateEscapes(t *testing.T) {
 	hi, lo := esc("d800"), esc("dc00")
 	bad := map[string]string{
@@ -164,8 +170,16 @@ func TestCanonicalTool_RejectsLoneSurrogateEscapes(t *testing.T) {
 		"two high surrogates":            `{"name":"a","d":"` + hi + hi + `"}`,
 	}
 	for name, raw := range bad {
-		if _, err := CanonicalTool([]byte(raw)); err == nil {
+		_, err := CanonicalTool([]byte(raw))
+		if err == nil {
 			t.Errorf("%s: accepted, so it would hash like its U+FFFD twin", name)
+			continue
+		}
+		if !errors.Is(err, ErrNotUTF8) {
+			t.Errorf("%s: error %v does not wrap ErrNotUTF8", name, err)
+		}
+		if !strings.Contains(err.Error(), "canonicalize tool") {
+			t.Errorf("%s: error %v does not carry the RFC 8785 step's refusal", name, err)
 		}
 	}
 }

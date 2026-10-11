@@ -59,12 +59,15 @@ func (s *Server) targets(services []string) bool {
 
 // noteWrongBackend logs the first mismatching service_names value, quoted and
 // bounded, so an operator can see the exact name the gateway uses for the
-// route and fix Target. Later mismatches only count.
+// route and fix Target. It is logged at Warn: a route whose every hook is
+// denied is a misconfiguration the operator has to act on, and the CLI's
+// logger keeps the default level, which drops Debug. Later mismatches only
+// count (Stats.WrongBackend).
 func (s *Server) noteWrongBackend(ctx context.Context, services []string) {
 	if !s.wrongBackendSeen.CompareAndSwap(false, true) {
 		return
 	}
-	s.log.DebugContext(ctx, "hook names another backend",
+	s.log.WarnContext(ctx, "hook names another backend",
 		"server", s.server, "target", quoteName(s.target), "service_names", quoteNames(services))
 }
 

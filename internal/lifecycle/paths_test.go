@@ -228,29 +228,42 @@ func TestPath_DeprecateThenReappear(t *testing.T) {
 	requireServes(t, tool, dA, true)
 }
 
+// deprecatedAt approves d (alice proposed it, bob approved) and then misses it
+// until it is deprecated.
+func deprecatedAt(t *testing.T, d string, p lc.Policy) lc.Tool {
+	t.Helper()
+	tool := approvedAt(t, d, p)
+	for i := 0; i < deprecateAfterThree; i++ {
+		tool = step(t, tool, miss(), p)
+	}
+	requireState(t, tool, lc.Deprecated)
+	return tool
+}
+
 // Reviewer's reproduction (catalog review, "Deprecated tool keeps its approval;
 // Disable then Enable re-enables it"): a tool that vanished long enough to be
 // deprecated cannot be brought back to enabled through Disable and Enable. The
-// miss counter survives Disable, Enable finds no live definition, retires the
-// approval, and the old digest is a proposal when it is listed again. Before
-// the fix the no-review policy went straight to enabled with LastSeen "".
+// miss counter survives Disable, Disable retires the approval the deprecation
+// withdrew (second hostile review; before it Enable did the retiring, on the
+// strength of LastSeen ""), Enable finds nothing to restore, and the old
+// digest is a proposal when it is listed again. Before the first fix the
+// no-review policy went straight to enabled with LastSeen "".
 func TestPath_DeprecatedDisableEnableNeedsReview(t *testing.T) {
 	for name, p := range map[string]lc.Policy{"no review": plainPolicy(), "review": reviewPolicy()} {
 		t.Run(name, func(t *testing.T) {
-			tool := approvedAt(t, dA, p)
-			for i := 0; i < deprecateAfterThree; i++ {
-				tool = step(t, tool, miss(), p)
-			}
-			requireState(t, tool, lc.Deprecated)
-
-			tool = step(t, tool, lc.Disable{Actor: carol}, p)
+			res := applyOK(t, deprecatedAt(t, dA, p), lc.Disable{Actor: carol}, p)
+			tool := res.Tool
 			if tool.MissingCrawls != deprecateAfterThree || tool.LastSeen != "" {
 				t.Fatalf("Disable must keep the miss record: %+v", tool)
 			}
-			res := applyOK(t, tool, lc.Enable{Actor: carol}, p)
+			requireKinds(t, res, lc.EvSuperseded, lc.EvDisabled)
+			if tool.Approved != "" {
+				t.Fatalf("Disable must retire a deprecated tool's approval: %+v", tool)
+			}
+			res = applyOK(t, tool, lc.Enable{Actor: carol}, p)
 			tool = res.Tool
 			requireState(t, tool, lc.PendingReview)
-			requireKinds(t, res, lc.EvSuperseded, lc.EvEnabled)
+			requireKinds(t, res, lc.EvEnabled)
 			if tool.Approved != "" {
 				t.Fatalf("Enable revived the approval of a vanished tool: %+v", tool)
 			}
@@ -263,6 +276,46 @@ func TestPath_DeprecatedDisableEnableNeedsReview(t *testing.T) {
 				t.Fatalf("pending = %q, want %q", tool.Pending(), dA)
 			}
 			mustFail(t, tool, lc.Approve{Digest: dA, Actor: alice}, p, lc.ErrSelfApproval)
+			tool = step(t, tool, lc.Approve{Digest: dA, Actor: bob}, p)
+			requireServes(t, tool, dA, true)
+		})
+	}
+}
+
+// The second hostile review's detour: Disable a deprecated tool, let a crawl
+// list the old definition while it is off, then Enable. With the approval
+// retained through Disable, that crawl took the revert path (a sighting of
+// the approved digest on a disabled tool) and Enable without re-review
+// restored the approval, so the tool was served again without the review a
+// direct reappearance forces. Disable now retires the approval, so the
+// sighting is a proposal and Enable under either policy lands in
+// pending_review, the shape a direct reappearance leaves.
+func TestPath_DeprecatedDisableCrawlEnableDetourNeedsReview(t *testing.T) {
+	for name, p := range map[string]lc.Policy{"no review": plainPolicy(), "review": reviewPolicy()} {
+		t.Run(name, func(t *testing.T) {
+			tool := step(t, deprecatedAt(t, dA, p), lc.Disable{Actor: carol}, p)
+			res := applyOK(t, tool, crawl(dA, crawler), p) // listed again while off
+			tool = res.Tool
+			requireState(t, tool, lc.Disabled)
+			if tool.Approved != "" || tool.Pending() != dA || tool.LastSeen != dA {
+				t.Fatalf("a sighting while off must propose, not revert: %+v", tool)
+			}
+			requireKinds(t, res, lc.EvReturned, lc.EvProposed, lc.EvDrifted)
+			requireProposers(t, tool, dA, alice, crawler)
+
+			tool = step(t, tool, lc.Enable{Actor: carol}, p)
+			requireState(t, tool, lc.PendingReview)
+			requireServes(t, tool, dA, false)
+			if tool.Approved != "" {
+				t.Fatalf("the detour revived the approval: %+v", tool)
+			}
+			direct := step(t, deprecatedAt(t, dA, p), crawl(dA, crawler), p)
+			if direct.State != tool.State || direct.Approved != tool.Approved || direct.Pending() != tool.Pending() {
+				t.Fatalf("the detour %+v differs from a direct reappearance %+v", tool, direct)
+			}
+			for _, proposer := range []string{alice, crawler} {
+				mustFail(t, tool, lc.Approve{Digest: dA, Actor: proposer}, p, lc.ErrSelfApproval)
+			}
 			tool = step(t, tool, lc.Approve{Digest: dA, Actor: bob}, p)
 			requireServes(t, tool, dA, true)
 		})

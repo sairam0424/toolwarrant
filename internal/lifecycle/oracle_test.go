@@ -109,6 +109,10 @@ func oracle(tool lc.Tool, cmd lc.Command, p lc.Policy) oracleOutcome {
 		if t.State == lc.Disabled {
 			return oracleFail(lc.ErrInvalidTransition)
 		}
+		if t.State == lc.Deprecated {
+			// "a deprecated tool's retained approval is retired on the way out"
+			retireApproval(&t)
+		}
 		t.State = lc.Disabled
 		return oracleOutcome{tool: t}
 	case lc.Enable:

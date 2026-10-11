@@ -105,11 +105,16 @@ func rejectViolations(c lc.Reject, rec stepRecord) []string {
 	return out
 }
 
+// disableViolations follows the Disable doc comment: only the state changes,
+// except that a deprecated tool's retained approval is retired on the way out.
 func disableViolations(rec stepRecord) []string {
 	want := cloneTool(rec.before)
 	want.State = lc.Disabled
+	if rec.before.State == lc.Deprecated {
+		retireApproval(&want)
+	}
 	if rec.before.State == lc.Disabled || !sameTool(want, rec.res.Tool) {
-		return []string{fmt.Sprintf("disable must change only the state: %+v -> %+v", rec.before, rec.res.Tool)}
+		return []string{fmt.Sprintf("disable must change only the state, retiring a deprecated tool's approval: %+v -> %+v", rec.before, rec.res.Tool)}
 	}
 	return nil
 }

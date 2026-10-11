@@ -5,6 +5,8 @@ import "fmt"
 // Disable and Enable: the operator's switch. Neither touches LastSeen or
 // MissingCrawls, so what the upstream last did survives the round trip.
 
+// disable implements the Disable command; see its documentation for the rule
+// about a deprecated tool.
 func disable(t Tool, c Disable) (Result, error) {
 	if c.Actor == "" {
 		return Result{}, ErrNoActor
@@ -13,8 +15,17 @@ func disable(t Tool, c Disable) (Result, error) {
 		return Result{}, fmt.Errorf("%w: already disabled", ErrInvalidTransition)
 	}
 	out := clone(t)
+	var ev []Event
+	if t.State == Deprecated {
+		// The deprecation withdrew this approval in effect; a reappearance
+		// would retire it. Retire it here too, so that a sighting while the
+		// tool is off proposes rather than reverts, and Enable has nothing to
+		// restore without a fresh review.
+		supersedeApproved(&out, &ev)
+	}
 	out.State = Disabled
-	return Result{Tool: out, Events: []Event{{EvDisabled, ""}}}, nil
+	ev = append(ev, Event{EvDisabled, ""})
+	return Result{Tool: out, Events: ev}, nil
 }
 
 // enable implements the Enable command; see its documentation for the rules.
