@@ -392,6 +392,24 @@ merged back into `params` for request-phase processors, CEL header semantics
 after #3778, gRPC status mapping after #3793).
 
 
+
+**Note added 2026-10-12 00:37 IST.** The third review's findings were fixed after this
+decision was written (commits 9cc8f28 to a96672e, decisions D13 in
+docs/decisions.md): the serving path now requires the newest decision about
+the tool, Integrity covers every mutable column and refuses foreign triggers,
+per-server growth caps exist, an unreadable page marks every servable tool,
+the live-configuration comparison covers the whole document, the canary and
+the crawl schedule exit 1 on any failure, the emitted file is 0600 and its
+processor entries filter client headers, and the schema is v4. The technical
+conditions were re-checked on a96672e: `make e2e` 17 to 23 s exit 0;
+`demo/run.sh` twice, 23 s and 29 s, both exit 0 (condition 4 still holds);
+scenario M added p50 +0.07 ms list and +0.06 ms call, with p95 inside the
+run-to-run noise on a loaded machine (condition 3 still holds by a wide
+margin). The whole-system review of the third round never completed (one
+usage-policy refusal, then two server-side failures of the model API); it is
+part of the fourth review, which starts on a96672e. The GO stands; v0.1 waits
+for that review's triage.
+
 ### Corrections after the third review (2026-10-11)
 
 The third hostile review ran against d28e0e3 and 9cc8f28, the tree the week-2
