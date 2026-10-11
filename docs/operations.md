@@ -88,8 +88,10 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   exits 0; an error that stops it exits 1. The stats line is:
   `stats: lists served=N denied=N, tools hidden=N (mismatched=N unapproved=N
   oversized=N unverified=N), calls allowed=N denied=N, wrong backend=N,
-  unauthenticated=N, throttled=N, source errors=N` (scenario N; pinned by
-  `TestWriteStatsPinsTheLine`). Tools the catalog has never heard
+  unauthenticated=N, throttled=N, source errors=N, evidence dropped=N`
+  (scenario N; pinned by `TestWriteStatsPinsTheLine`). `evidence dropped` is
+  `Stats.EvidenceDropped`; a non-zero value is a standing condition, described
+  under the evidence table above. Tools the catalog has never heard
   of are `hidden` minus the named categories. Since the third round the
   processor also counts tools hidden because the latest crawl left the
   unusable marker in the catalog while the gateway showed the approved bytes

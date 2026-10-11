@@ -256,9 +256,9 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 		t.Fatalf("serve exit %d:\n%s", code, out.String())
 	}
 	// docs/operations.md quotes this line; the unverified category was added
-	// in the third round.
+	// in the third round and the evidence dropped counter in the fourth.
 	wantContains(t, "stdout", out.String(), "guarding server s1, target s1", "hooks are not authenticated",
-		"stats: lists served=1 denied=1, tools hidden=2 (mismatched=0 unapproved=2 oversized=0 unverified=0), calls allowed=1 denied=1, wrong backend=1, unauthenticated=0, throttled=0, source errors=0\n")
+		"stats: lists served=1 denied=1, tools hidden=2 (mismatched=0 unapproved=2 oversized=0 unverified=0), calls allowed=1 denied=1, wrong backend=1, unauthenticated=0, throttled=0, source errors=0, evidence dropped=0\n")
 }
 
 // The stats line is quoted by docs/operations.md and read by operators, so
@@ -267,8 +267,8 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 func TestWriteStatsPinsTheLine(t *testing.T) {
 	var sb strings.Builder
 	writeStats(&stream{w: &sb}, processor.Stats{ListsServed: 1, ListsDenied: 2, ToolsHidden: 3, ToolsMismatched: 4, ToolsUnapproved: 5, ToolsOversized: 6, ToolsUnverified: 7,
-		CallsAllowed: 8, CallsDenied: 9, WrongBackend: 10, Unauthenticated: 11, Throttled: 12, SourceErrors: 13})
-	want := "stats: lists served=1 denied=2, tools hidden=3 (mismatched=4 unapproved=5 oversized=6 unverified=7), calls allowed=8 denied=9, wrong backend=10, unauthenticated=11, throttled=12, source errors=13\n"
+		CallsAllowed: 8, CallsDenied: 9, WrongBackend: 10, Unauthenticated: 11, Throttled: 12, SourceErrors: 13, EvidenceDropped: 14})
+	want := "stats: lists served=1 denied=2, tools hidden=3 (mismatched=4 unapproved=5 oversized=6 unverified=7), calls allowed=8 denied=9, wrong backend=10, unauthenticated=11, throttled=12, source errors=13, evidence dropped=14\n"
 	if got := sb.String(); got != want {
 		t.Errorf("stats line\n got %q\nwant %q", got, want)
 	}
