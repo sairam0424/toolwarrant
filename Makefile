@@ -7,7 +7,7 @@
 #   make vuln              govulncheck (install: go install golang.org/x/vuln/cmd/govulncheck@latest)
 #   make e2e               the end-to-end test against the real agentgateway v1.6.0 binary
 #   make demo              demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
-#   make release-check     goreleaser check: the release configuration parses and is consistent
+#   make release-check     goreleaser check, and the release notes name the schema version the code writes
 #   make release-snapshot  goreleaser release --snapshot: the four archives, SBOMs and checksums
 #                          into dist/ without signing or publishing (dist/ is gitignored)
 
@@ -37,7 +37,9 @@ demo:
 
 release-check:
 	goreleaser check
+	@want="$$(sed -n 's/^const schemaVersion = \([0-9]*\).*/\1/p' internal/catalog/schema.go)"; got="$$(sed -n 's/^ *v\([0-9]*\); a catalog from an earlier build.*/\1/p' .goreleaser.yaml)"; if [ -z "$$want" ] || [ "$$want" != "$$got" ]; then echo "release notes name schema v$$got but internal/catalog/schema.go writes v$$want"; exit 1; fi; echo "release notes name schema v$$got, as the code writes"
 
 release-snapshot:
+	@git check-ignore -q dist || { echo "dist/ is not gitignored; add it before building a snapshot"; exit 1; }
 	goreleaser release --snapshot --clean --skip=sign,publish,announce
 	@echo "snapshot in dist/: $$(ls dist/*.tar.gz | wc -l | tr -d ' ') archives, $$(ls dist/*.spdx.json | wc -l | tr -d ' ') SBOMs"
