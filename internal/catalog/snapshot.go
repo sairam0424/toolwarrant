@@ -92,11 +92,14 @@ func latestCompleteCrawl(ctx context.Context, q queryer, serverID int64) (time.T
 // tool's version is caught here, and so do whether the tool's newest decision
 // names it and the seq of the newest approval entry about the tool (looked up
 // only for tools with an approval), in the same query rather than one per
-// tool. The parameters are the server name, its id and the deprecated state.
+// tool), and the seq of the newest state-bearing entry about the tool, which
+// anchors the state column (D17 c). The parameters are the server name twice,
+// its id and the deprecated state.
 const snapshotQuery = `SELECT t.id, t.name, t.state, t.approved_version_id, v.id, v.tool_id,
 		COALESCE(v.digest, ''), COALESCE(v.digest_profile, ''), t.last_seen_digest,
 		` + newestDecisionNames + `,
-		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE ` + decisionEntryOfTool + ` END
+		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE ` + decisionEntryOfTool + ` END,
+		` + stateEntryOfTool + `
 	FROM tools t LEFT JOIN tool_versions v ON v.id = t.approved_version_id
 	WHERE t.server_id = ? AND t.state <> ?`
 
@@ -104,7 +107,7 @@ const snapshotQuery = `SELECT t.id, t.name, t.state, t.approved_version_id, v.id
 // re-checks the approved versions. A deprecated tool is left out on purpose: a
 // name missing from the snapshot is not served either.
 func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, error) {
-	tools, refs, err := readPolicyRows(ctx, q, srv)
+	tools, refs, states, err := readPolicyRows(ctx, q, srv)
 	if err != nil {
 		return nil, err
 	}
@@ -114,34 +117,41 @@ func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[s
 	if err := anchorApproved(ctx, q, s.chain, refs); err != nil {
 		return nil, err
 	}
+	if err := anchorStates(ctx, q, s.chain, states); err != nil {
+		return nil, err
+	}
 	return tools, nil
 }
 
 // readPolicyRows reads the policy of every non-deprecated tool and collects
 // the approved versions to re-check. Its rows are closed before it returns, so
 // the re-check's own queries never interleave with them.
-func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, []approvedRef, error) {
-	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.ID, string(lifecycle.Deprecated))
+func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, []approvedRef, []stateRef, error) {
+	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.Name, srv.ID, string(lifecycle.Deprecated))
 	if err != nil {
-		return nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
+		return nil, nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	tools := make(map[string]ToolPolicy)
-	var refs []approvedRef
+	var (
+		refs   []approvedRef
+		states []stateRef
+	)
 	for rows.Next() {
 		r, err := scanPolicy(rows, srv.Name)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		tools[r.name] = r.policy
+		states = append(states, r.state)
 		if r.approved.id != 0 {
 			refs = append(refs, r.approved)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
+		return nil, nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
-	return tools, refs, nil
+	return tools, refs, states, nil
 }
 
 // policyRow is one row of snapshotQuery: a tool's policy and, when it has an
@@ -150,6 +160,7 @@ type policyRow struct {
 	name     string
 	policy   ToolPolicy
 	approved approvedRef // id is 0 when the tool has no approved version
+	state    stateRef    // the state column against the newest entry about the tool
 }
 
 // scanPolicy reads one tool's policy and checks what needs no bytes: the
@@ -164,17 +175,18 @@ func scanPolicy(sc rowScanner, server string) (policyRow, error) {
 		state, profile              string
 		pointer, joined, joinedTool sql.NullInt64
 		newest                      int
-		entry                       sql.NullInt64
+		entry, stateEntry           sql.NullInt64
 	)
 	if err := sc.Scan(&toolID, &r.name, &state, &pointer, &joined, &joinedTool, &r.policy.Approved, &profile, &r.policy.LastSeen,
-		&newest, &entry); err != nil {
+		&newest, &entry, &stateEntry); err != nil {
 		return policyRow{}, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
 	r.policy.State = lifecycle.State(state)
+	subject := server + "/" + r.name
+	r.state = stateRef{tool: subject, state: r.policy.State, entry: stateEntry}
 	if !pointer.Valid {
 		return r, nil
 	}
-	subject := server + "/" + r.name
 	if err := checkPointer(subject, toolID, joined, joinedTool); err != nil {
 		return policyRow{}, err
 	}

@@ -47,6 +47,10 @@ type approvedRef struct {
 	entry    sql.NullInt64
 	approver string
 	at       string
+	// showsApprover is set by Approved, whose rows carry the approver and the
+	// time the verified entry must confirm; an empty at is then a rewritten row
+	// and not a reason to skip the comparison (eighth review).
+	showsApprover bool
 }
 
 // canonicalChunk is how many rows one re-check query fetches. The rows stream

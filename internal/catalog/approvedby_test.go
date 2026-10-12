@@ -76,3 +76,16 @@ func TestApproved_ApproverAndTimeComeFromTheVerifiedEntry(t *testing.T) {
 	}
 	mustBeClean(t, s, "after the restore")
 }
+
+// A rewritten approvals row with its time blanked is refused, not skipped:
+// the comparison with the verified entry runs whenever Approved shows the row,
+// and an empty time cannot be what the entry recorded (eighth review).
+func TestApproved_BlankedApprovalTimeIsCorrupt(t *testing.T) {
+	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
+	approvedEcho(t, s)
+	rewriteApprover(t, path, "mallory", "")
+	_, err := s.Approved(bg)
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "approvals row was rewritten") {
+		t.Fatalf("Approved with the time blanked = %v, want ErrCorrupt naming the rewritten row", err)
+	}
+}
