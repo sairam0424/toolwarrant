@@ -59,6 +59,21 @@ release.
 
 ## Scope
 
+The trust boundary, in five lines:
+
+- Whoever can write the 0600 catalog file can append a correctly sealed audit
+  entry that approves a definition; the recorded audit head, the git export and
+  backups detect it, nothing inside the file does (known limit L19, decision D14).
+- Whoever reaches the processor without the shared secret decides what is
+  served (known limit L11).
+- Every local user of the gateway host reaches the admin API, which hands out
+  the loaded configuration and accepts a replacement (known limit L18).
+- The upstream is hostile: everything it sends is attacker-controlled input.
+- Operator names are asserted, not authenticated: `--as` and `TOOLWARRANT_ACTOR`
+  are taken as given beyond the OS account that runs the command, so the
+  per-person rule and the proposer rule hold against the name given (residual
+  risk L13 in the threat model).
+
 In scope:
 
 - The `toolwarrant` binary (`cmd/toolwarrant`) and the packages under

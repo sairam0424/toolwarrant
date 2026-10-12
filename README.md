@@ -120,7 +120,11 @@ catalog catches that through the head it pinned, and while no catalog is open
 recorded catches it (decision D15 as corrected by D17). A
 crawl never approves anything: it records proposals,
 drift, reverts, absences and unusable definitions, and the person who ran the
-crawl that proposed a version cannot approve that version. Whoever can reach the
+crawl that proposed a version cannot approve that version. Operator names are
+asserted, not authenticated: `--as NAME` and `TOOLWARRANT_ACTOR` are taken as
+given beyond the OS account that runs the command (residual risk L13 in the
+threat model), so the per-person rule and the proposer rule hold against the
+name given. Whoever can reach the
 processor without the shared secret, or the gateway's admin listener, decides
 what is served; both are inside the trusted computing base
 ([docs/threat-model.md](docs/threat-model.md)).
