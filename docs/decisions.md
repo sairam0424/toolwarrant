@@ -1749,7 +1749,17 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `Snapshot`, `Tools`, `Tool`, `Approved`, every decision and the crawl),
   since `Disable` keeps the approved pointer and one `UPDATE tools SET state
   = 'enabled'` served a disabled tool again while every approval anchor held;
-  the chain memory therefore records every lifecycle event about a tool. The
+  the chain memory therefore records every lifecycle event about a tool.
+  Extended once more after the verification of the released v0.1.0 binary
+  (2026-10-13): `Approved` had anchored only the rows its state-filtered query
+  returned and `Snapshot` only the non-deprecated rows, so an approved tool
+  whose state column was edited to `disabled` vanished from the export and
+  `emit` wrote a smaller allow list from a catalog that `list` and `audit
+  verify` refused, and a flip to `deprecated` dropped a tool from the served
+  policy without an error; both now anchor every tool row of their scope
+  before leaving one out (`TestApproved_ToolHiddenByAColumnFlipIsCorrupt`,
+  `TestSnapshot_ToolDeprecatedByAColumnFlipIsCorrupt`,
+  `TestEmitRefusesACatalogWhoseToolStateColumnWasEdited`). The
   server row is anchored to the first `server.added` entry, not the newest,
   because a server is registered once and an appended sealed second entry
   (the access D14 admits) must not re-register it; `Integrity` names a second
@@ -1916,6 +1926,9 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt` and
   `TestServers_PausedFlagWithoutAnEntryIsCorrupt`,
   `TestSnapshot_DisabledToolReEnabledByAColumnFlipIsCorrupt`,
+  `TestSnapshot_ToolDeprecatedByAColumnFlipIsCorrupt`,
+  `TestApproved_ToolHiddenByAColumnFlipIsCorrupt`,
+  `TestEmitRefusesACatalogWhoseToolStateColumnWasEdited`,
   `TestSnapshot_PlantedToolRowWithoutAnEntryIsCorrupt` and
   `TestServers_ASecondServerAddedEntryIsNotTheAnchor` (c);
   `TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk` (d);

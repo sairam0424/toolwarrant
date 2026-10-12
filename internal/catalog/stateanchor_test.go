@@ -89,3 +89,64 @@ func TestSnapshot_PlantedToolRowWithoutAnEntryIsCorrupt(t *testing.T) {
 	_, err = s.Tools(bg, "alpha")
 	requireCorruptMentioning(t, "Tools", err, want)
 }
+
+// The export anchored only the rows it returned, so an approved tool whose
+// state column was edited to disabled or deprecated by hand vanished from
+// Approved, and emit wrote a smaller allow list from a catalog that list and
+// audit verify refused (found by the v0.1.0 verification on the released
+// binary). Every tool row is anchored now, exported or not, on the long-lived
+// Store and on a fresh read-only one.
+func TestApproved_ToolHiddenByAColumnFlipIsCorrupt(t *testing.T) {
+	for _, flip := range []string{"disabled", "deprecated"} {
+		t.Run(flip, func(t *testing.T) {
+			s, path := newStoreAt(t, lifecycle.DefaultPolicy())
+			approvedEcho(t, s)
+			before, err := s.Approved(bg)
+			if err != nil || len(before) != 1 {
+				t.Fatalf("Approved before the edit = %d tools, %v", len(before), err)
+			}
+			db := rawDB(t, path)
+			mustExec(t, db, `UPDATE tools SET state = '`+flip+`' WHERE name = 'echo'`)
+
+			want := []string{"state of tool", `"alpha/echo"`, `is "` + flip + `"`, "version.approved", `left it "enabled"`, "state column was edited"}
+			_, err = s.Approved(bg)
+			requireCorruptMentioning(t, "Approved", err, want)
+			fresh, err := OpenWith(path, OpenOptions{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = fresh.Close() }()
+			_, err = fresh.Approved(bg)
+			requireCorruptMentioning(t, "fresh Approved", err, want)
+		})
+	}
+}
+
+// The serving snapshot left deprecated rows out before anchoring (a
+// deprecated tool is not served, so the query skipped it), which the review
+// of the v0.1.0 fix named as the sibling of the export's gap: one UPDATE
+// tools SET state = 'deprecated' made an approved tool vanish from the
+// processor's policy without an error while list, show, export and the crawl
+// refused the file. Every row of the server is anchored now; deprecated ones
+// still stay out of the policy.
+func TestSnapshot_ToolDeprecatedByAColumnFlipIsCorrupt(t *testing.T) {
+	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
+	d1 := approvedEcho(t, s)
+	if snap := mustSnapshot(t, s, "alpha"); !snap.Serves("echo", d1) {
+		t.Fatalf("echo is not served before the edit: %+v", snap.Tools["echo"])
+	}
+	db := rawDB(t, path)
+	mustExec(t, db, `UPDATE tools SET state = 'deprecated' WHERE name = 'echo'`)
+	mustExec(t, db, `UPDATE meta SET value = value + 1 WHERE key = 'generation'`)
+
+	want := []string{"state of tool", `"alpha/echo"`, `is "deprecated"`, "version.approved", `left it "enabled"`, "state column was edited"}
+	_, err := s.Snapshot(bg, "alpha")
+	requireCorruptMentioning(t, "Snapshot", err, want)
+	fresh, err := OpenWith(path, OpenOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	_, err = fresh.Snapshot(bg, "alpha")
+	requireCorruptMentioning(t, "fresh Snapshot", err, want)
+}
