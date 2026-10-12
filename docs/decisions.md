@@ -1512,7 +1512,11 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   on 2026-10-12 do not shorten the notes of v0.1.0.
 - Decision (e): the workflow `.github/workflows/release.yml` runs on `v*` tags
   only, with permissions `contents: write` and `id-token: write` and nothing
-  else, after the existing CI jobs have passed on the same commit; every
+  else (the gate job that checks the ci run has `actions: read` and
+  `contents: read`; the first release candidate, v0.1.0-rc.1 on 2026-10-12,
+  failed with HTTP 403 when the gate had `actions: read` alone, since a
+  permissions block zeroes everything it does not name), after the existing
+  CI jobs have passed on the same commit; every
   action is SHA-pinned (resolved on 2026-10-12: goreleaser-action v7.2.3,
   cosign-installer v4.1.2, sbom-action v0.24.3, checkout v7.0.1, setup-go
   v7.0.0, each re-verified against its tag with the GitHub API on
