@@ -210,7 +210,10 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    gateway runs as (chown, or a read ACL) and by nobody else. Record the
 #    "body sha256" line emit prints; the canary compares the file with it.
 #    --gateway-binary PATH makes emit validate the file with the gateway
-#    before reporting success.
+#    before reporting success. Without --secret-env on emit and on serve the
+#    processor starts with "hooks are not authenticated": acceptable on this
+#    loopback lab; a deployment passes the same --secret-env VAR to both
+#    (`toolwarrant help serve`; docs/operations.md, Rotating the shared secret).
 ./bin/toolwarrant emit --out gateway.yaml --gateway-binary "$GATEWAY"
 ./bin/toolwarrant serve --server mock --listen 127.0.0.1:9001 &
 

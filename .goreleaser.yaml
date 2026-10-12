@@ -51,7 +51,7 @@ sboms:
       - "{{ .ArtifactName }}.spdx.json"
 
 # Keyless signature of the checksums file through the workflow's OIDC
-# identity; the certificate is attached next to the signature (D16 (c)).
+# identity; the certificate travels inside the bundle (D16 (c)).
 # The signature is one sigstore bundle (signature, certificate and
 # transparency-log entry in a .sigstore.json file). cosign v3, which the
 # pinned cosign-installer provides, writes bundles by default and ignores the
