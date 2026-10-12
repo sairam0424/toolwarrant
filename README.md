@@ -137,14 +137,38 @@ P; `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The spike
 in [seam/RESULTS.md](seam/RESULTS.md) ran the same shape with a prototype
 processor, not with this CLI.
 
-Prerequisites: Go 1.27 (go.mod pins toolchain go1.27.2) and the agentgateway
-v1.6.0 release binary for your platform, downloaded from the agentgateway
-repository on GitHub (github.com/agentgateway/agentgateway, release v1.6.0) and
-checked against its published SHA-256. The seam scripts and the end-to-end test
-expect it at `.cache/agentgateway-darwin-arm64` (`TOOLWARRANT_GATEWAY_BIN`
-overrides the path); that directory is ignored by git. Released binaries are
-verified with cosign before use; see the Releasing section of
-[docs/operations.md](docs/operations.md).
+Prerequisites. Any Go 1.21 or newer downloads the pinned toolchain itself under
+the default `GOTOOLCHAIN=auto` (`go.mod` pins `toolchain go1.27.2`). The
+agentgateway v1.6.0 release binary comes from the agentgateway repository on
+GitHub; compare its SHA-256 with the checksum published on the release page (no
+checksum is recorded here). The seam scripts and the end-to-end test expect the
+binary at `.cache/agentgateway-darwin-arm64` (`TOOLWARRANT_GATEWAY_BIN`
+overrides the path); that directory is ignored by git. `GATEWAY` holds the path
+in every later command:
+
+```sh
+# darwin/arm64; the linux asset is agentgateway-linux-amd64.
+GATEWAY=.cache/agentgateway-darwin-arm64
+mkdir -p .cache
+curl -fsSL --retry 3 -o "$GATEWAY" \
+  https://github.com/agentgateway/agentgateway/releases/download/v1.6.0/agentgateway-darwin-arm64
+shasum -a 256 "$GATEWAY"    # compare with the checksum on the release page
+chmod +x "$GATEWAY"
+```
+
+Loopback ports the quickstart uses, all `emit` defaults except the mock
+upstream's: 3000 (the gateway's serving port, route `/<server>/mcp`), 3001 (the
+mock upstream, the default of `cmd/mockupstream`), 9001 (the first processor;
+`emit` gives each server the next free port from this base), 15000, 15020 and
+15021 (the gateway's admin, stats and readiness listeners).
+
+Install from a release, instead of building in step 0, once v0.1.0 exists:
+download `toolwarrant_<version>_<os>_<arch>.tar.gz` for your platform from the
+GitHub release together with the checksums file, its `.sig` and its `.pem`,
+verify them as the [Release integrity](SECURITY.md#release-integrity) section of
+SECURITY.md says (toolwarrant release archives are verified with cosign before
+use), and untar the archive. `cmd/mockupstream` is not in the release, so the
+demo upstream still needs `go build -o bin/ ./cmd/mockupstream`.
 
 ```sh
 # 0. Build the control plane and the mock upstream.
@@ -194,7 +218,7 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    "body sha256" line emit prints; the canary compares the file with it.
 #    --gateway-binary PATH makes emit validate the file with the gateway
 #    before reporting success.
-./bin/toolwarrant emit --out gateway.yaml --gateway-binary .cache/agentgateway-darwin-arm64
+./bin/toolwarrant emit --out gateway.yaml --gateway-binary "$GATEWAY"
 ./bin/toolwarrant serve --server mock --listen 127.0.0.1:9001 &
 
 # 6. Point agentgateway v1.6.0 at the file. The emitted file binds the serving
@@ -202,7 +226,7 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    readiness listeners to 127.0.0.1:15000, 15020 and 15021. Agents on other
 #    hosts need `emit --bind-address ADDR` (a wildcard also needs
 #    --allow-all-interfaces), which prints a warning; firewall such a port.
-.cache/agentgateway-darwin-arm64 -f gateway.yaml &
+"$GATEWAY" -f gateway.yaml &
 
 # 7. Canary: open a fresh MCP session through the gateway, list the tools,
 #    compare each one with the catalog, check the file on disk against the
