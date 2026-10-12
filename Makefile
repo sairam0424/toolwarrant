@@ -4,7 +4,7 @@
 #
 #   make test              unit and property tests of every package under -race
 #   make lint              gofmt, go vet and golangci-lint, including the e2e package
-#   make vuln              govulncheck (install: go install golang.org/x/vuln/cmd/govulncheck@latest)
+#   make vuln              govulncheck (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 #   make e2e               the end-to-end test against the real agentgateway v1.6.0 binary
 #   make demo              demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
 #   make release-check     goreleaser check, and the release notes name the schema version the code writes

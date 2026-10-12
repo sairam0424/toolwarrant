@@ -14,7 +14,7 @@ Always `export GOFLAGS=-mod=readonly`. Never `go get` or `go mod tidy` without r
 make build                                            # go build ./... && go vet ./...
 make test                                             # go test -race -count=1 -timeout 1500s -cover ./... (prints per-package coverage)
 make lint                                             # gofmt, go vet (also -tags e2e), golangci-lint (also --build-tags e2e)
-make vuln                                             # govulncheck ./... (install: go install golang.org/x/vuln/cmd/govulncheck@latest)
+make vuln                                             # govulncheck ./... (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 make e2e                                              # go test -tags e2e -count=1 -timeout 900s -v ./e2e against the real gateway
 make demo                                             # demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
 make release-check                                    # goreleaser check, and the release notes name the schema version the code writes
