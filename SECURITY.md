@@ -13,7 +13,10 @@ worked around here where the design allows.
 ## Reporting a vulnerability
 
 Use GitHub private vulnerability reporting on this repository: the Security tab,
-"Report a vulnerability". The report is visible to the maintainer only. GitHub
+"Report a vulnerability". It is switched on when the repository is made public,
+which happens before a release is published (docs/operations.md, Releasing), so
+it exists wherever this file is read as part of a release. The report is
+visible to the maintainer only. GitHub
 is a CVE numbering authority, so a CVE can be requested through the advisory the
 report creates. Please do not open a public issue for a vulnerability; the
 new-issue chooser points here for that reason.
@@ -354,10 +357,11 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
 - A release is one annotated git tag on a commit whose newest `ci` run from a
   push to `main` succeeded; the `release` workflow's gate refuses a tag whose
   commit has no such run, and the release job checks that the commit it
-  built is the one the gate verified. Who may create a `v*` tag is a
-  repository rule (the tag ruleset named in docs/operations.md, Releasing), not
-  something the workflow can enforce: GitHub runs the workflow file of the
-  tagged commit. A published release is never re-run (a fix is a new tag).
+  built is the one the gate verified. Who may create a `v*` tag is a matter
+  of write access and, once the repository is public, of the tag ruleset named
+  in docs/operations.md, Releasing; the workflow cannot enforce it, since
+  GitHub runs the workflow file of the tagged commit. A published release is
+  never re-run (a fix is a new tag).
 - The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with

@@ -159,8 +159,8 @@ Install from a release instead of building in step 0:
 download `toolwarrant_<version>_<os>_<arch>.tar.gz` for your platform from the
 GitHub release together with the checksums file, its `.sigstore.json` signature bundle,
 verify them as the [Release integrity](SECURITY.md#release-integrity) section of
-SECURITY.md says (toolwarrant release archives are verified with cosign before
-use), and untar the archive. `cmd/mockupstream` is not in the release, so the
+SECURITY.md says (the checksums file is verified with cosign and the archive
+against it before use), and untar the archive. `cmd/mockupstream` is not in the release, so the
 demo upstream still needs `go build -o bin/ ./cmd/mockupstream`.
 
 ```sh
