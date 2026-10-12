@@ -91,7 +91,7 @@ type emitOutcome struct {
 // bindEmitFlags registers the flags of emit.
 func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 	o := &emitOptions{overrides: processorOverrides{}}
-	fs.StringVar(&o.out, "out", "", "file to write the gateway configuration to (required); it must be absent or a regular file (a symbolic link, directory, device, socket or named pipe is refused before anything is opened) and is never read, since processor addresses come from the catalog; always written with mode 0600, so chown it to the gateway's user")
+	fs.StringVar(&o.out, "out", "", "file to write the gateway configuration to (required); it must be absent or a regular file emit wrote before (a symbolic link, directory, device, socket or named pipe is refused before anything is opened, so are the catalog database, its -wal and -shm siblings and the gateway binary, and so is an existing file whose first lines are not emit's header; a file the gateway rewrote keeps the header and is replaced) and is never read for addresses, since processor addresses come from the catalog; always written with mode 0600, so chown it to the gateway's user")
 	fs.IntVar(&o.listenPort, "listen-port", defaultListenPort, "port the gateway binds")
 	fs.StringVar(&o.bindAddress, "bind-address", emit.DefaultBindAddress, "IPv4 or IPv6 literal the gateway binds --listen-port on; an address other hosts can reach exposes every route to the network with the processor as its only guard, and a wildcard (0.0.0.0 or ::) also needs --allow-all-interfaces")
 	fs.BoolVar(&o.allowAllInterfaces, "allow-all-interfaces", false, "permit a wildcard --bind-address and a listener address other hosts can reach; a permission, not a request: with loopback addresses it changes nothing")
@@ -110,17 +110,21 @@ func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 // anything is read or written: the required output path and the wildcard
 // bind permission, then that --out is absent or a regular file (Lstat, before
 // any open: a named pipe planted there blocked emit for ever, fourth review
-// cli-docs-2, and a symbolic link would make it replace a file elsewhere).
+// cli-docs-2, and a symbolic link would make it replace a file elsewhere),
+// and then that the regular file is one emit may replace (checkOut, D17 j).
 // Everything else about the input, an admin address given together with
 // --disable-admin included, is the emitter's rule and is reported by it.
-func (o *emitOptions) check(c *command) error {
+func (o *emitOptions) check(c *command, dbPath string) error {
 	if err := requireFlag(c, o.out, "out", "name the file to write"); err != nil {
 		return err
 	}
 	if err := checkBindAddress(c, o.bindAddress, o.allowAllInterfaces); err != nil {
 		return err
 	}
-	return refuseIrregularFile(o.out, "--out")
+	if err := refuseIrregularFile(o.out, "--out"); err != nil {
+		return err
+	}
+	return o.checkOut(c, dbPath)
 }
 
 // input is the emitter's view of the flags and the plans.
@@ -139,8 +143,14 @@ func (o *emitOptions) input(plans []emitPlan, secret string) emit.Input {
 // and goes back into it when it is new or changed, after the file was
 // validated and renamed into place (D14 i, D15 j): a refused or failed emit
 // records nothing, so the next emit that writes a file still prints every
-// address as new; the file at --out is never read and must be absent or a
-// regular file.
+// address as new; the file at --out is never read for addresses and must be
+// absent or a regular file emit wrote (D17 j). The addresses come from the
+// catalog's Servers view, which since the seventh round is anchored to the
+// verified server.processor_set entries and answers ErrCorrupt when the
+// column disagrees with them (D17 c), so an emit against a rewritten column
+// writes nothing instead of handing the forged address to the gateway, and
+// every address that differs from the one the catalog recorded is printed
+// as new or changed.
 func runEmit(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	o := bindEmitFlags(fs, a.getenv)
@@ -151,7 +161,7 @@ func runEmit(a *app, c *command, args []string) (err error) {
 	if err := wantArgs(c, pos); err != nil {
 		return err
 	}
-	if err := o.check(c); err != nil {
+	if err := o.check(c, a.dbPath()); err != nil {
 		return err
 	}
 	secret, err := readSecret(c, a.getenv, o.secretEnv)

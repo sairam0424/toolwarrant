@@ -64,7 +64,7 @@ func TestLiveComparisonReportsWhatTheFileCannotCarryInsideAKnownSection(t *testi
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), tc.old, tc.repl))
+			admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url(), tc.old, tc.repl))
 			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 			for _, want := range tc.want {
 				wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+want)
@@ -75,7 +75,7 @@ func TestLiveComparisonReportsWhatTheFileCannotCarryInsideAKnownSection(t *testi
 	}
 	// The recorded shape of the real gateway, unchanged, still matches: the
 	// walk accepts exactly what the pinned document carries.
-	healthy := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
+	healthy := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	wantContains(t, "healthy", c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", healthy.hostPort(), "--no-probe"), verdictOK+": ", "live configuration matches the emitted file")
 }
 

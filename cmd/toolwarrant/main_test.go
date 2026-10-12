@@ -31,7 +31,7 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
 	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going", "-admin", "-no-probe", "GET "+adminConfigPath, verdictLiveConfig,
 		probeToolPrefix, "HTTP 202", verdictUnhooked, "the probe reaches the upstream exactly when the gateway behaves this way", "L17",
-		"-expect-body-hash", "L19", verdictInconclusive, "HTTP 400 with an empty or non-JSON body is healthy", "a JSON-RPC answer, single or batched", "as a whole document", "the path of --url must be the emitted route's match", "printed a verdict line",
+		"-expect-body-hash", "L19", verdictInconclusive, "not accepted as a notification (HTTP 400, by the gateway or by the upstream)", "proves nothing about the hook", "a JSON-RPC answer, single or batched", "as a whole document", "the path of --url must be the emitted route's match", "the ports of --url and --admin must be the emitted gateway's serving port and the emitted adminAddr's port", "backend targets (name and host)", "printed a verdict line",
 		"no non-empty top-level section other than config, gateways and routes", "no policy other than mcpAuthorization and mcpGuardrails", "no match that is not a single exact path", "requestHeaders allowed and disallowed lists", "metadata compared by a hash of its canonical form and never shown",
 		"is not a regular file", "a listing failure alone is printed, counted and does not stop the run")
 	wantContains(t, "help crawl", c.ok("help", "crawl"), "-strict", "-every")

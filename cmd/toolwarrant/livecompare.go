@@ -198,7 +198,7 @@ func compareRoutes(emitted, live routeConfig) []string {
 	diffs = appendDiff(diffs, "match path", joinPaths(emitted.paths), joinPaths(live.paths))
 	diffs = append(diffs, compareRules(emitted.rules, live.rules)...)
 	diffs = append(diffs, compareProcessors(emitted.processors, live.processors)...)
-	diffs = append(diffs, compareHosts(emitted.backendHosts, live.backendHosts)...)
+	diffs = append(diffs, compareTargets(emitted, live)...)
 	diffs = append(diffs, live.foreign...)
 	return diffs
 }
@@ -288,18 +288,32 @@ func compareMetadata(emitted, live string) []string {
 	return []string{"processor metadata: the live metadata differs from the emitted file" + metadataWithheld}
 }
 
-// compareHosts compares the backend hosts without showing them.
-func compareHosts(emitted, live []string) []string {
-	if len(emitted) != len(live) {
-		return []string{fmt.Sprintf("backend targets: emitted %d, live %d", len(emitted), len(live))}
+// compareTargets compares the backend targets in order: the name, which is
+// the server name and may be shown, and the host, which is never shown. The
+// name matters because the processor accepts a hook only for its configured
+// target (service_names): a route whose target was renamed through the admin
+// API serves nothing, and until the seventh review the comparison called it a
+// match (canary-3, D17 i).
+func compareTargets(emitted, live routeConfig) []string {
+	if len(emitted.backendHosts) != len(live.backendHosts) {
+		return []string{fmt.Sprintf("backend targets: emitted %d, live %d", len(emitted.backendHosts), len(live.backendHosts))}
 	}
 	var diffs []string
-	for i := range emitted {
-		if emitted[i] != live[i] {
+	for i := range emitted.backendHosts {
+		diffs = appendDiff(diffs, "backend target name", nameAt(emitted.backendTargets, i), nameAt(live.backendTargets, i))
+		if emitted.backendHosts[i] != live.backendHosts[i] {
 			diffs = append(diffs, "backend host: the live route points at another upstream (values withheld: an upstream URL may carry a credential)")
 		}
 	}
 	return diffs
+}
+
+// nameAt is the i-th target name, "" when a side read fewer names than hosts.
+func nameAt(names []string, i int) string {
+	if i < len(names) {
+		return names[i]
+	}
+	return ""
 }
 
 // describeMethods renders a processor's method map in a fixed order, for a

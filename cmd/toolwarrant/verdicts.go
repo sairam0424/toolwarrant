@@ -77,17 +77,31 @@ type probeOutcome int
 const (
 	// probeSkipped means no probe was sent (--no-probe).
 	probeSkipped probeOutcome = iota
-	// probeHealthy means the gateway refused the id-less tools/call (HTTP 400).
-	probeHealthy
+	// probeNotAccepted means the id-less tools/call came back with HTTP 400
+	// and no JSON: the gateway or the upstream did not accept it as a
+	// notification. The check passes, and the sentence attributes the
+	// refusal to nobody (D17 h): until the seventh review it read "rejected
+	// by the gateway", although a forwarding gateway relays an upstream's
+	// plain-text refusal unchanged and the probe cannot tell the two apart.
+	probeNotAccepted
 	// probeUnhooked means the gateway accepted it (HTTP 202) and so forwarded
 	// it to the upstream without the processor or the allow rule.
 	probeUnhooked
 	// probeInconclusive means the answer was another 2xx with a body, or a
-	// 400 whose body is JSON (a JSON-RPC answer, single or batched), which the
-	// gateway or the upstream may have written; the canary cannot tell (D13 h,
-	// D14 i, D15 k).
+	// 400 whose body is JSON (a JSON-RPC answer, single or batched, in the
+	// body or across the data lines of one event, after a byte-order mark)
+	// or was cut at the read cap, which the gateway or the upstream may have
+	// written; the canary cannot tell (D13 h, D14 i, D15 k, D17 h).
 	probeInconclusive
 )
+
+// probeReport is what the probe found and the HTTP status the answer carried,
+// which the pass sentence names so the operator sees what came back without
+// the canary saying who wrote it.
+type probeReport struct {
+	outcome probeOutcome
+	status  int
+}
 
 // liveCheck is the outcome of comparing the gateway's live configuration with
 // the emitted file. It is skipped without --admin, and when the emitted file
@@ -124,13 +138,13 @@ type verdicts struct {
 	// and is still not the file emit wrote.
 	configExpected string
 	live           liveCheck
-	probe          probeOutcome
+	probe          probeReport
 }
 
 // failed reports whether the check must fail the command. Exit 0 is OK or
 // MISSING only.
 func (v verdicts) failed() bool {
-	return len(v.leaks) > 0 || v.configEdited || len(v.live.diffs) > 0 || v.probe == probeUnhooked || v.probe == probeInconclusive
+	return len(v.leaks) > 0 || v.configEdited || len(v.live.diffs) > 0 || v.probe.outcome == probeUnhooked || v.probe.outcome == probeInconclusive
 }
 
 // subLabelCounts counts the leaks that carry each sub-label.
@@ -185,11 +199,13 @@ func (l liveCheck) summary() string {
 	return "; live configuration not compared (no --admin)"
 }
 
-// summary is the probe's part of the check's one-line account.
-func (p probeOutcome) summary() string {
-	switch p {
-	case probeHealthy:
-		return "; id-less tools/call rejected by the gateway"
+// summary is the probe's part of the check's one-line account. The pass
+// sentence names the status and attributes the refusal to nobody (D17 h);
+// docs/operations.md and e2e scenario O quote it.
+func (p probeReport) summary() string {
+	switch p.outcome {
+	case probeNotAccepted:
+		return fmt.Sprintf("; the id-less tools/call was not accepted as a notification (HTTP %d, by the gateway or by the upstream)", p.status)
 	case probeUnhooked:
 		return fmt.Sprintf("; id-less tools/call forwarded unhooked (%s)", verdictUnhooked)
 	case probeInconclusive:
@@ -275,12 +291,12 @@ func (v *verifier) printChecks(res verdicts) {
 		out.printf("%s %s: %s\n", verdictLiveConfig, cell(v.server), d)
 		v.failingLines++
 	}
-	switch res.probe {
+	switch res.probe.outcome {
 	case probeUnhooked:
 		out.printf("%s %s: the gateway accepted a tools/call without an id (HTTP 202) and forwarded it to the upstream without the processor or the allow rule; every tools/call in that shape bypasses the approval (known limit L17)\n", verdictUnhooked, cell(v.server))
 		v.failingLines++
 	case probeInconclusive:
-		out.printf("%s %s: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON body, instead of a bare HTTP 400; the gateway or the upstream may have written that answer, so whether such calls reach the upstream unhooked is unknown and the check fails\n", verdictInconclusive, cell(v.server))
+		out.printf("%s %s: the answer to a tools/call without an id was a 2xx status with a body, or HTTP 400 and a JSON body (in the body or across the data lines of one event, after a byte-order mark, or cut at the read cap), not a bare HTTP 400; the gateway or the upstream may have written that answer, so whether such calls reach the upstream unhooked is unknown and the check fails\n", verdictInconclusive, cell(v.server))
 		v.failingLines++
 	}
 }

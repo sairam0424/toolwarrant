@@ -47,7 +47,7 @@ func TestVerifyGatewayOKMissingAndMismatch(t *testing.T) {
 
 	gateway := newUpstream(t, map[string]string{"echo": echoV1})
 	out := c.ok("verify-gateway", "--server", "s1", "--url", gateway.url())
-	wantContains(t, "stdout", out, verdictOK+": the gateway serves 1 tool(s), 1 approved and current; live configuration not compared (no --admin); id-less tools/call rejected by the gateway")
+	wantContains(t, "stdout", out, verdictOK+": the gateway serves 1 tool(s), 1 approved and current; live configuration not compared (no --admin); "+notAcceptedLine)
 	wantNotContains(t, "stdout", out, verdictLeak, verdictMissing, verdictMismatch)
 
 	empty := newUpstream(t, nil)
@@ -187,7 +187,7 @@ func TestVerifyGatewayComparesTheRecordedBodyHash(t *testing.T) {
 	// the operator has not recorded yet looks exactly like a replacement.
 	c.approve("alice", "s1", "add", c.tool("s1", "add").Pending)
 	c.ok("emit", "--out", cfg)
-	admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
+	admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--expect-body-hash", recorded, "--no-probe")
 	wantContains(t, "stdout", r.stdout, verdictConfigEdited+" "+cfg+": the body sha256 is ", ", not the recorded "+recorded+"; the file verifies, so whoever replaced it recomputed the header hash (known limit L19)")
 	wantNotContains(t, "stdout", r.stdout, verdictOK, verdictLiveConfig)
@@ -226,7 +226,7 @@ func TestVerifyGatewayEveryUsesAFreshSessionPerCheck(t *testing.T) {
 		t.Errorf("the gateway saw %d session(s), want two per check (the listing and the probe)", n)
 	}
 	for _, line := range nonEmptyLines(out.String()) {
-		wantContains(t, "line", line, "s1: the gateway serves 1 tool(s), 1 approved and current; live configuration not compared (no --admin); id-less tools/call rejected by the gateway")
+		wantContains(t, "line", line, "s1: the gateway serves 1 tool(s), 1 approved and current; live configuration not compared (no --admin); "+notAcceptedLine)
 		wantNotContains(t, "line", line, verdictLeak)
 	}
 }

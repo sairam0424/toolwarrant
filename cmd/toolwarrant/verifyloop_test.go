@@ -100,12 +100,13 @@ func TestVerifyGatewayEveryCountsListingFailures(t *testing.T) {
 // healthy document once, then holds every request open until the canary is
 // stopped, while the stand-in gateway starts serving a poisoned echo.
 func TestKeepGoingExits1WhenStoppedDuringACheckThatFoundALeak(t *testing.T) {
-	c, u, _, cfg := liveFixture(t)
+	c, u := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
 	gw := g.url() + routePath
 	var stall atomic.Bool
 	stalled := make(chan struct{}, 1)
-	healthy := adminDoc(t, u.url())
+	var healthy string
 	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if stall.Load() {
 			select {
@@ -119,8 +120,15 @@ func TestKeepGoingExits1WhenStoppedDuringACheckThatFoundALeak(t *testing.T) {
 		_, _ = io.WriteString(w, healthy)
 	}))
 	t.Cleanup(admin.Close)
+	// The emitted file carries the stand-in gateway's port and this admin
+	// stand-in's address, which the comparison holds --url and --admin
+	// against (D17 i).
+	adminAddr := strings.TrimPrefix(admin.URL, "http://")
+	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
+	c.ok("emit", "--out", cfg, "--listen-port", urlPort(t, g.url()), "--admin-addr", adminAddr)
+	healthy = adminDocFor(t, u.url(), urlPort(t, g.url()), adminAddr)
 
-	run := c.launch("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", strings.TrimPrefix(admin.URL, "http://"), "--every", loopEvery.String(), "--keep-going", "--no-probe")
+	run := c.launch("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", adminAddr, "--every", loopEvery.String(), "--keep-going", "--no-probe")
 	waitFor(t, "a healthy check", func() bool {
 		return strings.Contains(run.stdout.String(), "live configuration matches the emitted file")
 	})
@@ -170,7 +178,7 @@ func TestLoopTallyOutcome(t *testing.T) {
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "1 of 2 check(s) in this run failed") {
 		t.Errorf("one errored check: %v", err)
 	}
-	tally.record(verdicts{probe: probeUnhooked}, nil, false)
+	tally.record(verdicts{probe: probeReport{outcome: probeUnhooked}}, nil, false)
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "2 of 3 check(s) in this run failed") {
 		t.Errorf("one failed verdict: %v", err)
 	}

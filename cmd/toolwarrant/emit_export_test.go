@@ -28,6 +28,16 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 	if err := os.WriteFile(out, []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// D17 (j): a file emit did not write is refused, not replaced; the
+	// operator moves it away.
+	r := c.fail(exitUsage, "emit", "--out", out)
+	wantContains(t, "stderr", r.stderr, "--out "+out+" exists and its first lines are not the header emit writes")
+	if got := readFile(t, out); got != "stale" {
+		t.Fatalf("the refused emit touched the file: %q", got)
+	}
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
 
 	stdout := c.ok("emit", "--out", out)
 	yaml := readFile(t, out)
@@ -78,7 +88,7 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 	wantNotContains(t, "yaml", readFile(t, fresh), `host: "127.0.0.1:7000"`)
 	wantNotContains(t, "stdout", stdout, "processor address of server")
 
-	r := c.fail(exitUsage, "emit", "--out", out, "--processor", "nope=127.0.0.1:1")
+	r = c.fail(exitUsage, "emit", "--out", out, "--processor", "nope=127.0.0.1:1")
 	wantContains(t, "stderr", r.stderr, "unknown server nope")
 	r = c.fail(exitUsage, "emit", "--out", out, "--processor", "s1=127.0.0.1:1", "--processor", "s1=127.0.0.1:2")
 	wantContains(t, "stderr", r.stderr, "twice")
@@ -93,7 +103,11 @@ func TestEmitWithASecretWritesAPrivateFileAndWiresServe(t *testing.T) {
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	c.env[secretVar] = plant("secret")
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := os.WriteFile(out, []byte("stale"), 0o644); err != nil {
+	// A file emit wrote before, since loosened to 0644: the re-emit replaces
+	// it (D17 j refuses only files that are not emit's) and the replacement
+	// is owner-only again.
+	c.ok("emit", "--out", out)
+	if err := os.Chmod(out, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	r := c.run("emit", "--out", out, "--secret-env", secretVar)

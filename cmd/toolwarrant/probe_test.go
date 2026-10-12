@@ -16,24 +16,32 @@ import (
 )
 
 // okLine is the start of the one line that says a check passed; the word OK
-// alone also occurs inside UNHOOKED-CALLS.
-const okLine = verdictOK + ": "
+// alone also occurs inside UNHOOKED-CALLS. notAcceptedLine is the probe's
+// pass sentence for a bare HTTP 400 (D17 h), which attributes the refusal to
+// nobody; docs/operations.md and e2e scenario O quote it.
+const (
+	okLine          = verdictOK + ": "
+	notAcceptedLine = "the id-less tools/call was not accepted as a notification (HTTP 400, by the gateway or by the upstream)"
+)
 
-// Decision D12 and D13 (h): every check sends one tools/call without an id for
-// a name no catalog can hold. A gateway that refuses it with HTTP 400 is
-// healthy; one that accepts it (202) forwarded it to the upstream unhooked and
-// fails the check; any other 2xx answer that carries a body (a JSON-RPC error
-// in JSON or in an event stream, or a result) is PROBE-INCONCLUSIVE and fails
-// the check too, because the gateway or the upstream may have written it; any
-// other answer is an error, never OK; --no-probe sends nothing. The test
-// upstream's five modes cover the three outcomes.
+// Decision D12, D13 (h) and D17 (h): every check sends one tools/call without
+// an id for a name no catalog can hold. A bare HTTP 400 passes the check as
+// "not accepted as a notification" by the gateway or by the upstream, which
+// is all the probe can say; a gateway that accepts the call (202) forwarded
+// it to the upstream unhooked and fails the check; any other 2xx answer that
+// carries a body (a JSON-RPC error in JSON or in an event stream, or a
+// result) is PROBE-INCONCLUSIVE and fails the check too, because the gateway
+// or the upstream may have written it; any other answer is an error, never
+// OK; --no-probe sends nothing. The test upstream's five modes cover the
+// three outcomes.
 func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
 	sessions, deletes := g.sessions.Load(), g.deletes.Load()
 	out := c.ok("verify-gateway", "--server", "s1", "--url", g.url())
-	wantContains(t, "stdout", out, okLine, "id-less tools/call rejected by the gateway")
+	wantContains(t, "stdout", out, okLine, notAcceptedLine)
+	wantNotContains(t, "stdout", out, "rejected by the gateway")
 	names := g.probeNames()
 	if len(names) != 1 || !strings.HasPrefix(names[0], probeToolPrefix) || len(names[0]) != len(probeToolPrefix)+2*probeSuffixBytes {
 		t.Fatalf("probe names = %q, want exactly one %s<8 hex digits>", names, probeToolPrefix)
@@ -48,9 +56,9 @@ func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 	for name, mode := range map[string]int32{"json-rpc error": probeModeRPCError, "event stream error": probeModeSSEError, "result without error": probeModeSilent} {
 		g.probeMode.Store(mode)
 		r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
-		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON body, instead of a bare HTTP 400", "the gateway or the upstream may have written that answer")
+		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: the answer to a tools/call without an id was a 2xx status with a body, or HTTP 400 and a JSON body", "not a bare HTTP 400", "the gateway or the upstream may have written that answer")
 		wantNotContains(t, name+" stdout", r.stdout, okLine, verdictUnhooked, verdictLeak)
-		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until it answers HTTP 400 with an empty or non-JSON body")
+		wantContains(t, name+" stderr", r.stderr, verdictInconclusive, "treat the gateway as unhooked until the answer is a bare HTTP 400", "only HTTP 202 proves anything")
 	}
 	g.probeMode.Store(probeModeForward)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url())
@@ -165,7 +173,7 @@ func TestProbeFailsClosedOnAGatewayItCannotRead(t *testing.T) {
 		want    probeOutcome
 		err     string
 	}{
-		"healthy 400":        {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusBadRequest)}, probeHealthy, ""},
+		"bare 400":           {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusBadRequest)}, probeNotAccepted, ""},
 		"forwarded 202":      {scripted{healthy, http.StatusOK, answerStatus(http.StatusAccepted)}, probeUnhooked, ""},
 		"call 200 with body": {scripted{healthy, http.StatusAccepted, answerJSON(http.StatusOK, "session-1", `{"jsonrpc":"2.0","id":null,"result":{}}`)}, probeInconclusive, ""},
 		"call 200 empty":     {scripted{healthy, http.StatusAccepted, answerStatus(http.StatusOK)}, probeSkipped, "http status 200 without a body"},
@@ -182,8 +190,8 @@ func TestProbeFailsClosedOnAGatewayItCannotRead(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got, err := probeUnhookedCalls(context.Background(), client, tc.gateway.serve(t), nil)
-			if got != tc.want {
-				t.Errorf("outcome %d, want %d (err %v)", got, tc.want, err)
+			if got.outcome != tc.want {
+				t.Errorf("outcome %d, want %d (err %v)", got.outcome, tc.want, err)
 			}
 			if tc.err == "" && err != nil {
 				t.Errorf("unexpected error: %v", err)
@@ -243,10 +251,17 @@ func TestProbeHelpers(t *testing.T) {
 	}{
 		{rawResponse{status: http.StatusAccepted}, probeUnhooked, false},
 		{rawResponse{status: http.StatusAccepted, body: []byte("{}")}, probeUnhooked, false},
-		{rawResponse{status: http.StatusBadRequest}, probeHealthy, false},
-		{rawResponse{status: http.StatusBadRequest, body: []byte("Bad Request: id required")}, probeHealthy, false},
-		{rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte("Bad Request: id required")}, probeHealthy, false},
-		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("event: message\n\n")}, probeHealthy, false},
+		{rawResponse{status: http.StatusBadRequest}, probeNotAccepted, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte("Bad Request: id required")}, probeNotAccepted, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte("Bad Request: id required")}, probeNotAccepted, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("event: message\n\n")}, probeNotAccepted, false},
+		// D17 (h): the three shapes the seventh review found the heuristic
+		// missing (canary-2): an event whose JSON is split over two data
+		// lines, a byte-order mark before the object, a body cut at the cap.
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaSSE, body: []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":null,\"error\":{\"code\":-32600}}\n\n")}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte("\ufeff" + `{"error":{"code":1}}`)}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, contentType: mediaJSON, body: []byte(`{"error":{"code":1,"message":"` + strings.Repeat("x", probeMaxBody) + `"}}`)[:probeMaxBody]}, probeInconclusive, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(strings.Repeat("x", probeMaxBody))}, probeInconclusive, false},
 		// D14 (i), D15 (k): a 400 whose body is JSON may be an upstream's
 		// refusal relayed by a forwarding gateway (fourth review cli-docs-7),
 		// a batch of JSON-RPC errors included (fifth review cli-docs-4), so
@@ -259,7 +274,7 @@ func TestProbeHelpers(t *testing.T) {
 		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"result":{}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusBadRequest, body: []byte(` "id required" `)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusBadRequest, body: []byte(`[]`)}, probeInconclusive, false},
-		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":`)}, probeHealthy, false},
+		{rawResponse{status: http.StatusBadRequest, body: []byte(`{"error":`)}, probeNotAccepted, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"error":{"code":1}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaJSON, body: []byte(`{"result":{}}`)}, probeInconclusive, false},
 		{rawResponse{status: http.StatusOK, contentType: mediaSSE, body: []byte("data: {\"error\":{\"code\":1}}\n\n")}, probeInconclusive, false},
@@ -299,13 +314,99 @@ func TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive(t *testing.T) {
 	}
 	wantContains(t, "stdout", r.stdout, verdictInconclusive+" s1: ", "HTTP 400 and a JSON body")
 	wantNotContains(t, "stdout", r.stdout, verdictOK, "rejected by the gateway")
-	wantContains(t, "stderr", r.stderr, "HTTP 400 and a JSON body", "treat the gateway as unhooked until it answers HTTP 400 with an empty or non-JSON body")
+	wantContains(t, "stderr", r.stderr, "HTTP 400 and a JSON body", "treat the gateway as unhooked until the answer is a bare HTTP 400")
 
 	// The go-sdk's own refusal, a 400 with a plain-text body, relayed by the
-	// same stand-in, is healthy: the decision narrows the rule to JSON bodies.
+	// same stand-in, passes: the rule is about JSON bodies, and since D17 (h)
+	// the pass sentence attributes the refusal to nobody.
 	up.probeMode.Store(probeModeRefuse)
 	out := c.ok("verify-gateway", "--server", "s1", "--url", gw.URL)
-	wantContains(t, "stdout", out, verdictOK, "id-less tools/call rejected by the gateway")
+	wantContains(t, "stdout", out, verdictOK, notAcceptedLine)
+}
+
+// Seventh review (canary-1, D17 h): a 400 with an empty or non-JSON body was
+// called "rejected by the gateway", although the forwarding stand-in in front
+// of a plain go-sdk upstream relays the upstream's own text/plain 400 and the
+// probe's name is in the upstream's log: the call crossed the gateway
+// unhooked and the canary attributed the refusal to the gateway. The pass
+// sentence now names the status and says the gateway or the upstream did not
+// accept the call as a notification, which is all the probe can tell, and
+// the documents say the probe proves the fail-open shape of v1.6.0 and
+// cannot prove the hook. Not the pinned gateway's shape (v1.6.0 answers 202);
+// it matters on every move of the pin (L7).
+func TestProbeDoesNotAttributeARelayedPlainTextRefusalToTheGateway(t *testing.T) {
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	up := newUpstream(t, map[string]string{"echo": echoV1})
+	up.probeMode.Store(probeModeRefuse)
+	gw := forwardingGateway(t, up.url(), nil)
+	before := len(up.probeNames())
+	out := c.ok("verify-gateway", "--server", "s1", "--url", gw.URL)
+	names := up.probeNames()
+	if len(names) != before+1 || !strings.HasPrefix(names[len(names)-1], probeToolPrefix) {
+		t.Fatalf("the probe did not reach the upstream through the forwarding stand-in: %q", names)
+	}
+	wantContains(t, "stdout", out, okLine, notAcceptedLine)
+	wantNotContains(t, "stdout", out, "rejected by the gateway", "healthy", verdictInconclusive)
+	if got := (probeReport{outcome: probeNotAccepted, status: http.StatusBadRequest}).summary(); got != "; "+notAcceptedLine {
+		t.Errorf("summary = %q", got)
+	}
+	if got := (probeReport{outcome: probeNotAccepted, status: http.StatusTeapot}).summary(); !strings.Contains(got, "(HTTP 418, by the gateway or by the upstream)") {
+		t.Errorf("summary names another status: %q", got)
+	}
+}
+
+// Seventh review (canary-2, D17 h): carriesJSONAnswer validated each SSE data
+// line on its own and the body as one value, so three answers an upstream can
+// put on a 400 were not read as JSON and passed: a JSON-RPC error split over
+// two data lines of one event (the SSE specification joins them with a
+// newline), a JSON body behind a UTF-8 byte-order mark, and a body longer
+// than probeMaxBody, which the reader cuts into invalid JSON. Each is now
+// PROBE-INCONCLUSIVE, at the unit level and through the forwarding stand-in.
+func TestProbeReadsTheJSONShapesAnUpstreamCanRelayOnA400(t *testing.T) {
+	rpcErr := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"id required"}}`
+	split := "event: message\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":null,\"error\":{\"code\":-32600,\"message\":\"id required\"}}\n\n"
+	long := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"` + strings.Repeat("x", probeMaxBody) + `"}}`
+	cases := map[string]rawResponse{
+		"sse data split over two lines": {status: http.StatusBadRequest, contentType: mediaSSE, body: []byte(split)},
+		"utf-8 bom before the object":   {status: http.StatusBadRequest, contentType: mediaJSON, body: []byte("\ufeff" + rpcErr)},
+		"object cut at probeMaxBody":    {status: http.StatusBadRequest, contentType: mediaJSON, body: []byte(long)[:probeMaxBody]},
+	}
+	for name, resp := range cases {
+		if got, err := classifyProbe(resp); got != probeInconclusive || err != nil {
+			t.Errorf("%s: classifyProbe = %d, %v; want PROBE-INCONCLUSIVE", name, got, err)
+		}
+	}
+	joined := (rawResponse{contentType: mediaSSE, body: []byte(split)}).messages()
+	if len(joined) != 1 || !json.Valid(joined[0]) {
+		t.Errorf("the split event was read as %q, want one valid JSON message", joined)
+	}
+	if !(rawResponse{contentType: mediaJSON, body: []byte("\ufeff" + rpcErr)}).carriesJSONAnswer() {
+		t.Error("a byte-order mark hid the JSON answer")
+	}
+	if !(rawResponse{body: []byte(long)[:probeMaxBody]}).truncated() || (rawResponse{body: []byte(rpcErr)}).truncated() {
+		t.Error("truncated misjudges the read cap")
+	}
+
+	c, _ := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
+	up := newUpstream(t, map[string]string{"echo": echoV1})
+	for name, answer := range map[string]struct {
+		contentType, body string
+	}{
+		"split event":  {mediaSSE, split},
+		"over the cap": {mediaJSON, long},
+	} {
+		gw := forwardingGateway(t, up.url(), func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", answer.contentType)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, answer.body)
+		})
+		r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw.URL)
+		wantContains(t, name+" stdout", r.stdout, verdictInconclusive+" s1: ", "HTTP 400 and a JSON body")
+		wantNotContains(t, name+" stdout", r.stdout, okLine, "rejected by the gateway")
+		wantContains(t, name+" stderr", r.stderr, verdictInconclusive)
+	}
 }
 
 // Fifth review (cli-docs-4, D15 k): the probe read each message as one JSON

@@ -102,7 +102,8 @@ type liveRouteDoc struct {
 	Backends []struct {
 		Mcp struct {
 			Targets []struct {
-				Mcp struct {
+				Name string `json:"name"`
+				Mcp  struct {
 					Host string `json:"host"`
 				} `json:"mcp"`
 			} `json:"targets"`
@@ -236,6 +237,7 @@ func (r liveRouteDoc) config() routeConfig {
 	}
 	for _, b := range r.Backends {
 		for _, t := range b.Mcp.Targets {
+			rc.backendTargets = append(rc.backendTargets, t.Name)
 			rc.backendHosts = append(rc.backendHosts, t.Mcp.Host)
 		}
 	}

@@ -39,8 +39,8 @@ func TestEmittedConfigReadsWhatEmitWrites(t *testing.T) {
 		describeMethods(rc.processors[0].methods) != "tools/call=request,tools/list=response" {
 		t.Errorf("processor: %+v", rc.processors)
 	}
-	if len(rc.backendHosts) != 1 || rc.backendHosts[0] != "http://127.0.0.1:3001/mcp" {
-		t.Errorf("backends: %q", rc.backendHosts)
+	if len(rc.backendHosts) != 1 || rc.backendHosts[0] != "http://127.0.0.1:3001/mcp" || len(rc.backendTargets) != 1 || rc.backendTargets[0] != "alpha" {
+		t.Errorf("backends: %q %q", rc.backendTargets, rc.backendHosts)
 	}
 	beta, n := doc.route("beta")
 	if n != 1 || len(beta.backendHosts) != 1 || !strings.Contains(beta.backendHosts[0], plant("query")) || len(beta.processors) != 1 || beta.processors[0].host != "127.0.0.1:9002" {

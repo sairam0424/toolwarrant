@@ -162,7 +162,7 @@ func TestReEmitIgnoresAForgedAddressInTheFileAtOut(t *testing.T) {
 	wantContains(t, "re-emit output", second, "serve --server s1 --target s1 --listen 127.0.0.1:9001")
 	wantContains(t, "server list", c.ok("server", "list"), "127.0.0.1:9001")
 
-	admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), `"127.0.0.1:9001"`, `"127.0.0.1:4444"`))
+	admin := serveAdmin(t, http.StatusOK, c.adminDoc(u.url(), `"127.0.0.1:9001"`, `"127.0.0.1:4444"`))
 	r = c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", g.url()+routePath, "--config", out, "--expect-body-hash", bodyHashOf(t, second), "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "canary after the re-emit", r.stdout, verdictLiveConfig+" s1: processor host: emitted 127.0.0.1:9001, live 127.0.0.1:4444")
 	wantNotContains(t, "canary after the re-emit", r.stdout, verdictOK, verdictConfigEdited)

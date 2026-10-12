@@ -41,7 +41,7 @@ func TestLiveComparisonReportsASectionTheFileDoesNotCarry(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), `"gateways": {`, tc.extra+` "gateways": {`))
+			admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url(), `"gateways": {`, tc.extra+` "gateways": {`))
 			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 			for _, want := range tc.want {
 				wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+want)
@@ -50,7 +50,7 @@ func TestLiveComparisonReportsASectionTheFileDoesNotCarry(t *testing.T) {
 			wantContains(t, "stderr", r.stderr, "differs from the emitted file in")
 		})
 	}
-	admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), `"gateways": {`, `"binds": [], "policies": {}, "llm": null, "gateways": {`))
+	admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url(), `"gateways": {`, `"binds": [], "policies": {}, "llm": null, "gateways": {`))
 	out := c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "empty sections", out, verdictOK, "live configuration matches the emitted file")
 }
@@ -63,13 +63,13 @@ func TestLiveComparisonComparesTheConfigListeners(t *testing.T) {
 	cases := map[string]struct {
 		old, repl, want string
 	}{
-		"admin moved":     {`"adminAddr": "127.0.0.1:15000"`, `"adminAddr": "0.0.0.0:15000"`, "config adminAddr: emitted 127.0.0.1:15000, live 0.0.0.0:15000"},
+		"admin moved":     {`"adminAddr": "` + c.live.admin.hostPort() + `"`, `"adminAddr": "0.0.0.0:15000"`, "config adminAddr: emitted " + c.live.admin.hostPort() + ", live 0.0.0.0:15000"},
 		"stats gone":      {`"statsAddr": "127.0.0.1:15020",`, ``, "config statsAddr: emitted 127.0.0.1:15020, live (none)"},
 		"readiness moved": {`"readinessAddr": "127.0.0.1:15021"`, `"readinessAddr": "[::]:15021"`, "config readinessAddr: emitted 127.0.0.1:15021, live [::]:15021"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), tc.old, tc.repl))
+			admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url(), tc.old, tc.repl))
 			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 			wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+tc.want)
 			wantContains(t, "stderr", r.stderr, "differs from the emitted file in 1 place(s)")
@@ -102,7 +102,7 @@ func TestLiveComparisonComparesTheRequestHeaderFilter(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), tc.old, tc.repl))
+			admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url(), tc.old, tc.repl))
 			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 			for _, want := range tc.want {
 				wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+want)
@@ -160,41 +160,42 @@ func TestLiveComparisonComparesTheProcessorMetadataWithoutShowingIt(t *testing.T
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
 	gw := g.url() + routePath
+	c.live = newLiveLab(t, g.url())
 	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
 	secret := plant("shared-secret-value")
 	c.env["TW_SECRET"] = secret
-	c.ok("emit", "--out", cfg, "--secret-env", "TW_SECRET")
+	c.liveEmit(cfg, "--secret-env", "TW_SECRET")
 	wantContains(t, "emitted file", readFile(t, cfg), "metadata:")
 	withMeta := func(value string) string {
 		quoted, err := json.Marshal(`"` + value + `"`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return adminDoc(t, u.url(), `"methods": {`, `"metadata": {"toolwarrant_secret": `+string(quoted)+`}, "methods": {`)
+		return c.adminDoc(u.url(), `"methods": {`, `"metadata": {"toolwarrant_secret": `+string(quoted)+`}, "methods": {`)
 	}
 	const withheld = " (values withheld: the metadata carries the processor secret)"
 	cases := map[string]struct {
 		doc  string
 		want string
 	}{
-		"live has none":      {adminDoc(t, u.url()), "processor metadata: the live processor has none while the emitted file carries it" + withheld},
+		"live has none":      {c.adminDoc(u.url()), "processor metadata: the live processor has none while the emitted file carries it" + withheld},
 		"live holds another": {withMeta("other-secret-value"), "processor metadata: the live metadata differs from the emitted file" + withheld},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, tc.doc)
+			admin := c.live.admin.serve(http.StatusOK, tc.doc)
 			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 			wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+tc.want)
 			wantNotContains(t, "stdout", r.stdout+r.stderr, canary, "other-secret", "sha256 ")
 		})
 	}
-	healthy := serveAdmin(t, http.StatusOK, withMeta(secret))
+	healthy := c.live.admin.serve(http.StatusOK, withMeta(secret))
 	wantContains(t, "equal metadata", c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", healthy.hostPort(), "--no-probe"), verdictOK)
 
 	// The other direction: a file without a secret against a live entry that
 	// carries metadata.
-	c.ok("emit", "--out", cfg)
-	admin := serveAdmin(t, http.StatusOK, withMeta(secret))
+	c.liveEmit(cfg)
+	admin := c.live.admin.serve(http.StatusOK, withMeta(secret))
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: processor metadata: the live processor carries metadata the emitted file does not"+withheld)
 	wantNotContains(t, "stdout", r.stdout+r.stderr, canary)

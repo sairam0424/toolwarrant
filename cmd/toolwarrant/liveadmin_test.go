@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +16,21 @@ import (
 // --url must carry for the live comparison (D13 e).
 const routePath = "/s1/mcp"
 
-// adminDoc is testdata/admin_config.json, the shape GET /api/config returned
-// on the real gateway, with its pinned values replaced by the ones the
-// fixture's emitted file holds, so the live configuration can be made to
-// agree with the file or to differ from it in exactly one place. Every
-// replacement must hit, so a stale testdata file fails loudly.
-func adminDoc(t *testing.T, upstreamURL string, edits ...string) string {
+// Pinned values of testdata/admin_config.json that the fixture replaces, and
+// the defaults a plain emit writes, used when a test has no live lab.
+const (
+	pinnedGatewayPort  = `"port": 63902`
+	pinnedAdminAddr    = "127.0.0.1:15000"
+	defaultGatewayPort = "3000"
+)
+
+// adminDocFor is testdata/admin_config.json, the shape GET /api/config
+// returned on the real gateway, with its pinned values replaced by the ones
+// the emitted file holds (gatewayPort as the serving port, adminAddr as the
+// admin API), so the live configuration can be made to agree with the file or
+// to differ from it in exactly one place. Every replacement must hit, so a
+// stale testdata file fails loudly.
+func adminDocFor(t *testing.T, upstreamURL, gatewayPort, adminAddr string, edits ...string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "admin_config.json"))
 	if err != nil {
@@ -35,7 +45,8 @@ func adminDoc(t *testing.T, upstreamURL string, edits ...string) string {
 	}
 	replace(`"mock"`, `"s1"`)
 	replace(`"/mock/mcp"`, `"`+routePath+`"`)
-	replace(`"port": 63902`, `"port": 3000`)
+	replace(pinnedGatewayPort, `"port": `+gatewayPort)
+	replace(`"`+pinnedAdminAddr+`"`, `"`+adminAddr+`"`)
 	replace(`"127.0.0.1:63941"`, `"127.0.0.1:9001"`)
 	replace(`mcp.tool.name == \"add\" || mcp.tool.name == \"echo\"`, `mcp.tool.name == \"echo\"`)
 	replace(`"http://127.0.0.1:63905/mcp"`, `"`+upstreamURL+`"`)
@@ -45,43 +56,116 @@ func adminDoc(t *testing.T, upstreamURL string, edits ...string) string {
 	return doc
 }
 
-// adminAPI serves one fixed answer at the admin API's config path and counts
-// the requests it saw.
-type adminAPI struct {
-	srv  *httptest.Server
-	hits atomic.Int64
+// adminDoc is adminDocFor with the live lab's port and admin address, or with
+// the defaults a plain emit writes when the test has no lab.
+func (c *cli) adminDoc(upstreamURL string, edits ...string) string {
+	c.t.Helper()
+	if c.live == nil {
+		return adminDocFor(c.t, upstreamURL, defaultGatewayPort, pinnedAdminAddr, edits...)
+	}
+	return adminDocFor(c.t, upstreamURL, c.live.gatewayPort, c.live.admin.hostPort(), edits...)
 }
 
-func serveAdmin(t *testing.T, status int, body string) *adminAPI {
+// adminAnswer is what the admin stand-in says at the config path.
+type adminAnswer struct {
+	status int
+	body   string
+}
+
+// adminAPI serves one answer at the admin API's config path, swappable in
+// place so that a test can change the live document without moving the admin
+// API to another port (the comparison holds --admin against the emitted
+// adminAddr, D17 i), and counts the requests it saw since the answer was set.
+type adminAPI struct {
+	srv    *httptest.Server
+	hits   atomic.Int64
+	answer atomic.Pointer[adminAnswer]
+}
+
+// newAdminAPI starts an admin stand-in that answers 404 until serve is called.
+func newAdminAPI(t *testing.T) *adminAPI {
 	t.Helper()
 	a := &adminAPI{}
 	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.hits.Add(1)
-		if r.URL.Path != adminConfigPath || r.Method != http.MethodGet {
+		answer := a.answer.Load()
+		if answer == nil || r.URL.Path != adminConfigPath || r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", mediaJSON)
-		w.WriteHeader(status)
-		_, _ = io.WriteString(w, body)
+		w.WriteHeader(answer.status)
+		_, _ = io.WriteString(w, answer.body)
 	}))
 	t.Cleanup(a.srv.Close)
 	return a
+}
+
+// serve sets the answer, resets the hit count and returns the stand-in.
+func (a *adminAPI) serve(status int, body string) *adminAPI {
+	a.answer.Store(&adminAnswer{status: status, body: body})
+	a.hits.Store(0)
+	return a
+}
+
+// serveAdmin starts a stand-in of its own on a port of its own, for the tests
+// about an admin API the canary cannot read, or one that is not the gateway's.
+func serveAdmin(t *testing.T, status int, body string) *adminAPI {
+	t.Helper()
+	return newAdminAPI(t).serve(status, body)
 }
 
 // hostPort is the admin API as emit --admin-addr and verify-gateway --admin
 // take it.
 func (a *adminAPI) hostPort() string { return strings.TrimPrefix(a.srv.URL, "http://") }
 
+// liveLab is the pair of addresses the live comparison holds the canary's own
+// flags against (D17 i): the stand-in gateway's serving port and the admin
+// stand-in. liveEmit writes both into the emitted file and adminDoc renders
+// the live document with both, so a healthy fixture compares as a match and a
+// test swaps the admin API's answer in place.
+type liveLab struct {
+	gatewayPort string
+	admin       *adminAPI
+}
+
+// newLiveLab records the stand-in gateway's port and starts the admin
+// stand-in.
+func newLiveLab(t *testing.T, gatewayURL string) *liveLab {
+	t.Helper()
+	return &liveLab{gatewayPort: urlPort(t, gatewayURL), admin: newAdminAPI(t)}
+}
+
+// urlPort is the port of a stand-in's URL.
+func urlPort(t *testing.T, rawURL string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Port() == "" {
+		t.Fatalf("stand-in URL %q has no port: %v", rawURL, err)
+	}
+	return u.Port()
+}
+
+// liveEmit emits the file at cfg with the live lab's serving port and admin
+// address, so a canary pointed at both stand-ins compares as a match; extra
+// flags are appended.
+func (c *cli) liveEmit(cfg string, extra ...string) string {
+	c.t.Helper()
+	args := []string{"emit", "--out", cfg, "--listen-port", c.live.gatewayPort, "--admin-addr", c.live.admin.hostPort()}
+	return c.ok(append(args, extra...)...)
+}
+
 // liveFixture is the fixture with echo approved, a stand-in gateway serving
-// it at the route's path, and the emitted file.
+// it at the route's path, the admin stand-in and the emitted file carrying
+// both stand-ins' addresses.
 func liveFixture(t *testing.T) (c *cli, u *upstream, gatewayURL, cfg string) {
 	t.Helper()
 	c, u = fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
+	c.live = newLiveLab(t, g.url())
 	cfg = filepath.Join(t.TempDir(), "gateway.yaml")
-	c.ok("emit", "--out", cfg)
+	c.liveEmit(cfg)
 	return c, u, g.url() + routePath, cfg
 }
 
@@ -92,9 +176,9 @@ func liveFixture(t *testing.T) (c *cli, u *upstream, gatewayURL, cfg string) {
 // gateway returned.
 func TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile(t *testing.T) {
 	c, u, gw, cfg := liveFixture(t)
-	healthy := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
+	healthy := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	out := c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", healthy.hostPort())
-	wantContains(t, "stdout", out, verdictOK+": the gateway serves 1 tool(s), 1 approved and current; live configuration matches the emitted file; id-less tools/call rejected by the gateway")
+	wantContains(t, "stdout", out, verdictOK+": the gateway serves 1 tool(s), 1 approved and current; live configuration matches the emitted file; "+notAcceptedLine)
 	wantNotContains(t, "stdout", out, verdictLiveConfig)
 	out = c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", healthy.srv.URL+"/")
 	wantContains(t, "stdout as url", out, "live configuration matches the emitted file")
@@ -109,7 +193,7 @@ func TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile(t *testing.
 		want      []string
 	}{
 		"bind address":       {`"bindAddress": "127.0.0.1"`, `"bindAddress": "0.0.0.0"`, []string{"gateway toolwarrant: bind address: emitted 127.0.0.1, live 0.0.0.0"}},
-		"serving port":       {`"port": 3000`, `"port": 3001`, []string{"gateway toolwarrant: serving port: emitted 3000, live 3001"}},
+		"serving port":       {`"port": ` + c.live.gatewayPort, `"port": 3001`, []string{"gateway toolwarrant: serving port: emitted " + c.live.gatewayPort + ", live 3001"}},
 		"match path":         {`"` + routePath + `"`, `"/s1/mcp-parked"`, []string{"match path: emitted /s1/mcp, live /s1/mcp-parked"}},
 		"prefix match":       {`"exact": "` + routePath + `"`, `"pathPrefix": "/"`, []string{"match path: emitted /s1/mcp, live (not an exact path)"}},
 		"allow rule":         {`mcp.tool.name == \"echo\"`, `true`, []string{`allow rule: emitted mcp.tool.name == "echo", live true`}},
@@ -126,7 +210,7 @@ func TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile(t *testing.
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url(), tc.old, tc.repl))
+			admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url(), tc.old, tc.repl))
 			r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort())
 			for _, want := range tc.want {
 				wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+want)
@@ -150,8 +234,8 @@ func TestLiveComparisonCatchesAShadowRouteThatOwnsThePath(t *testing.T) {
 	shadow := `{"name": "s1-shadow", "gateways": "toolwarrant", "matches": [{"path": {"exact": "` + routePath + `"}}],` +
 		` "policies": {"mcpAuthorization": {"rules": [{"allow": "mcp.tool.name == \"echo\""}]}},` +
 		` "backends": [{"mcp": {"targets": [{"name": "s1", "mcp": {"host": "` + u.url() + `"}}]}}]},`
-	doc := adminDoc(t, u.url(), `"`+routePath+`"`, `"/s1/mcp-parked"`, `"routes": [`, `"routes": [`+shadow)
-	admin := serveAdmin(t, http.StatusOK, doc)
+	doc := c.adminDoc(u.url(), `"`+routePath+`"`, `"/s1/mcp-parked"`, `"routes": [`, `"routes": [`+shadow)
+	admin := c.live.admin.serve(http.StatusOK, doc)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "stdout", r.stdout,
 		verdictLiveConfig+" s1: match path: emitted /s1/mcp, live /s1/mcp-parked",
@@ -168,10 +252,10 @@ func TestLiveComparisonCatchesAnAddedOpenGateway(t *testing.T) {
 	open := `{"name": "s1-open", "gateways": "open", "matches": [{"path": {"exact": "` + routePath + `"}}],` +
 		` "policies": {"mcpAuthorization": {"rules": [{"allow": "true"}]}},` +
 		` "backends": [{"mcp": {"targets": [{"name": "s1", "mcp": {"host": "` + u.url() + `"}}]}}]},`
-	doc := adminDoc(t, u.url(),
+	doc := c.adminDoc(u.url(),
 		`"gateways": {`, `"gateways": {"open": {"port": 3001, "bindAddress": "0.0.0.0"},`,
 		`"routes": [`, `"routes": [`+open)
-	admin := serveAdmin(t, http.StatusOK, doc)
+	admin := c.live.admin.serve(http.StatusOK, doc)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "stdout", r.stdout,
 		verdictLiveConfig+" s1: gateway open: not in the emitted file (live bind address 0.0.0.0, serving port 3001); every route attached to it is served without the emitted guards",
@@ -204,11 +288,11 @@ func TestLiveComparisonReportsAnAddedRoute(t *testing.T) {
 			t.Run(name+" first="+map[bool]string{true: "yes", false: "no"}[first], func(t *testing.T) {
 				var doc string
 				if first {
-					doc = adminDoc(t, u.url(), `"routes": [`, `"routes": [`+tc.route+`,`)
+					doc = c.adminDoc(u.url(), `"routes": [`, `"routes": [`+tc.route+`,`)
 				} else {
-					doc = adminDoc(t, u.url(), "\n  ]\n}", ","+tc.route+"\n  ]\n}")
+					doc = c.adminDoc(u.url(), "\n  ]\n}", ","+tc.route+"\n  ]\n}")
 				}
-				admin := serveAdmin(t, http.StatusOK, doc)
+				admin := c.live.admin.serve(http.StatusOK, doc)
 				r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 				for _, want := range tc.want {
 					wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: "+want)
@@ -224,7 +308,7 @@ func TestLiveComparisonReportsAnAddedRoute(t *testing.T) {
 // when the live document is otherwise the emitted one.
 func TestLiveComparisonChecksTheURLPath(t *testing.T) {
 	c, u, gw, cfg := liveFixture(t)
-	admin := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
+	admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", strings.TrimSuffix(gw, routePath)+"/s1/other", "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: the path of --url (/s1/other) is not the match of the emitted route (/s1/mcp); the listing above tested another route")
 	wantContains(t, "stderr", r.stderr, "differs from the emitted file in 1 place(s)")
@@ -262,7 +346,7 @@ func TestVerifyGatewayLiveComparisonFailsClosed(t *testing.T) {
 	}
 	// An empty document has neither the gateway nor the route:
 	// LIVE-CONFIG-MISMATCH, not OK.
-	r := verify(serveAdmin(t, http.StatusOK, "{}").hostPort())
+	r := verify(c.live.admin.serve(http.StatusOK, "{}").hostPort())
 	if r.code != exitFailure {
 		t.Errorf("empty document: exit %d", r.code)
 	}
@@ -270,7 +354,7 @@ func TestVerifyGatewayLiveComparisonFailsClosed(t *testing.T) {
 
 	// A file that is not what emit wrote: CONFIG-EDITED, and the admin API
 	// is never asked.
-	untouched := serveAdmin(t, http.StatusOK, adminDoc(t, u.url()))
+	untouched := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	edited := strings.Replace(readFile(t, cfg), "failClosed", "failOpen", 1)
 	if err := os.WriteFile(cfg, []byte(edited), 0o600); err != nil {
 		t.Fatal(err)
@@ -334,13 +418,17 @@ func TestGatewayAcceptsTheShadowRouteDocument(t *testing.T) {
 // printed and named in the error next to the listing failure, and the run
 // still exits 1 (sixth round).
 func TestVerifyGatewayComparesTheLiveConfigurationWhenTheListingFails(t *testing.T) {
-	c, u, _, cfg := liveFixture(t)
+	c, u := fixture(t)
+	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "route broken", http.StatusInternalServerError)
 	}))
 	defer broken.Close()
-	doc := adminDoc(t, u.url(), `"policies": {`, `"policies": {"requestMirror": {"backend": {"host": "127.0.0.1:4444"}, "percentage": 100},`)
-	admin := serveAdmin(t, http.StatusOK, doc)
+	c.live = newLiveLab(t, broken.URL)
+	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
+	c.liveEmit(cfg)
+	doc := c.adminDoc(u.url(), `"policies": {`, `"policies": {"requestMirror": {"backend": {"host": "127.0.0.1:4444"}, "percentage": 100},`)
+	admin := c.live.admin.serve(http.StatusOK, doc)
 	r := c.sub(t).fail(exitFailure, "verify-gateway", "--server", "s1", "--url", broken.URL+routePath, "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
 	wantContains(t, "stdout", r.stdout, verdictLiveConfig+" s1: policy requestMirror: not in the emitted file")
 	wantContains(t, "stderr", r.stderr, "listing through the gateway failed", "differs from the emitted file in 1 place(s)")

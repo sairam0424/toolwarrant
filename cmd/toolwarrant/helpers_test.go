@@ -51,6 +51,10 @@ type cli struct {
 	t   *testing.T
 	db  string
 	env map[string]string
+	// live is the stand-in gateway port and the admin stand-in the live
+	// comparison holds --url and --admin against (D17 i); nil until
+	// newLiveLab, after which liveEmit and adminDoc use it.
+	live *liveLab
 }
 
 // result is what one invocation produced.
@@ -78,7 +82,7 @@ func newCLI(t *testing.T) *cli {
 }
 
 // sub returns a copy bound to a subtest, so failures are reported there.
-func (c *cli) sub(t *testing.T) *cli { return &cli{t: t, db: c.db, env: c.env} }
+func (c *cli) sub(t *testing.T) *cli { return &cli{t: t, db: c.db, env: c.env, live: c.live} }
 
 func (c *cli) getenv(k string) string { return c.env[k] }
 

@@ -90,22 +90,23 @@ func (e *verifyFailure) Error() string {
 	case probeUnhooked:
 		parts = append(parts, "the gateway forwards a tools/call without an id to the upstream unhooked ("+verdictUnhooked+", known limit L17); every such call bypasses the approval")
 	case probeInconclusive:
-		parts = append(parts, "the gateway answered a tools/call without an id with a 2xx status and a body, or with HTTP 400 and a JSON body ("+verdictInconclusive+"); the upstream may have written that answer, so treat the gateway as unhooked until it answers HTTP 400 with an empty or non-JSON body")
+		parts = append(parts, "the answer to a tools/call without an id was a 2xx status with a body, or HTTP 400 and a JSON body ("+verdictInconclusive+"); the upstream may have written that answer, so treat the gateway as unhooked until the answer is a bare HTTP 400, which proves nothing about the hook either: only HTTP 202 proves anything, and it proves the call forwarded")
 	}
 	return strings.Join(parts, "; ")
 }
 
 // bindVerifyFlags registers the flags of verify-gateway. The probe's help text
-// says where the probe goes, because that is why it can be switched off.
+// says where the probe goes, because that is why it can be switched off, and
+// what its pass means, because it proves nothing about the hook (D17 h).
 func bindVerifyFlags(fs *flag.FlagSet) *verifyOptions {
 	o := &verifyOptions{}
 	fs.StringVar(&o.server, "server", "", "catalog server the gateway route is for (required)")
-	fs.StringVar(&o.url, "url", "", "MCP endpoint of the gateway route to test (required); with --admin its path must be the emitted route's match")
+	fs.StringVar(&o.url, "url", "", "MCP endpoint of the gateway route to test (required); with --admin its path must be the emitted route's match and its port the emitted gateway's serving port (its host a loopback address too when the emitted bind address is one)")
 	fs.StringVar(&o.bearerEnv, "bearer-env", "", "environment variable holding a bearer token for Authorization (never printed)")
 	fs.StringVar(&o.config, "config", "", "gateway configuration file written by emit; "+verdictConfigEdited+" when it is no longer the file emit wrote, cannot be read, or is not a regular file (a symbolic link, directory, device, socket or named pipe is refused before it is opened, so a planted pipe cannot block the check)")
 	fs.StringVar(&o.expectBodyHash, "expect-body-hash", "", "the body sha256 emit printed for --config, recorded outside the gateway host; "+verdictConfigEdited+" when the file's body hashes to anything else, which catches a replacement that recomputed the header hash (known limit L19); needs --config")
-	fs.StringVar(&o.admin, "admin", "", "HOST:PORT or http(s) URL of the gateway's admin API (emit --admin-addr, default "+emit.DefaultAdminAddr+"); the configuration the gateway is running (GET "+adminConfigPath+") is compared with --config as a whole document: no non-empty top-level section other than config, gateways and routes may be present, the config block must declare the same adminAddr, statsAddr and readinessAddr and no other field, every emitted gateway must be present exactly once with the same bind address and port and no other field, every emitted route exactly once with the same gateway, match path, allow rules, backend targets and processors (host, kind, failureMode, methods, the requestHeaders allowed and disallowed lists, and the metadata compared by a hash of its canonical form and never shown), nothing the file does not carry may exist (no other route, gateway or section; inside a route no field other than name, gateways, matches, policies and backends, no policy other than mcpAuthorization and mcpGuardrails, no match that is not a single exact path, no backend other than the one mcp backend with the emitted target, and no field of a processor, rule or target that emit does not write), no path may be matched by two routes, and the path of --url must be the emitted route's match; any difference is "+verdictLiveConfig+"; needs --config")
-	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), HTTP 400 with an empty or non-JSON body is healthy, and any other 2xx answer with a body or a 400 whose body is JSON (a JSON-RPC answer, single or batched) is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; the probe reaches the upstream exactly when the gateway behaves this way, which is why it can be switched off (agentgateway v1.6.0 answers 202, known limit L17)")
+	fs.StringVar(&o.admin, "admin", "", "HOST:PORT or http(s) URL of the gateway's admin API (emit --admin-addr, default "+emit.DefaultAdminAddr+"); the configuration the gateway is running (GET "+adminConfigPath+") is compared with --config as a whole document: no non-empty top-level section other than config, gateways and routes may be present, the config block must declare the same adminAddr, statsAddr and readinessAddr and no other field, every emitted gateway must be present exactly once with the same bind address and port and no other field, every emitted route exactly once with the same gateway, match path, allow rules, backend targets (name and host) and processors (host, kind, failureMode, methods, the requestHeaders allowed and disallowed lists, and the metadata compared by a hash of its canonical form and never shown), nothing the file does not carry may exist (no other route, gateway or section; inside a route no field other than name, gateways, matches, policies and backends, no policy other than mcpAuthorization and mcpGuardrails, no match that is not a single exact path, no backend other than the one mcp backend with the emitted target, and no field of a processor, rule or target that emit does not write), no path may be matched by two routes, the path of --url must be the emitted route's match, and the ports of --url and --admin must be the emitted gateway's serving port and the emitted adminAddr's port (their hosts loopback addresses too when the emitted ones are), so the listing and this comparison are known to have gone to the gateway the file describes; any difference is "+verdictLiveConfig+"; needs --config")
+	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), which is the one thing the probe proves; HTTP 400 without JSON passes as \"not accepted as a notification (HTTP 400, by the gateway or by the upstream)\", which proves nothing about the hook, because a forwarding gateway relays an upstream's refusal unchanged; a 400 whose body is JSON (a JSON-RPC answer, single or batched, in the body or across the data lines of one event, after a byte-order mark) or was cut at the 1 MiB read cap, and any other 2xx answer with a body, is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; the probe reaches the upstream exactly when the gateway behaves this way, which is why it can be switched off (agentgateway v1.6.0 answers 202, known limit L17)")
 	fs.DurationVar(&o.every, "every", 0, "repeat at this interval (at least 1s) with a fresh MCP session each time, until SIGINT or SIGTERM")
 	fs.BoolVar(&o.keepGoing, "keep-going", false, "with --every, keep checking after a failed check instead of exiting at the first one; without it a check that printed a failing verdict exits 1 at once, even when a later step of that check (the live comparison, the probe) could not run, while a listing failure alone is printed, counted and does not stop the run; the run still exits 1 at the end if any check failed or printed a verdict line, or none completed, and a file --config cannot read, an unknown --server or a catalog error stops it at once")
 	return o
@@ -301,12 +302,15 @@ func (v *verifier) readConfig(res *verdicts) []byte {
 }
 
 // compareLive fetches the configuration the gateway is running and compares
-// the whole of it with the emitted file (D13 e). It runs only against a file
-// that passed the header check: a file that could not be read or that is not
-// what emit wrote gives nothing trustworthy to compare with, and the check
-// already fails as CONFIG-EDITED. A file without a route for the server is an
-// error too, as is an admin API that cannot be reached or read: a canary that
-// cannot see both sides must not report that they match.
+// the whole of it with the emitted file (D13 e), then holds the canary's own
+// --url and --admin against the file (D17 i), so a listing through another
+// listener or a document from another admin API is not called a match. It
+// runs only against a file that passed the header check: a file that could
+// not be read or that is not what emit wrote gives nothing trustworthy to
+// compare with, and the check already fails as CONFIG-EDITED. A file without
+// a route for the server is an error too, as is an admin API that cannot be
+// reached or read: a canary that cannot see both sides must not report that
+// they match.
 func (v *verifier) compareLive(ctx context.Context, emitted []byte, res *verdicts) error {
 	if v.admin == "" {
 		return nil
@@ -330,7 +334,9 @@ func (v *verifier) compareLive(ctx context.Context, emitted []byte, res *verdict
 	if err != nil {
 		return err
 	}
-	res.live = liveCheck{compared: true, diffs: compareDocuments(doc, liveDoc.config(), v.server, v.urlPath)}
+	diffs := compareDocuments(doc, liveDoc.config(), v.server, v.urlPath)
+	diffs = append(diffs, compareCanaryAddresses(doc, v.server, v.url, v.admin)...)
+	res.live = liveCheck{compared: true, diffs: diffs}
 	return nil
 }
 
@@ -339,7 +345,7 @@ func (v *verifier) compareLive(ctx context.Context, emitted []byte, res *verdict
 func (v *verifier) conclude(res verdicts) error {
 	if res.failed() {
 		return &verifyFailure{leaks: len(res.leaks), configEdited: res.configEdited, configReason: res.configReason, configExpected: res.configExpected,
-			liveDiffs: len(res.live.diffs), probe: res.probe, server: v.server, url: v.url}
+			liveDiffs: len(res.live.diffs), probe: res.probe.outcome, server: v.server, url: v.url}
 	}
 	v.a.stdout.printf("%s: %s\n", verdictOK, res.summary())
 	return v.a.stdout.broken()

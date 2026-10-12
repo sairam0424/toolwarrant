@@ -89,11 +89,11 @@ func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
 		"config edited":         {configEdited: true},
 		"body hash differs":     {configEdited: true, configExpected: strings.Repeat("0", 64)},
 		"live config differs":   {live: liveCheck{compared: true, diffs: []string{"x"}}},
-		"unhooked calls":        {probe: probeUnhooked},
-		"inconclusive probe":    {probe: probeInconclusive},
+		"unhooked calls":        {probe: probeReport{outcome: probeUnhooked}},
+		"inconclusive probe":    {probe: probeReport{outcome: probeInconclusive}},
 		"one leak":              {leaks: []leak{{liveTool: liveTool{name: "x"}}}},
 		"unreadable file":       {configEdited: true, configReason: "open: no such file"},
-		"edited and unhooked":   {configEdited: true, probe: probeUnhooked},
+		"edited and unhooked":   {configEdited: true, probe: probeReport{outcome: probeUnhooked}},
 		"leak with missing":     {leaks: []leak{{}}, missing: []string{"m"}},
 		"live diff and missing": {live: liveCheck{compared: true, diffs: []string{"x"}}, missing: []string{"m"}},
 	} {
@@ -103,8 +103,8 @@ func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
 	}
 	for name, v := range map[string]verdicts{
 		"nothing checked": {},
-		"healthy":         {served: 2, live: liveCheck{compared: true}, probe: probeHealthy},
-		"missing only":    {missing: []string{"m"}, probe: probeHealthy},
+		"healthy":         {served: 2, live: liveCheck{compared: true}, probe: probeReport{outcome: probeNotAccepted, status: 400}},
+		"missing only":    {missing: []string{"m"}, probe: probeReport{outcome: probeNotAccepted, status: 400}},
 		"live skipped":    {live: liveCheck{skipped: "why"}},
 	} {
 		if v.failed() {
@@ -116,12 +116,12 @@ func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
 		want []string
 	}{
 		"default":      {verdicts{}, []string{"the gateway serves 0 tool(s), 0 approved and current", "; live configuration not compared (no --admin)", "; unhooked-call probe skipped (--no-probe)"}},
-		"healthy":      {verdicts{served: 2, live: liveCheck{compared: true}, probe: probeHealthy}, []string{"the gateway serves 2 tool(s), 2 approved and current", "; live configuration matches the emitted file", "; id-less tools/call rejected by the gateway"}},
+		"healthy":      {verdicts{served: 2, live: liveCheck{compared: true}, probe: probeReport{outcome: probeNotAccepted, status: 400}}, []string{"the gateway serves 2 tool(s), 2 approved and current", "; live configuration matches the emitted file", "; the id-less tools/call was not accepted as a notification (HTTP 400, by the gateway or by the upstream)"}},
 		"edited":       {verdicts{configEdited: true}, []string{", configuration edited"}},
 		"skipped":      {verdicts{live: liveCheck{skipped: "why"}}, []string{"; live configuration not compared (why)"}},
 		"differs":      {verdicts{live: liveCheck{compared: true, diffs: []string{"x"}}}, []string{"; live configuration differs from the emitted file (" + verdictLiveConfig + ")"}},
-		"unhooked":     {verdicts{probe: probeUnhooked}, []string{"; id-less tools/call forwarded unhooked (" + verdictUnhooked + ")"}},
-		"inconclusive": {verdicts{probe: probeInconclusive}, []string{"; id-less tools/call answered by someone (" + verdictInconclusive + ")"}},
+		"unhooked":     {verdicts{probe: probeReport{outcome: probeUnhooked}}, []string{"; id-less tools/call forwarded unhooked (" + verdictUnhooked + ")"}},
+		"inconclusive": {verdicts{probe: probeReport{outcome: probeInconclusive}}, []string{"; id-less tools/call answered by someone (" + verdictInconclusive + ")"}},
 	}
 	for name, tc := range cases {
 		wantContains(t, name+" summary", tc.v.summary(), tc.want...)

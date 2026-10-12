@@ -15,29 +15,33 @@ import (
 // constants are the ones internal/emit writes with; a change there must
 // change these, which the test against a freshly emitted file catches.
 const (
-	indentConfigKey    = 2
-	indentGatewayName  = 2
-	indentGatewayKey   = 4
-	indentRouteField   = 2
-	indentRouteItem    = 6
-	indentProcessor    = 8
-	indentProcessorKV  = 10
-	sectionConfig      = "config"
-	sectionGateways    = "gateways"
-	sectionRoutes      = "routes"
-	keyPort            = "port"
-	keyBindAddress     = "bindAddress"
-	keyAdminAddr       = "adminAddr"
-	keyStatsAddr       = "statsAddr"
-	keyReadinessAddr   = "readinessAddr"
-	keyKind            = "kind"
-	keyFailureMode     = "failureMode"
-	keyMethods         = "methods:"
-	keyRequestHeaders  = "requestHeaders:"
-	keyMetadata        = "metadata:"
-	keyAllowed         = "allowed:"
-	keyDisallowed      = "disallowed:"
-	routeItemPrefix    = "- name: "
+	indentConfigKey   = 2
+	indentGatewayName = 2
+	indentGatewayKey  = 4
+	indentRouteField  = 2
+	indentRouteItem   = 6
+	indentProcessor   = 8
+	indentProcessorKV = 10
+	sectionConfig     = "config"
+	sectionGateways   = "gateways"
+	sectionRoutes     = "routes"
+	keyPort           = "port"
+	keyBindAddress    = "bindAddress"
+	keyAdminAddr      = "adminAddr"
+	keyStatsAddr      = "statsAddr"
+	keyReadinessAddr  = "readinessAddr"
+	keyKind           = "kind"
+	keyFailureMode    = "failureMode"
+	keyMethods        = "methods:"
+	keyRequestHeaders = "requestHeaders:"
+	keyMetadata       = "metadata:"
+	keyAllowed        = "allowed:"
+	keyDisallowed     = "disallowed:"
+	routeItemPrefix   = "- name: "
+	// targetItemPrefix opens one MCP backend target inside the route's
+	// backends block, at indent 6; the route item of the same text sits at
+	// indent 0, so the indent tells them apart (seventh review canary-3).
+	targetItemPrefix   = "- name: "
 	gatewayRefPrefix   = "gateways: "
 	exactPathPrefix    = "exact: "
 	allowItemPrefix    = "- allow: "
@@ -82,18 +86,22 @@ type processorConfig struct {
 // routeConfig is one route of the gateway configuration reduced to the fields
 // the canary compares between the file emit wrote and the configuration the
 // gateway is running: its name, the gateway it attaches to, the exact paths it
-// matches, the allow rules, the processors and the backend hosts, plus the
-// lines about everything else the live route carries, which the emitted file
-// cannot (D15 i; always empty for the emitted side). Both sides take this
-// shape so that a comparison names the field that differs rather than two
-// documents.
+// matches, the allow rules, the processors and the backend targets (name and
+// host, two slices in target order), plus the lines about everything else the
+// live route carries, which the emitted file cannot (D15 i; always empty for
+// the emitted side). Both sides take this shape so that a comparison names
+// the field that differs rather than two documents. The target name is
+// compared since the seventh review (canary-3, D17 i): the processor denies
+// every hook about another service name, so a renamed target serves nothing
+// while the documents promised the name was compared.
 type routeConfig struct {
-	name, gateway string
-	paths         []string
-	rules         []string
-	processors    []processorConfig
-	backendHosts  []string
-	foreign       []string
+	name, gateway  string
+	paths          []string
+	rules          []string
+	processors     []processorConfig
+	backendTargets []string
+	backendHosts   []string
+	foreign        []string
 }
 
 // configDoc is a whole gateway configuration as the canary compares it: the
@@ -258,8 +266,8 @@ func (p *emittedParser) gatewayLine(indent int, line string) error {
 
 // routeLine reads one line inside the current route: the gateway it attaches
 // to, the exact path, the allow rule, a processor and its fields, or the
-// backend host. The secret, when present, sits under metadata and is read
-// into the hash the comparison keeps, never into a value.
+// backend target's name and host. The secret, when present, sits under
+// metadata and is read into the hash the comparison keeps, never into a value.
 func (p *emittedParser) routeLine(indent int, line string) error {
 	rc := &p.doc.routes[p.route]
 	switch {
@@ -270,6 +278,9 @@ func (p *emittedParser) routeLine(indent int, line string) error {
 		return appendQuoted(&rc.paths, strings.TrimPrefix(line, exactPathPrefix))
 	case indent == indentRouteItem && strings.HasPrefix(line, allowItemPrefix):
 		return appendQuoted(&rc.rules, strings.TrimPrefix(line, allowItemPrefix))
+	case indent == indentRouteItem && strings.HasPrefix(line, targetItemPrefix):
+		p.closeProcessor()
+		return appendQuoted(&rc.backendTargets, strings.TrimPrefix(line, targetItemPrefix))
 	case indent == indentRouteItem && strings.HasPrefix(line, hostItemPrefix):
 		p.closeProcessor()
 		host, err := unquoteScalar(strings.TrimPrefix(line, hostItemPrefix))
