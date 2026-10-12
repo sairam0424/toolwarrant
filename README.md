@@ -517,6 +517,29 @@ until a later version says otherwise.
   seam with the gateway is hardened instead (decision D11 in
   [docs/decisions.md](docs/decisions.md)).
 
+## Compared with
+
+What the repository's own evidence says about the alternatives, and no more.
+
+- The gateway's `mcpAuthorization` allow rule. It matches tool names, and a rug
+  pull keeps the name, so the rule cannot see a changed description, schema or
+  `_meta`. `emit` still writes the rule on every route as a second guard;
+  end-to-end scenario K runs the CEL rule alone and records that it filters
+  list and call by name at runtime, and nothing else.
+- Approval in a registry or catalog. An approval recorded there approves what
+  was crawled, not what the gateway serves now, and an upstream can show the
+  crawler one definition and the gateway another (known limit L4). That is why
+  the processor hashes the live listing on every `tools/list` and judges every
+  `tools/call` against that evidence.
+- Allow lists inside an MCP client. They are per client and by name, keep no
+  shared audit log of who allowed what, and cannot see server-side drift.
+- A proxy of toolwarrant's own. Rejected in decision D11: it would reimplement
+  the gateway's transport, session and authentication work and move the bug
+  class found at the seam into code nobody has reviewed. The architecture
+  therefore inherits the gateway's behaviours: re-serialised definitions (L2),
+  per-session processor binding (L3), an id-less `tools/call` forwarded without
+  the hook (L17) and the unauthenticated admin API (L18).
+
 ## Known limits
 
 - L1. The call-time gap is bounded by the crawl cadence and by the gateway's
