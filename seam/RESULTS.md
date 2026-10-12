@@ -757,3 +757,102 @@ it names. What the round changed in the statements of this file:
   L18; threat-model rows 4, 7, 10, 11, 15, 18, 20, 25 and 26 and limits L1,
   L17 and L18; the operations guide's processor, canary, pause and re-emit
   sections; SECURITY.md's scope and checklist; CLAUDE.md and ci.yml).
+
+### Corrections after the seventh review (2026-10-12)
+
+The seventh hostile review was scoped to two areas, the catalog chain and the
+canary, and ran against eda2077, the tree the week-2 decision above describes;
+its fixes are the seventh round, recorded as decision D17 in docs/decisions.md.
+Every statement above was true of the tree it names. What the round changed in
+the statements of this file:
+
+- "The remaining limit is stated once: a chain rewritten completely before a
+  Store opens is caught only by the head the operator recorded" (the note of
+  05:25 IST) and "a chain rewritten completely before a Store opens is caught
+  only by the recorded head (the pin-bootstrap limit)" (the first bullet of
+  the fifth-review corrections). Is: the pin protects a Store only while it is
+  open, so it protects a processor while it runs and never the CLI, whose
+  Stores open and close with each command; while no Store holds a pin any
+  rewrite from the forged entry to the head verifies clean on the next open,
+  and the entries before the forged one need not change (the review rewrote
+  the entries about one tool from its first version entry to the head with the
+  Store closed, left 6 of 13 entries byte for byte unchanged, and fresh
+  read-only and read-write Stores served the result with VerifyAudit and
+  Integrity clean). The documents now state the limit in those words and tell
+  operators to record the head after every verify and compare it before every
+  decision made after processors were stopped (D17 k).
+- "the serving path and the decision path trust an entry only when the hash
+  computed from its fields equals the one that walk recorded" (same bullet).
+  Is, for the decision path: the entries were trusted that way, but the status
+  and ever-approved columns of tool_versions were still trusted through the
+  approvals table, any approve or rollback row at any id counting, so one
+  UPDATE and one approvals row at id -2 let the sole proposer of a digest roll
+  back to her own bytes with the chain untouched, and a rejected version
+  flipped to pending was approvable. Since D17 a every version's status and
+  ever-approved flag used by a decision and by Versions is reconstructed from
+  the verified version.* entries, a column that disagrees is ErrCorrupt, and
+  Rollback accepts a target only when a verified version.approved or
+  version.rolled_back entry names its digest; an approvals or history row with
+  an id below 1 is corrupt, refused by every checked read and write of a
+  Store and by two new AFTER INSERT guards, approvals_positive_id and
+  tool_versions_positive_id, and reported by Integrity (D17 b and g; a ghost
+  row at id -1, the value SQLite gives NEW.id for an insert without an id,
+  had made every later approve and reject fail with a guard message naming
+  the wrong cause, which is also why the new guards run after the insert
+  rather than as a clause on the no-replace guards).
+- "Processor addresses live in the catalog ... since D15 j the addresses are
+  recorded only after the file was renamed into place" (fifth bullet of the
+  fifth-review corrections) and, above it, "a file an attacker wrote or
+  re-sealed lends nothing to the next emit". Is: the servers row itself was
+  read by Server and Servers with no file check and no chain evidence, so one
+  UPDATE of processor_addr was returned as fact by every Store and the next
+  emit wrote the forged address into the gateway configuration, which the
+  pinned binary validated, with no change line and no audit entry. Since D17
+  c Server and Servers run checkFile like every other view and anchor the
+  processor address to the newest verified server.processor_set entry and the
+  URL hash and allow-private flag to the verified server.added entry, else
+  ErrCorrupt; emit refuses to emit on ErrCorrupt and prints a change line
+  whenever the address it writes differs from that entry. emit also refuses an
+  --out that is the catalog database, its -wal or -shm sibling or the
+  --gateway-binary path, and an existing regular file whose header lines are
+  not its own (D17 j; emit --out naming the database had replaced the catalog
+  with the YAML and exited 0).
+- "a 400 is healthy only when its body is empty or is not JSON; a body that
+  parses as JSON ... is PROBE-INCONCLUSIVE (D15 k)" (sixth bullet). Is: the
+  empty or plain-text 400 is the shape a go-sdk upstream writes, and behind a
+  forwarding gateway the probe reached the upstream and the canary called its
+  refusal the gateway's with exit 0. Since D17 h the probe attributes nothing:
+  202 stays UNHOOKED-CALLS, a 400 with an empty or non-JSON body read to the
+  end is reported as not accepted as a notification, by the gateway or by the
+  upstream, with exit 0, a 400 whose body is JSON, an SSE event whose joined
+  data lines are JSON, a body with a byte-order mark before JSON and a body
+  cut at the probe's read cap are PROBE-INCONCLUSIVE like a 2xx with a body,
+  and every other status stays a check-failed line. The probe proves the
+  fail-open shape of v1.6.0 and cannot prove the hook; the documents say so.
+- "a backend that is not the one mcp backend with the emitted target"
+  (fourth bullet). Is: the target host only; a target renamed through the
+  admin API compared as a match while the processor denied every hook about
+  the renamed backend. Since D17 i the name is compared on both sides, and so
+  are the ports of --url and --admin against the emitted gateway port and
+  adminAddr port (the hosts too when the emitted bind is loopback), each
+  difference one LIVE-CONFIG-MISMATCH line; before, only the path of --url
+  was held against the file.
+- Smaller corrections of the round: every chain walk, Integrity and the
+  genesis page start below the smallest possible seq, so a row at seq 0 or
+  below is a chain break and Integrity compares the row count with the entries
+  it walked (D17 d; such a row had been invisible to audit verify, audit list
+  and Integrity while every decision on its tool was ErrCorrupt); Approved
+  takes the approver and the time from the verified entry (D17 e; the git
+  export had carried a rewritten row's name); a reader whose read snapshot
+  predates a commit another handle of the same Store verified is no longer
+  told the log was truncated (D17 f); the catalog schema is v6 because the
+  no-replace guards changed.
+- Decisions added since: D16 (the release design) and D17, in
+  docs/decisions.md, with the pin limit stated as the code has it (README
+  "Trust model", "The audit log" and L19; SECURITY.md's scope and checklist;
+  threat-model's actors, row 21 and L19; the operations guide's processor,
+  audit and recovery sections; CLAUDE.md) and the document corrections of the
+  round (README L17, L18 and L19 and the rollback and re-emit bullets;
+  threat-model rows 7, 10, 18, 20, 21, 25 and 26 and limits L17, L18 and L19;
+  the operations guide's canary, re-emit and exit-code sections; SECURITY.md's
+  scope, checklist and dependency policy).

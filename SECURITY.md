@@ -61,11 +61,20 @@ In scope:
   non-empty top-level section, `config` field, listener address, gateway or
   route (an added route or `binds` listener, a route moved to another path, a
   processor removed, its `requestHeaders` filter or metadata changed, a route
-  key, policy, match or backend the emitted file cannot carry) that it does
-  not report with `--admin`, a body hash that differs from the recorded one
-  that it does not report with `--expect-body-hash`, an id-less `tools/call` the probe does not
-  detect or calls healthy without the gateway's own refusal, and a `--config`
-  path that makes the canary block or exit 0 without a verdict.
+  key, policy, match or backend the emitted file cannot carry, a renamed
+  backend target, a `--url` or `--admin` port that is not the emitted one)
+  that it does not report with `--admin`, a body hash that differs from the
+  recorded one that it does not report with `--expect-body-hash`, an id-less
+  `tools/call` answered 202 that the probe does not report as UNHOOKED-CALLS,
+  a probe answer the probe attributes to the gateway (since the seventh round
+  it attributes none: it proves the fail-open shape of v1.6.0 and cannot
+  prove the hook, decision D17), and a `--config` path that makes the canary
+  block or exit 0 without a verdict.
+- `emit`: an `--out` that names the catalog database, its `-wal` or `-shm`
+  sibling, the gateway binary or a regular file whose header lines are not
+  emit's that it does not refuse, and a processor address written into the
+  gateway configuration that the newest verified `server.processor_set`
+  audit entry does not carry without a change line (decision D17).
 - The scripts under `scripts/`, the CI workflow, and this documentation where it
   describes a control that does not hold.
 
@@ -75,12 +84,19 @@ definition served through a correctly configured gateway and processor; a
 a hook about another backend judged with this server's approvals; an approval by
 the system actor or by a proposer of the version (a rollback by a proposer is
 permitted by design: the target was approved by someone before, see decision D4
-and `internal/lifecycle/decide.go`); the crawler reaching an address or scheme
+and `internal/lifecycle/decide.go`, and since the seventh round a verified
+`version.approved` or `version.rolled_back` audit entry about the digest must
+show that, decision D17); the crawler reaching an address or scheme
 the egress policy forbids; an edit to the database that the catalog's integrity
 checks do not report (the digest re-check, the newest-decision rule and the
 newest audit entry for every approved version, the rule that the serving and
 decision paths trust an audit entry only when it is part of the chain the
-`Store` verified at open and extended on every reload, the chain pin, the
+`Store` verified at open and extended on every reload, the reconstruction of
+every version's status and ever-approved flag from the verified entries on
+every decision, the anchoring of every server's processor address, URL hash
+and allow-private flag and of every exported approver's name to the verified
+entries, the refusal of audit rows at seq 0 or below and of approvals and
+history rows with id below 1, the chain pin, the
 catalog identity and file identity compared on every read, the guard, table
 and index definitions and the absence of foreign triggers, views, unique
 indexes and unaccounted automatic indexes, all applied at open and on every
@@ -90,9 +106,10 @@ describes and every subject the log describes against the rows, which
 `audit verify` runs after the chain check and when the chain is broken), with
 one stated boundary: an entry appended to the audit log by whoever can write
 the 0600 file, correctly sealed, is not detectable inside the file, and
-neither is a chain rewritten completely, head included, before any `Store`
-opens it; both are detected by the recorded head, the git export and backups
-(decisions D14 and D15, known limit L19); a processor that keeps serving
+neither is a rewrite from any entry to the head made while no `Store` holds a
+pin (the CLI between commands, the processors while stopped); both are
+detected by the recorded head, the git export and backups
+(decisions D14, D15 and D17, known limit L19); a processor that keeps serving
 after the catalog file at its path was replaced; upstream text reaching a terminal, a
 log line or a file name
 unescaped; a bearer token, shared secret or credential-bearing URL printed,
@@ -134,7 +151,7 @@ test or seam result that proves it, is in [docs/threat-model.md](docs/threat-mod
 Its second table lists the residual risks and what an operator can do about
 each. The spike findings F1 to F5 and the design decisions are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md);
-the design decisions run to D15.
+the design decisions run to D17.
 
 ## Operator hardening checklist
 
@@ -185,8 +202,9 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   `gateways`, `matches`, `policies` and `backends`, any policy other than
   `mcpAuthorization` and `mcpGuardrails`, a match that is not a single exact
   path and a backend that is not the one `mcp` backend with the emitted
-  target, not only a change inside the named route (decisions D13, D14 and
-  D15); or turn
+  target host and target name, not only a change inside the named route, and
+  a `--url` or `--admin` port that is not the emitted gateway or admin port
+  (decisions D13, D14, D15 and D17); or turn
   the admin API off (`emit --disable-admin`, the gateway's own
   `adminAddr: off`) and accept that the live comparison then has nothing to
   query. Rotate the secret whenever another user could have reached
@@ -231,22 +249,32 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   PROBE-INCONCLUSIVE) and every `check failed` line as an incident. On
   agentgateway v1.6.0 the unhooked-call probe reports UNHOOKED-CALLS on every
   check (known limit L17): run it once, record the limit, and pass `--no-probe`
-  until the pin moves to a gateway that refuses the shape, because a canary that
-  fails on every run trains its readers to ignore it; re-run the probe on every
-  move of the pin. Exit 0 is OK or MISSING only; MISMATCH and UNVERIFIED are
-  sub-labels of a LEAK line, never a verdict that passes (decisions D12 and
-  D13).
+  until the pin moves to a gateway that does not answer the probe with 202,
+  because a canary that fails on every run trains its readers to ignore it;
+  re-run the probe on every move of the pin. The probe proves that fail-open
+  shape and nothing else: a bare 400 is reported as not accepted as a
+  notification, by the gateway or by the upstream, never as the gateway's
+  refusal, because a forwarding gateway relays whatever the upstream wrote
+  (decision D17). Exit 0 is OK or MISSING only; MISMATCH and
+  UNVERIFIED are sub-labels of a LEAK line, never a verdict that passes
+  (decisions D12 and D13).
 - Record the audit head outside the database after every `audit verify`, and
   verify with `audit verify --expect-head HASH`. The chain proves that nothing
   inside it was altered; only a head recorded elsewhere proves that the whole
   log was not replaced or extended by someone who can write the file, since a
   correctly sealed entry that approves a definition can be appended by anyone
   with write access and nothing inside the file can refute it (decision D14).
-  Inside the file an audit entry is trusted only when it is part of the chain
-  the `Store` verified when it opened, so a forger must rewrite every entry
-  from the forged one to the head, which changes the head a running `Store`
-  pinned and the head you recorded; a chain rewritten completely before any
-  `Store` opens it is caught only by the recorded head (decision D15).
+  Inside the file an audit entry, and since the seventh round every column a
+  decision or a server view acts on, is trusted only through the chain the
+  `Store` verified when it opened, so a forger must rewrite every entry from
+  the forged one to the head. A running `Store` catches that through the head
+  it pinned; a rewrite made while no `Store` holds a pin, which is the CLI's
+  state between commands and the processors' state while they are stopped,
+  verifies clean on the next open and is caught by the recorded head alone
+  (decision D15 as corrected by D17). The processor's pin protects only while
+  a processor runs and the CLI is never protected by a pin, so record the
+  head after every verify and compare it with `--expect-head` before every
+  decision you make after the processors were stopped.
   Keep the git export of approved definitions (`export --dir`) and backups as
   the other two anchors. `audit log ok` in forensic mode means the chain is
   consistent, not that the file is intact; every other command, `list` and
@@ -269,10 +297,20 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   gateway would refuse fails `emit` instead of freezing every server's
   configuration on the next reload. Re-emitting keeps every server's processor
   address, so a re-emit after adding a server does not darken the others
-  (decision D13); the addresses live in the catalog (`server list` shows
-  them) and `emit` never reads them from the file at `--out`, so a re-emit
-  after a CONFIG-EDITED cannot adopt an address the editor chose, and `--out`
-  and the canary's `--config` must be regular files (decision D14).
+  (decision D13); the addresses live in the catalog's servers row (`server
+  list` shows them), which since the seventh round must agree with the newest
+  verified `server.processor_set` audit entry about the server, else `emit`
+  refuses to emit, and `emit` never reads them from the file at `--out`, so a
+  re-emit after a CONFIG-EDITED cannot adopt an address the editor chose, and
+  prints a change line whenever the address it writes differs from that entry
+  (decisions D14 and D17; before the seventh round the row was read with no
+  check, so one `UPDATE` of the column made the remedy write a forger's
+  address in silence). `--out` and the canary's `--config` must be regular
+  files (decision D14), and `emit` refuses an `--out` that is the catalog
+  database, its `-wal` or `-shm` sibling or the `--gateway-binary` path, and
+  refuses to replace an existing regular file whose header lines are not its
+  own, as usage errors naming the fix (decision D17; a file the gateway
+  rewrote keeps the header lines and stays replaceable).
 - Run crawls under the system actor (no `--as`, no `TOOLWARRANT_ACTOR`) in
   automation, and decide as yourself. A person whose crawl proposed a digest
   cannot approve it.
@@ -308,11 +346,15 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   emitter's binary validation tests and the end-to-end test against the new
   release before the pin changes; scenario L re-derives which keys the gateway
   strips, and the canary probe re-checks whether id-less calls are still
-  forwarded and whether the shapes the probe calls healthy are still the
-  gateway's own refusals (a 2xx answer with a body that is not a plain 202,
-  and a 400 whose body parses as JSON, object or array, are PROBE-INCONCLUSIVE;
-  only an empty or non-JSON 400 body is the gateway's own refusal; decisions
-  D13, D14 and D15).
+  forwarded (HTTP 202, the fail-open shape of v1.6.0). The probe attributes
+  no other answer to the gateway, so a move of the pin cannot make it claim a
+  refusal it did not see: a 400 with an empty or non-JSON body is reported as
+  not accepted as a notification, by the gateway or by the upstream; a 2xx
+  answer with a body that is not a plain 202, a 400 whose body is JSON, an
+  SSE event whose joined `data:` lines are JSON, a body with a byte-order
+  mark before JSON and a body cut at the probe's 1 MiB read cap are
+  PROBE-INCONCLUSIVE; and a 2xx without a body or any other status is a
+  `check failed` line (decisions D13, D14, D15 and D17).
 
 ## Release integrity plan
 

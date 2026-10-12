@@ -18,7 +18,14 @@ decision D15) changed what a store verifies when it opens and what it trusts
 afterwards, what the canary compares inside every route and in `config`, when
 `emit` records processor addresses and which processor hosts it refuses, how
 the processor marks a page the transport refuses and judges a listing it sees
-during a pause, and the probe's healthy shape; the sections below describe the
+during a pause, and the probe's healthy shape. The seventh round (the fixes
+after the seventh review, 2026-10-12, scoped to the catalog chain and the
+canary, decision D17) changed what a decision and the server views trust (the
+chain, never a column on its own), what `audit verify` and `audit list` show
+about rows below the first, what the probe claims (nothing it cannot
+attribute), what the live comparison compares (the backend target name and the
+canary's own ports too), what `emit` refuses to write over, and the words in
+which the limit of the chain pin is stated; the sections below describe the
 behaviour since then.
 
 Global flags come before the command: `--db PATH` (or `TOOLWARRANT_DB`, default
@@ -91,7 +98,18 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   entry was re-sealed against its predecessor only and the pin covered the
   head and the suffix after it only, so an approval entry rewritten in place
   below the head was served); a catalog it cannot read or trust denies every
-  hook (`source errors`).
+  hook (`source errors`). A store is safe for concurrent use: a reader whose
+  read snapshot predates a commit that another handle of the same store
+  already verified is recognised by the head it can see, whose hash the
+  store's own walk recorded, and is not refused as a truncated log (D17; the
+  seventh review showed a reader in exactly that position getting `audit
+  entry N, which this store verified, is gone; the log was truncated or the
+  file replaced under a running reader` for an untouched file; no shipped
+  runtime reads and writes one store at once today, so no processor was
+  affected). The pin protects a store only while it is open: the processor's
+  pin protects while the processor runs, and a CLI command's store opens and
+  closes with the command, so a rewrite of the audit log made while every
+  processor is stopped is caught by the head you recorded alone.
 - The file must stay the same file. `init` writes a random catalog identity
   into the database and the processor's store records it together with the
   file's device and inode when it opens; every read re-checks both (D15;
@@ -213,9 +231,16 @@ The example passes `--no-probe` because agentgateway v1.6.0 forwards the id-less
 probe on every check (limit L17), so with the probe on every check of this
 gateway prints UNHOOKED-CALLS and exits 1. Run the canary once without
 `--no-probe` to see that verdict for yourself, record the limit in your runbook,
-and drop `--no-probe` when the gateway pin moves to a release that answers the
-probe with 400; a canary that fails on every run trains its readers to ignore
-it. On a gateway that refuses the shape, leave the probe on.
+and drop `--no-probe` when the gateway pin moves to a release that does not
+answer the probe with 202; a canary that fails on every run trains its readers
+to ignore it. The probe proves the fail-open shape of v1.6.0 and nothing else:
+it cannot prove that the hook ran, because an answer other than 202 may have
+been written by the gateway or by the upstream behind a forwarding gateway,
+and since the seventh round it says so instead of attributing the answer (D17;
+before, a 400 with an empty or non-JSON body was reported as `rejected by the
+gateway`, which a go-sdk upstream behind a forwarding gateway writes itself).
+On a gateway that does not answer 202, leave the probe on and read its line as
+what it is: the one shape known to bypass the hook did not occur.
 
 Verdicts, one line per tool or per check:
 
@@ -249,11 +274,19 @@ Verdicts, one line per tool or per check:
   other than the value you passed with `--expect-body-hash`, which is how an
   edit that recomputed the header line is caught (limit L19; D13). Exit code
   1. Regenerate the file with `emit` and record the new body hash; the
-  processor addresses `emit` writes come from the catalog, never from the file
-  it replaces, so a re-emit after a CONFIG-EDITED cannot adopt an address the
-  editor chose (D14; check `server list` if you want to see them). A file
+  processor addresses `emit` writes come from the catalog's servers row, never
+  from the file it replaces, so a re-emit after a CONFIG-EDITED cannot adopt
+  an address the editor chose (D14; check `server list` if you want to see
+  them), and since the seventh round that row must agree with the newest
+  verified `server.processor_set` audit entry about the server, else `emit`
+  refuses with `ErrCorrupt`, and `emit` prints a change line whenever the
+  address it writes differs from that entry (D17; before, the row was read
+  with no check, so one `UPDATE` of the column made this remedy write a
+  forger's address into the configuration in silence). A file
   written by an older emitter whose header text changed also fails and must be
-  re-emitted (scenario F).
+  re-emitted (scenario F); a file the gateway rewrote through the admin API
+  keeps the header lines and is replaced by the re-emit, while a regular file
+  at `--out` whose header lines are not emit's is refused (D17).
 - `LIVE-CONFIG-MISMATCH`: with `--admin HOST:PORT` (or an http or https URL;
   the address given to `emit --admin-addr`, default `127.0.0.1:15000`), the
   configuration the gateway is running (`GET /api/config`) is not the file
@@ -274,7 +307,13 @@ Verdicts, one line per tool or per check:
   with the same processors, each compared by host, kind, failure mode,
   methods, `requestHeaders` filter (the allowed and the disallowed list) and a
   hash of its canonical metadata, which holds the shared secret and is never
-  printed; every live route is decoded generically, and a route key other than
+  printed; the MCP backend target's name is compared as well as its host
+  (D17; the name is the server name, so the line may show it: before the
+  seventh round only the host was read on either side, so a target renamed
+  through the admin API, which the pinned binary accepts, compared as a match
+  while the processor denied every hook about the renamed backend as `wrong
+  backend` and the operator saw MISSING lines); every live route is decoded
+  generically, and a route key other than
   `name`, `gateways`, `matches`, `policies` and `backends`, a policy other
   than `mcpAuthorization` and `mcpGuardrails`, a match that is not a single
   exact path and a backend that is not the one `mcp` backend with the emitted
@@ -307,13 +346,29 @@ Verdicts, one line per tool or per check:
   listing included, and the comparison still named the policy because since
   the sixth round it runs even when the listing fails). Nothing the file does not
   carry may exist (an added route, an added gateway); no path may appear
-  twice; and the path of `--url` must be the
+  twice; the path of `--url` must be the
   match of the emitted route for `--server` (D13 and D14; before the fourth
   round only the route named after the server was compared, so a shadow route
   that owned the path compared healthy, and before the fifth round only the
   `gateways` and `routes` sections were decoded and neither the filter nor
   the metadata was compared, so a `binds` or `mcp` section and a stripped
-  filter compared healthy). The line for an extra section reads `section
+  filter compared healthy); and the port of `--url` must be the emitted
+  gateway's port and the port of `--admin` the port of the emitted admin
+  address, the hosts too when the emitted bind is loopback, so that the
+  listing and the live document the canary compares come from the gateway
+  the file describes (D17; before the seventh round only the path of `--url`
+  was held against the file, so a canary pointed at another listener, a
+  second gateway instance on the same host or a staging port, reported this
+  file as matching while it listed through another). The lines of the
+  seventh round read `backend target name: emitted NAME, live NAME`, `the
+  port of --url (P) is not the serving port of the emitted gateway NAME (Q);
+  the listing above went through another listener` and `the port of --admin
+  (P) is not the port of the emitted adminAddr (ADDR); the live configuration
+  above came from another admin API`, with a `host of --url` and a `host of
+  --admin` twin when the emitted address is loopback and the canary's is
+  not (cmd `TestLiveComparisonComparesTheBackendTargetName`,
+  `TestLiveComparisonHoldsTheURLAndAdminPortsAgainstTheEmittedFile`,
+  `TestCompareCanaryAddresses`). The line for an extra section reads `section
   binds: not in the emitted file; it may bind ports and routes the comparison
   cannot see`; the line for a stripped filter reads `processor requestHeaders
   allowed: emitted :method, live (none)` with its `disallowed` twin. Scenario
@@ -339,44 +394,58 @@ Verdicts, one line per tool or per check:
   were removed through the admin API, against a byte-identical copy of the
   emitted file; the gateway had rewritten the watched file with the header
   lines kept, so the same check against that file printed CONFIG-EDITED.
-- `UNHOOKED-CALLS`: the gateway forwarded the probe, a `tools/call` without an
+- `UNHOOKED-CALLS`: the gateway accepted the probe, a `tools/call` without an
   id for the tool name `toolwarrant.probe.<random>`, which no catalog can hold,
-  instead of rejecting it with a 400 (limit L17). Exit code 1. The probe
+  as a notification (HTTP 202), which is the fail-open shape of agentgateway
+  v1.6.0: it forwards such a call without the hook and without the allow rule
+  (limit L17). Exit code 1. The probe
   reaches the upstream exactly when the gateway is unhooked, which is why
   `--no-probe` exists. Scenario O printed this verdict against the pinned
   binary, the hostile upstream's request log showed the probe arriving, and
   with `--no-probe` the OK line said `unhooked-call probe skipped
   (--no-probe)`.
 - `PROBE-INCONCLUSIVE`: the gateway answered the probe with a 2xx status other
-  than 202 and a body, or with a 400 whose body parses as JSON (an object or an
-  array: a JSON-RPC error, or a batch of them). Such a body may be the
-  gateway's own refusal or an upstream's reply relayed by a forwarding
-  gateway, status included, and the canary cannot tell which, so it reports
-  that it proved nothing and fails the check (D13, D14 and D15; before the
-  sixth round only a single JSON-RPC error object was recognised, so a batch
-  of errors on a 400 was called healthy). Exit code 1. The one-line account
-  then reads `id-less tools/call answered by someone (PROBE-INCONCLUSIVE)`. A
-  400 is healthy only when its body is empty or is not JSON. Not reachable on
-  agentgateway v1.6.0,
+  than 202 and a body, or with a 400 whose body is JSON (an object, an array
+  or a scalar), an SSE event whose joined `data:` lines are JSON, a body with
+  a UTF-8 byte-order mark before JSON, or a body cut off at the probe's 1 MiB
+  cap. Such an answer is a JSON-RPC answer somebody wrote, or an answer the
+  probe did not read to the end, and the canary cannot tell whether the
+  gateway or the upstream wrote it, so it reports that it proved nothing and
+  fails the check (D13, D14, D15 and D17; before the sixth round only a
+  single JSON-RPC error object was recognised, so a batch of errors on a 400
+  was called healthy, and before the seventh round the three shapes after the
+  first passed as non-JSON). Exit code 1. The one-line account
+  then reads `id-less tools/call answered by someone (PROBE-INCONCLUSIVE)`.
+  Not reachable on agentgateway v1.6.0,
   which answers 202 itself; after a move of the pin it means the probe's
-  healthy shapes must be re-derived against that release (limit L7). Any other
-  answer (a non-2xx status other than 400, or a 2xx without a body) is a
-  `check failed` line, not a verdict; the line names the status and says
-  whether the answer carried a body (`the gateway answered http status N with
-  a body of M bytes`; D14; before the fifth round it said "without a body"
-  whatever the body was; cmd
+  shapes must be re-derived against that release (limit L7). A 400 whose body
+  is empty or is not JSON, read to the end, is not a verdict and not a
+  failure: the probe cannot tell the gateway's own refusal from an upstream's
+  refusal relayed by a forwarding gateway, so since the seventh round it
+  reports what it saw without attributing it, `the id-less tools/call was not
+  accepted as a notification (HTTP 400, by the gateway or by the upstream)`,
+  and the check exits 0 on that account (D17; before, such a 400 was
+  `rejected by the gateway`, which the seventh review produced from a go-sdk
+  upstream behind a forwarding stand-in that had received the probe). A 2xx
+  without a body and every other status is a `check failed` line, not a
+  verdict; the line names the status and says whether the answer carried a
+  body (`the gateway answered http status N with a body of M bytes`; D14;
+  before the fifth round it said "without a body" whatever the body was; cmd
   `TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive`,
   `TestProbeReportsA400WithABatchOfJSONRPCErrorsAsInconclusive`,
-  `TestProbeErrorSaysWhetherTheAnswerHadABody`).
+  `TestProbeErrorSaysWhetherTheAnswerHadABody`,
+  `TestProbeDoesNotAttributeARelayedPlainTextRefusalToTheGateway`,
+  `TestProbeReadsTheJSONShapesAnUpstreamCanRelayOnA400`).
 - `OK: the gateway serves N tool(s), N approved and current; live configuration
   matches the emitted file; unhooked-call probe skipped (--no-probe)` is the
   healthy line as printed with the flags of the example above; the first clause
   gains counts such as `, 1 approved but not listed (MISSING)` when there are
   any, the second reads `live configuration not compared (no --admin)` without
-  `--admin`, and the third reads `id-less tools/call rejected by the gateway`
-  when the probe ran and the gateway answered 400 with an empty or non-JSON
-  body. Exit code 0 is OK or
-  MISSING only.
+  `--admin`, and the third reads `the id-less tools/call was not accepted as a
+  notification (HTTP 400, by the gateway or by the upstream)` when the probe
+  ran and the gateway answered 400 with an empty or non-JSON body (D17; the
+  clause never says `rejected by the gateway`, because the probe cannot know
+  that). Exit code 0 is OK or MISSING only.
 
 Why a canary and not a one-off check: the gateway binds the processor chain per
 MCP session. A reload that drops the processor leaves existing sessions guarded
@@ -504,17 +573,32 @@ approval row against the decision entries, every version's status against the
 status the log implies and its proposers against its `version.proposed`
 entries, every subject the log describes against the rows that exist (a
 vanished tool row, a tool row the log never discovered, a second discovery of
-one subject, a version whose tool is gone), and the guard objects, every
+one subject, a version whose tool is gone), every server's processor address
+against the newest verified `server.processor_set` entry, every approval's
+approver and time against the verified entry, every approvals and history row
+for an id below 1, the row count of `audit_log` against the entries the walk
+saw, and the guard objects, every
 table's DDL and the foreign objects (an automatic index the schema's tables do
-not account for included) against the schema (D13, D14 and D15). It prints
+not account for included) against the schema (D13, D14, D15 and D17). Since
+the seventh round the walk starts below the smallest possible sequence
+number, so a row at seq 0 or below is reported as a chain break (expected seq
+1) and `audit list` shows it in forensic mode (D17; before, every walk and
+every page started at seq 0, so such a row was invisible to `audit verify`,
+`audit list` and the integrity report while every decision about its tool was
+`ErrCorrupt`). It prints
 `integrity ok: guard
 objects intact, every approval recorded in the log` or one
 `integrity problem:` line per disagreement (`tool X: state is disabled but the
 latest audit entry (seq N) left it as enabled`, `server X: paused is false but
 the latest server entry (seq N) left it as true`, `unexpected trigger X: the
-schema did not create it`, and since the sixth round `audit entry N does not
+schema did not create it`, since the sixth round `audit entry N does not
 re-seal: its hash is not the hash of its fields; the entry was rewritten in
-place`) with exit code 1. The report runs whether or not
+place`, and since the seventh round `audit entry N has a sequence number
+below 1, which the catalog never writes (the chain starts at seq 1); the row
+was inserted by hand and is not part of the chain`, `audit_log holds N rows
+but the walk from the first sequence number read M` and `approvals row N has
+an id below 1, which the catalog never assigns; the row was inserted by hand
+and is not a decision`) with exit code 1. The report runs whether or not
 `--expect-head` matched, and also when the chain itself is broken: a head that
 moved or a broken entry is exactly when you want to know which rows disagree
 with the log and which foreign objects exist, so both findings are printed
@@ -558,7 +642,17 @@ on every read by `TestSnapshot_ComparesTheStoredIdentityOnEveryRead`, and the
 table DDL and automatic indexes by
 `TestOpen_TableRecreatedWithAnExtraConstraintIsCorrupt`,
 `TestSchema_AutomaticIndexesArePinned` and
-`TestDisable_CheckConstraintFromARecreatedTableIsNamed` (D15).
+`TestDisable_CheckConstraintFromARecreatedTableIsNamed` (D15); the seventh
+round's rules by `TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk`,
+`TestGuards_RowsBelowIdOneAreRefusedByThePositiveIdGuards`,
+`TestDecisions_VersionColumnsMustMatchTheVerifiedChain`,
+`TestRollback_TargetForgedWithAGhostApprovalsRowIsCorrupt`,
+`TestServers_ColumnsAreAnchoredToTheVerifiedChain`,
+`TestApproved_ApproverAndTimeComeFromTheVerifiedEntry`,
+`TestSnapshot_ConcurrentReadersAndAWriterNeverSeeAFalseTruncation` and, for
+the pin limit as the code has it,
+`TestOpen_SuffixRewrittenWhileNoStoreHeldAPinIsCaughtByTheRecordedHeadAlone`
+(D17).
 
 What the checks inside the file cannot do: whoever can write the 0600 file can
 append a new, correctly sealed audit entry that approves a definition, and
@@ -569,10 +663,24 @@ reload, and the serving path and the decision path accept an entry only when
 the hash computed from its fields equals the one that walk recorded for its
 sequence number (D15; before, the newest approval entry was re-sealed against
 its predecessor only, so the fifth review rewrote it in place below the head
-and it was served). A forger must therefore rewrite every entry from the
-forged one to the head, which changes the head a running store pinned and the
-head you recorded; a chain rewritten completely before any store opens it is
-caught only by the recorded head (the pin-bootstrap limit). The git export of
+and it was served); since the seventh round the same holds for every column a
+decision or a server view acts on: a version's status and ever-approved flag,
+a rollback target's prior approval, a server's processor address, URL hash and
+allow-private flag and an export's approver are taken from or checked against
+the verified entries, never from a table alone (D17). A forger must therefore
+rewrite every entry from the forged one to the head. A running store catches
+that through the head it pinned. While no store holds a pin, which is the
+CLI's state between commands and the processors' state while they are
+stopped, any such rewrite verifies clean on the next open and is caught by the
+head you recorded alone (the pin limit; D15 as corrected by D17: the sixth
+round's documents said a chain rewritten completely, but the seventh review
+rewrote the entries about one tool from its first version entry to the head
+with the store closed, left the entries before them byte for byte unchanged,
+and fresh stores served the result with `audit verify` and the integrity
+report clean). The processor's pin protects only while a processor runs; the
+CLI is never protected by a pin. So: record the head after every verify, and
+compare it with `audit verify --expect-head` before every decision you make
+after the processors were stopped. The git export of
 approved definitions (`export --dir`) and your backups are the other two
 anchors. Record the head, keep the export, keep backups.
 
@@ -587,7 +695,22 @@ audit chain does not verify when the store opens, an audit entry the serving
 or decision path relies on does not hash to the value the store's verified
 walk recorded for its sequence number (D15), the newest audit entry a running
 store had verified changed or the entries since it do not re-seal (the chain
-pin), a status disagrees with its tool row, a guard trigger, table or index is
+pin), a status disagrees with its tool row, a version's status or ever-approved
+column disagrees with the verified `version.*` entries about it (`version D
+of S/T is in status X (ever_approved B) but the verified audit entries
+(latest seq N) leave it Y (ever_approved B); the status columns were edited`)
+or a rollback target has no verified approval or rollback entry naming its
+digest (D17), a server's processor address, URL or allow-private flag
+disagrees with the verified `server.processor_set` or `server.added` entry
+(D17; `server list`, `emit`, `crawl`, `serve`, `list` and `show` all refuse
+the file; the URL itself is never printed, the report says that its hash
+differs), an approver in the approvals table differs from the verified entry
+(`the approver or time of the newest approvals row of T is not what its
+approval entry (seq N) recorded; the approvals row was rewritten`, D17), an
+audit row sits at seq 0 or below or an approvals or history row at an id
+below 1 (`TABLE holds a row whose COLUMN is below 1, which the catalog never
+assigns; the file was edited outside toolwarrant, run audit verify`, D17),
+a guard trigger, table or index is
 missing or has another definition than the one `init` wrote, a constraint on
 a guarded table failed inside a write (the error names the table and the
 constraint SQLite reported, for example `a write to table audit_log failed a
@@ -614,22 +737,30 @@ Procedure:
 2. Run `audit verify` (forensic mode) to learn whether the audit chain is intact
    and at which entry it breaks, which registry columns disagree with the log
    and which foreign objects exist (the integrity report is printed whether or
-   not the chain verified, D14), and `audit list` to see the last entries.
-   Compare the head with the one you recorded: a chain rewritten completely
-   before any store opened it verifies clean, and only that head catches it
-   (the pin-bootstrap limit, D15). Do not read `list` or `show` as evidence:
-   they refuse the file like every other command.
+   not the chain verified, D14), and `audit list` to see the last entries,
+   rows at seq 0 or below included (D17).
+   Compare the head with the one you recorded: with the processors stopped no
+   store holds a pin, so a rewrite of any suffix of the log, from the forged
+   entry to the head, verifies clean, `audit verify` prints `audit log ok`
+   with the same entry count, the integrity report may be clean, and only the
+   head you recorded catches it (the pin limit, D15 as corrected by D17). Do
+   not read `list` or `show` as evidence: they refuse the file like every
+   other command.
 3. Restore the most recent backup whose `audit verify` head equals a head you
    recorded, re-run the crawls, and review anything the audit log shows between
    the backup and the corruption.
 4. Keep the corrupt file for investigation; it opens only in forensic mode.
 
 `catalog: unsupported schema version` (`ErrSchema`) means the file was not
-written by this build: an older unreleased schema (v2, v3 or v4), a newer
+written by this build: an older unreleased schema (v2, v3, v4 or v5), a newer
 build, or another application's SQLite file ("not a toolwarrant database",
-"the file holds another application's tables"). This build writes schema v5
-(D14: the processor address column, the catalog identity in `meta` and the
-no-delete guards; D13 had moved it to v4 for the audit detail fields). The CLI
+"the file holds another application's tables"). This build writes schema v6
+(D17: the positive-id guards `approvals_positive_id` and
+`tool_versions_positive_id`, which refuse a row with an id below 1, join the
+guard set, and a file without them would otherwise be refused as redefined;
+D14 had moved it to v5 for the processor address column, the catalog identity
+in `meta` and the no-delete guards, and D13 to v4 for the audit detail
+fields). The CLI
 adds "the file was written by another schema version and there is no
 migration: for a database from an unreleased build, delete the file and run
 init again". There is no migration code because nothing has been released. For
@@ -805,7 +936,22 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   had none and `processor address of server NAME changed from OLD to NEW;
   restart its processor on the new address` for a moved one, so you know
   which processors to restart before the gateway reloads; with no such line
-  the running processors are untouched. `emit` never reads addresses from the
+  the running processors are untouched. The stored address is trusted only
+  through the audit log: since the seventh round the server views that
+  `emit`, `server list`, `crawl`, `serve`, `list` and `show` read run the
+  same file check as every other view and require the servers row to agree
+  with the newest verified `server.processor_set` entry about the server (and
+  its URL, by hash, and allow-private flag with the verified `server.added`
+  entry), else `ErrCorrupt`, so `emit` refuses to emit, and `emit` prints a
+  change line whenever the address it writes differs from that entry (D17;
+  the seventh review rewrote the column with one `UPDATE`, `server list`
+  showed the forged address, and the next `emit` wrote it into the gateway
+  configuration, which the pinned binary validated, with no line and no audit
+  entry; catalog `TestServers_ColumnsAreAnchoredToTheVerifiedChain`,
+  `TestServers_RunTheFileCheckLikeEveryOtherView`,
+  `TestSetProcessorAddr_ForgedColumnEqualToTheNewAddressIsCorrupt`, cmd
+  `TestEmitRefusesACatalogWhoseProcessorAddressIsNotTheOneTheChainRecords`).
+  `emit` never reads addresses from the
   file at `--out`: before the fifth round it kept the addresses of an existing
   file whose header hash verified, and the fourth review re-sealed a file with
   a forged address (the unkeyed hash of limit L19) and planted a symbolic link
@@ -814,7 +960,18 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   file at `--out` must be absent or a regular file: a symbolic link, directory,
   device, socket or named pipe there is refused before anything is opened (a
   read of a named pipe would block `emit` for ever; cmd
-  `TestEmitRefusesAnIrregularOut`). Before the fourth round the i-th server in name order got
+  `TestEmitRefusesAnIrregularOut`), and since the seventh round `emit` also
+  refuses an `--out` that is the catalog database, its `-wal` or `-shm`
+  sibling or the `--gateway-binary` path (the same file by device and inode,
+  however spelled), and refuses to replace an existing regular file whose
+  header lines are not emit's own; a file the gateway rewrote through the
+  admin API keeps the header lines and stays replaceable, so the re-emit after
+  a CONFIG-EDITED still works. Each is a usage error naming the fix (D17; the
+  seventh review ran `emit --out` with the `--db` path, and `emit` renamed the
+  YAML over the hash-chained catalog, printed `wrote` and the `is new` line
+  and exited 0, after which every command refused the file as not a
+  database; only a backup recovers from that; cmd
+  `TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite`). Before the fourth round the i-th server in name order got
   `base + i`, so adding a server renumbered every later server and darkened
   its route (every hook went to the wrong processor or to nobody) until each
   processor was restarted (e2e scenario J re-emits a side file as servers are
@@ -979,8 +1136,11 @@ after a rollback.
   `--config`, and the policy refusals whose fix is a flag: the system actor
   trying to decide (pass `--as` with your own name), `serve` on a non-loopback
   address without `--allow-non-loopback`, `serve` with `--allow-non-loopback`
-  but without `--secret-env` or `--insecure-no-secret`, and `emit` with a
-  wildcard `--bind-address` without `--allow-all-interfaces`.
+  but without `--secret-env` or `--insecure-no-secret`, `emit` with a
+  wildcard `--bind-address` without `--allow-all-interfaces`, and `emit` with
+  an `--out` that is the catalog database, its `-wal` or `-shm` sibling, the
+  `--gateway-binary` path or an existing regular file whose header lines are
+  not emit's (D17; name another path, or remove the foreign file yourself).
 
 Every error is one sentence on stderr with advice where a sentinel is known
 (`your crawl proposed this version; another person must approve it, or pass

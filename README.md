@@ -91,9 +91,21 @@ hands out an approval only when the newest approve or rollback decision about
 the tool, in the append-only approvals table, names that exact version and
 digest (decision D13) and the newest approval or rollback entry about the tool
 in the hash-chained audit log carries the same digest and is part of the chain
-the catalog verified from its first entry when it opened (decision D15), so a
-forged approval must rewrite every entry from the forged one to the head,
-which changes the head a running catalog pinned and the head you recorded. A
+the catalog verified from its first entry when it opened (decision D15). Every
+decision (`approve`, `reject`, `rollback`, `disable`, `enable`, `budget
+reset`) and every version listing (`show`, `diff`) reconstruct each version's
+status and whether it was ever approved from the verified `version.*` entries
+about the tool, a `tool_versions` column that disagrees is corruption, and
+`rollback` accepts a target only when a verified `version.approved` or
+`version.rolled_back` entry names its digest (decision D17; before the seventh
+round the decision path trusted the audit entries through the chain but the
+status and ever-approved columns through the approvals table, so one `UPDATE`
+and one approvals row at a negative id let the sole proposer of a digest roll
+back to her own bytes with the chain untouched). A forged approval must
+therefore rewrite every entry from the forged one to the head; a running
+catalog catches that through the head it pinned, and while no catalog is open
+(the CLI between commands, the processors while stopped) only the head you
+recorded catches it (decision D15 as corrected by D17). A
 crawl never approves anything: it records proposals,
 drift, reverts, absences and unusable definitions, and the person who ran the
 crawl that proposed a version cannot approve that version. Whoever can reach the
@@ -160,7 +172,9 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    later emit keeps every server's address, adding a server never moves the
 #    others, and a refused emit records nothing; emit prints every address
 #    that is new or changed and never reads addresses from the file it
-#    replaces. The route is /<server>/mcp on port 3000 bound to 127.0.0.1.
+#    replaces (each comes from the catalog's servers row, checked against
+#    the audit log). The route is /<server>/mcp on port 3000 bound to
+#    127.0.0.1.
 #    The file is always written 0600: make it readable by the user the
 #    gateway runs as (chown, or a read ACL) and by nobody else. Record the
 #    "body sha256" line emit prints; the canary compares the file with it.
@@ -235,7 +249,10 @@ pinned gateway version.
   to the approved digest (the crawl then records `reverted`) or serves yet
   another digest, which becomes a new proposal.
 - Rollback. `rollback SERVER TOOL --to DIGEST` re-approves a version that was
-  approved before. Under strict mode it restores service only if the upstream
+  approved before, which the catalog accepts only when a verified
+  `version.approved` or `version.rolled_back` audit entry names that digest
+  (decision D17; a column or an approvals row alone no longer counts). Under
+  strict mode it restores service only if the upstream
   serves that definition; for a native MCP upstream the control plane cannot
   change what the upstream says, so rollback means withdrawing the newer
   approval. After a rollback, or after the upstream goes back to the approved
@@ -278,7 +295,11 @@ pinned gateway version.
   373 ms in every observation of the end-to-end test). Processor addresses live
   in the catalog, so a re-emit keeps every server's address (a new server
   takes the next free port, every new or changed address is printed, and
-  nothing is read from the file at `--out`), and the processors need no
+  nothing is read from the file at `--out`; the address comes from the
+  catalog's servers row, which must agree with the newest verified
+  `server.processor_set` audit entry about the server, else `emit` refuses to
+  emit, and `emit` prints a change line whenever the address it writes
+  differs from that entry, decision D17), and the processors need no
   restart while the catalog file is the same file: they read its generation on
   every hook. A catalog file that is deleted or replaced under a running
   processor is detected and denies everything (`catalog unavailable`) until
@@ -317,8 +338,9 @@ the sixth round: a `Store` verifies the whole audit chain once when it opens,
 from the first entry to the head, and pins the head; it keeps in memory the
 hash it computed itself for every decision entry it walked
 (`version.proposed`, `version.superseded`, `version.rejected`,
-`version.approved`, `version.rolled_back`, `tool.budget_reset` and
-`server.processor_set`) and for the head; every reload verifies the suffix
+`version.approved`, `version.rolled_back`, `tool.budget_reset`,
+`server.processor_set` and, since the seventh round, `server.added`) and for
+the head; every reload verifies the suffix
 after the pin and extends that memory; and the serving path (`Snapshot`,
 `Approved`, `Versions`, `Tools`, `Tool`) and the decision path (every `Apply`,
 the proposer list `approve` consults included) trust an audit entry only when
@@ -341,7 +363,37 @@ tables do not account for is a foreign object (decision D15; the fifth review
 re-created `audit_log` with an extra `UNIQUE` constraint, which gave SQLite an
 automatic index with no DDL text that no check saw, and every later write
 failed with an `ErrCorrupt` that named no cause while `audit verify` was
-clean; the error now names the table and the constraint). A file
+clean; the error now names the table and the constraint). Since the seventh
+round the rules reach the rows the earlier rounds did not: every chain walk
+starts below the smallest possible sequence number, so a row at seq 0 or
+below is a chain break (expected seq 1) at open, in `audit verify` and in
+`Store.Integrity`, which also compares the row count of `audit_log` with the
+entries it walked, and `audit list` shows such a row in forensic mode
+(decision D17; before, every walk and every page started at seq 0, so a row
+inserted at seq 0 or below under a re-created `audit_log_sequential` was
+invisible to `audit verify`, `audit list` and `Integrity` while every
+decision about its tool was `ErrCorrupt`); an approvals row or a history row
+with id below 1 is corruption: every checked read and every write refuses a
+file that holds one (`ErrCorrupt`, naming the table and the column), two
+`AFTER INSERT` guards (`approvals_positive_id`, `tool_versions_positive_id`)
+refuse the insert, and `Integrity` reports it (decision D17; before, such a
+row counted as a historic approval, and a row at id -1 made every later
+insert fail under the no-replace guards' message, because SQLite evaluates
+`NEW.id` as -1 in a `BEFORE INSERT` trigger when no id is supplied, which is
+also why the new guards run after the insert); the server views that `emit`, the
+crawler, `serve`, `server list`, `list` and `show` read run the same file
+check as every other view and anchor the processor address to the newest
+verified `server.processor_set` entry and the URL (by its SHA-256) and the
+allow-private flag to the verified `server.added` entry, else `ErrCorrupt`
+(decision D17; before, they ran no check at all, so a processor address
+rewritten with one `UPDATE` was returned as fact and the next `emit` wrote it
+into the gateway configuration with no change line); `Approved` takes the
+approver's name and the time of approval from the verified entry and reports
+a disagreement with the approvals row as `ErrCorrupt`, so the git export
+carries the name the chain carries (decision D17); and a reader whose read
+snapshot predates a commit that another handle of the same `Store` already
+verified is recognised as stale, not told that the log was truncated
+(decision D17). A file
 that fails any of these is reported as corrupt and nothing is served, listed
 or shown from it: `list` and `show` apply the same evidence as the serving
 path (decision D14). `Store.Integrity` in `internal/catalog` goes further: it
@@ -369,10 +421,19 @@ that approves a definition, and only the head you recorded, the git export of
 approved definitions (`export --dir`) and your backups betray it (decision
 D14, known limit L19). Since the sixth round an entry is trusted only when it
 is part of the chain the `Store` verified, so that person must rewrite every
-entry from the forged one to the head, which changes the head a running
-`Store` pinned and the head you recorded; a chain rewritten completely before
-any `Store` opens it is caught only by the recorded head (the pin-bootstrap
-limit, decision D15). `audit verify`
+entry from the forged one to the head. What catches that rewrite depends on
+who is watching: a running `Store` (a processor, or a command in flight)
+catches it through the head it pinned; while no `Store` holds a pin, which is
+the CLI's state between commands and the processors' state while they are
+stopped, the rewrite verifies clean on the next open and only the head you
+recorded catches it (the pin limit, decision D15 as corrected by D17; before
+the seventh round the documents said that only a chain rewritten completely
+before any `Store` opened it escaped the pin, but any suffix from the forged
+entry to the head does, with the entries before it byte for byte unchanged).
+The processor's pin protects only while a processor runs; the CLI is never
+protected by a pin. Record the head after every verify and compare it with
+`audit verify --expect-head` before every decision you make after the
+processors were stopped. `audit verify`
 prints the head after every successful check, and
 `audit verify --expect-head HASH` fails unless the head equals the one you
 recorded. `audit list [--after N] [--limit N] [--json]` prints entries in
@@ -576,14 +637,25 @@ until a later version says otherwise.
   cannot judge a message the gateway never shows it. The control is the
   canary's probe: every `verify-gateway` check sends such a call for a name no
   catalog can hold and reports UNHOOKED-CALLS, exit 1, when the gateway answers
-  202 instead of rejecting it; HTTP 400 is the healthy answer only when its
-  body is empty or is not JSON, and a 400 whose body parses as JSON (an object
-  or an array: a JSON-RPC error or a batch of them), like any other 2xx answer
-  with a body, is PROBE-INCONCLUSIVE, exit 1, because such an answer may have
-  come from the upstream through a forwarding gateway rather than from the
-  gateway's own refusal (decisions D13, D14 and D15; before the sixth round
-  only a single JSON-RPC error object was recognised, so a JSON-RPC batch of
-  errors on a 400 was called healthy).
+  202, which is the fail-open shape of v1.6.0. That shape is all the probe
+  proves; it cannot prove that the hook ran, because an answer other than 202
+  may have been written by the gateway or by the upstream behind a forwarding
+  gateway, and the probe cannot tell which. Since the seventh round it
+  attributes nothing it cannot attribute: a 400 whose body is empty or is not
+  JSON is reported, exit 0, as `the id-less tools/call was not accepted as a
+  notification (HTTP 400, by the gateway or by the upstream)`; a 2xx answer
+  other than 202 that carries a body, a 400 whose body is JSON (an object, an
+  array or a scalar), an SSE event whose joined `data:` lines are JSON, a body
+  with a UTF-8 byte-order mark before JSON and a body cut at the probe's 1 MiB
+  read cap are PROBE-INCONCLUSIVE, exit 1; and a 2xx without a body or any
+  other status is a `check failed` line naming the status, not a verdict
+  (decision D17; before, a 400 with an
+  empty or non-JSON body was called the gateway's own refusal and the summary
+  read `rejected by the gateway`, although a go-sdk upstream behind a
+  forwarding gateway writes exactly that 400 in plain text and the probe had
+  reached it, and the three JSON shapes passed as non-JSON; decisions D13,
+  D14 and D15 had narrowed the healthy shape from any JSON-RPC error in a 2xx
+  to an empty or non-JSON 400).
   On the
   pinned gateway the probe therefore fails every check: run it once, record the
   limit, pass `--no-probe` until the pin moves, and re-run the probe on every
@@ -616,7 +688,12 @@ until a later version says otherwise.
   metadata (never printed), and match path; every live route is decoded
   generically and may carry only `name`, `gateways`, `matches`, `policies` and
   `backends`, only the policies `mcpAuthorization` and `mcpGuardrails`, a
-  single exact-path match and the one `mcp` backend with the emitted target,
+  single exact-path match and the one `mcp` backend whose target has the
+  emitted host and the emitted name (the server name; since the seventh round
+  the name is compared on both sides, decision D17, before which a target
+  renamed through the admin API compared as a match while the processor denied
+  every hook about the renamed backend as `wrong backend` and the operator saw
+  MISSING lines),
   and anything else in it is a mismatch, one line per item with names escaped
   (decision D15; the fifth review posted the emitted document plus an
   `extProc` policy, a `requestMirror` to another host, a response
@@ -627,8 +704,12 @@ until a later version says otherwise.
   file; the gateway applies it to this route`, and e2e scenario P posts such
   a policy and a second backend through the admin API and records what the
   running gateway does with each); nothing the file does not carry may exist;
-  no path may appear twice; and the `--url` path must be the emitted route's
-  match
+  no path may appear twice; the `--url` path must be the emitted route's
+  match; and since the seventh round the port of `--url` must be the emitted
+  gateway's port and the port of `--admin` the emitted admin address's port,
+  the hosts too when the emitted bind is loopback, so a canary pointed at
+  another listener (a second gateway on the same host, a staging port) cannot
+  report this file as matching (decision D17)
   (LIVE-CONFIG-MISMATCH; decision D13, after the third review added a route
   that owned the path and a second gateway and the comparison of the named
   route alone called both healthy; decision D14, after the fourth review's
@@ -653,24 +734,40 @@ until a later version says otherwise.
   (LIVE-CONFIG-MISMATCH with `--admin`) remain the controls behind it; one
   owner for the file remains an operator duty. The remedy after a
   CONFIG-EDITED is to run `emit` again, and since the fifth round that is
-  safe: processor addresses come from the catalog, never from the file at
-  `--out`, and `--out` and `--config` must be regular files (a symbolic link,
-  directory, device, socket or named pipe is refused before it is opened;
-  decision D14;
-  before, a re-emit kept the addresses of a re-sealed or symlinked file, so
-  the remedy wrote an attacker's address back with no change line). The
+  safe: processor addresses come from the catalog's servers row, never from
+  the file at `--out`, and since the seventh round that row must agree with
+  the newest verified `server.processor_set` audit entry about the server,
+  else `emit` refuses to emit, and `emit` prints a change line whenever the
+  address it writes differs from that entry (decision D17; before, the row
+  was read with no check at all, so one `UPDATE` of the column made the
+  remedy write a forger's processor address into the gateway configuration in
+  silence, and the gateway would have dialled it for every hook); `--out` and
+  `--config` must be regular files (a symbolic link, directory, device,
+  socket or named pipe is refused before it is opened; decision D14; before,
+  a re-emit kept the addresses of a re-sealed or symlinked file, so the
+  remedy wrote an attacker's address back with no change line); and `emit`
+  refuses an `--out` that is the catalog database, its `-wal` or `-shm`
+  sibling or the `--gateway-binary` path, and refuses to replace an existing
+  regular file whose header lines are not its own (a file the gateway
+  rewrote keeps the header lines and stays replaceable), each as a usage
+  error naming the fix (decision D17; before, `emit --out` naming the
+  database replaced the hash-chained catalog with the YAML and exited 0). The
   catalog file has the same kind of boundary: whoever can write the 0600
   database can append a new, correctly sealed audit entry that approves a
   definition, and nothing inside the file can refute it; the audit head you
   recorded, the git export of approved definitions and your backups are the
   controls. Inside the file the rule since the sixth round is that an audit
-  entry is trusted only when it is part of the chain the `Store` verified, so
-  a forger must rewrite every entry from the forged one to the head, which
-  changes the head a running `Store` pinned and the head you recorded; a chain
-  rewritten completely before any `Store` opens it is caught only by the
-  recorded head (the pin-bootstrap limit, decision D15; decision D14's anchor
-  re-sealed the newest approval entry against its predecessor only, so the
-  fifth review rewrote that entry in place below the head and it was served).
+  entry is trusted only when it is part of the chain the `Store` verified,
+  and since the seventh round every column a decision or a server view acts
+  on is trusted only through that chain too, so a forger must rewrite every
+  entry from the forged one to the head; a running `Store` catches that
+  through the head it pinned, and a rewrite made while no `Store` holds a pin
+  is caught by the recorded head alone (the pin limit, decision D15 as
+  corrected by D17; decision D14's anchor re-sealed the newest approval entry
+  against its predecessor only, so the fifth review rewrote that entry in
+  place below the head and it was served, and the documents of the sixth
+  round said that only a chain rewritten completely escaped the pin, when any
+  suffix rewritten between two opens does).
 
 The residual-risk table in [docs/threat-model.md](docs/threat-model.md) says what
 an operator can do about each of these.
@@ -694,7 +791,7 @@ checksum of the linux gateway binary; it has not run yet because the repository
 has not been pushed. The security policy, including how to report a problem once
 the repository is public and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D16 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D17 are in
 [docs/decisions.md](docs/decisions.md).
 
 ## Licence
