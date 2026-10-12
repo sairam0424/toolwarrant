@@ -12,10 +12,15 @@ import (
 // staging port or a copy of the file running elsewhere listed through one
 // listener and asked another admin API, and printed "live configuration
 // matches the emitted file" for a gateway it never touched (canary-4). Ports
-// are compared always; hosts only when the emitted one is a loopback address,
-// because a port-forward or a non-loopback bind makes a host difference
-// legitimate while a listing that left the host cannot have reached a
-// loopback listener.
+// are compared always. Hosts: two IP literals must be equal, because a
+// gateway bound to 127.0.0.1 does not listen on 127.0.0.2 or ::1 and a
+// stand-in there with the emitted ports is not the emitted gateway (eighth
+// review); when either side is a name the host is held to the loopback class
+// only when the emitted one is loopback, because a port-forward or a
+// non-loopback bind makes a host difference legitimate while a listing that
+// left the host cannot have reached a loopback listener; an unspecified
+// emitted address (0.0.0.0, ::) listens everywhere and is compared by port
+// alone.
 
 // Default ports of the URL schemes the canary accepts, for a --url or --admin
 // without an explicit port.
@@ -58,10 +63,29 @@ func compareURLListener(rawURL, gatewayName string, gw gatewayConfig) []string {
 	if port != gw.port {
 		diffs = append(diffs, fmt.Sprintf("the port of --url (%s) is not the serving port of the emitted gateway %s (%s); the listing above went through another listener", shown(port), cell(gatewayName), shown(gw.port)))
 	}
-	if isLoopbackHost(gw.bindAddress) && !isLoopbackHost(host) {
+	switch differs, literals := hostDiffers(host, gw.bindAddress); {
+	case differs && literals:
+		diffs = append(diffs, fmt.Sprintf("the host of --url (%s) is not the emitted bind address (%s); the listing above went through another host", shown(host), shown(gw.bindAddress)))
+	case differs:
 		diffs = append(diffs, fmt.Sprintf("the host of --url (%s) is not a loopback address like the emitted bind address (%s); the listing above went through another host", shown(host), shown(gw.bindAddress)))
 	}
 	return diffs
+}
+
+// hostDiffers reports whether the canary's host cannot have reached the
+// emitted address, and whether both sides were IP literals (which decides the
+// wording): two literals differ when they are not the same address, unless
+// the emitted one is unspecified; otherwise a loopback emitted address
+// demands a loopback canary host.
+func hostDiffers(canary, emitted string) (differs, literals bool) {
+	c, e := net.ParseIP(canary), net.ParseIP(emitted)
+	if e != nil && e.IsUnspecified() {
+		return false, true
+	}
+	if c != nil && e != nil {
+		return !c.Equal(e), true
+	}
+	return isLoopbackHost(emitted) && !isLoopbackHost(canary), false
 }
 
 // compareAdminListener holds the host and port of --admin against the emitted
@@ -81,7 +105,10 @@ func compareAdminListener(adminURL, emittedAdmin string) []string {
 	if port != emittedPort {
 		diffs = append(diffs, fmt.Sprintf("the port of --admin (%s) is not the port of the emitted adminAddr (%s); the live configuration above came from another admin API", shown(port), shown(emittedAdmin)))
 	}
-	if isLoopbackHost(emittedHost) && !isLoopbackHost(host) {
+	switch differs, literals := hostDiffers(host, emittedHost); {
+	case differs && literals:
+		diffs = append(diffs, fmt.Sprintf("the host of --admin (%s) is not the host of the emitted adminAddr (%s); the live configuration above came from another admin API", shown(host), shown(emittedAdmin)))
+	case differs:
 		diffs = append(diffs, fmt.Sprintf("the host of --admin (%s) is not a loopback address like the emitted adminAddr (%s); the live configuration above came from another admin API", shown(host), shown(emittedAdmin)))
 	}
 	return diffs

@@ -151,17 +151,21 @@ func TestCompareCanaryAddresses(t *testing.T) {
 		emitted    configDoc
 		want       []string
 	}{
-		"match":              {"http://127.0.0.1:3000/s1/mcp", "http://127.0.0.1:15000", emitted, nil},
-		"loopback aliases":   {"http://localhost:3000/s1/mcp", "http://[::1]:15000", emitted, nil},
-		"no admin":           {"http://127.0.0.1:3000/s1/mcp", "", emitted, nil},
-		"default http port":  {"http://127.0.0.1/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the port of --url (80) is not the serving port of the emitted gateway toolwarrant (3000); the listing above went through another listener"}},
-		"default https port": {"https://127.0.0.1/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the port of --url (443) is not the serving port"}},
-		"other url port":     {"http://127.0.0.1:3001/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the port of --url (3001) is not the serving port of the emitted gateway toolwarrant (3000)"}},
-		"other url host":     {"http://10.0.0.5:3000/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the host of --url (10.0.0.5) is not a loopback address like the emitted bind address (127.0.0.1); the listing above went through another host"}},
-		"other admin port":   {"http://127.0.0.1:3000/s1/mcp", "http://127.0.0.1:15001", emitted, []string{"the port of --admin (15001) is not the port of the emitted adminAddr (127.0.0.1:15000); the live configuration above came from another admin API"}},
-		"other admin host":   {"http://127.0.0.1:3000/s1/mcp", "http://10.0.0.5:15000", emitted, []string{"the host of --admin (10.0.0.5) is not a loopback address like the emitted adminAddr (127.0.0.1:15000); the live configuration above came from another admin API"}},
-		"both wrong":         {"http://10.0.0.5:3001/s1/mcp", "http://10.0.0.5:15001", emitted, []string{"the port of --url (3001)", "the host of --url (10.0.0.5)", "the port of --admin (15001)", "the host of --admin (10.0.0.5)"}},
-		"unparseable url":    {"::bad", "http://127.0.0.1:15000", emitted, nil},
+		"match":                  {"http://127.0.0.1:3000/s1/mcp", "http://127.0.0.1:15000", emitted, nil},
+		"loopback name alias":    {"http://localhost:3000/s1/mcp", "http://localhost:15000", emitted, nil},
+		"other loopback literal": {"http://127.0.0.2:3000/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the host of --url (127.0.0.2) is not the emitted bind address (127.0.0.1); the listing above went through another host"}},
+		"ipv6 loopback literal":  {"http://127.0.0.1:3000/s1/mcp", "http://[::1]:15000", emitted, []string{"the host of --admin (::1) is not the host of the emitted adminAddr (127.0.0.1:15000); the live configuration above came from another admin API"}},
+		"no admin":               {"http://127.0.0.1:3000/s1/mcp", "", emitted, nil},
+		"default http port":      {"http://127.0.0.1/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the port of --url (80) is not the serving port of the emitted gateway toolwarrant (3000); the listing above went through another listener"}},
+		"default https port":     {"https://127.0.0.1/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the port of --url (443) is not the serving port"}},
+		"other url port":         {"http://127.0.0.1:3001/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the port of --url (3001) is not the serving port of the emitted gateway toolwarrant (3000)"}},
+		"other url host":         {"http://10.0.0.5:3000/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the host of --url (10.0.0.5) is not the emitted bind address (127.0.0.1); the listing above went through another host"}},
+		"other url name":         {"http://gateway.example:3000/s1/mcp", "http://127.0.0.1:15000", emitted, []string{"the host of --url (gateway.example) is not a loopback address like the emitted bind address (127.0.0.1); the listing above went through another host"}},
+		"other admin port":       {"http://127.0.0.1:3000/s1/mcp", "http://127.0.0.1:15001", emitted, []string{"the port of --admin (15001) is not the port of the emitted adminAddr (127.0.0.1:15000); the live configuration above came from another admin API"}},
+		"other admin host":       {"http://127.0.0.1:3000/s1/mcp", "http://10.0.0.5:15000", emitted, []string{"the host of --admin (10.0.0.5) is not the host of the emitted adminAddr (127.0.0.1:15000); the live configuration above came from another admin API"}},
+		"other admin name":       {"http://127.0.0.1:3000/s1/mcp", "http://admin.example:15000", emitted, []string{"the host of --admin (admin.example) is not a loopback address like the emitted adminAddr (127.0.0.1:15000); the live configuration above came from another admin API"}},
+		"both wrong":             {"http://10.0.0.5:3001/s1/mcp", "http://10.0.0.5:15001", emitted, []string{"the port of --url (3001)", "the host of --url (10.0.0.5)", "the port of --admin (15001)", "the host of --admin (10.0.0.5)"}},
+		"unparseable url":        {"::bad", "http://127.0.0.1:15000", emitted, nil},
 		"hostile emitted value": {"http://127.0.0.1:3000/s1/mcp", "http://127.0.0.1:15000", func() configDoc {
 			d := emitted
 			d.gateways = map[string]gatewayConfig{"toolwarrant": {bindAddress: "127.0.0.1", port: "3000" + esc}}
@@ -175,6 +179,11 @@ func TestCompareCanaryAddresses(t *testing.T) {
 		"wildcard bind, other host": {"http://10.0.0.5:3000/s1/mcp", "http://127.0.0.1:15000", func() configDoc {
 			d := emitted
 			d.gateways = map[string]gatewayConfig{"toolwarrant": {bindAddress: "0.0.0.0", port: "3000"}}
+			return d
+		}(), nil},
+		"ipv6 wildcard bind, loopback literal": {"http://127.0.0.1:3000/s1/mcp", "http://127.0.0.1:15000", func() configDoc {
+			d := emitted
+			d.gateways = map[string]gatewayConfig{"toolwarrant": {bindAddress: "::", port: "3000"}}
 			return d
 		}(), nil},
 		"no route": {"http://10.0.0.5:3001/s1/mcp", "http://10.0.0.5:15001", configDoc{gateways: emitted.gateways}, nil},
