@@ -1276,6 +1276,20 @@ is a new tag. The gate accepts only the newest `ci` run that a push to `main`
 triggered for the tagged commit; a commit that reached `main` through a pull
 request has such a run, a tag on any other commit is refused.
 
+Before the repository is made public, set by hand on GitHub:
+
+- Description: toolwarrant for MCP: a control plane that approves exact
+  tool-definition digests and enforces them at agentgateway v1.6.0 as an
+  ExtMCP processor.
+- Topics: mcp, model-context-protocol, agentgateway, ai-agents,
+  tool-poisoning, supply-chain-security, audit-log, sqlite, go. No website.
+- Security: private vulnerability reporting, Dependabot alerts, secret scanning
+  with push protection (all free on a public repository).
+- Rules: a ruleset on `main` that requires a pull request and the `ci` checks,
+  and one on `v*` tags that lets only the owner create them.
+- Wiki off; issues on (the issue chooser routes security reports to the
+  policy).
+
 ## Exit codes
 
 - `0`: success. For `verify-gateway`, OK or MISSING only. For
