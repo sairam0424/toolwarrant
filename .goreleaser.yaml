@@ -52,16 +52,21 @@ sboms:
 
 # Keyless signature of the checksums file through the workflow's OIDC
 # identity; the certificate is attached next to the signature (D16 (c)).
+# The signature is one sigstore bundle (signature, certificate and
+# transparency-log entry in a .sigstore.json file). cosign v3, which the
+# pinned cosign-installer provides, writes bundles by default and ignores the
+# separate --output-signature and --output-certificate files that cosign v2
+# wrote, so a configuration naming those files signs nothing and the release
+# fails when goreleaser looks for them (found by the review of 2026-10-12
+# before v0.1.0-rc.3). Verification: cosign verify-blob --bundle.
 signs:
   - id: checksums
     cmd: cosign
-    certificate: "${artifact}.pem"
-    signature: "${artifact}.sig"
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
       - --yes
-      - --output-certificate=${certificate}
-      - --output-signature=${signature}
+      - --bundle=${signature}
       - ${artifact}
     artifacts: checksum
 
@@ -99,7 +104,7 @@ changelog:
   filters:
     exclude:
       - '^(?:[0-9a-f]+ )?chore'
-      - '^(?:[0-9a-f]+ )?Merge '
+      - '(?i)^(?:[0-9a-f]+ )?merge[: ]'
 
 release:
   # The target is named so that goreleaser check works before the first

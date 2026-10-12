@@ -1253,13 +1253,13 @@ one SPDX SBOM per archive with syft, signs the checksums file keyless with
 cosign under the workflow's own identity, and creates a draft release whose
 notes open with the pinned gateway version and the catalog schema version and
 group the commits since the previous tag by type. Inspect the draft (the four
-archives, the `.spdx.json` files, the `.txt`, `.txt.sig` and `.txt.pem`), then
+archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`), then
 publish it. The seam and mock binaries are never released.
 
 A user verifies a release before running it:
 
 ```sh
-cosign verify-blob --certificate toolwarrant_0.1.0_checksums.txt.pem --signature toolwarrant_0.1.0_checksums.txt.sig \
+cosign verify-blob --bundle toolwarrant_0.1.0_checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/v0.1.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   toolwarrant_0.1.0_checksums.txt
@@ -1274,7 +1274,11 @@ A published release is never re-run: the workflow keeps an existing
 release's notes and the existing assets make a second upload fail, so a fix
 is a new tag. The gate accepts only the newest `ci` run that a push to `main`
 triggered for the tagged commit; a commit that reached `main` through a pull
-request has such a run, a tag on any other commit is refused.
+request has such a run, a tag on any other commit is refused, and the release
+job stops if the commit it checked out is not the one the gate verified. The
+gate lives in the workflow file of the tagged commit, so it binds only tags
+created by someone who could not also change that file: the tag ruleset below
+is what limits tag creation to the owner.
 
 Before the repository is made public, set by hand on GitHub:
 

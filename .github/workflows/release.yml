@@ -27,8 +27,11 @@ jobs:
     permissions:
       actions: read # list the ci runs of the tagged commit
       contents: read # read the tag ref and peel the tag object; a permissions block zeroes everything it does not name
+    outputs:
+      commit: ${{ steps.gate.outputs.commit }}
     steps:
       - name: require a successful ci run for the tagged commit
+        id: gate
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -42,11 +45,14 @@ jobs:
             SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${SHA}" --jq .object.sha)
           fi
           echo "tag ${TAG} points at commit ${SHA}"
+          echo "commit=${SHA}" >> "${GITHUB_OUTPUT}"
           # The newest push run of ci on main for this commit decides; an older
           # success does not outweigh a later failure, and runs of other events
-          # or branches (pull requests, dispatches) do not count.
+          # or branches (pull requests, dispatches) do not count. The workflow
+          # is selected by its file path, not its display name, so no other
+          # workflow can be read as ci.
           newest=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=50" \
-            --jq '[.workflow_runs[] | select(.name == "ci" and .event == "push" and .head_branch == "main")] | sort_by(.run_number) | reverse | (.[0].conclusion // "none")')
+            --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .event == "push" and .head_branch == "main")] | sort_by(.run_number) | reverse | (.[0].conclusion // "none")')
           echo "newest ci push run on main for ${SHA}: ${newest}"
           if [ "${newest}" != "success" ]; then
             echo "the newest ci push run on main for this commit is not a success (${newest}); push main, let ci pass, then tag that commit" >&2
@@ -65,6 +71,20 @@ jobs:
         with:
           fetch-depth: 0 # the changelog needs every commit since the previous tag
           persist-credentials: false # nothing in this job pushes; the token stays out of .git/config
+      - name: the checkout is the commit the gate verified
+        env:
+          GATE_COMMIT: ${{ needs.gate.outputs.commit }}
+        run: |
+          set -eu
+          # The gate read the tag through the API and the checkout read it
+          # again from git; a tag moved between the two reads would be built
+          # and signed without its ci run having been checked.
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "checked out ${HEAD_SHA}; the gate verified ${GATE_COMMIT}"
+          if [ "${HEAD_SHA}" != "${GATE_COMMIT}" ]; then
+            echo "the tag moved between the gate and the checkout; tag again and let the gate see the final commit" >&2
+            exit 1
+          fi
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

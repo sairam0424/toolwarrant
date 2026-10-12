@@ -386,12 +386,17 @@ Nothing has been tagged yet; this section describes what the release
 workflow does once a `v*` tag is pushed (decision D16).
 
 - A release is one annotated git tag on a commit whose newest `ci` run from a
-  push to `main` succeeded; the `release` workflow refuses any other tag, and a
-  published release is never re-run (a fix is a new tag).
+  push to `main` succeeded; the `release` workflow's gate refuses a tag whose
+  commit has no such run, and the release job checks that the commit it
+  built is the one the gate verified. Who may create a `v*` tag is a
+  repository rule (the tag ruleset named in docs/operations.md, Releasing), not
+  something the workflow can enforce: GitHub runs the workflow file of the
+  tagged commit. A published release is never re-run (a fix is a new tag).
 - The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with
-  cosign under the workflow's own OIDC identity. No build provenance
+  cosign under the workflow's own OIDC identity, as a sigstore bundle
+  (`.sigstore.json`: signature, certificate and transparency-log entry). No build provenance
   attestation is produced yet; the signature over the checksums file is the
   integrity statement.
 - `toolwarrant version` prints the build version (the tag without its `v`,
@@ -402,7 +407,7 @@ workflow does once a `v*` tag is pushed (decision D16).
 Verifying a release before running it:
 
 ```sh
-cosign verify-blob --certificate toolwarrant_0.1.0_checksums.txt.pem --signature toolwarrant_0.1.0_checksums.txt.sig \
+cosign verify-blob --bundle toolwarrant_0.1.0_checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/v0.1.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   toolwarrant_0.1.0_checksums.txt
