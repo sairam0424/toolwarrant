@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,6 +155,9 @@ func (r rawResponse) bodyPhrase() string {
 	}
 	return fmt.Sprintf("with a body of %d bytes", len(r.body))
 }
+
+// probeMaxBodyText is the read cap as the help text and the verdicts name it.
+func probeMaxBodyText() string { return strconv.Itoa(probeMaxBody>>20) + " MiB" }
 
 // truncated reports whether the body reached the read cap: the reader stops
 // there, so a JSON answer longer than the cap arrives as invalid JSON and a
