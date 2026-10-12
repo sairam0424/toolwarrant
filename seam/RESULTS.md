@@ -345,13 +345,12 @@ v0.1 is published only after its findings are triaged.
 | 2 | A rollback takes effect within the next request | HOLDS | seam test 5; e2e D (re-approve and rollback: listed again on the next tools/list; tools/call allowed again once the next crawl records the revert, D9) |
 | 3 | Added p95 latency at most 50 ms | HOLDS | seam: worst added p95 6.3 ms (5-tool page, 300 pairs); e2e M on 75ab299 (3-tool page, 100 list+call pairs, loopback): added p50 +0.23 ms list, +0.18 ms call; added p95 +0.46 ms list, +0.26 ms call. The same scenario on 21164fd under a loaded machine measured +3.83 and +3.35 ms p95, still far inside the budget |
 | 4 | The demo runs unattended twice | HOLDS | `demo/run.sh` by the maintainer on 75ab299: run 1 exit 0 in 25 s, run 2 exit 0 in 22 s (2026-10-11); before that, five green harness runs and one demo run by the e2e builder on the same scenarios, and four runs on 21164fd |
-| 5 | Hours worked at most 90 h (1.5 x the 60 h plan) | OWNER'S CALL | the time log is the owner's; this file records no hours |
+| 5 | Hours worked at most 90 h (1.5 x the 60 h plan) | HOLDS | the owner stated on 2026-10-12 that the spike took under 60 hours of their time since 2026-10-02, inside the original 60 h plan; this file records the statement, not a log |
 | 6 | No competing open-source project shipped K4 (i), (ii) or (iii) | HOLDS | competitor-watch-2026-10-07.md (baseline 2026-10-05) and competitor-watch-2026-10-11.md: K4 not tripped; nearest miss LiteLLM PR #44245 (open); LiteLLM's admin pin and drift alert, GA in v1.105.0, is none of the three clauses |
 
-**Decision on the technical conditions: GO to v0.1.** Conditions 1, 2, 3, 4
-and 6 hold on evidence in this repository and the two watch logs. Condition 5
-is decided by the owner's time log, not here; if it fails, the plan's own rule
-applies and this GO does not override it.
+**Decision: GO to v0.1.** Conditions 1, 2, 3, 4 and 6 hold on evidence in this
+repository and the two watch logs; condition 5 holds on the owner's statement
+of 2026-10-12 (under 60 hours). All six conditions of the plan's rule hold.
 
 **What the technical evidence does not cover.**
 
