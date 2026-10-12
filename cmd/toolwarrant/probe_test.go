@@ -454,3 +454,19 @@ func TestProbeErrorSaysWhetherTheAnswerHadABody(t *testing.T) {
 		t.Error("plain text counted as a JSON answer")
 	}
 }
+
+// An event stream that opens with a byte-order mark still carries its first
+// data line: the SSE parser strips the mark from the stream before reading
+// lines, so a relayed JSON-RPC refusal behind it stays inconclusive instead
+// of passing as a bare 400 (eighth review).
+func TestProbeReadsAnEventStreamBehindALeadingByteOrderMark(t *testing.T) {
+	body := "\ufeffdata: {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"no id\"}}\n\n"
+	resp := rawResponse{status: 400, contentType: mediaSSE, body: []byte(body)}
+	if !resp.carriesJSONAnswer() {
+		t.Fatalf("an SSE body behind a byte-order mark was not read as JSON: %q", body)
+	}
+	outcome, err := classifyProbe(resp)
+	if err != nil || outcome != probeInconclusive {
+		t.Fatalf("classifyProbe = %v, %v; want PROBE-INCONCLUSIVE", outcome, err)
+	}
+}

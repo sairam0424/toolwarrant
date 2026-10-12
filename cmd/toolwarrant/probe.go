@@ -321,7 +321,10 @@ func (r rawResponse) messages() [][]byte {
 			data = nil
 		}
 	}
-	for _, line := range strings.Split(string(r.body), "\n") {
+	// The SSE specification strips one leading byte-order mark from the whole
+	// stream before any line is read; without it the first "data:" line is
+	// missed and a relayed refusal passes as a bare 400 (eighth review).
+	for _, line := range strings.Split(strings.TrimPrefix(string(r.body), utf8BOM), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			flush()
