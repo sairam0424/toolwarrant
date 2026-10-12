@@ -104,7 +104,7 @@ changelog:
   filters:
     exclude:
       - '^(?:[0-9a-f]+ )?chore'
-      - '^(?:[0-9a-f]+ )?Merge '
+      - '(?i)^(?:[0-9a-f]+ )?merge[: ]'
 
 release:
   # The target is named so that goreleaser check works before the first
