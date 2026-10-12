@@ -1,4 +1,4 @@
-# Design decisions D1 to D15
+# Design decisions D1 to D16
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
@@ -1406,3 +1406,88 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `requestMirror` policy and a second backend posted through the admin API,
   each LIVE-CONFIG-MISMATCH, with what the running gateway did recorded
   against a mirror target).
+
+## D16. The release: a tagged GitHub release with signed binaries, built by goreleaser, private first
+
+- Context. The week-2 decision is GO on all six conditions (seam/RESULTS.md,
+  2026-10-12). The repository has never been pushed, has no release pipeline,
+  and the CLI's `version` is set by `-ldflags -X main.version=...` with the
+  default `dev`. The owner decided on 2026-10-12, in the brainstorm recorded
+  in the daily log, what v0.1 means: a public repository under the name
+  toolwarrant (free on GitHub, npm, PyPI and crates.io, with the .dev, .io,
+  .com and .org domains unregistered as of that day), a `v0.1.0` tag, binaries
+  for the operator and the processor with a software bill of materials and
+  signatures, and release notes grouped from the conventional commits; no
+  container image and no Homebrew tap in v0.1. The repository goes public only
+  at the tag: it is pushed private first so the CI workflow can run and be
+  fixed where a runner differs from the laptop without anything half-working
+  being visible. The three action SHAs in `ci.yml` were verified against their
+  tags on 2026-10-12 (match); `gitleaks/gitleaks-action` is pinned by tag only
+  and gets a SHA here.
+- Decision (a): goreleaser drives the release. One `.goreleaser.yaml` with a
+  single build of `./cmd/toolwarrant` (CGO off, `-trimpath`, `-ldflags "-s -w
+  -X main.version={{.Version}}"`) for darwin/arm64, darwin/amd64, linux/amd64
+  and linux/arm64; the seam and mock binaries are never released. Archives are
+  tar.gz carrying LICENSE, README.md, SECURITY.md and THIRD_PARTY_NOTICES.md;
+  a checksums file lists every archive. goreleaser 2.18, syft 1.54 and cosign
+  3.1 are installed on the owner's machine, so the pipeline is dry-run locally
+  before any push.
+- Decision (b): one SBOM per archive, produced by syft through goreleaser's
+  `sboms`, so the modules the notices file attributes are also machine
+  readable per artefact.
+- Decision (c): keyless signing. The checksums file is signed with cosign
+  through GitHub's OIDC identity of the release workflow, so no signing key
+  exists anywhere and the signature binds to
+  `github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/vX.Y.Z`.
+  A user verifies the checksums file with `cosign verify-blob` against that
+  identity and the GitHub issuer, then the checksum of the binary they run.
+- Decision (d): the changelog is generated from the conventional commits
+  between tags, grouped by type (feat, fix, perf, refactor, test, build, ci,
+  docs), and the release notes open with a fixed header naming the pinned
+  gateway version (agentgateway v1.6.0) and the catalog schema version, since
+  both decide whether an operator can upgrade in place.
+- Decision (e): the workflow `.github/workflows/release.yml` runs on `v*` tags
+  only, with permissions `contents: write` and `id-token: write` and nothing
+  else, after the existing CI jobs have passed on the same commit; every
+  action is SHA-pinned (resolved on 2026-10-12: goreleaser-action v7.2.3,
+  cosign-installer v4.1.2, sbom-action v0.24.3, checkout v7.0.1, setup-go
+  v7.0.0, to be re-verified against their tags when the file is written). Go
+  comes from go.mod through setup-go.
+- Decision (f): failure handling. goreleaser aborts on any failed build,
+  missing SBOM or failed signature and leaves no partial release; a tag whose
+  CI failed never reaches the release job; the release is created as a draft
+  and published by the owner after inspecting the artefacts, so nothing
+  unsigned or unexpected goes public without a person looking.
+- Decision (g): proof before the tag, in this order: `goreleaser check`;
+  `make release-snapshot` (goreleaser `release --snapshot --clean`, which
+  builds every target and SBOM locally and skips signing); a local
+  `cosign sign-blob` and `verify-blob` of the snapshot checksums with the
+  owner's own identity to prove the verification command in the documents;
+  the full race suite, `make e2e` and `demo/run.sh` on the tagged commit; the
+  first tag on the private repository, inspection of the draft release, then
+  the repository is made public and the release published.
+- Decision (h): the publish gate the owner completes before the tag, all of it
+  recorded in SECURITY.md's pending-actions section until done: fill the
+  SECURITY.md contact (GitHub private vulnerability reporting enabled on the
+  repository, or an address); record the linux gateway asset checksum for the
+  e2e CI job; write and file the upstream report on the id-less tools/call
+  forwarding by hand (no public report existed on 2026-10-11); register the
+  domain if wanted (not needed for v0.1).
+- Consequence. Operators: a release is one tag; the binary prints its tag as
+  its version; an archive is verified by the checksums file's signature, not
+  by a key the project would have to protect. Maintainers: adding a platform
+  or an archive member is a line in `.goreleaser.yaml`; the release workflow
+  shares no secret with anyone. What D16 does not do: no container image, no
+  package-manager formula, no automatic publication (a draft needs a person),
+  no release of the seam or mock binaries.
+- Where. `.goreleaser.yaml` (new), `.github/workflows/release.yml` (new),
+  `Makefile` (`release-snapshot`), `.github/workflows/ci.yml` (gitleaks SHA
+  pin), `docs/operations.md` ("Releasing": the owner's steps and the user's
+  verification command), SECURITY.md (contact, pending actions).
+- Tests and proof. `goreleaser check` and `make release-snapshot` green on the
+  owner's machine; the verification command exercised once against a locally
+  signed checksums file; the existing CI jobs on the private repository green
+  before the first tag; the draft release inspected before publication. No
+  Go test is added: the pipeline is configuration, and its proof is the
+  snapshot build and the signature verification.
+

@@ -64,7 +64,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
-- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D15), `docs/operations.md`.
+- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D16), `docs/operations.md`.
 - `.github/workflows/ci.yml`: the CI workflow.
 
 ## Rules

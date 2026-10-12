@@ -694,7 +694,7 @@ checksum of the linux gateway binary; it has not run yet because the repository
 has not been pushed. The security policy, including how to report a problem once
 the repository is public and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D15 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D16 are in
 [docs/decisions.md](docs/decisions.md).
 
 ## Licence
