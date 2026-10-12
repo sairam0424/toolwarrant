@@ -89,3 +89,35 @@ func TestSnapshot_PlantedToolRowWithoutAnEntryIsCorrupt(t *testing.T) {
 	_, err = s.Tools(bg, "alpha")
 	requireCorruptMentioning(t, "Tools", err, want)
 }
+
+// The export anchored only the rows it returned, so an approved tool whose
+// state column was edited to disabled or deprecated by hand vanished from
+// Approved, and emit wrote a smaller allow list from a catalog that list and
+// audit verify refused (found by the v0.1.0 verification on the released
+// binary). Every tool row is anchored now, exported or not, on the long-lived
+// Store and on a fresh read-only one.
+func TestApproved_ToolHiddenByAColumnFlipIsCorrupt(t *testing.T) {
+	for _, flip := range []string{"disabled", "deprecated"} {
+		t.Run(flip, func(t *testing.T) {
+			s, path := newStoreAt(t, lifecycle.DefaultPolicy())
+			approvedEcho(t, s)
+			before, err := s.Approved(bg)
+			if err != nil || len(before) != 1 {
+				t.Fatalf("Approved before the edit = %d tools, %v", len(before), err)
+			}
+			db := rawDB(t, path)
+			mustExec(t, db, `UPDATE tools SET state = '`+flip+`' WHERE name = 'echo'`)
+
+			want := []string{"state of tool", `"alpha/echo"`, `is "` + flip + `"`, "version.approved", `left it "enabled"`, "state column was edited"}
+			_, err = s.Approved(bg)
+			requireCorruptMentioning(t, "Approved", err, want)
+			fresh, err := OpenWith(path, OpenOptions{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = fresh.Close() }()
+			_, err = fresh.Approved(bg)
+			requireCorruptMentioning(t, "fresh Approved", err, want)
+		})
+	}
+}
