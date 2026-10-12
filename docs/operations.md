@@ -1274,7 +1274,11 @@ A published release is never re-run: the workflow keeps an existing
 release's notes and the existing assets make a second upload fail, so a fix
 is a new tag. The gate accepts only the newest `ci` run that a push to `main`
 triggered for the tagged commit; a commit that reached `main` through a pull
-request has such a run, a tag on any other commit is refused.
+request has such a run, a tag on any other commit is refused, and the release
+job stops if the commit it checked out is not the one the gate verified. The
+gate lives in the workflow file of the tagged commit, so it binds only tags
+created by someone who could not also change that file: the tag ruleset below
+is what limits tag creation to the owner.
 
 Before the repository is made public, set by hand on GitHub:
 
