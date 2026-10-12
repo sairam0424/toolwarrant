@@ -104,7 +104,9 @@ jobs:
           cache: true
       # Installed at a pinned module version rather than @latest so that a new
       # govulncheck release cannot change what this job does without a commit.
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      # v1.1.4 panicked in its SSA builder on Go 1.27 code (first run on the
+      # runner); v1.9.0 handles it and found no vulnerabilities on 2026-10-12.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: govulncheck ./...
 
   gitleaks:
