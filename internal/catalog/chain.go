@@ -231,10 +231,11 @@ func (s *Store) loadPin() chainPin { return s.chain.pin() }
 // checkFile is what every serving-path and view read requires of the file
 // before it trusts a row: the file at the path still the one this Store opened
 // and still carrying the catalog identity it read at open (identity.go, D14
-// e), no row below id 1 in the history tables (checkGhostRows, D17 b), the
-// guard objects and tables as the schema defines them (skipped by a forensic
-// open, as at Open, so that the views can inspect a file whose guards are
-// gone) and the audit chain unchanged since this Store last looked, with the
+// e), no row below id 1 in the history tables (checkGhostRows, D17 b) and the
+// guard objects and tables as the schema defines them (both skipped by a
+// forensic open, as at Open, so that the views can inspect a file whose
+// guards are gone or that holds a planted row, which Integrity and the
+// listing then report), and the audit chain unchanged since this Store last looked, with the
 // memory of it extended to the head (verifyChain). It must be the first thing
 // a read transaction runs: the whole check holds walkMu, so the transaction's
 // first statement, which fixes its snapshot, runs under the same lock as the
@@ -252,10 +253,10 @@ func (s *Store) checkFile(ctx context.Context, q queryer) error {
 	if err := s.checkStoredIdentity(ctx, q); err != nil {
 		return err
 	}
-	if err := checkGhostRows(ctx, q); err != nil {
-		return err
-	}
 	if !s.forensic {
+		if err := checkGhostRows(ctx, q); err != nil {
+			return err
+		}
 		if err := verifyGuards(ctx, q); err != nil {
 			return err
 		}
