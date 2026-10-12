@@ -131,6 +131,6 @@ release:
     docs/operations.md, section Releasing.
   footer: |
     Binaries are built from the tagged commit with CGO disabled and
-    -trimpath; each archive carries an SPDX SBOM produced by syft, and the
-    checksums file is signed keyless with cosign by this repository's
-    release workflow.
+    -trimpath; an SPDX SBOM produced by syft sits beside each archive
+    (`<archive>.spdx.json`), and the checksums file is signed keyless with
+    cosign by this repository's release workflow.

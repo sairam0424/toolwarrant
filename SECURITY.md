@@ -4,58 +4,28 @@
 
 | Version | Supported |
 | --- | --- |
-| none | No version has been released. The code is pre-release and exists only in a local repository. |
+| 0.1.x | Yes: fixes land on `main` and ship in the next tag. |
 
-When the first version is tagged this table will name it and say how long it
-receives fixes. Until then there is nothing to upgrade to and nothing to patch
-in place; a problem found now is fixed on the main branch before the first
-release.
+There is no long-term branch; a fix is a new tag from `main`. A problem found
+in the pinned agentgateway v1.6.0 itself is reported upstream (see below) and
+worked around here where the design allows.
 
 ## Reporting a vulnerability
 
-PLACEHOLDER. The repository owner must complete this section before the
-repository is made public, and must remove this paragraph when doing so.
+Use GitHub private vulnerability reporting on this repository: the Security tab,
+"Report a vulnerability". It is switched on when the repository is made public,
+which happens before a release is published (docs/operations.md, Releasing), so
+it exists wherever this file is read as part of a release. The report is
+visible to the maintainer only. GitHub
+is a CVE numbering authority, so a CVE can be requested through the advisory the
+report creates. Please do not open a public issue for a vulnerability; the
+new-issue chooser points here for that reason.
 
-- Once the repository is public: use GitHub private vulnerability reporting on
-  it (the Security tab, "Report a vulnerability"). The owner must enable private
-  reporting before the first announcement. GitHub is a CVE numbering authority,
-  so a CVE can be requested through the advisory that the report creates.
-- Until then: OWNER, write a contact address or another private reporting
-  mechanism here. There is no public channel yet.
-
-Do not open a public issue for a security problem. A useful report names the
-commit hash, gives a minimal reproduction (a test under `internal/` or
-`cmd/toolwarrant`, a command sequence against `cmd/mockupstream`, or an
-end-to-end scenario under `e2e/`), and states what an attacker gains: a
-definition served without approval, a call allowed against changed evidence, an
-address reached that the egress policy forbids, a secret printed, an audit edit
-that the catalog does not detect, a served tool the canary does not report.
-Response and fix targets will be set by the owner together with the first
-release.
-
-## Pending actions for the owner
-
-- Complete the reporting section above (enable private vulnerability
-  reporting on the repository, or name an address).
-- Report two behaviours of agentgateway v1.6.0 to the agentgateway project, by
-  hand: a `tools/call` sent as a JSON-RPC notification (no `id`, or `id: null`)
-  is forwarded to the upstream without the ExtMCP hook and without the
-  `mcpAuthorization` rule (known limit L17), and the admin API on the admin
-  listener accepts `POST /api/config` and answers `GET /config_dump` without
-  authentication (known limit L18). toolwarrant's controls for both are
-  documented below and in [docs/threat-model.md](docs/threat-model.md) rows 25
-  and 26; no public report of either existed on 2026-10-11.
-- Record the SHA-256 of the linux release asset of agentgateway v1.6.0 in the
-  `e2e` job of [.github/workflows/ci.yml](.github/workflows/ci.yml), which
-  refuses to run until the placeholder is replaced.
-- Add `dist/` to `.gitignore` (the goreleaser output directory).
-- Push the repository private, let `ci` pass, then tag `v0.1.0`, inspect the
-  draft release and make the repository public before publishing it
-  ([docs/operations.md](docs/operations.md), Releasing).
-- At the `v0.1.0` tag, before the repository is made public: replace the
-  Supported versions table and the PLACEHOLDER reporting paragraph above,
-  remove this list, and have the release notes checked against the Release
-  integrity section below.
+The maintainer acknowledges a report within seven days and aims to ship a fix
+in the next tag. The two behaviours of agentgateway v1.6.0 itself (known limits
+L17 and L18 below) are the maintainer's to report to the agentgateway project,
+by hand; that report is pending, and toolwarrant documents its own controls for
+both in [docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
 
 ## Scope
 
@@ -346,7 +316,7 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   `toolchain go1.27.2`).
 - `govulncheck ./...` runs as the `govulncheck` job of
   [.github/workflows/ci.yml](.github/workflows/ci.yml) on every pull request
-  and every push to main once the repository is on GitHub, and before every
+  and every push to main, and before every
   release. The last recorded run by hand (2026-10-11) found no vulnerabilities
   after the move to go1.27.2 and golang.org/x/net v0.60.0.
 - grpc is pinned to v1.86.0-dev because of GO-2026-6443, a server panic in grpc
@@ -382,16 +352,16 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
 
 ## Release integrity
 
-Nothing has been tagged yet; this section describes what the release
-workflow does once a `v*` tag is pushed (decision D16).
+The release workflow runs when a `v*` tag is pushed (decision D16).
 
 - A release is one annotated git tag on a commit whose newest `ci` run from a
   push to `main` succeeded; the `release` workflow's gate refuses a tag whose
   commit has no such run, and the release job checks that the commit it
-  built is the one the gate verified. Who may create a `v*` tag is a
-  repository rule (the tag ruleset named in docs/operations.md, Releasing), not
-  something the workflow can enforce: GitHub runs the workflow file of the
-  tagged commit. A published release is never re-run (a fix is a new tag).
+  built is the one the gate verified. Who may create a `v*` tag is a matter
+  of write access and, once the repository is public, of the tag ruleset named
+  in docs/operations.md, Releasing; the workflow cannot enforce it, since
+  GitHub runs the workflow file of the tagged commit. A published release is
+  never re-run (a fix is a new tag).
 - The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with

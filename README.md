@@ -18,14 +18,14 @@ that never re-lists keeps calling the changed tool until then (known limit L1,
 finding F1 in [seam/RESULTS.md](seam/RESULTS.md), end-to-end scenario C).
 
 Who it is for: the person who runs agentgateway in front of AI agents and must
-say who approved each tool definition it serves. Status: the first release,
-v0.1.0, is ahead; the code is tested against one pinned gateway version, serves
-one tenant and has no web UI. Start with the [Quickstart](#quickstart), then read
+say who approved each tool definition it serves. Status: v0.1.0 is the first
+release; the code is tested against one pinned gateway version, serves one
+tenant and has no web UI. Start with the [Quickstart](#quickstart), then read
 [Non-goals](#non-goals), [Known limits](#known-limits) and
 [SECURITY.md](SECURITY.md).
 
-toolwarrant is pre-release software that exists only as a local git repository.
-Nothing has been tagged, published or announced. See [Status](#status).
+toolwarrant is at its first release, v0.1.0. See [Status](#status) for what has
+been proven and where.
 
 ## How it works, in five steps
 
@@ -155,12 +155,12 @@ mock upstream, the default of `cmd/mockupstream`), 9001 (the first processor;
 `emit` gives each server the next free port from this base), 15000, 15020 and
 15021 (the gateway's admin, stats and readiness listeners).
 
-Install from a release, instead of building in step 0, once v0.1.0 exists:
+Install from a release instead of building in step 0:
 download `toolwarrant_<version>_<os>_<arch>.tar.gz` for your platform from the
 GitHub release together with the checksums file, its `.sigstore.json` signature bundle,
 verify them as the [Release integrity](SECURITY.md#release-integrity) section of
-SECURITY.md says (toolwarrant release archives are verified with cosign before
-use), and untar the archive. `cmd/mockupstream` is not in the release, so the
+SECURITY.md says (the checksums file is verified with cosign and the archive
+against it before use), and untar the archive. `cmd/mockupstream` is not in the release, so the
 demo upstream still needs `go build -o bin/ ./cmd/mockupstream`.
 
 ```sh
@@ -409,23 +409,27 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 
 ## Status
 
-Pre-release. The code lives in a local git repository; no tag, no GitHub
-release, no module published, no container image. The unit and property tests
-of every package pass under `-race` (`make test`, which prints per-package
-coverage), and the end-to-end test passes against the real gateway (`make e2e`;
-`demo/run.sh` runs it unattended and writes `demo/last-run.log`). The GitHub
-Actions workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs
-lint, vet and build, the short test suite under `-race`, the six tests that
-`-short` skips (the three Unicode walks of `internal/textdiff`, the two slow
-catalog tests and the processor's gRPC size test, run with their packages in
-full), govulncheck, gitleaks, the
-third-party notices check and the documentation checks (every cited test name
-and every relative link must exist) on every pull request and every push to
-main, and the end-to-end job on manual dispatch once the owner has recorded the
-checksum of the linux gateway binary; it has not run yet because the repository
-has not been pushed. The security policy, including how to report a problem once
-the repository is public and the owner's pending report to the agentgateway
-project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
+v0.1.0 is the first release: a tagged GitHub release with the `toolwarrant`
+binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64, an SPDX
+SBOM per archive and a keyless cosign signature over the checksums file
+(verification in [SECURITY.md](SECURITY.md), Release integrity). There is no
+container image; the Go module is the repository itself, so `go install
+github.com/sairam0424/toolwarrant/cmd/toolwarrant@v0.1.0` builds the same
+commit once the repository is public. The unit and property tests of every
+package pass under `-race` (`make test`, which prints per-package coverage), and
+the end-to-end test passes against the real gateway (`make e2e`; `demo/run.sh`
+runs it unattended and writes `demo/last-run.log`). The GitHub Actions workflow
+in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs lint, vet and
+build, the short test suite under `-race`, the six tests that `-short` skips
+(the three Unicode walks of `internal/textdiff`, the two slow catalog tests and
+the processor's gRPC size test, run with their packages in full), govulncheck,
+gitleaks, the third-party notices check, the release configuration check and
+the documentation checks (every cited test name and every relative link must
+exist) on every pull request and every push to main; the end-to-end job runs on
+manual dispatch against the linux release binary of agentgateway v1.6.0 and
+passed on 2026-10-12. The security policy, including how to report a problem
+and the owner's pending report to the agentgateway project, is in
+[SECURITY.md](SECURITY.md). Operational procedures are in
 [docs/operations.md](docs/operations.md); the design decisions D1 to D17 are in
 [docs/decisions.md](docs/decisions.md). Contributions follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the code of conduct is

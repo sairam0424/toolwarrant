@@ -1253,8 +1253,9 @@ one SPDX SBOM per archive with syft, signs the checksums file keyless with
 cosign under the workflow's own identity, and creates a draft release whose
 notes open with the pinned gateway version and the catalog schema version and
 group the commits since the previous tag by type. Inspect the draft (the four
-archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`), then
-publish it. The seam and mock binaries are never released.
+archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`); for
+the first release, make the repository public and set the items listed below
+first, then publish it. The seam and mock binaries are never released.
 
 A user verifies a release before running it:
 
@@ -1277,10 +1278,21 @@ triggered for the tagged commit; a commit that reached `main` through a pull
 request has such a run, a tag on any other commit is refused, and the release
 job stops if the commit it checked out is not the one the gate verified. The
 gate lives in the workflow file of the tagged commit, so it binds only tags
-created by someone who could not also change that file: the tag ruleset below
-is what limits tag creation to the owner.
+created by someone who could not also change that file; who can create a tag
+is limited by write access and, once the repository is public, by the tag
+ruleset below.
 
-Before the repository is made public, set by hand on GitHub:
+A release candidate (`vX.Y.Z-rc.N`) exercises the same workflow and is marked
+a pre-release by goreleaser. The notes of a release list the commits since
+the previous tag by version, and a candidate tag counts as one, so before the
+final tag delete the candidate tags and their draft releases, or the notes of
+the release start at the last candidate. goreleaser's `smartsemver` sort, which would skip them, is a
+GoReleaser Pro feature and fails the open-source build (D16).
+
+When the repository is made public, and before the draft is published, set by
+hand on GitHub (rulesets, private vulnerability reporting and secret scanning
+with push protection exist only for a public repository on the free plan;
+Dependabot alerts can be switched on while it is private):
 
 - Description: toolwarrant for MCP: a control plane that approves exact
   tool-definition digests and enforces them at agentgateway v1.6.0 as an

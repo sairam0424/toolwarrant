@@ -1546,7 +1546,9 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   first tag on the private repository, inspection of the draft release, then
   the repository is made public and the release published.
 - Decision (h): the publish gate the owner completes before the tag, all of it
-  recorded in SECURITY.md's pending-actions section until done: fill the
+  recorded in SECURITY.md's pending-actions section until done (the section
+  went with the v0.1.0 wording, its items complete or carried by the Releasing
+  section of docs/operations.md): fill the
   SECURITY.md contact (GitHub private vulnerability reporting enabled on the
   repository, or an address); record the linux gateway asset checksum for the
   e2e CI job; write and file the upstream report on the id-less tools/call
@@ -1564,7 +1566,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
 - Where. `.goreleaser.yaml` (new), `.github/workflows/release.yml` (new),
   `Makefile` (`release-snapshot`), `.github/workflows/ci.yml` (gitleaks SHA
   pin), `docs/operations.md` ("Releasing": the owner's steps and the user's
-  verification command), SECURITY.md (contact, pending actions).
+  verification command), SECURITY.md (reporting mechanism, Release integrity).
 - Tests and proof. `goreleaser check` and `make release-snapshot` green on the
   owner's machine; the verification command exercised once against a locally
   signed checksums file; the existing CI jobs on the private repository green
