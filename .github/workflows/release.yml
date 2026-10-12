@@ -2,9 +2,10 @@
 # (D16). Runs only after the ci workflow succeeded on the same commit; every
 # action is pinned by commit SHA (the tag is the bare trailing comment
 # Dependabot maintains). The gate job needs
-# actions: read to list workflow runs; the release job needs contents: write
-# to create the draft and id-token: write for the keyless cosign signature;
-# nothing else.
+# actions: read to list workflow runs and contents: read to read the tag ref
+# and peel the tag object (v0.1.0-rc.1 failed with HTTP 403 without it); the
+# release job needs contents: write to create the draft and id-token: write
+# for the keyless cosign signature; nothing else.
 name: release
 
 on:
@@ -24,7 +25,8 @@ jobs:
     name: ci succeeded on this commit
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions: read # list the ci runs of the tagged commit
+      contents: read # read the tag ref and peel the tag object; a permissions block zeroes everything it does not name
     steps:
       - name: require a successful ci run for the tagged commit
         env:
