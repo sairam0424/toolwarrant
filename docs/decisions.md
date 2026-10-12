@@ -721,7 +721,9 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   re-seal; the probe rule of (h) called an HTTP 400 healthy whoever produced
   it; and the per-server caps of (c) bound rows and bytes but not the audit
   log.
-- Where. `internal/catalog/snapshot.go` and `internal/catalog/load.go` (a),
+- Where. In `docs/threat-model.md` this round changed rows 4, 11, 16, 18, 20,
+  21, 22, 25 and 26 and limits L1, L6, L11, L17, L18 and L19. In the code:
+  `internal/catalog/snapshot.go` and `internal/catalog/load.go` (a),
   `internal/catalog/integrity.go`, `internal/catalog/integrity_audit.go` and
   `internal/catalog/guards.go` (b), `internal/catalog/crawl.go` and
   `internal/catalog/tooldef.go` (c), `internal/catalog/schema.go` (i);
@@ -1075,7 +1077,10 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   per-server caps. The processor's `source errors` counter rises when the
   file was replaced under it. Document corrections of the round are listed in
   the corrections subsection of [../seam/RESULTS.md](../seam/RESULTS.md).
-- Where. `internal/catalog/anchor.go` and `internal/catalog/approved.go` (a),
+- Where. In `docs/threat-model.md` this round changed rows 4, 7, 10, 11, 15, 16,
+  18, 20, 21, 22, 25 and 26 and limits L1, L6, L17, L18 and L19, and states
+  the trust boundary of the catalog file in row 21. In the code:
+  `internal/catalog/anchor.go` and `internal/catalog/approved.go` (a),
   `internal/catalog/pin.go` and `internal/audit/audit.go` (`VerifyFrom`, b),
   `internal/catalog/integrity_versions.go`, `internal/catalog/integrity.go`,
   `internal/catalog/guards.go` and `internal/catalog/store.go` (c),
@@ -1394,7 +1399,11 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   refused `emit` records no address; a 400 probe answer with any JSON body
   fails the check. Document corrections of the round are listed in the
   corrections subsection of [../seam/RESULTS.md](../seam/RESULTS.md).
-- Where. `internal/catalog/chain.go`, `internal/catalog/anchor.go`,
+- Where. In `docs/threat-model.md` this round changed rows 4, 7, 10, 11, 15, 18,
+  20, 21, 25 and 26 and limits L1, L17, L18 and L19, and restates the chain
+  rule of row 21: an audit entry is trusted only when it is part of the chain
+  the `Store` verified. In the code:
+  `internal/catalog/chain.go`, `internal/catalog/anchor.go`,
   `internal/catalog/approved.go`, `internal/catalog/load.go`,
   `internal/catalog/recheck.go`, `internal/catalog/snapshot.go` and
   `internal/catalog/proposers.go` (a, b; `pin.go` is gone; `proposers.go`
@@ -1826,7 +1835,12 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   compare it before every decision you make after the processors were
   stopped. Document corrections of the round are listed in the corrections
   subsection of [../seam/RESULTS.md](../seam/RESULTS.md).
-- Where. `internal/catalog/versionhistory.go` (which replaces
+- Where. In `docs/threat-model.md` this round changed rows 7, 10, 18, 20, 21, 25
+  and 26 and limits L17, L18 and L19, extends the chain rule to every column a
+  decision or a server view acts on, and states the limit of the chain pin in
+  row 21 as the code has it: a rewrite from any entry to the head made while
+  no `Store` holds a pin is caught by the recorded head alone. In the code:
+  `internal/catalog/versionhistory.go` (which replaces
   `proposers.go`), `internal/catalog/load.go`, `internal/catalog/views.go`
   and `internal/catalog/integrity_versions.go` (a),
   `internal/catalog/ghostrows.go`, `internal/catalog/anchor.go`,
