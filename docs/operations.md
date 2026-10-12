@@ -649,8 +649,11 @@ processor address rewritten with one `UPDATE` was returned as fact and the
 next `emit` wrote it into the gateway configuration with no change line); the
 state column of every tool is anchored to the newest verified lifecycle entry
 about it on every path that acts on it (the snapshot the processor serves
-from, `list`, `show`, `export`, every decision and the crawl), so a disabled
-tool re-enabled by one `UPDATE` is refused rather than served, and the server
+from, `list`, `show`, `export`, `emit`, every decision and the crawl), so a
+disabled tool re-enabled by one `UPDATE` is refused rather than served, and a
+tool hidden by a flip to `disabled` or `deprecated` is refused rather than
+dropped from the configuration or the served policy (found by the
+verification of the released v0.1.0 binary), and the server
 row is anchored to the first `server.added` entry, so an appended second
 registration cannot re-point it (decision D17, extended after the eighth
 review); `Approved` takes the approver's name and the time of approval from
@@ -827,7 +830,7 @@ the file; the URL itself is never printed, the report says that its hash
 differs), a tool's state column disagrees with the newest audit entry about
 the tool (`state of tool S/T is "X" but its newest audit entry (seq N,
 EVENT) left it "Y"; the state column was edited`; D17; the snapshot, `list`,
-`show`, `export`, every decision and the crawl refuse the file), an approver in the approvals table differs from the verified entry
+`show`, `export`, `emit`, every decision and the crawl refuse the file), an approver in the approvals table differs from the verified entry
 (`the approver or time of the newest approvals row of T is not what its
 approval entry (seq N) recorded; the approvals row was rewritten`, D17), an
 audit row sits at seq 0 or below or an approvals or history row at an id
