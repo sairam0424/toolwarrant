@@ -5,12 +5,24 @@ It crawls each upstream MCP server, stores every tool definition it sees as an
 immutable version identified by the SHA-256 of its RFC 8785 canonical JSON, lets
 a named person approve one exact digest, keeps a hash-chained audit log, and runs
 as the gateway's ExtMCP processor so that a tool is shown and callable only while
-the definition the upstream serves right now hashes to the approved digest. The
-attack it stops is tool poisoning by rug pull: an upstream changes a tool's
+the definition the upstream serves right now hashes to the approved digest.
+
+The attack it stops is tool poisoning by rug pull: an upstream changes a tool's
 description, schema, annotations or `_meta` after the tool was approved, so that
 the agent reads an instruction nobody reviewed. With toolwarrant in the path the
 changed tool disappears from `tools/list` and its `tools/call` is denied until a
 person approves the new digest or the upstream goes back to the approved one.
+The denial of `tools/call` for a changed definition takes effect when the
+processor's evidence is refreshed by a gateway listing or by a crawl, so a client
+that never re-lists keeps calling the changed tool until then (known limit L1,
+finding F1 in [seam/RESULTS.md](seam/RESULTS.md), end-to-end scenario C).
+
+Who it is for: the person who runs agentgateway in front of AI agents and must
+say who approved each tool definition it serves. Status: the first release,
+v0.1.0, is ahead; the code is tested against one pinned gateway version, serves
+one tenant and has no web UI. Start with the [Quickstart](#quickstart), then read
+[Non-goals](#non-goals), [Known limits](#known-limits) and
+[SECURITY.md](SECURITY.md).
 
 toolwarrant is pre-release software that exists only as a local git repository.
 Nothing has been tagged, published or announced. See [Status](#status).
@@ -367,8 +379,8 @@ automatic index with no DDL text that no check saw, and every later write
 failed with an `ErrCorrupt` that named no cause while `audit verify` was
 clean; the error now names the table and the constraint). Since the seventh
 round the rules reach the rows the earlier rounds did not: every chain walk
-starts at the smallest possible seq, bound included,uence number, so a row at seq 0 or
-below is a chain break (expected seq 1) at open, in `audit verify` and in
+starts at the smallest possible sequence number, bound included, so a row at
+seq 0 or below is a chain break (expected seq 1) at open, in `audit verify` and in
 `Store.Integrity`, which also compares the row count of `audit_log` with the
 entries it walked, and `audit list` shows such a row in forensic mode
 (decision D17; before, every walk and every page started at seq 0, so a row
@@ -376,12 +388,14 @@ inserted at seq 0 or below under a re-created `audit_log_sequential` was
 invisible to `audit verify`, `audit list` and `Integrity` while every
 decision about its tool was `ErrCorrupt`); an approvals row or a history row
 with id below 1 is corruption: every checked read and every write refuses a
-file that holds one (`ErrCorrupt`, naming the table and the column), two
+file that holds one (`ErrCorrupt`, naming the table and the column; a forensic
+open reads past such a row, as it reads past a missing guard, so `list`, `show`
+and `audit list` can inspect the file while `audit verify` names the row), two
 `AFTER INSERT` guards (`approvals_positive_id`, `tool_versions_positive_id`)
 refuse the insert, and `Integrity` reports it (decision D17; before, such a
 row counted as a historic approval, and a row at id -1 made every later
 insert fail under the no-replace guards' message, because SQLite evaluates
-`NEW (a forensic open reads past such a row, as it reads past a missing guard, so `list`, `show` and `audit list` can inspect the file while `audit verify` names the row).id` as -1 in a `BEFORE INSERT` trigger when no id is supplied, which is
+`NEW.id` as -1 in a `BEFORE INSERT` trigger when no id is supplied, which is
 also why the new guards run after the insert); the server views that `emit`, the
 crawler, `serve`, `server list`, `list` and `show` read run the same file
 check as every other view and anchor the processor address to the newest
