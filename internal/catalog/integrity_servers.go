@@ -53,6 +53,14 @@ func (c *integrityCheck) noteServerEntry(e audit.Entry) {
 			c.problem("audit entry %d about server %s has no %s field", e.Seq, quote(e.Subject), fieldURLSHA256)
 			return
 		}
+		if trace.seq != 0 {
+			// A server is registered once; a well-formed second server.added
+			// about the same name is an appended forgery and never replaces the
+			// first (the server anchor reads the first too).
+			c.problem("audit entry %d is a second server.added about server %s, which was registered at entry %d; a server is registered once", e.Seq, quote(e.Subject), trace.seq)
+			c.rep.ServersMismatched++
+			return
+		}
 		trace.seq, trace.allowPrivate, trace.urlSHA = e.Seq, private, sha
 		trace.paused, trace.pausedSeq = false, e.Seq
 	case evServerProcessorSet:
