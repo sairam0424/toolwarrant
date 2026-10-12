@@ -155,7 +155,7 @@ mock upstream, the default of `cmd/mockupstream`), 9001 (the first processor;
 `emit` gives each server the next free port from this base), 15000, 15020 and
 15021 (the gateway's admin, stats and readiness listeners).
 
-Install from a release, instead of building in step 0, once v0.1.0 exists:
+Install from a release instead of building in step 0:
 download `toolwarrant_<version>_<os>_<arch>.tar.gz` for your platform from the
 GitHub release together with the checksums file, its `.sigstore.json` signature bundle,
 verify them as the [Release integrity](SECURITY.md#release-integrity) section of
@@ -412,8 +412,10 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 v0.1.0 is the first release: a tagged GitHub release with the `toolwarrant`
 binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64, an SPDX
 SBOM per archive and a keyless cosign signature over the checksums file
-(verification in [SECURITY.md](SECURITY.md), Release integrity). No module is
-published and there is no container image. The unit and property tests of every
+(verification in [SECURITY.md](SECURITY.md), Release integrity). There is no
+container image; the Go module is the repository itself, so `go install
+github.com/sairam0424/toolwarrant/cmd/toolwarrant@v0.1.0` builds the same
+commit once the repository is public. The unit and property tests of every
 package pass under `-race` (`make test`, which prints per-package coverage), and
 the end-to-end test passes against the real gateway (`make e2e`; `demo/run.sh`
 runs it unattended and writes `demo/last-run.log`). The GitHub Actions workflow

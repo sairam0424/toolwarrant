@@ -19,10 +19,10 @@ report creates. Please do not open a public issue for a vulnerability; the
 new-issue chooser points here for that reason.
 
 The maintainer acknowledges a report within seven days and aims to ship a fix
-in the next tag. A behaviour of agentgateway v1.6.0 itself (known limits L17
-and L18 below) is reported to the agentgateway project by the maintainer, by
-hand; toolwarrant documents its own controls for both in
-[docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
+in the next tag. The two behaviours of agentgateway v1.6.0 itself (known limits
+L17 and L18 below) are the maintainer's to report to the agentgateway project,
+by hand; that report is pending, and toolwarrant documents its own controls for
+both in [docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
 
 ## Scope
 
@@ -313,7 +313,7 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   `toolchain go1.27.2`).
 - `govulncheck ./...` runs as the `govulncheck` job of
   [.github/workflows/ci.yml](.github/workflows/ci.yml) on every pull request
-  and every push to main once the repository is on GitHub, and before every
+  and every push to main, and before every
   release. The last recorded run by hand (2026-10-11) found no vulnerabilities
   after the move to go1.27.2 and golang.org/x/net v0.60.0.
 - grpc is pinned to v1.86.0-dev because of GO-2026-6443, a server panic in grpc
