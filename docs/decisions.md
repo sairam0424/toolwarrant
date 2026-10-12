@@ -1295,10 +1295,16 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   constraint when SQLite reports them.
 - Decision (f): processor. A `CheckResponse` call whose message the gRPC
   transport refuses for size (`ResourceExhausted` from the length prefix) is
-  observed on the call's request decoder, and before the status is written
+  observed on the call's request decoder, within the same handler call, and
   the processor marks every catalog tool of the snapshot (every tracked entry
   while the snapshot is empty), counts the denial and logs it, exactly as it
-  does for an oversized page it reads itself; marking needs no payload, so the
+  does for an oversized page it reads itself. The order on the wire, found by
+  the first ci run after the eighth review: grpc-go's server stream writes the
+  status to the client before it returns the error to the decoder, so the
+  gateway sees the failed hook a moment before the marking lands, and a
+  `tools/call` in that moment is judged against the evidence the previous
+  listing left, as one an instant earlier would have been (the test that read
+  the statistics inside that moment now waits for the marking); marking needs no payload, so the
   refused message's secret and service names, which were never read, cannot
   gate it. The documents say what the shipped runtime does: on agentgateway v1.6.0
   a page over the gateway's own limit never reaches the processor at all (HTTP
