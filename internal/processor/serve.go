@@ -113,11 +113,18 @@ func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
 
 // serviceDesc is a copy of the generated ServiceDesc whose CheckResponse
 // method decodes the request through watchRefusal, so a message the transport
-// refuses for size is reported to pageRefused before the handler returns the
-// error and gRPC writes the status. gRPC's own hooks are too late or too
-// early for this: a unary interceptor runs after the request was decoded, so
-// it never sees a refused one, and a stats handler sees the RPC end only after
-// the status was written, which would leave a window in which a tools/call
+// refuses for size is reported to pageRefused within the same handler call,
+// before the handler returns the error. The order on the wire is tighter than
+// that comment once suggested: grpc-go's server stream writes the status to
+// the client inside RecvMsg, before it returns the error to the decoder, so
+// the gateway sees the failed hook a moment before the marking completes and
+// a tools/call in that moment is judged against the evidence the previous
+// listing left, exactly as one an instant earlier would have been; the
+// marking then lands and holds until a clean listing (the eighth review's ci
+// run caught a test that read the statistics inside that moment). gRPC's own
+// hooks are no better placed: a unary interceptor runs after the request was
+// decoded, so it never sees a refused one, and a stats handler sees the RPC
+// end only after the status was written, which would leave a window in which a tools/call
 // passes on the older evidence. The generated variable is never modified; the
 // methods slice is cloned before the one entry is replaced.
 func (s *Server) serviceDesc() (*grpc.ServiceDesc, error) {

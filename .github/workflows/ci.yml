@@ -104,12 +104,20 @@ jobs:
           cache: true
       # Installed at a pinned module version rather than @latest so that a new
       # govulncheck release cannot change what this job does without a commit.
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      # v1.1.4 panicked in its SSA builder on Go 1.27 code (first run on the
+      # runner); v1.9.0 handles it and found no vulnerabilities on 2026-10-12.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: govulncheck ./...
 
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # On a pull request the action lists the request's commits through the
+      # API, which the default contents: read token may not do (403 on the
+      # first pull request of this repository).
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, SHA pinned
         with:
