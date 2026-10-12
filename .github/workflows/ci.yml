@@ -112,6 +112,12 @@ jobs:
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # On a pull request the action lists the request's commits through the
+      # API, which the default contents: read token may not do (403 on the
+      # first pull request of this repository).
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, SHA pinned
         with:
