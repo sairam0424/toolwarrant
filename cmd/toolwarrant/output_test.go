@@ -190,7 +190,7 @@ func TestDescribeMapsSentinelsToAdvice(t *testing.T) {
 		{wrap(catalog.ErrNotFound), "not found"},
 		{wrap(catalog.ErrExists), "already exists"},
 		{wrap(catalog.ErrInvalid), "invalid input"},
-		{wrap(catalog.ErrSchema), "delete the file and run init again"},
+		{wrap(catalog.ErrSchema), "the message says whether it came from an unreleased build (delete it and run init again) or from a release"},
 		{wrap(catalog.ErrCorrupt), adviceCorrupt},
 		{wrap(catalog.ErrReadOnly), adviceReadOnly},
 		{wrap(catalog.ErrPaused), "server resume NAME"},

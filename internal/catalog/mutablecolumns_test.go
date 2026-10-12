@@ -24,9 +24,10 @@ func approvedEcho(t *testing.T, s *Store) string {
 	return d1
 }
 
-// A disabled tool is re-enabled by one UPDATE on tools.state. The serving path
-// cannot tell (the approval is genuine), so Integrity must: the latest entry
-// about the tool says state=enabled->disabled.
+// A disabled tool is re-enabled by one UPDATE on tools.state. Integrity names
+// it from the latest entry about the tool (state=enabled->disabled), and since
+// the eighth review the serving path refuses it too (D17 c, the state anchor)
+// instead of serving the genuine approval under a forged state.
 func TestIntegrity_StateFlipReenablingADisabledToolIsReported(t *testing.T) {
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
@@ -36,8 +37,8 @@ func TestIntegrity_StateFlipReenablingADisabledToolIsReported(t *testing.T) {
 	mustBeClean(t, s, "after the disable")
 	mustExec(t, rawDB(t, path), `UPDATE tools SET state = 'enabled' WHERE name = 'echo'`)
 
-	if snap := mustSnapshot(t, s, "alpha"); !snap.Serves("echo", d1) {
-		t.Logf("note: Snapshot does not serve the flipped tool: %+v", snap.Tools["echo"])
+	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "state column was edited") {
+		t.Errorf("Snapshot with the state flipped = %v, want ErrCorrupt naming the edited column (d1 %s)", err, d1)
 	}
 	rep := mustIntegrity(t, s)
 	if rep.StateMismatches != 1 || len(rep.Problems) != 1 {

@@ -10,9 +10,14 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version. A database with another
-// number is refused: a higher one was written by a newer build, a lower one by
-// an unreleased build, and there is no migration code for either (nothing has
-// shipped), so the operator deletes the file and runs init again.
+// number is refused: a higher one was written by a newer build; a lower one
+// below firstReleasedSchema was written by an unreleased build, for which
+// there is no migration, so the operator deletes the file and runs init
+// again; a lower one at or above firstReleasedSchema was written by a
+// released build and holds approvals and an audit log an operator must keep,
+// so the message names the build that reads it and never advises deletion
+// (eighth review; the first bump after v0.1.0 carries a migration or that
+// message, never the delete advice).
 //
 // Version 2 added digest_profile and proposals_since_decision, the
 // tool_version_proposers table, servers.paused and the unusable marker.
@@ -38,6 +43,11 @@ import (
 // changed guard text means a version 5 file would be refused as redefined, so
 // the number moves and the file is refused with the usual advice instead.
 const schemaVersion = 6
+
+// firstReleasedSchema is the schema of the first tagged release (v0.1.0). Every
+// version below it belongs to an unreleased build and may be deleted; every
+// version from it on belongs to a release and must not be.
+const firstReleasedSchema = 6
 
 // migrate creates the schema in an empty database, or checks that an existing
 // one is ours. It runs in one immediate transaction, so two processes opening
@@ -80,10 +90,20 @@ func readUserVersion(ctx context.Context, q queryer) (int, error) {
 
 // schemaError explains a user_version this build cannot use.
 func schemaError(version int) error {
-	if version > 0 && version < schemaVersion {
-		return fmt.Errorf("%w: database is schema version %d from an unreleased build and this build uses %d; there is no migration: delete the file and run init again", ErrSchema, version, schemaVersion)
+	return schemaMessage(version, firstReleasedSchema, schemaVersion)
+}
+
+// schemaMessage is schemaError with the boundaries as parameters, so the
+// branch for a released older schema can be tested before such a schema
+// exists.
+func schemaMessage(version, first, current int) error {
+	switch {
+	case version > 0 && version < first:
+		return fmt.Errorf("%w: database is schema version %d from an unreleased build and this build uses %d; there is no migration: delete the file and run init again", ErrSchema, version, current)
+	case version >= first && version < current:
+		return fmt.Errorf("%w: database is schema version %d, written by a released build, and this build uses %d; do not delete it: read it with a build of schema %d or migrate it as that build's release notes say", ErrSchema, version, current, version)
 	}
-	return fmt.Errorf("%w: database is version %d, this build supports %d", ErrSchema, version, schemaVersion)
+	return fmt.Errorf("%w: database is version %d, this build supports %d", ErrSchema, version, current)
 }
 
 // checkOurs verifies that a database at our version really is ours and, when

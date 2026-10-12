@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 )
@@ -36,19 +35,28 @@ import (
 // with the flag; an un-pause by one UPDATE therefore serves nothing and turns
 // the operator's resume into ErrCorrupt instead of "already paused=false".
 
-// newestServerEntry returns the newest entry with one of these events about a
-// server; found is false when the log has none. The query rests on the
-// audit_log_by_subject index, so it costs one probe per server and lookup.
-func newestServerEntry(ctx context.Context, q queryer, server string, events ...string) (audit.Entry, bool, error) {
-	args := make([]any, 0, len(events)+1)
-	args = append(args, server)
-	marks := make([]string, len(events))
-	for i, event := range events {
-		marks[i] = "?"
-		args = append(args, event)
-	}
+// firstServerEntry returns the oldest entry with this event about a server;
+// found is false when the log has none. One index seek, no sort.
+func firstServerEntry(ctx context.Context, q queryer, server, event string) (audit.Entry, bool, error) {
 	e, err := scanAudit(q.QueryRowContext(ctx,
-		`SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event IN (`+strings.Join(marks, ", ")+`) ORDER BY seq DESC LIMIT 1`, args...))
+		`SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event = ? ORDER BY seq ASC LIMIT 1`, server, event))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return audit.Entry{}, false, nil
+	case err != nil:
+		return audit.Entry{}, false, fmt.Errorf("catalog: read server entry: %w", err)
+	}
+	return e, true, nil
+}
+
+// newestServerEntry returns the newest entry with this event about a server;
+// found is false when the log has none. The query is one seek on the
+// audit_log_by_subject index with no sort (an IN list over two events would
+// make SQLite sort every matching entry in a temporary b-tree), so a lookup
+// costs the same whatever the log holds.
+func newestServerEntry(ctx context.Context, q queryer, server, event string) (audit.Entry, bool, error) {
+	e, err := scanAudit(q.QueryRowContext(ctx,
+		`SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event = ? ORDER BY seq DESC LIMIT 1`, server, event))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return audit.Entry{}, false, nil
@@ -78,7 +86,7 @@ func anchorServer(ctx context.Context, q queryer, chain *chainMemory, srv Server
 // server.resumed entry; a row without such an entry must not be paused.
 func anchorPaused(ctx context.Context, q queryer, chain *chainMemory, srv Server) error {
 	shown := quote(srv.Name)
-	e, found, err := newestServerEntry(ctx, q, srv.Name, evServerPaused, evServerResumed)
+	e, found, err := newestPauseEntry(ctx, q, srv.Name)
 	if err != nil {
 		return err
 	}
@@ -102,10 +110,16 @@ func anchorPaused(ctx context.Context, q queryer, chain *chainMemory, srv Server
 }
 
 // anchorServerAdded checks the URL and the allow_private flag against the
-// server.added entry.
+// FIRST server.added entry about the server: AddServer writes exactly one per
+// name and nothing deletes a server, so a later server.added is foreign, and
+// anchoring to the newest would let whoever can append a sealed entry (the
+// access D14 admits) register a new URL and policy for an existing server
+// without rewriting anything (eighth review). Integrity reports the second
+// entry; the forger must now rewrite the original in place, which the chain
+// catches.
 func anchorServerAdded(ctx context.Context, q queryer, chain *chainMemory, srv Server) error {
 	shown := quote(srv.Name)
-	added, found, err := newestServerEntry(ctx, q, srv.Name, evServerAdded)
+	added, found, err := firstServerEntry(ctx, q, srv.Name, evServerAdded)
 	if err != nil {
 		return err
 	}
@@ -157,6 +171,26 @@ func anchorProcessorAddr(ctx context.Context, q queryer, chain *chainMemory, srv
 		return fmt.Errorf("%w: processor_addr of server %s is %s but the newest server.processor_set entry (seq %d) recorded %s", ErrCorrupt, shown, quote(srv.ProcessorAddr), set.Seq, quote(addr))
 	}
 	return nil
+}
+
+// newestPauseEntry is the newer of the newest server.paused and the newest
+// server.resumed entry about a server: two index seeks, no sort.
+func newestPauseEntry(ctx context.Context, q queryer, server string) (audit.Entry, bool, error) {
+	paused, foundPaused, err := newestServerEntry(ctx, q, server, evServerPaused)
+	if err != nil {
+		return audit.Entry{}, false, err
+	}
+	resumed, foundResumed, err := newestServerEntry(ctx, q, server, evServerResumed)
+	if err != nil {
+		return audit.Entry{}, false, err
+	}
+	switch {
+	case foundPaused && (!foundResumed || paused.Seq > resumed.Seq):
+		return paused, true, nil
+	case foundResumed:
+		return resumed, true, nil
+	}
+	return audit.Entry{}, false, nil
 }
 
 // errServerEntryField is the ErrCorrupt for a server entry whose detail lacks

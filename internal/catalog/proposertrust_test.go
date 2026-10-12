@@ -86,8 +86,11 @@ func TestApprove_ProposerLaunderedByInPlaceRewriteIsCorrupt(t *testing.T) {
 	if !strings.Contains(err.Error(), "is not the entry this store verified") {
 		t.Errorf("Approve = %v, want the rewritten proposal entry named", err)
 	}
-	if snap := mustSnapshot(t, s, "alpha"); snap.Serves("echo", d1) {
-		t.Error("echo is served although nobody approved it")
+	// The serving path reads the newest entry about the tool for its state
+	// (D17 c, extended), so the laundered entry is refused there too instead
+	// of the tool being quietly left unserved.
+	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "is not the entry this store verified") {
+		t.Errorf("Snapshot after the laundering = %v, want ErrCorrupt naming the rewritten entry", err)
 	}
 	if _, err := s.Versions(bg, "alpha", "echo"); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Versions after the laundering = %v, want ErrCorrupt rather than the laundered history", err)

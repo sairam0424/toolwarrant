@@ -1,8 +1,9 @@
 # .github/workflows/release.yml: a v* tag becomes a draft GitHub release
 # (D16). Runs only after the ci workflow succeeded on the same commit; every
-# action is pinned by commit SHA (the tag is a comment). The job needs
-# contents: write to create the draft and id-token: write for the keyless
-# cosign signature; nothing else.
+# action is pinned by commit SHA (the tag is a comment). The gate job needs
+# actions: read to list workflow runs; the release job needs contents: write
+# to create the draft and id-token: write for the keyless cosign signature;
+# nothing else.
 name: release
 
 on:
@@ -22,22 +23,32 @@ jobs:
     name: ci succeeded on this commit
     runs-on: ubuntu-latest
     permissions:
-      checks: read
       actions: read
     steps:
       - name: require a successful ci run for the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -eu
-          conclusions=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=50" \
-            --jq '[.workflow_runs[] | select(.name == "ci")] | map(.conclusion // "pending") | join(",")')
-          echo "ci runs for ${SHA}: ${conclusions:-none}"
-          case ",${conclusions}," in
-            *,success,*) echo "ci succeeded on this commit" ;;
-            *) echo "no successful ci run for this commit; push main, let ci pass, then tag" >&2; exit 1 ;;
-          esac
+          # github.sha is the tag object for an annotated tag, and ci runs are
+          # keyed by commit, so peel the tag through the API first.
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha + " " + .object.type')
+          SHA=${ref%% *}
+          if [ "${ref##* }" = tag ]; then
+            SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${SHA}" --jq .object.sha)
+          fi
+          echo "tag ${TAG} points at commit ${SHA}"
+          # The newest push run of ci on main for this commit decides; an older
+          # success does not outweigh a later failure, and runs of other events
+          # or branches (pull requests, dispatches) do not count.
+          newest=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=50" \
+            --jq '[.workflow_runs[] | select(.name == "ci" and .event == "push" and .head_branch == "main")] | sort_by(.run_number) | reverse | (.[0].conclusion // "none")')
+          echo "newest ci push run on main for ${SHA}: ${newest}"
+          if [ "${newest}" != "success" ]; then
+            echo "the newest ci push run on main for this commit is not a success (${newest}); push main, let ci pass, then tag that commit" >&2
+            exit 1
+          fi
 
   release:
     name: goreleaser release (draft)
@@ -50,6 +61,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, SHA pinned
         with:
           fetch-depth: 0 # the changelog needs every commit since the previous tag
+          persist-credentials: false # nothing in this job pushes; the token stays out of .git/config
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0, SHA pinned
         with:
           go-version-file: go.mod
@@ -60,13 +72,13 @@ jobs:
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3, SHA pinned
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.18.2 # the version the snapshot proof ran with (D16); bump deliberately
           args: check
       - name: goreleaser release
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3, SHA pinned
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.18.2 # the version the snapshot proof ran with (D16); bump deliberately
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

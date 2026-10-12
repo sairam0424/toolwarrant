@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,6 +155,9 @@ func (r rawResponse) bodyPhrase() string {
 	}
 	return fmt.Sprintf("with a body of %d bytes", len(r.body))
 }
+
+// probeMaxBodyText is the read cap as the help text and the verdicts name it.
+func probeMaxBodyText() string { return strconv.Itoa(probeMaxBody>>20) + " MiB" }
 
 // truncated reports whether the body reached the read cap: the reader stops
 // there, so a JSON answer longer than the cap arrives as invalid JSON and a
@@ -321,7 +325,10 @@ func (r rawResponse) messages() [][]byte {
 			data = nil
 		}
 	}
-	for _, line := range strings.Split(string(r.body), "\n") {
+	// The SSE specification strips one leading byte-order mark from the whole
+	// stream before any line is read; without it the first "data:" line is
+	// missed and a relayed refusal passes as a bare 400 (eighth review).
+	for _, line := range strings.Split(strings.TrimPrefix(string(r.body), utf8BOM), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			flush()

@@ -4,3 +4,4 @@ bin/
 *.db-*
 .DS_Store
 demo/last-run.log
+dist/

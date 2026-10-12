@@ -31,20 +31,20 @@ func TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt(t *testing.T) {
 
 	want := []string{"paused of server", `"alpha"`, "is false", "server.paused entry (seq", "recorded true"}
 	_, err = s.Server(bg, "alpha")
-	requirePausedCorrupt(t, "Server", err, want)
+	requireCorruptMentioning(t, "Server", err, want)
 	_, err = s.Snapshot(bg, "alpha")
-	requirePausedCorrupt(t, "Snapshot", err, want)
+	requireCorruptMentioning(t, "Snapshot", err, want)
 	_, err = s.RecordCrawl(bg, CrawlInput{Server: "alpha", Complete: true}, crawler)
-	requirePausedCorrupt(t, "RecordCrawl", err, want)
-	requirePausedCorrupt(t, "ResumeServer", s.ResumeServer(bg, "alpha", bob), want)
-	requirePausedCorrupt(t, "PauseServer", s.PauseServer(bg, "alpha", bob), want)
+	requireCorruptMentioning(t, "RecordCrawl", err, want)
+	requireCorruptMentioning(t, "ResumeServer", s.ResumeServer(bg, "alpha", bob), want)
+	requireCorruptMentioning(t, "PauseServer", s.PauseServer(bg, "alpha", bob), want)
 	for label, opts := range map[string]OpenOptions{"read-only": {ReadOnly: true}, "read-write": {Policy: lifecycle.DefaultPolicy()}} {
 		fresh, err := OpenWith(path, opts)
 		if err != nil {
 			t.Fatalf("%s Open = %v", label, err)
 		}
 		_, err = fresh.Snapshot(bg, "alpha")
-		requirePausedCorrupt(t, label+" fresh Snapshot", err, want)
+		requireCorruptMentioning(t, label+" fresh Snapshot", err, want)
 		_ = fresh.Close()
 	}
 	if after, err := s.VerifyAudit(bg); err != nil || after.Head != recorded.Head {
@@ -75,16 +75,16 @@ func TestServers_PausedFlagWithoutAnEntryIsCorrupt(t *testing.T) {
 	mustExec(t, db, `UPDATE servers SET paused = 1 WHERE name = 'beta'`)
 	want := []string{"paused of server", `"beta"`, "is true", "no server.paused or server.resumed entry"}
 	_, err := s.Server(bg, "beta")
-	requirePausedCorrupt(t, "Server", err, want)
+	requireCorruptMentioning(t, "Server", err, want)
 	_, err = s.Snapshot(bg, "beta")
-	requirePausedCorrupt(t, "Snapshot", err, want)
+	requireCorruptMentioning(t, "Snapshot", err, want)
 	if _, err := s.Servers(bg); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Servers = %v, want ErrCorrupt", err)
 	}
 }
 
-// requirePausedCorrupt fails unless err is ErrCorrupt mentioning every fragment.
-func requirePausedCorrupt(t *testing.T, what string, err error, fragments []string) {
+// requireCorruptMentioning fails unless err is ErrCorrupt mentioning every fragment.
+func requireCorruptMentioning(t *testing.T, what string, err error, fragments []string) {
 	t.Helper()
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("%s = %v, want ErrCorrupt", what, err)

@@ -202,7 +202,9 @@ func loadTool(ctx context.Context, q queryer, chain *chainMemory, server, tool s
 // about the tool leave behind (verifyVersionHistory). Once that holds, the
 // columns lifecycle.Apply reads are the chain's values: a rollback target is
 // one a verified version.approved or version.rolled_back entry names, and a
-// rejected version put back to pending by hand is refused, not approved.
+// rejected version put back to pending by hand is refused, not approved. The
+// state column is anchored last to the newest state-bearing entry about the
+// tool (anchorToolState, D17 c), so a decision starts from the chain's state.
 func checkToolEvidence(ctx context.Context, q queryer, chain *chainMemory, subject string, rec *toolRec) error {
 	if rec.tool.Approved != "" {
 		versionID, err := rec.versionID(rec.tool.Approved)
@@ -213,7 +215,10 @@ func checkToolEvidence(ctx context.Context, q queryer, chain *chainMemory, subje
 			return err
 		}
 	}
-	return verifyVersionHistory(ctx, q, chain, subject, recordedVersions(rec))
+	if err := verifyVersionHistory(ctx, q, chain, subject, recordedVersions(rec)); err != nil {
+		return err
+	}
+	return anchorToolState(ctx, q, chain, subject, rec.tool.State)
 }
 
 // checkCanonical re-hashes the stored canonical bytes: they must hash to the

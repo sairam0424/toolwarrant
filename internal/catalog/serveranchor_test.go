@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
@@ -152,4 +153,36 @@ func TestServers_RunTheFileCheckLikeEveryOtherView(t *testing.T) {
 	if err != nil || len(servers) != 2 || servers[0].ProcessorAddr != "127.0.0.1:9001" || servers[1].ProcessorAddr != "" {
 		t.Errorf("Servers once the file is whole again = %+v, %v", servers, err)
 	}
+}
+
+// The URL and policy of a server are anchored to the FIRST server.added entry
+// about it, so appending a sealed second one (the access D14 admits) and
+// rewriting the row to match does not pass: the row still disagrees with the
+// first entry, and Integrity names the second (eighth review).
+func TestServers_ASecondServerAddedEntryIsNotTheAnchor(t *testing.T) {
+	s, path := anchoredServers(t)
+	recorded, err := s.VerifyAudit(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := rawDB(t, path)
+	forged := ServerSpec{Name: "alpha", URL: "https://attacker.example.net/mcp", AllowPrivate: true}
+	appendSealed(t, db, audit.Entry{TS: forgedTS, Actor: "mallory", ActorType: string(ActorHuman), Event: evServerAdded,
+		Subject: "alpha", Detail: serverAddedDetail(forged)})
+	mustExec(t, db, `UPDATE servers SET url = ?, allow_private = 1 WHERE name = 'alpha'`, forged.URL)
+	mustExec(t, db, `UPDATE meta SET value = value + 1 WHERE key = 'generation'`)
+
+	_, err = s.Server(bg, "alpha")
+	requireCorruptMentioning(t, "Server", err, []string{"allow_private of server", `"alpha"`, "server.added entry (seq 1)"})
+	if strings.Contains(err.Error(), "attacker") {
+		t.Errorf("the error prints the rewritten URL: %q", err)
+	}
+	if _, err := s.Servers(bg); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("Servers = %v, want ErrCorrupt", err)
+	}
+	if after, err := s.VerifyAudit(bg); err != nil || after.Entries != recorded.Entries+1 {
+		t.Errorf("VerifyAudit = %+v, %v; the sealed append extends the chain by one", after, err)
+	}
+	rep := mustIntegrity(t, s)
+	problemMentioning(t, rep, "second server.added about server")
 }

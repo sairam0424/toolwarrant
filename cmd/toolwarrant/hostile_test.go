@@ -89,12 +89,15 @@ func TestApproveRefusesSuspiciousCharactersUnlessAccepted(t *testing.T) {
 }
 
 // Rows changed behind the audit log: since D15 (b) the catalog trusts a
-// version only when the verified audit walk proposed it, so a tool renamed by
-// hand in the database is refused as ErrCorrupt on every read path that
-// checks (show does today; list, crawl and audit list may follow). Whichever
-// way a command answers, the hostile name reaches the terminal escaped only:
-// in text mode as \u{...} on stdout, in an error as a quoted string on stderr,
-// and JSON mode carries the raw name for machines when it answers at all.
+// version only when the verified audit walk proposed it, and since the state
+// anchor (D17 c, eighth review) every path that acts on a tool refuses a row
+// the log never created, so a tool renamed by hand in the database is
+// ErrCorrupt in list, show and crawl alike, and no command writes an audit
+// entry about the hostile name. Whichever way a command answers, the hostile
+// name reaches the terminal escaped only: in text mode as \u{...} on stdout,
+// in an error as a quoted string on stderr, and JSON mode carries the raw
+// name for machines when it answers at all. audit list, which never consults
+// the tools table, is checked for raw bytes only.
 func TestHostileToolNamesFromTheDatabaseAreEscaped(t *testing.T) {
 	c, _ := fixture(t)
 	hostile := "ev" + zeroWidth + "il" + esc + "[31m" + bidi
@@ -123,7 +126,8 @@ func TestHostileToolNamesFromTheDatabaseAreEscaped(t *testing.T) {
 	if r := escaped("crawl", "crawl", "s1"); r.code == exitOK {
 		wantContains(t, "crawl report", r.stdout, "missing")
 	}
-	escaped("audit list", "audit", "list")
+	auditOut := c.ok("audit", "list")
+	wantNotContains(t, "audit list stdout", auditOut, zeroWidth, esc, bidi)
 
 	r := c.run("list", "s1", "--json")
 	wantNotContains(t, "json stderr", r.stderr, zeroWidth, esc, bidi)

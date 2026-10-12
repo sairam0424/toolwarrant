@@ -21,7 +21,8 @@ const toolViewSelect = `SELECT s.name, t.id, t.name, t.state,
 		COALESCE(pv.digest, ''), t.last_seen_digest, t.missing_crawls,
 		(SELECT COUNT(*) FROM tool_versions c WHERE c.tool_id = t.id),
 		` + newestDecisionNames + `,
-		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE ` + decisionEntryOfServerTool + ` END
+		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE ` + decisionEntryOfServerTool + ` END,
+		` + stateEntryOfServerTool + `
 	FROM tools t
 	JOIN servers s ON s.id = t.server_id
 	LEFT JOIN tool_versions v ON v.id = t.approved_version_id
@@ -30,36 +31,37 @@ const toolViewSelect = `SELECT s.name, t.id, t.name, t.state,
 // scanToolView reads one row of toolViewSelect and checks the approval
 // evidence that needs no bytes; the returned reference (id 0 when the tool has
 // no approval) is what the caller re-checks and anchors afterwards.
-func scanToolView(sc rowScanner) (ToolView, approvedRef, error) {
+func scanToolView(sc rowScanner) (ToolView, approvedRef, stateRef, error) {
 	var (
 		v                           ToolView
 		state, profile              string
 		pointer, joined, joinedTool sql.NullInt64
 		newest                      int
-		entry                       sql.NullInt64
+		entry, stateEntry           sql.NullInt64
 	)
 	err := sc.Scan(&v.Server, &v.ID, &v.Name, &state, &pointer, &joined, &joinedTool, &v.Approved, &profile,
-		&v.Pending, &v.LastSeen, &v.MissingCrawls, &v.Versions, &newest, &entry)
+		&v.Pending, &v.LastSeen, &v.MissingCrawls, &v.Versions, &newest, &entry, &stateEntry)
 	if err != nil {
-		return ToolView{}, approvedRef{}, err
+		return ToolView{}, approvedRef{}, stateRef{}, err
 	}
 	v.State = lifecycle.State(state)
 	v.Drifted = lifecycle.Tool{Approved: v.Approved, LastSeen: v.LastSeen}.Drifted()
 	v.Unusable = v.LastSeen == lifecycle.UnusableDigest
-	if !pointer.Valid {
-		return v, approvedRef{}, nil
-	}
 	subject := v.Server + "/" + v.Name
+	st := stateRef{tool: subject, state: v.State, entry: stateEntry}
+	if !pointer.Valid {
+		return v, approvedRef{}, st, nil
+	}
 	if err := checkPointer(subject, v.ID, joined, joinedTool); err != nil {
-		return ToolView{}, approvedRef{}, err
+		return ToolView{}, approvedRef{}, stateRef{}, err
 	}
 	if err := checkApprovedProfile(subject, profile); err != nil {
-		return ToolView{}, approvedRef{}, err
+		return ToolView{}, approvedRef{}, stateRef{}, err
 	}
 	if newest == 0 {
-		return ToolView{}, approvedRef{}, errNotNewestDecision(subject)
+		return ToolView{}, approvedRef{}, stateRef{}, errNotNewestDecision(subject)
 	}
-	return v, approvedRef{id: joined.Int64, tool: subject, digest: v.Approved, entry: entry}, nil
+	return v, approvedRef{id: joined.Int64, tool: subject, digest: v.Approved, entry: entry}, st, nil
 }
 
 // Tools lists tools ordered by server then name. An empty server means all. A
@@ -72,11 +74,14 @@ func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 		if err := s.checkFile(ctx, q); err != nil {
 			return err
 		}
-		refs, err := s.readToolViews(ctx, q, server, &out)
+		refs, states, err := s.readToolViews(ctx, q, server, &out)
 		if err != nil {
 			return err
 		}
-		return s.checkApprovedRefs(ctx, q, refs)
+		if err := s.checkApprovedRefs(ctx, q, refs); err != nil {
+			return err
+		}
+		return anchorStates(ctx, q, s.chain, states)
 	})
 	if err != nil {
 		return nil, err
@@ -86,27 +91,31 @@ func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 
 // readToolViews runs toolViewSelect for one server or all, appends the views
 // to out and returns the approvals to check once the rows are closed.
-func (s *Store) readToolViews(ctx context.Context, q queryer, server string, out *[]ToolView) ([]approvedRef, error) {
+func (s *Store) readToolViews(ctx context.Context, q queryer, server string, out *[]ToolView) ([]approvedRef, []stateRef, error) {
 	rows, err := q.QueryContext(ctx, toolViewSelect+` WHERE (? = '' OR s.name = ?) ORDER BY s.name, t.name`, server, server)
 	if err != nil {
-		return nil, fmt.Errorf("catalog: list tools: %w", err)
+		return nil, nil, fmt.Errorf("catalog: list tools: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var refs []approvedRef
+	var (
+		refs   []approvedRef
+		states []stateRef
+	)
 	for rows.Next() {
-		v, ref, err := scanToolView(rows)
+		v, ref, st, err := scanToolView(rows)
 		if err != nil {
-			return nil, fmt.Errorf("catalog: list tools: %w", err)
+			return nil, nil, fmt.Errorf("catalog: list tools: %w", err)
 		}
 		*out = append(*out, v)
+		states = append(states, st)
 		if ref.id != 0 {
 			refs = append(refs, ref)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("catalog: list tools: %w", err)
+		return nil, nil, fmt.Errorf("catalog: list tools: %w", err)
 	}
-	return refs, nil
+	return refs, states, nil
 }
 
 // checkApprovedRefs re-hashes the approved versions the verifier does not
@@ -127,15 +136,20 @@ func (s *Store) Tool(ctx context.Context, server, tool string) (ToolView, error)
 		}
 		var (
 			ref approvedRef
+			st  stateRef
 			err error
 		)
-		v, ref, err = scanToolView(q.QueryRowContext(ctx, toolViewSelect+` WHERE s.name = ? AND t.name = ?`, server, tool))
+		v, ref, st, err = scanToolView(q.QueryRowContext(ctx, toolViewSelect+` WHERE s.name = ? AND t.name = ?`, server, tool))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("%w: tool %s/%s", ErrNotFound, quote(server), quote(tool))
 		case err != nil:
 			return fmt.Errorf("catalog: load tool: %w", err)
-		case ref.id == 0:
+		}
+		if err := anchorStates(ctx, q, s.chain, []stateRef{st}); err != nil {
+			return err
+		}
+		if ref.id == 0 {
 			return nil
 		}
 		return s.checkApprovedRefs(ctx, q, []approvedRef{ref})

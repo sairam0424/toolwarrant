@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
+	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
 // Approved returns the approved version of every tool that is enabled or
@@ -32,12 +33,15 @@ func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 		if err := s.checkFile(ctx, q); err != nil {
 			return err
 		}
-		refs, err := s.readApproved(ctx, q, &out)
+		refs, states, err := s.readApproved(ctx, q, &out)
 		if err != nil {
 			return err
 		}
 		entries, err := verifyAnchors(ctx, q, s.chain, refs)
 		if err != nil {
+			return err
+		}
+		if err := anchorStates(ctx, q, s.chain, states); err != nil {
 			return err
 		}
 		return adoptApprovers(out, refs, entries)
@@ -65,25 +69,29 @@ func adoptApprovers(tools []ApprovedTool, refs []approvedRef, entries map[int64]
 // readApproved runs approvedQuery, appends every exported tool to out and
 // returns the references the anchor check needs. The rows are closed before
 // it returns, so the anchor's own queries never interleave with them.
-func (s *Store) readApproved(ctx context.Context, q queryer, out *[]ApprovedTool) ([]approvedRef, error) {
+func (s *Store) readApproved(ctx context.Context, q queryer, out *[]ApprovedTool) ([]approvedRef, []stateRef, error) {
 	rows, err := q.QueryContext(ctx, approvedQuery)
 	if err != nil {
-		return nil, fmt.Errorf("catalog: list approved tools: %w", err)
+		return nil, nil, fmt.Errorf("catalog: list approved tools: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var refs []approvedRef
+	var (
+		refs   []approvedRef
+		states []stateRef
+	)
 	for rows.Next() {
-		a, ref, err := scanApproved(rows, s.verified)
+		a, ref, st, err := scanApproved(rows, s.verified)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		*out = append(*out, a)
 		refs = append(refs, ref)
+		states = append(states, st)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("catalog: list approved tools: %w", err)
+		return nil, nil, fmt.Errorf("catalog: list approved tools: %w", err)
 	}
-	return refs, nil
+	return refs, states, nil
 }
 
 // approvedQuery joins each exported tool with its newest approve or rollback
@@ -92,7 +100,8 @@ func (s *Store) readApproved(ctx context.Context, q queryer, out *[]ApprovedTool
 // and time from it, and with the seq of the newest approval entry about it.
 const approvedQuery = `SELECT s.name, t.id, t.name, v.id, v.tool_id, COALESCE(v.digest, ''), COALESCE(v.digest_profile, ''),
 		v.canonical, COALESCE(v.version_no, 0), a.version_id, a.hash_seen, a.approver, a.at,
-		` + decisionEntryOfServerTool + `
+		` + decisionEntryOfServerTool + `,
+		t.state, ` + stateEntryOfServerTool + `
 	FROM tools t
 	JOIN servers s ON s.id = t.server_id
 	LEFT JOIN tool_versions v ON v.id = t.approved_version_id
@@ -109,34 +118,36 @@ const approvedQuery = `SELECT s.name, t.id, t.name, v.id, v.tool_id, COALESCE(v.
 // returned reference carries what verifyAnchors checks afterwards, the row's
 // approver and time included; the tool's own ApprovedBy and ApprovedAt are
 // filled in from the verified entry (adoptApprovers).
-func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, approvedRef, error) {
+func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, approvedRef, stateRef, error) {
 	var (
 		a                  ApprovedTool
 		toolID             int64
 		joined, joinedTool sql.NullInt64
-		profile            string
+		profile, state     string
 		decided, entry     sql.NullInt64
+		stateEntry         sql.NullInt64
 		seen, approver, at sql.NullString
 	)
 	if err := sc.Scan(&a.Server, &toolID, &a.Name, &joined, &joinedTool, &a.Digest, &profile, &a.Canonical, &a.VersionNo,
-		&decided, &seen, &approver, &at, &entry); err != nil {
-		return ApprovedTool{}, approvedRef{}, fmt.Errorf("catalog: list approved tools: %w", err)
+		&decided, &seen, &approver, &at, &entry, &state, &stateEntry); err != nil {
+		return ApprovedTool{}, approvedRef{}, stateRef{}, fmt.Errorf("catalog: list approved tools: %w", err)
 	}
 	name := a.Server + "/" + a.Name
 	if err := checkPointer(name, toolID, joined, joinedTool); err != nil {
-		return ApprovedTool{}, approvedRef{}, err
+		return ApprovedTool{}, approvedRef{}, stateRef{}, err
 	}
 	if err := checkApprovedProfile(name, profile); err != nil {
-		return ApprovedTool{}, approvedRef{}, err
+		return ApprovedTool{}, approvedRef{}, stateRef{}, err
 	}
 	if !v.verify(joined.Int64, a.Digest, a.Canonical) {
-		return ApprovedTool{}, approvedRef{}, fmt.Errorf("%w: approved version of %s does not hash to its digest", ErrCorrupt, quote(name))
+		return ApprovedTool{}, approvedRef{}, stateRef{}, fmt.Errorf("%w: approved version of %s does not hash to its digest", ErrCorrupt, quote(name))
 	}
 	if !decided.Valid || !approver.Valid || !at.Valid {
-		return ApprovedTool{}, approvedRef{}, errNoApprovalRecord(name)
+		return ApprovedTool{}, approvedRef{}, stateRef{}, errNoApprovalRecord(name)
 	}
 	if decided.Int64 != joined.Int64 || seen.String != a.Digest {
-		return ApprovedTool{}, approvedRef{}, errNotNewestDecision(name)
+		return ApprovedTool{}, approvedRef{}, stateRef{}, errNotNewestDecision(name)
 	}
-	return a, approvedRef{id: joined.Int64, tool: name, digest: a.Digest, entry: entry, approver: approver.String, at: at.String}, nil
+	ref := approvedRef{id: joined.Int64, tool: name, digest: a.Digest, entry: entry, approver: approver.String, at: at.String, showsApprover: true}
+	return a, ref, stateRef{tool: name, state: lifecycle.State(state), entry: stateEntry}, nil
 }

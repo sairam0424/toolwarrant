@@ -90,7 +90,10 @@ func anchorKnownTools(ctx context.Context, q queryer, chain *chainMemory, server
 			return err
 		}
 	}
-	return anchorApproved(ctx, q, chain, refs)
+	if err := anchorApproved(ctx, q, chain, refs); err != nil {
+		return err
+	}
+	return anchorKnownStates(ctx, q, chain, server, known)
 }
 
 // findDecisionEntries fills in the seq of the newest decision entry about each
@@ -198,7 +201,7 @@ func checkAnchor(chain *chainMemory, r approvedRef, entries map[int64]audit.Entr
 	if e.AfterHash != r.digest {
 		return fmt.Errorf("%w: approved digest of %s is not the one its newest approval entry (seq %d) recorded", ErrCorrupt, quote(r.tool), e.Seq)
 	}
-	if r.at != "" && (e.Actor != r.approver || e.TS != r.at) {
+	if r.showsApprover && (e.Actor != r.approver || e.TS != r.at) {
 		return fmt.Errorf("%w: the approver or time of the newest approvals row of %s is not what its approval entry (seq %d) recorded; the approvals row was rewritten", ErrCorrupt, quote(r.tool), e.Seq)
 	}
 	return chain.verify(e)
