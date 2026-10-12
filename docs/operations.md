@@ -1280,6 +1280,14 @@ gate lives in the workflow file of the tagged commit, so it binds only tags
 created by someone who could not also change that file: the tag ruleset below
 is what limits tag creation to the owner.
 
+A release candidate (`vX.Y.Z-rc.N`) exercises the same workflow and is marked
+a pre-release by goreleaser. The notes of a release list the commits since
+the previous tag by version, and a candidate tag counts as one, so before the
+final tag delete the candidate tags and their draft releases (the candidates
+of v0.1.0 were removed this way), or the notes of the release start at the
+last candidate. goreleaser's `smartsemver` sort, which would skip them, is a
+GoReleaser Pro feature and fails the open-source build (D16).
+
 Before the repository is made public, set by hand on GitHub:
 
 - Description: toolwarrant for MCP: a control plane that approves exact
