@@ -1,0 +1,118 @@
+# .goreleaser.yaml: how a v* tag becomes a draft GitHub release (D16).
+# Only cmd/toolwarrant is released; the seam and mock binaries never are.
+version: 2
+
+project_name: toolwarrant
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: toolwarrant
+    main: ./cmd/toolwarrant
+    binary: toolwarrant
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: tarballs
+    ids:
+      - toolwarrant
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+      - THIRD_PARTY_NOTICES.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+# One SPDX document per archive, produced by syft (D16 (b)).
+sboms:
+  - id: archive-sboms
+    artifacts: archive
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+
+# Keyless signature of the checksums file through the workflow's OIDC
+# identity; the certificate is attached next to the signature (D16 (c)).
+signs:
+  - id: checksums
+    cmd: cosign
+    certificate: "${artifact}.pem"
+    signature: "${artifact}.sig"
+    args:
+      - sign-blob
+      - --yes
+      - --output-certificate=${certificate}
+      - --output-signature=${signature}
+      - ${artifact}
+    artifacts: checksum
+
+changelog:
+  sort: asc
+  use: git
+  groups:
+    - title: Features
+      regexp: '^feat(\([^)]*\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\([^)]*\))?!?:'
+      order: 1
+    - title: Performance
+      regexp: '^perf(\([^)]*\))?!?:'
+      order: 2
+    - title: Refactoring
+      regexp: '^refactor(\([^)]*\))?!?:'
+      order: 3
+    - title: Tests
+      regexp: '^test(\([^)]*\))?!?:'
+      order: 4
+    - title: Build and CI
+      regexp: '^(build|ci)(\([^)]*\))?!?:'
+      order: 5
+    - title: Documentation
+      regexp: '^docs(\([^)]*\))?!?:'
+      order: 6
+  filters:
+    exclude:
+      - '^chore'
+      - '^Merge '
+
+release:
+  # The target is named so that goreleaser check works before the first
+  # push and so that a fork never releases into another repository.
+  github:
+    owner: sairam0424
+    name: toolwarrant
+  draft: true
+  replace_existing_draft: true
+  prerelease: auto
+  mode: replace
+  header: |
+    toolwarrant {{ .Version }} is tested against agentgateway v1.6.0 (pinned
+    ExtMCP wire format and configuration schema) and writes catalog schema
+    v5; a catalog from an earlier build is refused and must be re-initialised.
+    Verify the checksums file before running a binary:
+    docs/operations.md, section Releasing.
+  footer: |
+    Binaries are built from the tagged commit with CGO disabled and
+    -trimpath; each archive carries an SPDX SBOM produced by syft, and the
+    checksums file is signed keyless with cosign by this repository's
+    release workflow.
