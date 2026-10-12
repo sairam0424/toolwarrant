@@ -93,19 +93,24 @@ func latestCompleteCrawl(ctx context.Context, q queryer, serverID int64) (time.T
 // names it and the seq of the newest approval entry about the tool (looked up
 // only for tools with an approval), in the same query rather than one per
 // tool), and the seq of the newest state-bearing entry about the tool, which
-// anchors the state column (D17 c). The parameters are the server name twice,
-// its id and the deprecated state.
+// anchors the state column (D17 c). The parameters are the server name twice
+// and its id. Every row of the server comes back, deprecated ones included:
+// readPolicyRows anchors the state of each and only then leaves a deprecated
+// row out of the policy, so a tool flipped to deprecated by hand is ErrCorrupt
+// rather than a tool quietly gone (the review of the v0.1.0 fix named this as
+// the sibling of the export's gap).
 const snapshotQuery = `SELECT t.id, t.name, t.state, t.approved_version_id, v.id, v.tool_id,
 		COALESCE(v.digest, ''), COALESCE(v.digest_profile, ''), t.last_seen_digest,
 		` + newestDecisionNames + `,
 		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE ` + decisionEntryOfTool + ` END,
 		` + stateEntryOfTool + `
 	FROM tools t LEFT JOIN tool_versions v ON v.id = t.approved_version_id
-	WHERE t.server_id = ? AND t.state <> ?`
+	WHERE t.server_id = ?`
 
 // snapshotTools maps every non-deprecated tool of a server to its policy and
 // re-checks the approved versions. A deprecated tool is left out on purpose: a
-// name missing from the snapshot is not served either.
+// name missing from the snapshot is not served either. Its state column is
+// anchored all the same, before it is left out.
 func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, error) {
 	tools, refs, states, err := readPolicyRows(ctx, q, srv)
 	if err != nil {
@@ -123,11 +128,12 @@ func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[s
 	return tools, nil
 }
 
-// readPolicyRows reads the policy of every non-deprecated tool and collects
-// the approved versions to re-check. Its rows are closed before it returns, so
-// the re-check's own queries never interleave with them.
+// readPolicyRows reads every tool of the server, anchors nothing itself but
+// collects the state of every row, and keeps the policy and the approved
+// version to re-check of the non-deprecated ones. Its rows are closed before
+// it returns, so the re-check's own queries never interleave with them.
 func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, []approvedRef, []stateRef, error) {
-	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.Name, srv.ID, string(lifecycle.Deprecated))
+	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.Name, srv.ID)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
@@ -142,8 +148,11 @@ func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]Tool
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		tools[r.name] = r.policy
 		states = append(states, r.state)
+		if r.policy.State == lifecycle.Deprecated {
+			continue
+		}
+		tools[r.name] = r.policy
 		if r.approved.id != 0 {
 			refs = append(refs, r.approved)
 		}
