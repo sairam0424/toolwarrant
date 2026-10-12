@@ -36,7 +36,12 @@ func TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite(t *testing.T) {
 		t.Fatalf("the fixture's database is not a SQLite file: %q", before[:16])
 	}
 	dir := filepath.Dir(c.db)
-	relative := filepath.Join(dir, "..", filepath.Base(dir), filepath.Base(c.db))
+	// Built by concatenation, not filepath.Join, which would clean the dots
+	// away and leave the same spelling as c.db (eighth review).
+	relative := dir + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(dir) + string(filepath.Separator) + filepath.Base(c.db)
+	if relative == c.db {
+		t.Fatalf("the relative spelling collapsed to the database path %q", relative)
+	}
 	gateway, _ := fakeGateway(t, t.TempDir(), "gateway-ok", 0, "")
 	for name, tc := range map[string]struct {
 		out, what string
