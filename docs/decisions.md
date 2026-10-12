@@ -1699,7 +1699,14 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   the verified `server.added` entry, else `ErrCorrupt`. `emit` refuses to
   emit on `ErrCorrupt` and prints a change line whenever the address it
   writes differs from that entry, so a re-emit cannot adopt an address the
-  catalog's audit log does not carry in silence.
+  catalog's audit log does not carry in silence. Extended by the lead after
+  the round, with the same rule: the paused flag is anchored to the newest
+  verified `server.paused` or `server.resumed` entry about the server (no
+  entry means not paused) by `Server`, `Servers`, `Snapshot`, `RecordCrawl`,
+  `PauseServer` and `ResumeServer`, so an un-pause by one `UPDATE` serves
+  nothing, is refused as a crawl and turns the operator's resume into
+  `ErrCorrupt` rather than `ErrInvalid`; the chain memory records both
+  events for it.
 - Decision (d): every chain walk, `Integrity.readLog` and the genesis page
   start below the smallest possible seq (the query reads `seq >
   math.MinInt64` from the zero pin), so a row at seq 0 or below is a chain
@@ -1801,7 +1808,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `internal/catalog/ghostrows.go`, `internal/catalog/anchor.go`,
   `internal/catalog/guards.go` and `internal/catalog/integrity.go` (b, g),
   `internal/catalog/serveranchor.go`, `internal/catalog/servers.go`,
-  `internal/catalog/processoraddr.go` and `cmd/toolwarrant/emit.go` (c),
+  `internal/catalog/processoraddr.go`, `internal/catalog/snapshot.go`,
+  `internal/catalog/crawl.go` and `cmd/toolwarrant/emit.go` (c),
   `internal/catalog/audit.go`, `internal/catalog/chain.go` and
   `internal/catalog/integrity_audit.go` (d), `internal/catalog/approved.go`
   (e), `internal/catalog/chain.go` and `internal/catalog/store.go` (f),
@@ -1840,7 +1848,9 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestSnapshot_GhostApprovalsRowWithAPositiveIDBreaksTheCurrentApproval` (b,
   g); `TestServers_ColumnsAreAnchoredToTheVerifiedChain`,
   `TestServers_RunTheFileCheckLikeEveryOtherView` and
-  `TestSetProcessorAddr_ForgedColumnEqualToTheNewAddressIsCorrupt` (c);
+  `TestSetProcessorAddr_ForgedColumnEqualToTheNewAddressIsCorrupt`,
+  `TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt` and
+  `TestServers_PausedFlagWithoutAnEntryIsCorrupt` (c);
   `TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk` (d);
   `TestApproved_ApproverAndTimeComeFromTheVerifiedEntry` (e);
   `TestSnapshot_ConcurrentReadersAndAWriterNeverSeeAFalseTruncation` (f, the

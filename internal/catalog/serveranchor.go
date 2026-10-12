@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 )
@@ -27,14 +28,27 @@ import (
 // memory records both events. SetProcessorAddr anchors the row before it
 // compares the address it is asked to record, so a forged column equal to the
 // new address cannot pass as unchanged and leave the log without an entry.
-// The URL is never printed: a report says that its hash differs.
+// The URL is never printed: a report says that its hash differs. The paused
+// flag is anchored too, to the newest server.paused or server.resumed entry
+// (no entry means not paused), by both views and by every path that acts on
+// it: Snapshot, which serves nothing of a paused server, RecordCrawl, which
+// refuses one, and PauseServer and ResumeServer, which compare the request
+// with the flag; an un-pause by one UPDATE therefore serves nothing and turns
+// the operator's resume into ErrCorrupt instead of "already paused=false".
 
-// newestServerEntry returns the newest entry with this event about a server;
-// found is false when the log has none. The query rests on the
-// audit_log_by_subject index, so it costs one probe per server and event.
-func newestServerEntry(ctx context.Context, q queryer, server, event string) (audit.Entry, bool, error) {
+// newestServerEntry returns the newest entry with one of these events about a
+// server; found is false when the log has none. The query rests on the
+// audit_log_by_subject index, so it costs one probe per server and lookup.
+func newestServerEntry(ctx context.Context, q queryer, server string, events ...string) (audit.Entry, bool, error) {
+	args := make([]any, 0, len(events)+1)
+	args = append(args, server)
+	marks := make([]string, len(events))
+	for i, event := range events {
+		marks[i] = "?"
+		args = append(args, event)
+	}
 	e, err := scanAudit(q.QueryRowContext(ctx,
-		`SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event = ? ORDER BY seq DESC LIMIT 1`, server, event))
+		`SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event IN (`+strings.Join(marks, ", ")+`) ORDER BY seq DESC LIMIT 1`, args...))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return audit.Entry{}, false, nil
@@ -45,15 +59,46 @@ func newestServerEntry(ctx context.Context, q queryer, server, event string) (au
 }
 
 // anchorServer requires a servers row to be what the verified chain recorded:
-// allow_private and the URL as the server.added entry wrote them, and the
-// processor address as the newest server.processor_set entry wrote it. Any
-// disagreement, a missing entry or an entry outside the verified chain is
+// allow_private and the URL as the server.added entry wrote them, the
+// processor address as the newest server.processor_set entry wrote it, and
+// the paused flag as the newest server.paused or server.resumed entry left it.
+// Any disagreement, a missing entry or an entry outside the verified chain is
 // ErrCorrupt.
 func anchorServer(ctx context.Context, q queryer, chain *chainMemory, srv Server) error {
 	if err := anchorServerAdded(ctx, q, chain, srv); err != nil {
 		return err
 	}
-	return anchorProcessorAddr(ctx, q, chain, srv)
+	if err := anchorProcessorAddr(ctx, q, chain, srv); err != nil {
+		return err
+	}
+	return anchorPaused(ctx, q, chain, srv)
+}
+
+// anchorPaused checks the paused flag against the newest server.paused or
+// server.resumed entry; a row without such an entry must not be paused.
+func anchorPaused(ctx context.Context, q queryer, chain *chainMemory, srv Server) error {
+	shown := quote(srv.Name)
+	e, found, err := newestServerEntry(ctx, q, srv.Name, evServerPaused, evServerResumed)
+	if err != nil {
+		return err
+	}
+	if !found {
+		if !srv.Paused {
+			return nil
+		}
+		return fmt.Errorf("%w: paused of server %s is true but the audit log has no server.paused or server.resumed entry about it", ErrCorrupt, shown)
+	}
+	if err := chain.verify(e); err != nil {
+		return err
+	}
+	paused, ok := detailBool(e.Detail, fieldPaused)
+	if !ok {
+		return errServerEntryField(e, fieldPaused)
+	}
+	if paused != srv.Paused {
+		return fmt.Errorf("%w: paused of server %s is %t but the newest %s entry (seq %d) recorded %t", ErrCorrupt, shown, srv.Paused, e.Event, e.Seq, paused)
+	}
+	return nil
 }
 
 // anchorServerAdded checks the URL and the allow_private flag against the

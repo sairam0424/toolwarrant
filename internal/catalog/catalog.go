@@ -47,9 +47,11 @@
 // subject, reconstructs every version's status and proposers from the log, and
 // names every row that disagrees, is missing or was never recorded; audit
 // verify prints its report. The columns emit and the crawler act on are bound
-// on the read path too: Server and Servers anchor processor_addr, url and
-// allow_private to the verified server.processor_set and server.added entries
-// (D17 c). Open, every Snapshot, Approved and view load and every write
+// on the read path too: Server and Servers anchor processor_addr, url,
+// allow_private and paused to the verified server.processor_set,
+// server.added and newest server.paused or server.resumed entries, and
+// Snapshot, RecordCrawl, PauseServer and ResumeServer anchor the paused flag
+// they act on (D17 c). Open, every Snapshot, Approved and view load and every write
 // transaction refuse a file whose guard objects are missing or redefined, that
 // holds a trigger, view or unique index the schema did not create, or that
 // holds a history row below id 1 (D17 b).

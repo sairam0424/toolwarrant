@@ -44,6 +44,9 @@ func (s *Store) Snapshot(ctx context.Context, server string) (Snapshot, error) {
 		if err != nil {
 			return err
 		}
+		if err := anchorPaused(ctx, q, s.chain, srv); err != nil {
+			return err
+		}
 		gen, err := readGeneration(ctx, q)
 		if err != nil {
 			return err

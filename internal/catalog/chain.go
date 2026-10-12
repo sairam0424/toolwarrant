@@ -19,7 +19,8 @@ import (
 // entry it verified (the pin of D14 b), and the hash of every decision entry
 // it walked (version.proposed, version.superseded, version.rejected,
 // version.approved, version.rolled_back, tool.budget_reset, server.added,
-// server.processor_set), as the walk computed it from the entry's fields.
+// server.processor_set, server.paused, server.resumed), as the walk computed
+// it from the entry's fields.
 // Every later read verifies only the suffix appended after the head and
 // extends the memory. An audit entry is trusted on the serving path and on the
 // decision path only when the hash computed from the fields read now equals
@@ -158,11 +159,13 @@ func errEntryRewritten(seq int64, subject string) error {
 // isChainRecordedEvent reports whether the walk keeps an entry's hash: the
 // events the serving and decision paths and the server views read back as
 // evidence (server.added anchors a server's URL and allow_private flag,
-// server.processor_set its processor address, D17 c).
+// server.processor_set its processor address, server.paused and
+// server.resumed its paused flag, D17 c).
 func isChainRecordedEvent(event string) bool {
 	switch event {
 	case string(lifecycle.EvProposed), string(lifecycle.EvSuperseded), string(lifecycle.EvRejected),
-		string(lifecycle.EvApproved), string(lifecycle.EvRolledBack), evBudgetReset, evServerAdded, evServerProcessorSet:
+		string(lifecycle.EvApproved), string(lifecycle.EvRolledBack), evBudgetReset, evServerAdded, evServerProcessorSet,
+		evServerPaused, evServerResumed:
 		return true
 	}
 	return false

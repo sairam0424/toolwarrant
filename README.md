@@ -386,8 +386,13 @@ also why the new guards run after the insert); the server views that `emit`, the
 crawler, `serve`, `server list`, `list` and `show` read run the same file
 check as every other view and anchor the processor address to the newest
 verified `server.processor_set` entry and the URL (by its SHA-256) and the
-allow-private flag to the verified `server.added` entry, else `ErrCorrupt`
-(decision D17; before, they ran no check at all, so a processor address
+allow-private flag to the verified `server.added` entry, and the paused flag
+to the newest verified `server.paused` or `server.resumed` entry (no entry
+means not paused), else `ErrCorrupt`; the paused flag is anchored wherever it
+is acted on, by the snapshot the processor serves from, by `crawl`, and by
+`server pause` and `server resume`, so an un-pause by one `UPDATE` serves
+nothing and turns a resume into `ErrCorrupt` (decision D17; before, they ran
+no check at all, so a processor address
 rewritten with one `UPDATE` was returned as fact and the next `emit` wrote it
 into the gateway configuration with no change line); `Approved` takes the
 approver's name and the time of approval from the verified entry and reports

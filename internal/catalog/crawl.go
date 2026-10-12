@@ -81,6 +81,9 @@ func (s *Store) crawlTx(ctx context.Context, t *txn, in CrawlInput, ls *listing,
 	if err != nil {
 		return CrawlReport{}, err
 	}
+	if err := anchorPaused(ctx, t, s.chain, srv); err != nil {
+		return CrawlReport{}, err
+	}
 	if srv.Paused {
 		return CrawlReport{}, fmt.Errorf("%w: server %s", ErrPaused, quote(srv.Name))
 	}

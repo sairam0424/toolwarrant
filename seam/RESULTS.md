@@ -845,8 +845,13 @@ the statements of this file:
   takes the approver and the time from the verified entry (D17 e; the git
   export had carried a rewritten row's name); a reader whose read snapshot
   predates a commit another handle of the same Store verified is no longer
-  told the log was truncated (D17 f); the catalog schema is v6 because the
-  no-replace guards changed.
+  told the log was truncated (D17 f); the catalog schema is v6 because two
+  positive-id guards were added. After the round the lead extended D17 c to
+  the paused flag: Server, Servers, Snapshot, RecordCrawl, PauseServer and
+  ResumeServer anchor it to the newest verified server.paused or
+  server.resumed entry (TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt
+  and TestServers_PausedFlagWithoutAnEntryIsCorrupt), so an un-pause by one
+  UPDATE serves nothing and a resume is ErrCorrupt.
 - Decisions added since: D16 (the release design) and D17, in
   docs/decisions.md, with the pin limit stated as the code has it (README
   "Trust model", "The audit log" and L19; SECURITY.md's scope and checklist;

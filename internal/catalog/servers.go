@@ -108,6 +108,9 @@ func (s *Store) setPaused(ctx context.Context, name string, by Actor, paused boo
 		if err != nil {
 			return err
 		}
+		if err := anchorPaused(ctx, t, s.chain, srv); err != nil {
+			return err
+		}
 		if srv.Paused == paused {
 			return invalidf("server %s is already paused=%t", quote(name), paused)
 		}

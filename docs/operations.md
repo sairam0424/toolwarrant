@@ -700,8 +700,9 @@ column disagrees with the verified `version.*` entries about it (`version D
 of S/T is in status X (ever_approved B) but the verified audit entries
 (latest seq N) leave it Y (ever_approved B); the status columns were edited`)
 or a rollback target has no verified approval or rollback entry naming its
-digest (D17), a server's processor address, URL or allow-private flag
-disagrees with the verified `server.processor_set` or `server.added` entry
+digest (D17), a server's processor address, URL, allow-private or paused flag
+disagrees with the verified `server.processor_set`, `server.added`,
+`server.paused` or `server.resumed` entry
 (D17; `server list`, `emit`, `crawl`, `serve`, `list` and `show` all refuse
 the file; the URL itself is never printed, the report says that its hash
 differs), an approver in the approvals table differs from the verified entry
@@ -942,7 +943,9 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   same file check as every other view and require the servers row to agree
   with the newest verified `server.processor_set` entry about the server (and
   its URL, by hash, and allow-private flag with the verified `server.added`
-  entry), else `ErrCorrupt`, so `emit` refuses to emit, and `emit` prints a
+  entry, and its paused flag with the newest verified `server.paused` or
+  `server.resumed` entry, which `Snapshot`, `crawl`, `server pause` and
+  `server resume` check too), else `ErrCorrupt`, so `emit` refuses to emit, and `emit` prints a
   change line whenever the address it writes differs from that entry (D17;
   the seventh review rewrote the column with one `UPDATE`, `server list`
   showed the forged address, and the next `emit` wrote it into the gateway
