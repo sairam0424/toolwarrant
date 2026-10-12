@@ -157,7 +157,7 @@ mock upstream, the default of `cmd/mockupstream`), 9001 (the first processor;
 
 Install from a release, instead of building in step 0, once v0.1.0 exists:
 download `toolwarrant_<version>_<os>_<arch>.tar.gz` for your platform from the
-GitHub release together with the checksums file, its `.sig` and its `.pem`,
+GitHub release together with the checksums file, its `.sigstore.json` signature bundle,
 verify them as the [Release integrity](SECURITY.md#release-integrity) section of
 SECURITY.md says (toolwarrant release archives are verified with cosign before
 use), and untar the archive. `cmd/mockupstream` is not in the release, so the

@@ -391,7 +391,8 @@ workflow does once a `v*` tag is pushed (decision D16).
 - The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with
-  cosign under the workflow's own OIDC identity. No build provenance
+  cosign under the workflow's own OIDC identity, as a sigstore bundle
+  (`.sigstore.json`: signature, certificate and transparency-log entry). No build provenance
   attestation is produced yet; the signature over the checksums file is the
   integrity statement.
 - `toolwarrant version` prints the build version (the tag without its `v`,
@@ -402,7 +403,7 @@ workflow does once a `v*` tag is pushed (decision D16).
 Verifying a release before running it:
 
 ```sh
-cosign verify-blob --certificate toolwarrant_0.1.0_checksums.txt.pem --signature toolwarrant_0.1.0_checksums.txt.sig \
+cosign verify-blob --bundle toolwarrant_0.1.0_checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/v0.1.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   toolwarrant_0.1.0_checksums.txt

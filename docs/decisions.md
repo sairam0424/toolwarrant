@@ -1502,6 +1502,12 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/vX.Y.Z`.
   A user verifies the checksums file with `cosign verify-blob` against that
   identity and the GitHub issuer, then the checksum of the binary they run.
+  The signature is a sigstore bundle, `<checksums>.sigstore.json`, verified
+  with `--bundle`: cosign v3, which the pinned cosign-installer provides,
+  writes bundles by default and ignores the `--output-signature` and
+  `--output-certificate` files of cosign v2, so the first configuration, which
+  named those files, would have signed nothing (the review of 2026-10-12
+  found it before v0.1.0-rc.3; the local proof of (g) ran on cosign v3.1).
 - Decision (d): the changelog is generated from the conventional commits
   between tags, grouped by type (feat, fix, perf, refactor, test, build, ci,
   docs), and the release notes open with a fixed header naming the pinned
