@@ -112,11 +112,17 @@ func TestServe_OversizedPageOverTheWireMarksEveryCatalogTool(t *testing.T) {
 		}
 		requireAllowed(t, res2)
 	}
-	refused := func(page []byte) {
+	// denied is the ListsDenied count the refusal brings the server to; the
+	// transport writes the status to the client before pageRefused marks the
+	// tools and counts the denial (serve.go, serviceDesc), so the test waits
+	// for the count, which is written after the marking, before it reads the
+	// evidence (the eighth review's ci run read it inside that moment).
+	refused := func(page []byte, denied uint64) {
 		t.Helper()
 		if _, err := client.CheckResponse(ctx, listMsg(page)); status.Code(err) != codes.ResourceExhausted {
 			t.Fatalf("a payload of %d bytes: err = %v, want ResourceExhausted from the transport", len(page), err)
 		}
+		awaitMarking(t, func() bool { return s.Stats().ListsDenied == denied })
 		if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 			t.Fatalf("evidence for echo after the refused page = %q, %v; want the conflict marker", seen, ok)
 		}
@@ -128,9 +134,9 @@ func TestServe_OversizedPageOverTheWireMarksEveryCatalogTool(t *testing.T) {
 	}
 
 	cleanListing()
-	refused(make([]byte, maxPayloadBytes))
+	refused(make([]byte, maxPayloadBytes), 1)
 	cleanListing()
-	refused(oversizedPage())
+	refused(oversizedPage(), 2)
 	cleanListing()
 	if st := s.Stats(); st.ListsDenied != 2 || st.ListsServed != 3 || st.SourceErrors != 0 {
 		t.Errorf("stats = %+v, want two refused pages counted as denied lists", st)
