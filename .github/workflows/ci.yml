@@ -203,10 +203,12 @@ jobs:
       # The linux asset name of the release; the darwin asset the laptops use
       # is agentgateway-darwin-arm64. Adjust if the release names it otherwise.
       AGENTGATEWAY_ASSET: agentgateway-linux-amd64
-      # PLACEHOLDER: the owner must replace this with the SHA-256 of the asset
-      # named above, read from the v1.6.0 release page. The job refuses to run
-      # while the placeholder is in place; no checksum was invented here.
-      AGENTGATEWAY_SHA256: REPLACE_WITH_THE_SHA256_OF_THE_LINUX_RELEASE_ASSET
+      # The SHA-256 of the asset named above, as the release publishes it in
+      # agentgateway-linux-amd64.sha256 and as the GitHub API reports the
+      # asset's digest (both read on 2026-10-12, and they agree). The job
+      # refuses to run with a placeholder value, so a moved pin needs a new
+      # checksum here.
+      AGENTGATEWAY_SHA256: 496ed27e6a96b55a9ad7cabe5c2be7172511f44a3cb113e533d22bf93a7f079d
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, SHA pinned
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0, SHA pinned
