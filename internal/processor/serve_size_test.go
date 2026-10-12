@@ -60,6 +60,11 @@ func TestServe_RefusesAPageOverTheRecvLimit(t *testing.T) {
 	if msg := status.Convert(err).Message(); !strings.Contains(msg, strconv.Itoa(maxRecvMsgSize)) {
 		t.Errorf("the refusal should name the %d byte limit: %q", maxRecvMsgSize, msg)
 	}
+	// The server stream writes the status to the client before it returns the
+	// error to the decoder (serve.go, serviceDesc), so the marking lands a
+	// moment after the client has its error; wait for it rather than read the
+	// statistics inside that moment.
+	awaitMarking(t, func() bool { return s.Stats().ListsDenied == 1 })
 	if st := s.Stats(); st.ListsServed != 0 || st.ListsDenied != 1 || st.SourceErrors != 0 {
 		t.Errorf("stats = %+v, want the refused page counted as one denied list", st)
 	}
@@ -205,4 +210,15 @@ func timePage(t *testing.T, client api.ExtMcpClient, deadline time.Duration, n i
 		t.Fatalf("served %v, want [echo]", got)
 	}
 	return elapsed
+}
+
+// awaitMarking polls until ready returns true or two seconds pass; the test
+// then asserts the state it waited for, so a marking that never lands fails
+// with the usual messages.
+func awaitMarking(t *testing.T, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !ready() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 }
