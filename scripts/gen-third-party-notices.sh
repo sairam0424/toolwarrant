@@ -18,9 +18,9 @@
 #
 # The module cache must hold the modules in go.mod (any build has done that)
 # and every package of the module, tests included, must load, because the
-# classification comes from `go list -deps -test ./...`; a tree that does not
-# compile stops the script. No network is used. Works with the bash 3.2 that
-# macOS ships.
+# classification comes from `go list -deps -test ./...` over every release
+# platform; a tree that does not compile stops the script. No network is used.
+# Works with the bash 3.2 that macOS ships.
 set -euo pipefail
 export GOFLAGS=-mod=readonly LC_ALL=C
 
@@ -148,9 +148,17 @@ main_module=$(go list -m)
 awk '/^require[[:space:]]*\(/ { f = 1; next } /^\)/ { f = 0 } f && NF { print $1 } /^require[[:space:]]+[^(]/ { print $2 }' go.mod | sort -u >"$tmp/gomod"
 go list -m -f '{{.Path}}{{"\t"}}{{.Version}}{{"\t"}}{{.Dir}}' all | awk -F'\t' '$2 != ""' >"$tmp/all"
 
-# module_pkgs lists the modules whose packages the given build needs.
+# module_pkgs lists the modules whose packages the given build needs, on any of
+# the platforms a release ships (.goreleaser.yaml): the sets differ by platform
+# (the darwin graph carries go-isatty and go-strftime, the linux graph does
+# not), so the union is taken and the file is the same whatever host generates
+# or checks it; the first ci run on a linux runner had refused a file written
+# on darwin.
+release_platforms="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64"
 module_pkgs() { # go list args...
-	go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$@" | awk -v main="$main_module" 'NF && $0 != main' | sort -u
+	for platform in $release_platforms; do
+		GOOS=${platform%/*} GOARCH=${platform#*/} go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$@"
+	done | awk -v main="$main_module" 'NF && $0 != main' | sort -u
 }
 module_pkgs ./... >"$tmp/linked"
 module_pkgs -test ./... >"$tmp/tested"
