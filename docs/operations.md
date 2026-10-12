@@ -554,12 +554,124 @@ valid, and only a head recorded elsewhere betrays it. `--expect-head HASH` fails
 when the head differs, with the note that either the log grew since you recorded
 the head or it was rewritten; compare with `audit list --after N` from your
 recorded sequence number (scenario D runs all three forms).
+`audit list [--after N] [--limit N] [--json]` prints entries in sequence order.
+
+### What the catalog checks before it trusts the file
+
+Every state change is one or more entries in `audit_log`, written in the same
+SQLite transaction as the change. Each entry hashes every field of itself plus
+the previous entry's hash, as RFC 8785 canonical JSON, so changing, deleting,
+reordering or inserting any row breaks `audit verify` from that row on.
+Triggers in the database refuse ordinary SQL updates and deletes on the history
+tables (tools, versions, proposers and approvals included, decision D14), and
+the catalog checks the file before it trusts it: guard objects must be present
+with the definition `init` wrote (compared by their DDL text at open, on every
+snapshot load and at the end of every write transaction, so a same-named no-op
+trigger is corruption and a long-running crawl schedule cannot keep writing
+into a file whose trigger was dropped); no trigger, view or unique index the
+schema did not create may exist (a foreign trigger can undo a decision inside
+the operator's own transaction, and a foreign unique index makes writes fail,
+so both are corruption, decisions D13 and D14); every approved version it hands
+out is re-hashed and must be what the newest decision about the tool says:
+among all versions of the tool, the approve or rollback row with the highest
+id in the append-only approvals table must point at the approved version and
+carry `hash_seen` equal to its digest (decision D13; before the fourth round
+any historic approve row about the version counted, so a pointer flipped back
+to a superseded version reached the serving path); and the newest
+`version.approved` or `version.rolled_back` entry about the tool in the audit
+log must carry the same digest and must be part of the chain the catalog
+verified (decision D14 for the entry, D15 for the chain; before the fifth
+round a definition and its `hash_seen` rewritten together under two dropped
+and re-created guard triggers reached the serving path, because the approvals
+table was the only evidence).
+
+What "part of the verified chain" means, since the sixth round: a `Store`
+verifies the whole audit chain once when it opens, from the first entry to the
+head, and pins the head; it keeps in memory the hash it computed itself for
+every decision entry it walked (`version.proposed`, `version.superseded`,
+`version.rejected`, `version.approved`, `version.rolled_back`,
+`tool.budget_reset`, `server.processor_set` and, since the seventh round,
+`server.added`) and for the head; every reload verifies the suffix after the
+pin and extends that memory; and the serving path (`Snapshot`, `Approved`,
+`Versions`, `Tools`, `Tool`) and the decision path (every `Apply`, the proposer
+list `approve` consults included) trust an audit entry only when the hash
+computed from its fields equals the hash the walk recorded for its sequence
+number. The hash column stored in the file is never consulted for trust and
+never keys a memory; a mismatch is `ErrCorrupt` (decision D15; before the sixth
+round the entry was re-sealed against its predecessor only, the pin verified
+the head and the suffix after it only, and the verifier memory was keyed by the
+stored hash column, so the fifth review rewrote one approval entry in place
+below the head, re-sealed from its real predecessor, and the serving path, the
+decision path and `Store.Integrity` all accepted it while only the full walk of
+`audit verify` broke at the successor). The serving snapshot refuses a file
+that was deleted or replaced under it: the random identity `init` wrote and
+the file's device and inode are compared on every read (decision D14 for the
+device and inode, D15 for the identity on every read; before the sixth round
+only the generation read compared the stored identity). The stored DDL of
+every table is compared with the schema's, as the triggers and indexes are,
+and an automatic index that the schema's own tables do not account for is a
+foreign object (decision D15; the fifth review re-created `audit_log` with an
+extra `UNIQUE` constraint, which gave SQLite an automatic index with no DDL
+text that no check saw, and every later write failed with an `ErrCorrupt` that
+named no cause while `audit verify` was clean; the error now names the table
+and the constraint).
+
+Since the seventh round the rules reach the rows the earlier rounds did not:
+every chain walk starts at the smallest possible sequence number, bound
+included, so a row at seq 0 or below is a chain break (expected seq 1) at
+open, in `audit verify` and in `Store.Integrity`, which also compares the row
+count of `audit_log` with the entries it walked, and `audit list` shows such a
+row in forensic mode (decision D17; before, every walk and every page started
+at seq 0, so a row inserted at seq 0 or below under a re-created
+`audit_log_sequential` was invisible to `audit verify`, `audit list` and
+`Integrity` while every decision about its tool was `ErrCorrupt`); an
+approvals row or a history row with id below 1 is corruption: every checked
+read and every write refuses a file that holds one (`ErrCorrupt`, naming the
+table and the column; a forensic open reads past such a row, as it reads past
+a missing guard, so `list`, `show` and `audit list` can inspect the file while
+`audit verify` names the row), two `AFTER INSERT` guards
+(`approvals_positive_id`, `tool_versions_positive_id`) refuse the insert, and
+`Integrity` reports it (decision D17; before, such a row counted as a historic
+approval, and a row at id -1 made every later insert fail under the no-replace
+guards' message, because SQLite evaluates `NEW.id` as -1 in a `BEFORE INSERT`
+trigger when no id is supplied, which is also why the new guards run after the
+insert); the server views that `emit`, the crawler, `serve`, `server list`,
+`list` and `show` read run the same file check as every other view and anchor
+the processor address to the newest verified `server.processor_set` entry and
+the URL (by its SHA-256) and the allow-private flag to the verified
+`server.added` entry, and the paused flag to the newest verified
+`server.paused` or `server.resumed` entry (no entry means not paused), else
+`ErrCorrupt`; the paused flag is anchored wherever it is acted on, by the
+snapshot the processor serves from, by `crawl`, and by `server pause` and
+`server resume`, so an un-pause by one `UPDATE` serves nothing and turns a
+resume into `ErrCorrupt` (decision D17; before, they ran no check at all, so a
+processor address rewritten with one `UPDATE` was returned as fact and the
+next `emit` wrote it into the gateway configuration with no change line); the
+state column of every tool is anchored to the newest verified lifecycle entry
+about it on every path that acts on it (the snapshot the processor serves
+from, `list`, `show`, `export`, every decision and the crawl), so a disabled
+tool re-enabled by one `UPDATE` is refused rather than served, and the server
+row is anchored to the first `server.added` entry, so an appended second
+registration cannot re-point it (decision D17, extended after the eighth
+review); `Approved` takes the approver's name and the time of approval from
+the verified entry and reports a disagreement with the approvals row as
+`ErrCorrupt`, so the git export carries the name the chain carries (decision
+D17); and every checked read takes the `Store`'s walk lock before its first
+statement, so a reader's snapshot never predates the pin it is compared with
+and no reader is told that the log was truncated by a commit it could not see
+(decision D17). A file that fails any of these is reported as corrupt and
+nothing is served, listed or shown from it: `list` and `show` apply the same
+evidence as the serving path (decision D14).
+
+### What the two audit commands read, and what the integrity report compares
 
 Both commands open the database in forensic mode: a file whose guard objects
-were dropped or redefined, or that holds a trigger or view the schema did not
-create, is still read, read-only, so that `audit verify` can name the broken
-entry (`the audit log is broken at entry N`), and a file holding a history row below id 1 is read past that row too, which the report then names. Nothing is ever served or written
-from such an open. Read `audit log ok` in that mode as "the chain is
+were dropped or redefined, that holds a trigger, view or unique index the
+schema did not create, or whose journal mode was switched away from WAL, is
+still read, read-only, so that `audit verify` can name the broken entry (`the
+audit log is broken at entry N`), and a file holding a history row below id 1
+is read past that row too, which the report then names. Nothing is ever served
+or written from such an open. Read `audit log ok` in that mode as "the chain is
 consistent", not as "the file is intact": every other command refuses a database
 whose guard objects are missing or do not have the definition `init` wrote, or
 that holds a foreign trigger, view or unique index (`ErrCorrupt`), and
@@ -582,13 +694,7 @@ approver and time against the verified entry, every approvals and history row
 for an id below 1, the row count of `audit_log` against the entries the walk
 saw, and the guard objects, every
 table's DDL and the foreign objects (an automatic index the schema's tables do
-not account for included) against the schema (D13, D14, D15 and D17). Since
-the seventh round the walk starts at the smallest possible seq, bound included,uence
-number, so a row at seq 0 or below is reported as a chain break (expected seq
-1) and `audit list` shows it in forensic mode (D17; before, every walk and
-every page started at seq 0, so such a row was invisible to `audit verify`,
-`audit list` and the integrity report while every decision about its tool was
-`ErrCorrupt`). It prints
+not account for included) against the schema (D13, D14, D15 and D17). It prints
 `integrity ok: guard
 objects intact, every approval recorded in the log` or one
 `integrity problem:` line per disagreement (`tool X: state is disabled but the
@@ -657,35 +763,45 @@ the pin limit as the code has it,
 `TestOpen_SuffixRewrittenWhileNoStoreHeldAPinIsCaughtByTheRecordedHeadAlone`
 (D17).
 
-What the checks inside the file cannot do: whoever can write the 0600 file can
-append a new, correctly sealed audit entry that approves a definition, and
-nothing inside the file can refute it. Since the sixth round an audit entry is
-trusted only when it is part of the chain the store verified: a store verifies
-the whole chain once when it opens and the suffix after its pin on every
-reload, and the serving path and the decision path accept an entry only when
-the hash computed from its fields equals the one that walk recorded for its
-sequence number (D15; before, the newest approval entry was re-sealed against
-its predecessor only, so the fifth review rewrote it in place below the head
-and it was served); since the seventh round the same holds for every column a
-decision or a server view acts on: a version's status and ever-approved flag,
-a rollback target's prior approval, a server's processor address, URL hash and
-allow-private flag and an export's approver are taken from or checked against
-the verified entries, never from a table alone (D17). A forger must therefore
-rewrite every entry from the forged one to the head. A running store catches
-that through the head it pinned. While no store holds a pin, which is the
-CLI's state between commands and the processors' state while they are
-stopped, any such rewrite verifies clean on the next open and is caught by the
-head you recorded alone (the pin limit; D15 as corrected by D17: the sixth
-round's documents said a chain rewritten completely, but the seventh review
-rewrote the entries about one tool from its first version entry to the head
-with the store closed, left the entries before them byte for byte unchanged,
-and fresh stores served the result with `audit verify` and the integrity
-report clean). The processor's pin protects only while a processor runs; the
-CLI is never protected by a pin. So: record the head after every verify, and
-compare it with `audit verify --expect-head` before every decision you make
-after the processors were stopped. The git export of
-approved definitions (`export --dir`) and your backups are the other two
-anchors. Record the head, keep the export, keep backups.
+### The recorded head, the export and backups
+
+The one operational rule: record the head hash outside the database. The chain
+proves that nothing inside it was altered since the first entry; it cannot
+prove that the whole log was not replaced by a shorter, internally valid one,
+and nothing inside the file can prove that an entry was not appended by
+whoever can write the file (decision D14, known limit L19). What the checks
+inside the file cannot do: whoever can write the 0600 file can append a new,
+correctly sealed audit entry that approves a definition, and nothing inside the
+file can refute it; only the head you recorded, the git export of approved
+definitions (`export --dir`) and your backups betray it. Since the sixth round
+an audit entry is trusted only when it is part of the chain the store
+verified: a store verifies the whole chain once when it opens and the suffix
+after its pin on every reload, and the serving path and the decision path
+accept an entry only when the hash computed from its fields equals the one
+that walk recorded for its sequence number (D15; before, the newest approval
+entry was re-sealed against its predecessor only, so the fifth review rewrote
+it in place below the head and it was served); since the seventh round the
+same holds for every column a decision or a server view acts on: a version's
+status and ever-approved flag, a rollback target's prior approval, a server's
+processor address, URL hash and allow-private flag and an export's approver are
+taken from or checked against the verified entries, never from a table alone
+(D17). A forger must therefore rewrite every entry from the forged one to the
+head. A running store catches that through the head it pinned. While no store
+holds a pin, which is the CLI's state between commands and the processors'
+state while they are stopped, any such rewrite verifies clean on the next open
+and is caught by the head you recorded alone (the pin limit; D15 as corrected
+by D17: the sixth round's documents said a chain rewritten completely before
+any store opened it, but any suffix from the forged entry to the head does,
+with the entries before it byte for byte unchanged: the seventh review rewrote
+the entries about one tool from its first version entry to the head with the
+store closed, left the entries before them byte for byte unchanged, and fresh
+stores served the result with `audit verify` and the integrity report clean).
+The processor's pin protects only while a processor runs; the CLI is never
+protected by a pin. So: record the head after every verify, and compare it
+with `audit verify --expect-head` before every decision you make after the
+processors were stopped. The git export of approved definitions
+(`export --dir`) and your backups are the other two anchors. Record the head,
+keep the export, keep backups.
 
 ## Recovering from ErrCorrupt and ErrSchema
 
@@ -1159,6 +1275,20 @@ release's notes and the existing assets make a second upload fail, so a fix
 is a new tag. The gate accepts only the newest `ci` run that a push to `main`
 triggered for the tagged commit; a commit that reached `main` through a pull
 request has such a run, a tag on any other commit is refused.
+
+Before the repository is made public, set by hand on GitHub:
+
+- Description: toolwarrant for MCP: a control plane that approves exact
+  tool-definition digests and enforces them at agentgateway v1.6.0 as an
+  ExtMCP processor.
+- Topics: mcp, model-context-protocol, agentgateway, ai-agents,
+  tool-poisoning, supply-chain-security, audit-log, sqlite, go. No website.
+- Security: private vulnerability reporting, Dependabot alerts, secret scanning
+  with push protection (all free on a public repository).
+- Rules: a ruleset on `main` that requires a pull request and the `ci` checks,
+  and one on `v*` tags that lets only the owner create them.
+- Wiki off; issues on (the issue chooser routes security reports to the
+  policy).
 
 ## Exit codes
 

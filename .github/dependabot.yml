@@ -1,0 +1,20 @@
+# Keeps the SHA-pinned actions and the Go modules current. Every gomod pull
+# request needs scripts/gen-third-party-notices.sh run and its output committed
+# on the branch before merge, or the notices job fails (CONTRIBUTING.md).
+# Dependabot does not bump the go or toolchain lines of go.mod; those stay a
+# deliberate commit.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build(ci)"
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build(deps)"
