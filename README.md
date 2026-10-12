@@ -367,7 +367,7 @@ automatic index with no DDL text that no check saw, and every later write
 failed with an `ErrCorrupt` that named no cause while `audit verify` was
 clean; the error now names the table and the constraint). Since the seventh
 round the rules reach the rows the earlier rounds did not: every chain walk
-starts below the smallest possible sequence number, so a row at seq 0 or
+starts at the smallest possible seq, bound included,uence number, so a row at seq 0 or
 below is a chain break (expected seq 1) at open, in `audit verify` and in
 `Store.Integrity`, which also compares the row count of `audit_log` with the
 entries it walked, and `audit list` shows such a row in forensic mode
@@ -381,7 +381,7 @@ file that holds one (`ErrCorrupt`, naming the table and the column), two
 refuse the insert, and `Integrity` reports it (decision D17; before, such a
 row counted as a historic approval, and a row at id -1 made every later
 insert fail under the no-replace guards' message, because SQLite evaluates
-`NEW.id` as -1 in a `BEFORE INSERT` trigger when no id is supplied, which is
+`NEW (a forensic open reads past such a row, as it reads past a missing guard, so `list`, `show` and `audit list` can inspect the file while `audit verify` names the row).id` as -1 in a `BEFORE INSERT` trigger when no id is supplied, which is
 also why the new guards run after the insert); the server views that `emit`, the
 crawler, `serve`, `server list`, `list` and `show` read run the same file
 check as every other view and anchor the processor address to the newest
@@ -394,13 +394,19 @@ is acted on, by the snapshot the processor serves from, by `crawl`, and by
 nothing and turns a resume into `ErrCorrupt` (decision D17; before, they ran
 no check at all, so a processor address
 rewritten with one `UPDATE` was returned as fact and the next `emit` wrote it
-into the gateway configuration with no change line); `Approved` takes the
+into the gateway configuration with no change line); the state column of
+every tool is anchored to the newest verified lifecycle entry about it on
+every path that acts on it (the snapshot the processor serves from, `list`,
+`show`, `export`, every decision and the crawl), so a disabled tool re-enabled
+by one `UPDATE` is refused rather than served, and the server row is anchored
+to the first `server.added` entry, so an appended second registration cannot
+re-point it (decision D17, extended after the eighth review); `Approved` takes the
 approver's name and the time of approval from the verified entry and reports
 a disagreement with the approvals row as `ErrCorrupt`, so the git export
-carries the name the chain carries (decision D17); and a reader whose read
-snapshot predates a commit that another handle of the same `Store` already
-verified is recognised as stale, not told that the log was truncated
-(decision D17). A file
+carries the name the chain carries (decision D17); and every checked read
+takes the `Store`'s walk lock before its first statement, so a reader's
+snapshot never predates the pin it is compared with and no reader is told
+that the log was truncated by a commit it could not see (decision D17). A file
 that fails any of these is reported as corrupt and nothing is served, listed
 or shown from it: `list` and `show` apply the same evidence as the serving
 path (decision D14). `Store.Integrity` in `internal/catalog` goes further: it
@@ -714,7 +720,8 @@ until a later version says otherwise.
   no path may appear twice; the `--url` path must be the emitted route's
   match; and since the seventh round the port of `--url` must be the emitted
   gateway's port and the port of `--admin` the emitted admin address's port,
-  the hosts too when the emitted bind is loopback, so a canary pointed at
+  the hosts too (two IP literals must be equal; a name must be loopback when
+  the emitted bind is loopback), so a canary pointed at
   another listener (a second gateway on the same host, a staging port) cannot
   report this file as matching (decision D17)
   (LIVE-CONFIG-MISMATCH; decision D13, after the third review added a route

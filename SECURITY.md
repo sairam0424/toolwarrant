@@ -52,6 +52,10 @@ release.
 - Push the repository private, let `ci` pass, then tag `v0.1.0`, inspect the
   draft release and make the repository public before publishing it
   ([docs/operations.md](docs/operations.md), Releasing).
+- At the `v0.1.0` tag, before the repository is made public: replace the
+  Supported versions table and the PLACEHOLDER reporting paragraph above,
+  remove this list, and have the release notes checked against the Release
+  integrity section below.
 
 ## Scope
 
@@ -361,16 +365,35 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   PROBE-INCONCLUSIVE; and a 2xx without a body or any other status is a
   `check failed` line (decisions D13, D14, D15 and D17).
 
-## Release integrity plan
+## Release integrity
 
-Not yet done; nothing has been released. Before the first announcement:
+Nothing has been tagged yet; this section describes what the release
+workflow does once a `v*` tag is pushed (decision D16).
 
-- Every release is a signed git tag.
-- Every release ships an SBOM and build provenance for its binaries, with
-  published checksums.
-- `toolwarrant version` prints the build version (set at link time) and the
-  pinned gateway version, so a deployment can be matched to a release.
-- The repository has private vulnerability reporting enabled and this file has
-  a real reporting section.
-- The CI workflow has run green on the repository, including the dispatched
-  end-to-end job against the release binary of agentgateway v1.6.0.
+- A release is one annotated git tag on a commit whose newest `ci` run from a
+  push to `main` succeeded; the `release` workflow refuses any other tag, and a
+  published release is never re-run (a fix is a new tag).
+- The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
+  linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
+  SPDX SBOM per archive with syft, and signs the checksums file keyless with
+  cosign under the workflow's own OIDC identity. No build provenance
+  attestation is produced yet; the signature over the checksums file is the
+  integrity statement.
+- `toolwarrant version` prints the build version (the tag without its `v`,
+  set at link time) and the pinned gateway version, so a deployment can be
+  matched to a release.
+- The seam and mock binaries are never released.
+
+Verifying a release before running it:
+
+```sh
+cosign verify-blob --certificate toolwarrant_0.1.0_checksums.txt.pem --signature toolwarrant_0.1.0_checksums.txt.sig \
+  --certificate-identity "https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  toolwarrant_0.1.0_checksums.txt
+shasum -a 256 -c --ignore-missing toolwarrant_0.1.0_checksums.txt
+```
+
+The first command proves the checksums file was produced by this repository's
+release workflow at that tag; the second proves the downloaded archive is the
+one it lists.

@@ -100,8 +100,9 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   below the head was served); a catalog it cannot read or trust denies every
   hook (`source errors`). A store is safe for concurrent use: a reader whose
   read snapshot predates a commit that another handle of the same store
-  already verified is recognised by the head it can see, whose hash the
-  store's own walk recorded, and is not refused as a truncated log (D17; the
+  already verified cannot occur: every checked read takes the store's walk
+  lock before its first statement, so its snapshot never predates the pin it
+  is compared with and it is never refused as a truncated log (D17; the
   seventh review showed a reader in exactly that position getting `audit
   entry N, which this store verified, is gone; the log was truncated or the
   file replaced under a running reader` for an untouched file; no shipped
@@ -354,7 +355,9 @@ Verdicts, one line per tool or per check:
   the metadata was compared, so a `binds` or `mcp` section and a stripped
   filter compared healthy); and the port of `--url` must be the emitted
   gateway's port and the port of `--admin` the port of the emitted admin
-  address, the hosts too when the emitted bind is loopback, so that the
+  address, and the hosts: two IP literals must be equal (a gateway bound to
+  127.0.0.1 does not listen on 127.0.0.2 or ::1), and a name must be loopback
+  when the emitted bind is loopback, so that the
   listing and the live document the canary compares come from the gateway
   the file describes (D17; before the seventh round only the path of `--url`
   was held against the file, so a canary pointed at another listener, a
@@ -555,7 +558,7 @@ recorded sequence number (scenario D runs all three forms).
 Both commands open the database in forensic mode: a file whose guard objects
 were dropped or redefined, or that holds a trigger or view the schema did not
 create, is still read, read-only, so that `audit verify` can name the broken
-entry (`the audit log is broken at entry N`). Nothing is ever served or written
+entry (`the audit log is broken at entry N`), and a file holding a history row below id 1 is read past that row too, which the report then names. Nothing is ever served or written
 from such an open. Read `audit log ok` in that mode as "the chain is
 consistent", not as "the file is intact": every other command refuses a database
 whose guard objects are missing or do not have the definition `init` wrote, or
@@ -580,7 +583,7 @@ for an id below 1, the row count of `audit_log` against the entries the walk
 saw, and the guard objects, every
 table's DDL and the foreign objects (an automatic index the schema's tables do
 not account for included) against the schema (D13, D14, D15 and D17). Since
-the seventh round the walk starts below the smallest possible sequence
+the seventh round the walk starts at the smallest possible seq, bound included,uence
 number, so a row at seq 0 or below is reported as a chain break (expected seq
 1) and `audit list` shows it in forensic mode (D17; before, every walk and
 every page started at seq 0, so such a row was invisible to `audit verify`,
@@ -705,7 +708,10 @@ disagrees with the verified `server.processor_set`, `server.added`,
 `server.paused` or `server.resumed` entry
 (D17; `server list`, `emit`, `crawl`, `serve`, `list` and `show` all refuse
 the file; the URL itself is never printed, the report says that its hash
-differs), an approver in the approvals table differs from the verified entry
+differs), a tool's state column disagrees with the newest audit entry about
+the tool (`state of tool S/T is "X" but its newest audit entry (seq N,
+EVENT) left it "Y"; the state column was edited`; D17; the snapshot, `list`,
+`show`, `export`, every decision and the crawl refuse the file), an approver in the approvals table differs from the verified entry
 (`the approver or time of the newest approvals row of T is not what its
 approval entry (seq N) recorded; the approvals row was rewritten`, D17), an
 audit row sits at seq 0 or below or an approvals or history row at an id
@@ -762,10 +768,14 @@ guard set, and a file without them would otherwise be refused as redefined;
 D14 had moved it to v5 for the processor address column, the catalog identity
 in `meta` and the no-delete guards, and D13 to v4 for the audit detail
 fields). The CLI
-adds "the file was written by another schema version and there is no
-migration: for a database from an unreleased build, delete the file and run
-init again". There is no migration code because nothing has been released. For
-a pre-release file: stop every processor of the file, back it up, delete it,
+adds "the file was written by another schema version; the message says whether
+it came from an unreleased build (delete it and run init again) or from a
+release (read it with a build of that schema, never delete it)". Schema v6 is
+the first released schema: a file below it belongs to an unreleased build and
+is deleted, and the first bump after v0.1.0 will name the build that reads a
+v6 file or carry a migration; it will never advise deleting a released
+catalog (catalog `TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`).
+For a pre-release file: stop every processor of the file, back it up, delete it,
 run `init`, register the servers again, crawl, re-approve from your git export
 or from the backup read with a build of the matching schema, and start the
 processors again; a processor left running on the old handle denies every hook
@@ -1143,6 +1153,12 @@ shasum -a 256 -c --ignore-missing toolwarrant_0.1.0_checksums.txt
 The first command proves the checksums file was produced by this repository's
 release workflow at that tag; the second proves the downloaded archive is the
 one it lists. The binary prints its version with `toolwarrant version`.
+
+A published release is never re-run: the workflow keeps an existing
+release's notes and the existing assets make a second upload fail, so a fix
+is a new tag. The gate accepts only the newest `ci` run that a push to `main`
+triggered for the tagged commit; a commit that reached `main` through a pull
+request has such a run, a tag on any other commit is refused.
 
 ## Exit codes
 

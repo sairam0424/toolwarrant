@@ -672,7 +672,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   format gains the fields (b) compares (the state, the budget, the paused and
   allow-private flags, the URL hash). A v3 file from an unreleased build is
   refused with `ErrSchema` and must be re-initialised, as every earlier version
-  was.
+  was. Extended after the eighth review: when both the canary's host and the emitted address are IP literals they must be equal (a gateway bound to 127.0.0.1 does not listen on 127.0.0.2 or ::1, so a stand-in there with the emitted ports is not the emitted gateway); the loopback-class rule remains for names; an unspecified emitted address is compared by port alone.
 - Decision (j): the digest-shape rule is shared. `internal/lifecycle` exports
   `IsDigest` and `LastSeenVerifiable` (9cc8f28); the processor and the canary
   use them instead of private copies, so a served tool whose latest crawl left
@@ -1484,7 +1484,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
 - Decision (c): keyless signing. The checksums file is signed with cosign
   through GitHub's OIDC identity of the release workflow, so no signing key
   exists anywhere and the signature binds to
-  `github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/vX.Y.Z`.
+  `https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/vX.Y.Z`.
   A user verifies the checksums file with `cosign verify-blob` against that
   identity and the GitHub issuer, then the checksum of the binary they run.
 - Decision (d): the changelog is generated from the conventional commits
@@ -1497,7 +1497,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   else, after the existing CI jobs have passed on the same commit; every
   action is SHA-pinned (resolved on 2026-10-12: goreleaser-action v7.2.3,
   cosign-installer v4.1.2, sbom-action v0.24.3, checkout v7.0.1, setup-go
-  v7.0.0, to be re-verified against their tags when the file is written). Go
+  v7.0.0, each re-verified against its tag with the GitHub API on
+  2026-10-12 when the file was written, as was gitleaks-action v3.0.0). Go
   comes from go.mod through setup-go.
 - Decision (f): failure handling. goreleaser aborts on any failed build,
   missing SBOM or failed signature and leaves no partial release; a tag whose
@@ -1519,8 +1520,10 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   e2e CI job; write and file the upstream report on the id-less tools/call
   forwarding by hand (no public report existed on 2026-10-11); register the
   domain if wanted (not needed for v0.1).
-- Consequence. Operators: a release is one tag; the binary prints its tag as
-  its version; an archive is verified by the checksums file's signature, not
+- Consequence. Operators: a release is one tag; the binary prints the tag
+  without its v prefix as its version (goreleaser's version template strips
+  it; a snapshot built before the first push names its commit `none`, since
+  goreleaser reads it from the remote); an archive is verified by the checksums file's signature, not
   by a key the project would have to protect. Maintainers: adding a platform
   or an archive member is a line in `.goreleaser.yaml`; the release workflow
   shares no secret with anyone. What D16 does not do: no container image, no
@@ -1706,10 +1709,22 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `PauseServer` and `ResumeServer`, so an un-pause by one `UPDATE` serves
   nothing, is refused as a crawl and turns the operator's resume into
   `ErrCorrupt` rather than `ErrInvalid`; the chain memory records both
-  events for it.
+  events for it. Extended again after the eighth review (the whole-branch
+  review before the first push): every tool's state column is anchored to the
+  newest verified lifecycle entry about the tool (`anchorStates`, on
+  `Snapshot`, `Tools`, `Tool`, `Approved`, every decision and the crawl),
+  since `Disable` keeps the approved pointer and one `UPDATE tools SET state
+  = 'enabled'` served a disabled tool again while every approval anchor held;
+  the chain memory therefore records every lifecycle event about a tool. The
+  server row is anchored to the first `server.added` entry, not the newest,
+  because a server is registered once and an appended sealed second entry
+  (the access D14 admits) must not re-register it; `Integrity` names a second
+  one.
 - Decision (d): every chain walk, `Integrity.readLog` and the genesis page
-  start below the smallest possible seq (the query reads `seq >
-  math.MinInt64` from the zero pin), so a row at seq 0 or below is a chain
+  start at the smallest possible seq, bound included (the query reads
+  `seq >= math.MinInt64` from the zero pin; the first cut read `seq >` and so
+  could not reach that one value, which the eighth review planted a row at),
+  so a row at seq 0 or below is a chain
   break (expected seq 1) at open, in `audit verify` and in `Integrity`, which
   also compares `COUNT(*)` of `audit_log` with the entries it walked;
   `AuditEntries` shows such rows in forensic mode so `audit list` can name
@@ -1717,17 +1732,22 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
 - Decision (e): `Approved` takes `ApprovedBy` and `ApprovedAt` from the
   verified entry and reports a disagreement with the approvals row as
   `ErrCorrupt`, so the git export carries the name the chain carries.
-- Decision (f): `checkPinnedEntry` distinguishes a stale read snapshot from a
-  truncation. When the pinned seq is absent it reads the snapshot's head and
-  accepts it when its seq is below the pin and its hash is the one the memory
-  recorded for that seq (or the read transaction's first statement moves
-  under `walkMu`, which fixes the snapshot after the pin is read); anything
-  else stays `ErrCorrupt`. A concurrent-writer test fails on the old code.
+- Decision (f): a stale read snapshot cannot be mistaken for a truncation
+  because it cannot occur: `checkFile` takes `walkMu` before the read
+  transaction's first statement, so the snapshot is fixed after the pin it
+  is compared with was read, and `checkPinnedEntry` treats an absent pinned
+  entry as a truncation and nothing else. The first cut of this record named
+  a second mechanism, accepting the snapshot's head by its recorded hash,
+  which was considered and not implemented (it would accept a prefix
+  truncation ending at a decision entry); the eighth review corrected the
+  record. A concurrent-writer test fails on the old code.
 - Decision (g): the positive-id guards, `checkGhostRows` and `Integrity`
   refuse and report an id below 1 (the same rule as (b)), so a ghost row at
   id -1 cannot block the `Store`'s own inserts under the no-replace guards'
   message: the file is refused with its cause named before the insert is
-  tried.
+  tried. A forensic open (read-only) reads past such a row, as it reads past
+  a missing guard, so `list`, `show` and `audit list` can inspect the file
+  while `audit verify` names the row (eighth review).
 - Decision (h): the probe attributes nothing it cannot attribute. HTTP 202
   stays UNHOOKED-CALLS, exit 1: it is the fail-open shape of agentgateway
   v1.6.0. A 400 whose body is empty or is not JSON, read to the end, is
@@ -1788,7 +1808,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   schema's, so a v5 file from the sixth round is refused with `ErrSchema`
   and must be re-initialised like every earlier pre-release file (there is no
   migration; stop the processors, back the file up, `init`, re-register,
-  crawl, re-approve from the git export). `server list`, `emit`, `crawl`,
+  crawl, re-approve from the git export). After the eighth review the refusal distinguishes an unreleased schema (below `firstReleasedSchema`, 6: delete and init again) from a released one (6 and above: never delete, read it with a build of that schema or migrate as its release notes say), so the first bump after v0.1.0 cannot tell an operator to destroy an audit log (`TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`). `server list`, `emit`, `crawl`,
   `serve` and `show` now refuse a file whose servers row disagrees with the
   audit log, and `emit` prints a change line whenever the address it writes
   differs from the newest verified `server.processor_set` entry. A rollback
@@ -1813,7 +1833,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `internal/catalog/guards.go` and `internal/catalog/integrity.go` (b, g),
   `internal/catalog/serveranchor.go`, `internal/catalog/servers.go`,
   `internal/catalog/processoraddr.go`, `internal/catalog/snapshot.go`,
-  `internal/catalog/crawl.go` and `cmd/toolwarrant/emit.go` (c),
+  `internal/catalog/crawl.go`, `internal/catalog/stateanchor.go` and
+  `cmd/toolwarrant/emit.go` (c),
   `internal/catalog/audit.go`, `internal/catalog/chain.go` and
   `internal/catalog/integrity_audit.go` (d), `internal/catalog/approved.go`
   (e), `internal/catalog/chain.go` and `internal/catalog/store.go` (f),
@@ -1854,9 +1875,13 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestServers_RunTheFileCheckLikeEveryOtherView` and
   `TestSetProcessorAddr_ForgedColumnEqualToTheNewAddressIsCorrupt`,
   `TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt` and
-  `TestServers_PausedFlagWithoutAnEntryIsCorrupt` (c);
+  `TestServers_PausedFlagWithoutAnEntryIsCorrupt`,
+  `TestSnapshot_DisabledToolReEnabledByAColumnFlipIsCorrupt`,
+  `TestSnapshot_PlantedToolRowWithoutAnEntryIsCorrupt` and
+  `TestServers_ASecondServerAddedEntryIsNotTheAnchor` (c);
   `TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk` (d);
-  `TestApproved_ApproverAndTimeComeFromTheVerifiedEntry` (e);
+  `TestApproved_ApproverAndTimeComeFromTheVerifiedEntry` and
+  `TestApproved_BlankedApprovalTimeIsCorrupt` (e);
   `TestSnapshot_ConcurrentReadersAndAWriterNeverSeeAFalseTruncation` (f, the
   concurrent-writer test that fails on the old code);
   `TestOpen_SuffixRewrittenWhileNoStoreHeldAPinIsCaughtByTheRecordedHeadAlone`
@@ -1865,7 +1890,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestSnapshot_SwappingToolNamesIsCaughtByTheAnchor`; cmd
   `TestEmitRefusesACatalogWhoseProcessorAddressIsNotTheOneTheChainRecords`
   (c), `TestProbeDoesNotAttributeARelayedPlainTextRefusalToTheGateway` and
-  `TestProbeReadsTheJSONShapesAnUpstreamCanRelayOnA400` (h),
+  `TestProbeReadsTheJSONShapesAnUpstreamCanRelayOnA400` and
+  `TestProbeReadsAnEventStreamBehindALeadingByteOrderMark` (h),
   `TestLiveComparisonComparesTheBackendTargetName`,
   `TestLiveComparisonHoldsTheURLAndAdminPortsAgainstTheEmittedFile` and
   `TestCompareCanaryAddresses` (i), and

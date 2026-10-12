@@ -865,6 +865,27 @@ the statements of this file:
   ("approvals ids start at 1"); with the guard dropped, audit verify naming
   both problems and every other command refusing the file at open; the
   audit_log sequential guard refusing a seq 0 insert outright.
+- Eighth review (2026-10-12, before the first push: a whole-branch reviewer,
+  five specialist reviewers and an adversarial pass over a9612c0..6d3dc5e).
+  Fixed: tools.state was still read from the row by the snapshot, the views,
+  the export, the decisions and the crawl, so one UPDATE re-served a disabled
+  tool (now anchored to the newest verified lifecycle entry about the tool,
+  TestSnapshot_DisabledToolReEnabledByAColumnFlipIsCorrupt); the server row
+  was anchored to the newest server.added, which an appended sealed entry
+  could replace (now the first, TestServers_ASecondServerAddedEntryIsNotTheAnchor);
+  a row at seq math.MinInt64 was unreachable by an exclusive bound (inclusive
+  now, TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk gained the case); a
+  blanked approvals time skipped the approver comparison
+  (TestApproved_BlankedApprovalTimeIsCorrupt); a byte-order mark before an
+  SSE body's first line slipped past the probe
+  (TestProbeReadsAnEventStreamBehindALeadingByteOrderMark); forensic reads
+  were blocked by the ghost-row refusal (now read past it). Release pipeline:
+  changelog regexps that never matched goreleaser's sha-prefixed lines, dist/
+  not ignored, the gate keyed on the tag object for annotated tags and on any
+  ci run (now the newest push run on main, peeled), goreleaser version
+  floating (pinned v2.18.2), published releases replaceable by a re-run (now
+  keep-existing), credentials persisted by the release checkout. Documents
+  corrected where they described mechanisms the code does not have.
 - Decisions added since: D16 (the release design) and D17, in
   docs/decisions.md, with the pin limit stated as the code has it (README
   "Trust model", "The audit log" and L19; SECURITY.md's scope and checklist;
