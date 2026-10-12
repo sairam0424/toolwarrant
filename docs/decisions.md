@@ -1507,9 +1507,13 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   docs), and the release notes open with a fixed header naming the pinned
   gateway version (agentgateway v1.6.0) and the catalog schema version, since
   both decide whether an operator can upgrade in place. The previous tag is
-  chosen with goreleaser's `smartsemver` sort, which skips pre-release tags
-  when the current tag is a final release, so the release candidates tagged
-  on 2026-10-12 do not shorten the notes of v0.1.0.
+  the newest other tag by version, release candidates included, so the
+  candidate tags and their drafts are deleted before a final tag is cut (the
+  Releasing section says so). goreleaser's `smartsemver` sort, which would
+  skip them, is a GoReleaser Pro feature: the open-source build passes the
+  value to `git tag --sort`, git rejects it, and goreleaser reports "git
+  doesn't contain any tags", which is how v0.1.0-rc.2 failed on 2026-10-12
+  after `goreleaser check` had accepted the value.
 - Decision (e): the workflow `.github/workflows/release.yml` runs on `v*` tags
   only, with permissions `contents: write` and `id-token: write` and nothing
   else (the gate job that checks the ci run has `actions: read` and
