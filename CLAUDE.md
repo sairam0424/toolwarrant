@@ -17,7 +17,7 @@ make lint                                             # gofmt, go vet (also -tag
 make vuln                                             # govulncheck ./... (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 make e2e                                              # go test -tags e2e -count=1 -timeout 900s -v ./e2e against the real gateway
 make demo                                             # demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
-make release-check                                    # goreleaser check, and the release notes name the schema version the code writes
+make release-check                                    # goreleaser check; the release notes name the schema version the code writes; the notices script's platform list equals goreleaser's goos x goarch; the checksums are signed as a bundle
 make release-snapshot                                 # goreleaser snapshot into dist/ (gitignored): four archives, SBOMs, checksums; unsigned
 go build -o bin/ ./cmd/...                            # binaries; bin/ is gitignored
 go test -short -race -count=1 -timeout 900s ./...     # skips six tests, named below

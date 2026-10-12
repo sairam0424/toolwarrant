@@ -38,6 +38,8 @@ demo:
 release-check:
 	goreleaser check
 	@want="$$(sed -n 's/^const schemaVersion = \([0-9]*\).*/\1/p' internal/catalog/schema.go)"; got="$$(sed -n 's/^ *v\([0-9]*\); a catalog from an earlier build.*/\1/p' .goreleaser.yaml)"; if [ -z "$$want" ] || [ "$$want" != "$$got" ]; then echo "release notes name schema v$$got but internal/catalog/schema.go writes v$$want"; exit 1; fi; echo "release notes name schema v$$got, as the code writes"
+	@os="$$(awk '/^builds:/{b=1} /^archives:/{b=0} b && /^ *goos:/{m="os"; next} b && /^ *goarch:/{m="arch"; next} b && m != "" && /^ *- [a-z0-9]+ *$$/{print m, $$2; next} b && /^ *[a-z_]+:/{m=""}' .goreleaser.yaml)"; want="$$(for o in $$(echo "$$os" | awk '$$1=="os"{print $$2}'); do for a in $$(echo "$$os" | awk '$$1=="arch"{print $$2}'); do echo "$$o/$$a"; done; done | sort | tr '\n' ' ')"; got="$$(sed -n 's/^release_platforms="\(.*\)"/\1/p' scripts/gen-third-party-notices.sh | tr ' ' '\n' | sort | tr '\n' ' ')"; if [ -z "$$want" ] || [ "$$want" != "$$got" ]; then echo "goreleaser builds [$$want] but scripts/gen-third-party-notices.sh lists [$$got]; release_platforms must equal the goos x goarch of .goreleaser.yaml or the notices miss a platform's modules"; exit 1; fi; echo "release platforms agree: $$want"
+	@grep -qF -- '--bundle=$${signature}' .goreleaser.yaml || { echo ".goreleaser.yaml signs the checksums file without --bundle; cosign v3 writes nothing without it (D16 (c))"; exit 1; }; echo "checksums are signed as a sigstore bundle"
 
 release-snapshot:
 	@git check-ignore -q dist || { echo "dist/ is not gitignored; add it before building a snapshot"; exit 1; }
