@@ -4,22 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/sairam0424/toolwarrant/internal/audit"
 )
 
 // Approved returns the approved version of every tool that is enabled or
-// changed_pending_reapproval, ordered by server then tool name. The approver
-// and time come from the tool's newest approve or rollback row, which must
-// name the approved version and carry its digest as hash_seen, and the newest
-// version.approved or version.rolled_back audit entry about the tool must have
-// recorded the digest and be part of the verified chain (anchorApproved). A
-// version whose canonical form no longer hashes to its digest, whose digest
-// profile is not the current one, whose pointer dangles or names another
-// tool's version, or that the newest decision or the newest approval entry
-// does not name, is reported as ErrCorrupt rather than exported. The export
-// carries the bytes, so they are read on every call; only the hash is
-// skipped, for a row this Store verified within RecheckTTL. Tools of a paused
-// server are included: the export describes approvals, not serving. The guard
-// objects and the pinned chain are verified first, as on every Snapshot load.
+// changed_pending_reapproval, ordered by server then tool name. The tool's
+// newest approve or rollback row must name the approved version and carry its
+// digest as hash_seen, and the newest version.approved or version.rolled_back
+// audit entry about the tool must have recorded the digest and be part of the
+// verified chain (anchorApproved). The approver and time come from that
+// verified entry, and the row must agree with it (D17 e: the export used to
+// take them from the row, which one UPDATE under a re-created guard rewrote
+// while the chain, the recorded head and every serving-path check stayed
+// clean, so the git export named the wrong approver). A version whose
+// canonical form no longer hashes to its digest, whose digest profile is not
+// the current one, whose pointer dangles or names another tool's version, or
+// that the newest decision or the newest approval entry does not name, is
+// reported as ErrCorrupt rather than exported. The export carries the bytes,
+// so they are read on every call; only the hash is skipped, for a row this
+// Store verified within RecheckTTL. Tools of a paused server are included: the
+// export describes approvals, not serving. The guard objects and the pinned
+// chain are verified first, as on every Snapshot load.
 func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 	out := []ApprovedTool{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -30,12 +36,30 @@ func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
 		if err != nil {
 			return err
 		}
-		return anchorApproved(ctx, q, s.chain, refs)
+		entries, err := verifyAnchors(ctx, q, s.chain, refs)
+		if err != nil {
+			return err
+		}
+		return adoptApprovers(out, refs, entries)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// adoptApprovers fills in the approver and time of every exported tool from
+// its verified approval entry; refs runs parallel to tools.
+func adoptApprovers(tools []ApprovedTool, refs []approvedRef, entries map[int64]audit.Entry) error {
+	for i, r := range refs {
+		e := entries[r.entry.Int64]
+		when, err := parseTime(e.TS)
+		if err != nil {
+			return err
+		}
+		tools[i].ApprovedBy, tools[i].ApprovedAt = e.Actor, when
+	}
+	return nil
 }
 
 // readApproved runs approvedQuery, appends every exported tool to out and
@@ -82,7 +106,9 @@ const approvedQuery = `SELECT s.name, t.id, t.name, v.id, v.tool_id, COALESCE(v.
 // log: the pointer must resolve to the tool's own version, the profile must be
 // the current one, the bytes must hash to the digest unless the verifier
 // remembers the row, and the tool's newest decision must name the version. The
-// returned reference carries what anchorApproved checks afterwards.
+// returned reference carries what verifyAnchors checks afterwards, the row's
+// approver and time included; the tool's own ApprovedBy and ApprovedAt are
+// filled in from the verified entry (adoptApprovers).
 func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, approvedRef, error) {
 	var (
 		a                  ApprovedTool
@@ -112,10 +138,5 @@ func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, approvedRef, error)
 	if decided.Int64 != joined.Int64 || seen.String != a.Digest {
 		return ApprovedTool{}, approvedRef{}, errNotNewestDecision(name)
 	}
-	when, err := parseTime(at.String)
-	if err != nil {
-		return ApprovedTool{}, approvedRef{}, err
-	}
-	a.ApprovedBy, a.ApprovedAt = approver.String, when
-	return a, approvedRef{id: joined.Int64, tool: name, digest: a.Digest, entry: entry}, nil
+	return a, approvedRef{id: joined.Int64, tool: name, digest: a.Digest, entry: entry, approver: approver.String, at: at.String}, nil
 }

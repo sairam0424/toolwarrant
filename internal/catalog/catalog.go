@@ -24,17 +24,20 @@
 // the suffix on every reload, keeps the hash of every decision entry it
 // walked, and trusts an entry only when its fields hash to that value; a
 // forger must rewrite every entry from the forged one to the head, which the
-// head a running Store pinned and the head the operator records outside the
-// file betray). A Store remembers each version row it has verified for
+// head a running Store pinned betrays while that Store runs, and which only
+// the head the operator records outside the file betrays once no Store holds
+// a pin, the CLI's state between commands, D17 k). A Store remembers each
+// version row it has verified for
 // RecheckTTL (ten minutes), so the processor's reload after a crawl does not
 // read every approved definition again; the price, stated in full at
 // RecheckTTL, is that a change to the stored bytes of a row this Store
 // verified within the last RecheckTTL is not reported until that time has
 // passed or a Store without the memory reads the row. Decisions always load
-// their tool afresh and require its proposer lists to be what the verified
-// version.proposed entries name. A Store also remembers the catalog identity
-// and the file it opened, so every read reports ErrReplaced once the file at
-// the path is another one.
+// their tool afresh and require every version's status, ever-approved flag and
+// proposer list to be what the verified version.* entries about the tool leave
+// behind (D17 a). A Store also remembers the catalog identity and the file it
+// opened, so every read reports ErrReplaced once the file at the path is
+// another one.
 //
 // The servers and tools tables are the current policy and have no update
 // guard: their columns must change with every crawl and decision; nothing is
@@ -43,10 +46,13 @@
 // mutable column the log describes against the latest entry about its
 // subject, reconstructs every version's status and proposers from the log, and
 // names every row that disagrees, is missing or was never recorded; audit
-// verify prints its report. Open, every Snapshot, Approved and view load and
-// every write transaction refuse a file whose guard objects are missing or
-// redefined or that holds a trigger, view or unique index the schema did not
-// create.
+// verify prints its report. The columns emit and the crawler act on are bound
+// on the read path too: Server and Servers anchor processor_addr, url and
+// allow_private to the verified server.processor_set and server.added entries
+// (D17 c). Open, every Snapshot, Approved and view load and every write
+// transaction refuse a file whose guard objects are missing or redefined, that
+// holds a trigger, view or unique index the schema did not create, or that
+// holds a history row below id 1 (D17 b).
 package catalog
 
 import (

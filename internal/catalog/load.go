@@ -195,11 +195,14 @@ func loadTool(ctx context.Context, q queryer, chain *chainMemory, server, tool s
 }
 
 // checkToolEvidence requires what a decision consults about a tool to be what
-// the verified chain says (D15 b): the approved version, if any, is the one
-// the newest approval entry recorded (anchorOne, checked first so that a
-// rewritten approval is named as such), and the proposers of every version
-// are the actors of the version.proposed entries about the tool
-// (verifyProposers).
+// the verified chain says (D15 b, D17 a): the approved version, if any, is the
+// one the newest approval entry recorded (anchorOne, checked first so that a
+// rewritten approval is named as such), and every version's status,
+// ever-approved flag and proposer list are what the verified version.* entries
+// about the tool leave behind (verifyVersionHistory). Once that holds, the
+// columns lifecycle.Apply reads are the chain's values: a rollback target is
+// one a verified version.approved or version.rolled_back entry names, and a
+// rejected version put back to pending by hand is refused, not approved.
 func checkToolEvidence(ctx context.Context, q queryer, chain *chainMemory, subject string, rec *toolRec) error {
 	if rec.tool.Approved != "" {
 		versionID, err := rec.versionID(rec.tool.Approved)
@@ -210,7 +213,7 @@ func checkToolEvidence(ctx context.Context, q queryer, chain *chainMemory, subje
 			return err
 		}
 	}
-	return verifyProposers(ctx, q, chain, subject, recordedProposers(rec))
+	return verifyVersionHistory(ctx, q, chain, subject, recordedVersions(rec))
 }
 
 // checkCanonical re-hashes the stored canonical bytes: they must hash to the

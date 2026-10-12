@@ -171,11 +171,13 @@ const versionViewQuery = `SELECT v.id, v.version_no, v.digest, v.digest_profile,
 // (checkFile). Each canonical form is re-hashed on the way out, unless this
 // Store verified that row within RecheckTTL, its digest profile is checked, a
 // version in status approved or marked ever approved must have an approve or
-// rollback record behind it, the proposers shown must be the ones the verified
-// version.proposed entries about the tool name (verifyProposers: an approver
-// decides on this history), and the version in status approved must be the
-// one the tool's newest decision names and the one its newest approval entry
-// recorded (anchorApproved), so a tampered row is reported, not displayed.
+// rollback record behind it, the status, the ever-approved flag and the
+// proposers shown must be what the verified version.* entries about the tool
+// leave behind (verifyVersionHistory, D17 a: an approver decides on this
+// history, and a version shown as approved before is a rollback target), and
+// the version in status approved must be the one the tool's newest decision
+// names and the one its newest approval entry recorded (anchorApproved), so a
+// tampered row is reported, not displayed.
 func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionView, error) {
 	out := []VersionView{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -198,21 +200,12 @@ func (s *Store) Versions(ctx context.Context, server, tool string) ([]VersionVie
 		if err := anchorOne(ctx, q, s.chain, subject, approvedID, approved); err != nil {
 			return err
 		}
-		return verifyProposers(ctx, q, s.chain, subject, viewedProposers(out))
+		return verifyVersionHistory(ctx, q, s.chain, subject, viewedVersions(out))
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
-}
-
-// viewedProposers lists the versions of a view with the proposers it shows.
-func viewedProposers(views []VersionView) []versionProposers {
-	out := make([]versionProposers, 0, len(views))
-	for _, v := range views {
-		out = append(out, versionProposers{digest: v.Digest, names: v.Proposers})
-	}
-	return out
 }
 
 // readVersionViews runs versionViewQuery, appends the views to out and

@@ -58,26 +58,52 @@ func isDecisionEvent(event string) bool {
 	return event == string(lifecycle.EvApproved) || event == string(lifecycle.EvRejected) || event == string(lifecycle.EvRolledBack)
 }
 
-// readLog streams the whole log in pages, oldest first, verifies every entry's
-// seal and its link to the entry before it (checkLink, D15 c) and notes what
-// every entry says.
+// readLog streams the whole log in pages, oldest first, from below the
+// smallest seq SQLite can store (D17 d), verifies every entry's seal and its
+// link to the entry before it (checkLink, D15 c) and notes what every entry
+// says. A row at seq 0 or below is outside the chain: it is reported as a
+// break and neither linked nor noted, so a forged row placed there cannot
+// stand in for history. The row count is then compared with the entries read.
 func (c *integrityCheck) readLog() error {
 	var prev audit.Entry
-	for after := int64(0); ; {
+	walked := 0
+	for after := int64(beforeFirstSeq); ; {
 		page, err := queryAudit(c.ctx, c.q, after, auditPage)
 		if err != nil {
 			return err
 		}
 		for _, e := range page {
+			walked++
+			if e.Seq < 1 {
+				c.problem("audit entry %d has a sequence number below 1, which the catalog never writes (the chain starts at seq 1); the row was inserted by hand and is not part of the chain", e.Seq)
+				c.rep.ChainBreaks++
+				continue
+			}
 			c.checkLink(prev, e)
 			prev = e
 			c.noteEntry(e)
 		}
 		if len(page) < auditPage {
-			return nil
+			break
 		}
 		after = page[len(page)-1].Seq
 	}
+	return c.checkLogCount(walked)
+}
+
+// checkLogCount compares the number of rows audit_log holds with the number
+// the walk read; the two are read in one transaction, so a difference means
+// the table answers the two questions differently.
+func (c *integrityCheck) checkLogCount(walked int) error {
+	var n int
+	if err := c.q.QueryRowContext(c.ctx, `SELECT COUNT(*) FROM audit_log`).Scan(&n); err != nil {
+		return fmt.Errorf("catalog: count audit entries: %w", err)
+	}
+	if n != walked {
+		c.problem("audit_log holds %d rows but the walk from the first sequence number read %d", n, walked)
+		c.rep.ChainBreaks++
+	}
+	return nil
 }
 
 // checkLink verifies one entry against the entry before it (the zero Entry
@@ -234,9 +260,17 @@ func (c *integrityCheck) checkApprovals() error {
 }
 
 // matchApproval consumes the decision entry that recorded this row, or reports
-// the row. The approver, timestamp and hash_seen columns are quoted when shown:
-// a row appended by hand may hold anything.
+// the row. A row below id 1 is reported and matched against nothing: the
+// catalog never assigns such an id, and a row placed there must not consume
+// the entry of a decision the Store did write (D17 b). The approver, timestamp
+// and hash_seen columns are quoted when shown: a row appended by hand may hold
+// anything.
 func (c *integrityCheck) matchApproval(a approvalRow) {
+	if a.id < 1 {
+		c.rep.GhostRows++
+		c.problem("approvals row %d has an id below 1, which the catalog never assigns; the row was inserted by hand and is not a decision", a.id)
+		return
+	}
 	if !a.digest.Valid || !a.server.Valid || !a.tool.Valid {
 		c.rep.ApprovalsWithoutAuditEntry++
 		c.problem("approvals row %d points at a version, tool or server that does not exist", a.id)

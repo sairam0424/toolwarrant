@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,14 @@ const (
 	auditPage   = 5000
 	auditCols   = `seq, ts, actor, actor_type, event, subject, before_hash, after_hash, detail, prev_hash, hash`
 	insertAudit = `INSERT INTO audit_log (` + auditCols + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	// beforeFirstSeq is the lower bound of every read of the log from its
+	// start: below any seq SQLite can store, so that a row at seq 0 or below,
+	// which the catalog never writes (the chain starts at seq 1), is read by
+	// the chain walks, by Integrity and by the listing instead of being skipped
+	// by a bound of seq > 0, and is refused as a break (D17 d; the seventh
+	// review placed a version.proposed entry at seq 0 that no walk read while
+	// the decision path read it and refused every decision on the tool).
+	beforeFirstSeq = math.MinInt64
 )
 
 func scanAudit(sc rowScanner) (audit.Entry, error) {
@@ -212,10 +221,16 @@ func queryAudit(ctx context.Context, q queryer, after int64, limit int) ([]audit
 }
 
 // AuditEntries returns up to limit entries with Seq greater than after, in
-// order. A limit of zero or less means no limit.
+// order. A limit of zero or less means no limit. An after of zero lists the
+// table from its start, a row at seq 0 or below included: the catalog never
+// writes one, so a forensic listing must show it (D17 d) rather than hide it
+// behind a bound of seq > 0.
 func (s *Store) AuditEntries(ctx context.Context, after int64, limit int) ([]audit.Entry, error) {
 	if limit <= 0 {
 		limit = noLimit
+	}
+	if after == 0 {
+		after = beforeFirstSeq
 	}
 	var out []audit.Entry
 	err := s.inRead(ctx, func(q queryer) error {

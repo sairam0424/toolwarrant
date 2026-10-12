@@ -35,12 +35,18 @@ func (s *Store) clock() time.Time { return s.now() }
 // does not remember it: a remembered row is neither read nor hashed. tool is
 // the audit subject (server/tool) and entry the seq of the newest
 // version.approved or version.rolled_back entry about it, NULL when the log
-// has none; anchorApproved checks both.
+// has none; anchorApproved checks both. approver and at are the approver and
+// the time the tool's newest approvals row holds, set by Approved alone, which
+// checkAnchor compares with the entry's actor and timestamp (D17 e): the
+// export used to take them from the row, which a re-created guard lets anyone
+// rewrite while the chain stays clean. Empty where the caller shows neither.
 type approvedRef struct {
-	id     int64
-	tool   string
-	digest string
-	entry  sql.NullInt64
+	id       int64
+	tool     string
+	digest   string
+	entry    sql.NullInt64
+	approver string
+	at       string
 }
 
 // canonicalChunk is how many rows one re-check query fetches. The rows stream

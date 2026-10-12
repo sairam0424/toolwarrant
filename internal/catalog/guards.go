@@ -52,7 +52,12 @@ func guardIndexStatements() []string {
 // BEFORE INSERT trigger runs before conflict resolution, so RAISE there stops
 // the statement before anything is deleted. The UPDATE guards compare values
 // instead of naming columns, because an UPDATE OF column list does not see
-// "SET rowid = ..." (nor _rowid_ or oid) although it rewrites the id.
+// "SET rowid = ..." (nor _rowid_ or oid) although it rewrites the id. The
+// positive-id guards are AFTER INSERT triggers on purpose: in a BEFORE INSERT
+// trigger SQLite evaluates an unsupplied INTEGER PRIMARY KEY as -1, so a
+// BEFORE guard on NEW.id < 1 would refuse every insert the Store makes, while
+// an AFTER trigger sees the id the row got and RAISE(ABORT) there backs the
+// row out again (D17 b, g; see ghostrows.go for what a row below id 1 did).
 func guardStatements() []string {
 	return []string{
 		triggerAbort("audit_log_no_update", "BEFORE UPDATE ON audit_log", "", "audit_log is append-only"),
@@ -72,6 +77,8 @@ func guardStatements() []string {
 			   OR (NEW.status IN ('pending', 'approved')
 			       AND EXISTS (SELECT 1 FROM tool_versions WHERE tool_id = NEW.tool_id AND status = NEW.status))`,
 			"tool_versions cannot be replaced"),
+		triggerAbort("tool_versions_positive_id", "AFTER INSERT ON tool_versions", "WHEN NEW.id < 1",
+			"tool_versions ids start at 1"),
 		triggerAbort("proposers_no_update", "BEFORE UPDATE ON tool_version_proposers", "", "proposers are append-only"),
 		triggerAbort("proposers_no_delete", "BEFORE DELETE ON tool_version_proposers", "", "proposers are append-only"),
 		triggerAbort("proposers_append_only", "BEFORE INSERT ON tool_version_proposers",
@@ -82,6 +89,7 @@ func guardStatements() []string {
 		triggerAbort("approvals_no_delete", "BEFORE DELETE ON approvals", "", "approvals are append-only"),
 		triggerAbort("approvals_no_replace", "BEFORE INSERT ON approvals",
 			"WHEN EXISTS (SELECT 1 FROM approvals WHERE id = NEW.id)", "approvals cannot be replaced"),
+		triggerAbort("approvals_positive_id", "AFTER INSERT ON approvals", "WHEN NEW.id < 1", "approvals ids start at 1"),
 		// The catalog never deletes a tool row: a deleted row orphans the
 		// tool's versions and lets the next crawl discover the name afresh
 		// with a fresh proposer history (D14), so a delete is an edit of history.

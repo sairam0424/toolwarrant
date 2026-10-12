@@ -65,10 +65,11 @@ func TestOpen_ReopenKeepsDataAndIsIdempotent(t *testing.T) {
 }
 
 func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
-	// Versions 3 and 4 are the previous unreleased builds (D13(i): the audit
+	// Versions 3, 4 and 5 are the previous unreleased builds (D13(i): the audit
 	// detail format gained fields; D14(k): the catalog identity, the processor
-	// address column and the new guards); each is refused like every other.
-	for name, version := range map[string]int{"newer": 99, "older unreleased": 1, "third round": 3, "fourth round": 4, "negative": -3} {
+	// address column and the new guards; D17(b): the positive-id guards); each
+	// is refused like every other.
+	for name, version := range map[string]int{"newer": 99, "older unreleased": 1, "third round": 3, "fourth round": 4, "fifth round": 5, "negative": -3} {
 		t.Run(name, func(t *testing.T) {
 			path := dbPath(t)
 			s, err := Open(path, lifecycle.DefaultPolicy())

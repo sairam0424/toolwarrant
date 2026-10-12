@@ -237,7 +237,8 @@ type queryer interface {
 // together with exactly one generation bump, or rolled back if fn (or the bump)
 // fails or panics. A read-only store refuses before touching the database.
 //
-// The audit chain is verified first (verifyChain, D15): the suffix appended
+// The history tables must hold no row below id 1 (checkGhostRows, D17 b) and
+// the audit chain is verified first (verifyChain, D15): the suffix appended
 // since this Store last looked must continue the chain it verified, the memory
 // is extended to the head, and the entries fn appends are chained from that
 // verified head rather than from a hash column read back from the file. The
@@ -268,6 +269,9 @@ func (s *Store) inTx(ctx context.Context, fn func(t *txn) error) error {
 		}
 	}()
 	t := newTxn(sqlTx, s.now())
+	if err := checkGhostRows(ctx, t); err != nil {
+		return err
+	}
 	if err := s.verifyChain(ctx, t); err != nil {
 		return err
 	}

@@ -13,12 +13,12 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// The verified chain (D15). A Store verifies the whole audit chain once, when
-// it opens (audit.VerifyFrom over a streamed read, from the genesis), and
+// The verified chain (D15, D17). A Store verifies the whole audit chain once,
+// when it opens (audit.VerifyFrom over a streamed read, from the genesis), and
 // remembers two things about it: the head, the seq and hash of the newest
 // entry it verified (the pin of D14 b), and the hash of every decision entry
 // it walked (version.proposed, version.superseded, version.rejected,
-// version.approved, version.rolled_back, tool.budget_reset,
+// version.approved, version.rolled_back, tool.budget_reset, server.added,
 // server.processor_set), as the walk computed it from the entry's fields.
 // Every later read verifies only the suffix appended after the head and
 // extends the memory. An audit entry is trusted on the serving path and on the
@@ -31,13 +31,24 @@ import (
 // every Store that opens later and walks the chain the rewrite broke; to
 // pass, the forger must rewrite every entry from the forged one to the head,
 // which changes the head a running Store pinned and the head the operator
-// recorded. What no Store can see is a chain rewritten completely before it
-// opened (the pin-bootstrap limit); that is what audit verify with the
-// recorded head is for. The fifth review showed why the previous rule (the
-// newest approval entry re-sealed from its predecessor only, remembered by
-// the stored hash column for RecheckTTL) was not enough: an entry below the
-// head rewritten in place was served, and an after_hash edited with the hash
-// column kept was served for ten minutes.
+// recorded.
+//
+// The limit of the pin, stated as the code has it (D17 k): the pin protects
+// only while a Store holds it. The processor's pin protects while a processor
+// runs; the CLI opens a Store per command and is never protected by a pin.
+// Any rewrite from the forged entry to the head made while no Store holds a
+// pin, the whole chain or a suffix of it, verifies clean when the next Store
+// opens and walks it, and is caught by the recorded head alone (audit verify
+// with the recorded head), which is why operators record the head after every
+// verify and compare it before every decision made after the processors were
+// stopped. The fifth review showed why the previous rule (the newest approval
+// entry re-sealed from its predecessor only, remembered by the stored hash
+// column for RecheckTTL) was not enough: an entry below the head rewritten in
+// place was served, and an after_hash edited with the hash column kept was
+// served for ten minutes. The seventh review showed that a walk bounded by
+// seq > 0 never read a row at seq 0 or below (D17 d, beforeFirstSeq) and that
+// a reader whose snapshot predated the pin was told the log was truncated
+// (D17 f, checkFile).
 
 // chainPin is the newest audit entry a Store has verified: its seq and the
 // hash computed from its fields. seq 0 means nothing verified yet, or an
@@ -52,8 +63,10 @@ type chainPin struct {
 type entryHash [sha256.Size]byte
 
 // chainMemory is what a Store knows about the chain it verified; see the file
-// comment. walkMu serialises the walks, so two readers cannot verify one
-// suffix with different contents and both record it; mu guards the memory.
+// comment. walkMu serialises the walks and the first statement of every
+// checked read (checkFile), so two readers cannot verify one suffix with
+// different contents and both record it, and no read compares its snapshot
+// with a pin that a later snapshot set; mu guards the memory.
 type chainMemory struct {
 	walkMu sync.Mutex
 	mu     sync.RWMutex
@@ -143,11 +156,13 @@ func errEntryRewritten(seq int64, subject string) error {
 }
 
 // isChainRecordedEvent reports whether the walk keeps an entry's hash: the
-// events the serving and decision paths read back as evidence.
+// events the serving and decision paths and the server views read back as
+// evidence (server.added anchors a server's URL and allow_private flag,
+// server.processor_set its processor address, D17 c).
 func isChainRecordedEvent(event string) bool {
 	switch event {
 	case string(lifecycle.EvProposed), string(lifecycle.EvSuperseded), string(lifecycle.EvRejected),
-		string(lifecycle.EvApproved), string(lifecycle.EvRolledBack), evBudgetReset, evServerProcessorSet:
+		string(lifecycle.EvApproved), string(lifecycle.EvRolledBack), evBudgetReset, evServerAdded, evServerProcessorSet:
 		return true
 	}
 	return false
@@ -170,11 +185,18 @@ func decodeEntryHash(s string) (entryHash, bool) {
 // pin) and hands every verified page to visit, which may be nil. It returns
 // the new head and the number of entries walked. A break is returned as
 // audit.VerifyFrom reports it, unwrapped, so VerifyAudit can hand it on as is.
+// A walk from the genesis starts below the smallest seq SQLite can store, so a
+// row at seq 0 or below, which the catalog never writes, is read and refused
+// as a break (expected seq 1) instead of skipped (D17 d).
 func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit.Entry)) (chainPin, int, error) {
 	prev := audit.Entry{Seq: from.seq, Hash: from.hash}
+	after := prev.Seq
+	if from.seq == 0 {
+		after = beforeFirstSeq
+	}
 	walked := 0
 	for {
-		page, err := queryAudit(ctx, q, prev.Seq, auditPage)
+		page, err := queryAudit(ctx, q, after, auditPage)
 		if err != nil {
 			return chainPin{}, 0, err
 		}
@@ -187,6 +209,7 @@ func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit
 		walked += len(page)
 		if len(page) > 0 {
 			prev = page[len(page)-1]
+			after = prev.Seq
 		}
 		if len(page) < auditPage {
 			return chainPin{seq: prev.Seq, hash: prev.Hash}, walked, nil
@@ -200,15 +223,28 @@ func (s *Store) loadPin() chainPin { return s.chain.pin() }
 // checkFile is what every serving-path and view read requires of the file
 // before it trusts a row: the file at the path still the one this Store opened
 // and still carrying the catalog identity it read at open (identity.go, D14
-// e), the guard objects and tables as the schema defines them (skipped by a
-// forensic open, as at Open, so that the views can inspect a file whose
-// guards are gone) and the audit chain unchanged since this Store last looked,
-// with the memory of it extended to the head (verifyChain).
+// e), no row below id 1 in the history tables (checkGhostRows, D17 b), the
+// guard objects and tables as the schema defines them (skipped by a forensic
+// open, as at Open, so that the views can inspect a file whose guards are
+// gone) and the audit chain unchanged since this Store last looked, with the
+// memory of it extended to the head (verifyChain). It must be the first thing
+// a read transaction runs: the whole check holds walkMu, so the transaction's
+// first statement, which fixes its snapshot, runs under the same lock as the
+// read of the pin it is compared with. A snapshot fixed before the lock could
+// predate a pin another handle of this Store advanced in between, and the
+// pinned entry, absent from that older snapshot, read as a truncation (D17 f;
+// the seventh review measured one in five Snapshot calls under six readers
+// and one writer failing that way on an untouched file).
 func (s *Store) checkFile(ctx context.Context, q queryer) error {
 	if err := s.checkFileIdentity(); err != nil {
 		return err
 	}
+	s.chain.walkMu.Lock()
+	defer s.chain.walkMu.Unlock()
 	if err := s.checkStoredIdentity(ctx, q); err != nil {
+		return err
+	}
+	if err := checkGhostRows(ctx, q); err != nil {
 		return err
 	}
 	if !s.forensic {
@@ -216,18 +252,27 @@ func (s *Store) checkFile(ctx context.Context, q queryer) error {
 			return err
 		}
 	}
-	return s.verifyChain(ctx, q)
+	return s.verifyChainLocked(ctx, q)
 }
 
 // verifyChain brings the Store's memory of the chain up to the log as this
-// transaction sees it: the pinned entry must still hash, from its fields as
-// stored now, to the recorded hash, every entry after it must continue the
-// chain, and the memory is extended to the new head. Nothing before the pin is
-// read again; with no pin yet (a fresh Store, or an empty log so far) the walk
-// starts at the genesis. The walks of one Store run one at a time.
+// transaction sees it, under walkMu. Open and every write transaction call
+// it: at Open it is the transaction's first statement, and a write transaction
+// (BEGIN IMMEDIATE) always sees the newest commit, so neither can hold a
+// snapshot older than the pin. Reads go through checkFile, which takes the
+// lock before their first statement.
 func (s *Store) verifyChain(ctx context.Context, q queryer) error {
 	s.chain.walkMu.Lock()
 	defer s.chain.walkMu.Unlock()
+	return s.verifyChainLocked(ctx, q)
+}
+
+// verifyChainLocked is verifyChain with walkMu held: the pinned entry must
+// still hash, from its fields as stored now, to the recorded hash, every entry
+// after it must continue the chain, and the memory is extended to the new
+// head. Nothing before the pin is read again; with no pin yet (a fresh Store,
+// or an empty log so far) the walk starts at the genesis.
+func (s *Store) verifyChainLocked(ctx context.Context, q queryer) error {
 	pin := s.chain.pin()
 	if pin.seq != 0 {
 		if err := checkPinnedEntry(ctx, q, pin); err != nil {
@@ -249,7 +294,10 @@ func (s *Store) verifyChain(ctx context.Context, q queryer) error {
 
 // checkPinnedEntry requires the pinned entry to exist and its fields, as
 // stored now, to hash to the recorded hash. The hash column is not compared:
-// the fifth review edited a pinned entry's fields and kept the column.
+// the fifth review edited a pinned entry's fields and kept the column. An
+// absent pinned entry is a truncation and nothing else, because the snapshot
+// of every caller is fixed under walkMu and so never predates the pin (see
+// checkFile and verifyChain).
 func checkPinnedEntry(ctx context.Context, q queryer, pin chainPin) error {
 	e, err := scanAudit(q.QueryRowContext(ctx, `SELECT `+auditCols+` FROM audit_log WHERE seq = ?`, pin.seq))
 	switch {

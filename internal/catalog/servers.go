@@ -122,23 +122,28 @@ func (s *Store) setPaused(ctx context.Context, name string, by Actor, paused boo
 	})
 }
 
-// Servers lists registered upstreams ordered by name.
+// Servers lists registered upstreams ordered by name. The file is checked
+// first as on every other view (checkFile) and every row's processor address,
+// URL and allow_private flag must be what the verified chain recorded
+// (anchorServer, D17 c), so emit never writes a processor address the log did
+// not record and the crawl loop never follows a URL or a policy flag someone
+// edited into the row; a disagreement is ErrCorrupt.
 func (s *Store) Servers(ctx context.Context) ([]Server, error) {
 	out := []Server{}
 	err := s.inRead(ctx, func(q queryer) error {
-		rows, err := q.QueryContext(ctx, `SELECT `+serverCols+` FROM servers ORDER BY name`)
-		if err != nil {
-			return fmt.Errorf("catalog: list servers: %w", err)
+		if err := s.checkFile(ctx, q); err != nil {
+			return err
 		}
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			srv, err := scanServer(rows)
-			if err != nil {
-				return fmt.Errorf("catalog: list servers: %w", err)
+		var err error
+		if out, err = readServerRows(ctx, q); err != nil {
+			return err
+		}
+		for _, srv := range out {
+			if err := anchorServer(ctx, q, s.chain, srv); err != nil {
+				return err
 			}
-			out = append(out, srv)
 		}
-		return rows.Err()
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -146,13 +151,41 @@ func (s *Store) Servers(ctx context.Context) ([]Server, error) {
 	return out, nil
 }
 
-// Server returns one upstream by name, or ErrNotFound.
+// readServerRows reads every servers row in name order. The rows are closed
+// before it returns, so the anchor's own queries never interleave with them.
+func readServerRows(ctx context.Context, q queryer) ([]Server, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+serverCols+` FROM servers ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: list servers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Server{}
+	for rows.Next() {
+		srv, err := scanServer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("catalog: list servers: %w", err)
+		}
+		out = append(out, srv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("catalog: list servers: %w", err)
+	}
+	return out, nil
+}
+
+// Server returns one upstream by name, or ErrNotFound. The file is checked and
+// the row anchored to the chain as in Servers.
 func (s *Store) Server(ctx context.Context, name string) (Server, error) {
 	var srv Server
 	err := s.inRead(ctx, func(q queryer) error {
+		if err := s.checkFile(ctx, q); err != nil {
+			return err
+		}
 		var err error
-		srv, err = loadServerRow(ctx, q, name)
-		return err
+		if srv, err = loadServerRow(ctx, q, name); err != nil {
+			return err
+		}
+		return anchorServer(ctx, q, s.chain, srv)
 	})
 	if err != nil {
 		return Server{}, err

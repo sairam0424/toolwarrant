@@ -24,8 +24,9 @@ import (
 // approved digest, and requires the entry to be part of the chain the Store
 // verified (chainMemory.verify: the hash computed from its fields now equals
 // the one the verified walk recorded). A forger must rewrite every entry from
-// that one to the head, which the head a running Store pinned and the head
-// the operator recorded betray.
+// that one to the head, which the head a running Store pinned betrays while
+// that Store runs, and which the head the operator recorded alone betrays once
+// no Store holds a pin (chain.go, D17 k).
 
 // The SQL that selects the seq of the newest version.approved or
 // version.rolled_back entry about a subject, NULL when there is none. It rests
@@ -132,25 +133,34 @@ func findDecisionEntries(ctx context.Context, q queryer, refs []approvedRef) err
 // as after_hash, and to be part of the chain the Store verified. Any failure
 // is ErrCorrupt.
 func anchorApproved(ctx context.Context, q queryer, chain *chainMemory, refs []approvedRef) error {
+	_, err := verifyAnchors(ctx, q, chain, refs)
+	return err
+}
+
+// verifyAnchors is anchorApproved returning the verified entries by seq, so
+// that Approved can take the approver and the time of every exported version
+// from the entry the chain vouches for instead of from the approvals row (D17
+// e).
+func verifyAnchors(ctx context.Context, q queryer, chain *chainMemory, refs []approvedRef) (map[int64]audit.Entry, error) {
 	var seqs []int64
 	for _, r := range refs {
 		if !r.entry.Valid {
-			return fmt.Errorf("%w: approved version of %s has no version.approved or version.rolled_back audit entry", ErrCorrupt, quote(r.tool))
+			return nil, fmt.Errorf("%w: approved version of %s has no version.approved or version.rolled_back audit entry", ErrCorrupt, quote(r.tool))
 		}
 		seqs = append(seqs, r.entry.Int64)
 	}
 	entries := make(map[int64]audit.Entry, len(seqs))
 	for chunk := range chunks(seqs) {
 		if err := readEntries(ctx, q, chunk, entries); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, r := range refs {
 		if err := checkAnchor(chain, r, entries); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return entries, nil
 }
 
 // readEntries reads the entries with the given seqs into out.
@@ -174,8 +184,9 @@ func readEntries(ctx context.Context, q queryer, seqs []int64, out map[int64]aud
 }
 
 // checkAnchor applies the anchor rule to one approved version: the entry must
-// be about the tool, be an approval, name the digest, and be the entry the
-// verified chain holds at its seq.
+// be about the tool, be an approval, name the digest, carry the approver and
+// time the approvals row shows when the caller shows them, and be the entry
+// the verified chain holds at its seq.
 func checkAnchor(chain *chainMemory, r approvedRef, entries map[int64]audit.Entry) error {
 	e, ok := entries[r.entry.Int64]
 	if !ok {
@@ -186,6 +197,9 @@ func checkAnchor(chain *chainMemory, r approvedRef, entries map[int64]audit.Entr
 	}
 	if e.AfterHash != r.digest {
 		return fmt.Errorf("%w: approved digest of %s is not the one its newest approval entry (seq %d) recorded", ErrCorrupt, quote(r.tool), e.Seq)
+	}
+	if r.at != "" && (e.Actor != r.approver || e.TS != r.at) {
+		return fmt.Errorf("%w: the approver or time of the newest approvals row of %s is not what its approval entry (seq %d) recorded; the approvals row was rewritten", ErrCorrupt, quote(r.tool), e.Seq)
 	}
 	return chain.verify(e)
 }

@@ -37,10 +37,20 @@ type IntegrityReport struct {
 	// their fields is not their stored hash: rewritten in place), do not link
 	// to their predecessor (prev_hash is not its hash: re-chained, or the
 	// predecessor rewritten), or do not follow it in sequence (deleted
-	// entries). Integrity verifies every entry as it streams the log (D15 c),
-	// so its cross-checks against the log stand on their own; VerifyAudit
+	// entries), the rows at seq 0 or below, which the catalog never writes and
+	// no chain contains (D17 d), and a row count that differs from the entries
+	// the walk read. Integrity verifies every entry as it streams the log (D15
+	// c), so its cross-checks against the log stand on their own; VerifyAudit
 	// stops at the first break, this counts every one.
 	ChainBreaks int
+	// GhostRows counts approvals and tool_versions rows whose id is below 1.
+	// The catalog assigns ids from 1, and SQLite evaluates an unsupplied id as
+	// -1 inside a BEFORE INSERT trigger, so such a row was never the newest
+	// decision, satisfied the per-version approval evidence, and made the
+	// no-replace guards refuse every later insert (D17 b, g); every read and
+	// write refuses a file that holds one, and the positive-id guards refuse
+	// the insert.
+	GhostRows int
 	// ApprovalsWithoutRecord counts versions in status approved, or marked
 	// ever approved, with no approve or rollback row in the approvals table:
 	// the status columns are mutable, the approvals table is not.

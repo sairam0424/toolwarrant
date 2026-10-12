@@ -32,8 +32,12 @@ var errUnchanged = errors.New("catalog: unchanged")
 // address. A human or a system actor may call it: emit is an operator command,
 // but it assigns no approval, and a scheduled re-emit must be able to run
 // unattended. The address must be a host:port with a numeric port; an address
-// equal to the one recorded is a no-op with no entry. ErrNotFound for an
-// unregistered server, ErrInvalid for a bad address or actor.
+// equal to the one recorded is a no-op with no entry, where "recorded" means
+// the row as the verified chain backs it (anchorServer, D17 c): a column
+// rewritten to the address emit is about to assign would otherwise pass as
+// unchanged and leave the log without the entry. ErrNotFound for an
+// unregistered server, ErrInvalid for a bad address or actor, ErrCorrupt for a
+// row the chain does not back.
 func (s *Store) SetProcessorAddr(ctx context.Context, server, addr string, by Actor) error {
 	if err := validateProcessorAddr(addr); err != nil {
 		return err
@@ -45,6 +49,9 @@ func (s *Store) SetProcessorAddr(ctx context.Context, server, addr string, by Ac
 	err = s.inTx(ctx, func(t *txn) error {
 		srv, err := loadServerRow(ctx, t, server)
 		if err != nil {
+			return err
+		}
+		if err := anchorServer(ctx, t, s.chain, srv); err != nil {
 			return err
 		}
 		if srv.ProcessorAddr == addr {

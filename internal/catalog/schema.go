@@ -30,7 +30,14 @@ import (
 // file), the tools_no_delete guard (the catalog never deletes a row, so a
 // delete is an edit of history) and the audit_log_by_subject index that the
 // serving path's read of the newest approval entry about a tool rests on.
-const schemaVersion = 5
+// Version 6 (D17) added the positive-id guards tool_versions_positive_id and
+// approvals_positive_id: AFTER INSERT triggers that refuse a row below id 1,
+// which the no-replace guards could not (in a BEFORE INSERT trigger SQLite
+// evaluates an unsupplied id as -1, so a ghost row at id -1 made them refuse
+// every later insert, and a row at id -2 was never the newest decision). A
+// changed guard text means a version 5 file would be refused as redefined, so
+// the number moves and the file is refused with the usual advice instead.
+const schemaVersion = 6
 
 // migrate creates the schema in an empty database, or checks that an existing
 // one is ours. It runs in one immediate transaction, so two processes opening

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
@@ -117,9 +118,12 @@ func TestIntegrity_ProposerHistoryRewrittenUnderRecreatedGuardsIsReported(t *tes
 }
 
 // A rejected version put back to pending by one UPDATE: the status differs
-// from what the log leaves behind, and once a person approves it the log reads
-// version.rejected then version.approved with no proposal between, an edge the
-// lifecycle never takes, which is reported as well.
+// from what the log leaves behind, and the decision path refuses the flipped
+// column instead of approving the resurrected version (D17 a; until the
+// seventh round a second person could approve it, the D14 residual). The
+// impossible edge, version.rejected then version.approved with no proposal
+// between, is still reported when a forger with write access appends the
+// approval entry to the log itself.
 func TestIntegrity_RejectedVersionFlippedToPendingIsReported(t *testing.T) {
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
@@ -129,24 +133,25 @@ func TestIntegrity_RejectedVersionFlippedToPendingIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustBeClean(t, s, "after the reject")
-	mustExec(t, rawDB(t, path), `UPDATE tool_versions SET status = 'pending' WHERE digest = ?`, d1)
+	db := rawDB(t, path)
+	mustExec(t, db, `UPDATE tool_versions SET status = 'pending' WHERE digest = ?`, d1)
 	rep := mustIntegrity(t, s)
 	if rep.VersionStatusMismatches != 1 {
 		t.Errorf("Integrity after the flip = %+v, want the status mismatch", rep)
 	}
 	problemMentioning(t, rep, `"alpha/echo"`, `status is "pending"`, "leaves it rejected")
 
-	if err := s.Approve(bg, "alpha", "echo", d1, bob); err != nil {
-		t.Fatalf("Approve of the resurrected version = %v; the lifecycle sees a pending version", err)
+	err := s.Approve(bg, "alpha", "echo", d1, bob)
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "leave it rejected") {
+		t.Fatalf("Approve of the resurrected version = %v, want ErrCorrupt naming the status the verified entries leave", err)
 	}
+	appendSealed(t, db, audit.Entry{TS: forgedTS, Actor: "mallory", ActorType: string(ActorHuman), Event: string(lifecycle.EvApproved),
+		Subject: "alpha/echo", AfterHash: d1, Detail: "digest=" + d1 + " state=pending_review->enabled last_seen=" + d1 + " proposals=1->0"})
 	rep = mustIntegrity(t, s)
-	if rep.VersionStatusMismatches != 1 {
-		t.Errorf("Integrity after approving the resurrected version = %+v, want the impossible edge reported", rep)
-	}
 	problemMentioning(t, rep, "version.approved of digest "+d1, "from status rejected", "the lifecycle never does")
 	// Superseded instead of pending lets the next sighting re-propose the
 	// rejected digest; the same pass reports it.
-	mustExec(t, rawDB(t, path), `UPDATE tool_versions SET status = 'superseded' WHERE digest = ?`, d1)
+	mustExec(t, db, `UPDATE tool_versions SET status = 'superseded' WHERE digest = ?`, d1)
 	problemMentioning(t, mustIntegrity(t, s), `status is "superseded"`)
 }
 

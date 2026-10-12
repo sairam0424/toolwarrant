@@ -46,23 +46,37 @@ func (c *integrityCheck) version(subject, digest string, seq int64) *versionTrac
 	return t
 }
 
-// noteVersionEvent folds one version.* entry into its version's trace. An
-// event that the lifecycle never produces from the status the log left the
-// version in (versionEdges) is reported: the Store writes every status move as
-// an event, so an impossible edge in the log means the row was edited between
-// the two entries (a rejected version put back to pending by hand and then
-// approved reads rejected then approved, with no proposal between).
+// noteVersionEvent folds one version.* entry into its version's trace
+// (versionTrace.apply). An event that the lifecycle never produces from the
+// status the log left the version in (versionEdges) is reported: the Store
+// writes every status move as an event, so an impossible edge in the log means
+// the row was edited between the two entries (a rejected version put back to
+// pending by hand and then approved reads rejected then approved, with no
+// proposal between; since D17 a the decision path refuses the flipped column
+// before it can approve, so the edge now appears only in a log a forger
+// appended to).
 func (c *integrityCheck) noteVersionEvent(e audit.Entry) {
-	digest, ok := detailField(e.Detail, fieldDigest)
-	if !ok || digest == noDigest {
+	digest, ok := versionDigest(e)
+	if !ok {
 		return
 	}
 	t := c.version(e.Subject, digest, e.Seq)
-	if from := t.status; !slices.Contains(versionEdges(e.Event), from) {
+	if from, legal := t.apply(e); !legal {
 		c.problem("audit entry %d: %s of digest %s of tool %s from status %s, which the lifecycle never does; the row was edited between the entries",
 			e.Seq, e.Event, digest, quote(e.Subject), shownStatus(from))
 		c.rep.VersionStatusMismatches++
 	}
+}
+
+// apply folds one version.* entry into the trace: the status and flag the
+// event leaves behind and, for a proposal, the proposer it adds (addProposer).
+// It returns the status the version was in before the entry and whether the
+// lifecycle takes that edge (versionEdges). Integrity and the decision path
+// (versionsFromLog, D17 a) share it, so the two reconstructions cannot drift
+// apart.
+func (t *versionTrace) apply(e audit.Entry) (from lifecycle.VersionStatus, legal bool) {
+	from = t.status
+	legal = slices.Contains(versionEdges(e.Event), from)
 	t.last = e.Seq
 	switch e.Event {
 	case string(lifecycle.EvProposed):
@@ -75,6 +89,7 @@ func (c *integrityCheck) noteVersionEvent(e audit.Entry) {
 	case string(lifecycle.EvApproved), string(lifecycle.EvRolledBack):
 		t.status, t.ever = lifecycle.VersionApproved, true
 	}
+	return from, legal
 }
 
 // versionEdges lists the statuses the lifecycle moves a version from for one
@@ -192,6 +207,10 @@ func (c *integrityCheck) checkVersionHistory() error {
 		)
 		if err := rows.Scan(&subject, &id, &no, &digest, &status, &ever); err != nil {
 			return fmt.Errorf("catalog: read versions: %w", err)
+		}
+		if id < 1 {
+			c.rep.GhostRows++
+			c.problem("version row %d (version %d of tool %s) has an id below 1, which the catalog never assigns; the row was inserted by hand", id, no, quote(subject))
 		}
 		c.compareVersion(subject, digest, no, lifecycle.VersionStatus(status), ever == 1, proposers[id])
 	}
