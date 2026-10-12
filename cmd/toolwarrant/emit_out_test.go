@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,9 +19,12 @@ import (
 // inode and exited 0 with "wrote <db>"; every later command then refused the
 // file ("file is not a database") and the only recovery was a backup. The
 // database, its -wal and -shm siblings and the gateway binary are now refused
-// by identity, and so is any existing regular file whose first lines are not
-// emit's header, each as a usage error naming the fix; a file emit wrote, and
-// a file the gateway rewrote keeping the header lines, are still replaced.
+// by canonical path and by identity (the siblings whether or not they exist at
+// that moment: SQLite removes them on a clean close, and a configuration
+// written into that slot is deleted by the next open), and so is any existing
+// regular file whose first lines are not emit's header, each as a usage error
+// naming the fix; a file emit wrote, and a file the gateway rewrote keeping
+// the header lines, are still replaced.
 func TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite(t *testing.T) {
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
@@ -36,15 +41,18 @@ func TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite(t *testing.T) {
 	for name, tc := range map[string]struct {
 		out, what string
 		args      []string
+		plant     bool // write a stand-in at out first; SQLite removes the siblings on a clean close
 	}{
-		"the database":        {c.db, "the catalog database (--db)", nil},
-		"a relative spelling": {relative, "the catalog database (--db)", nil},
-		"the -wal sibling":    {c.db + walSuffix, "the catalog's write-ahead log", nil},
-		"the -shm sibling":    {c.db + shmSuffix, "the catalog's shared-memory index", nil},
-		"the gateway binary":  {gateway, "the gateway binary (--gateway-binary)", []string{"--gateway-binary", gateway}},
+		"the database":                    {c.db, "the catalog database (--db)", nil, false},
+		"a relative spelling":             {relative, "the catalog database (--db)", nil, false},
+		"the -wal sibling, present":       {c.db + walSuffix, "the catalog's write-ahead log", nil, true},
+		"the -shm sibling, present":       {c.db + shmSuffix, "the catalog's shared-memory index", nil, true},
+		"the -wal sibling, absent":        {c.db + walSuffix, "the catalog's write-ahead log", nil, false},
+		"the -shm sibling, absent":        {c.db + shmSuffix, "the catalog's shared-memory index", nil, false},
+		"a relative spelling of the -wal": {relative + walSuffix, "the catalog's write-ahead log", nil, false},
+		"the gateway binary":              {gateway, "the gateway binary (--gateway-binary)", []string{"--gateway-binary", gateway}, false},
 	} {
-		if strings.HasSuffix(tc.out, walSuffix) || strings.HasSuffix(tc.out, shmSuffix) {
-			// SQLite removes the siblings on a clean close; plant them.
+		if tc.plant {
 			if err := os.WriteFile(tc.out, []byte("sqlite sibling"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -52,6 +60,15 @@ func TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite(t *testing.T) {
 		r := c.fail(exitUsage, append([]string{"emit", "--out", tc.out}, tc.args...)...)
 		wantContains(t, name, r.stderr, "--out "+tc.out+" is "+tc.what+"; emit would replace it with the gateway configuration, so name another file")
 		wantNotContains(t, name, r.stdout, "wrote ")
+		if tc.plant {
+			if err := os.Remove(tc.out); err != nil {
+				t.Fatal(err)
+			}
+		} else if strings.HasSuffix(tc.out, walSuffix) || strings.HasSuffix(tc.out, shmSuffix) {
+			if _, err := os.Lstat(tc.out); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("%s: a file exists at the sibling path after the refused emit (%v)", name, err)
+			}
+		}
 	}
 	after, err := os.ReadFile(c.db)
 	if err != nil {

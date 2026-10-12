@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"github.com/sairam0424/toolwarrant/internal/emit"
@@ -52,17 +53,27 @@ func protectedFiles(dbPath, gatewayBinary string) []protectedFile {
 	return files
 }
 
-// checkOut refuses an --out that exists and must not be replaced, as a usage
-// error naming the fix, before anything is read or written: a file that is
-// the catalog database, one of its SQLite siblings or the gateway binary, each
-// compared by identity (os.SameFile), so a relative spelling or a hard link is
-// refused too; and a regular file whose first lines are not the ones emit
-// writes, because emit replaces only its own files. A file the gateway rewrote
+// checkOut refuses an --out that must not be replaced, as a usage error naming
+// the fix, before anything is read or written: a path that is the catalog
+// database, one of its SQLite siblings or the gateway binary, compared by
+// canonical path and, when the file exists, by identity (os.SameFile), so a
+// relative spelling or a hard link is refused too, and so is a sibling that
+// does not exist at that moment (SQLite removes the -wal and -shm files on a
+// clean close; a configuration written into that slot is deleted by the next
+// open, and the eighth review's live run saw emit exit 0 and the file vanish);
+// and a regular file whose first lines are not the ones emit writes, because
+// emit replaces only its own files. A file the gateway rewrote
 // after a document was posted to its admin API keeps those lines and stays
 // replaceable, so the documented re-emit after a CONFIG-EDITED still works. A
 // missing --out is fine; refuseIrregularFile has already refused anything
 // that is not a regular file.
 func (o *emitOptions) checkOut(c *command, dbPath string) error {
+	protected := protectedFiles(dbPath, o.gatewayBinary)
+	for _, p := range protected {
+		if samePath(o.out, p.path) {
+			return o.protectedOutError(c, p)
+		}
+	}
 	fi, err := os.Lstat(o.out)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -70,13 +81,43 @@ func (o *emitOptions) checkOut(c *command, dbPath string) error {
 	case err != nil:
 		return fmt.Errorf("--out %s: %w", textdiff.Escape(o.out), err)
 	}
-	for _, p := range protectedFiles(dbPath, o.gatewayBinary) {
+	for _, p := range protected {
 		pfi, err := os.Stat(p.path)
 		if err == nil && os.SameFile(fi, pfi) {
-			return &usageError{msg: fmt.Sprintf("--out %s is %s; emit would replace it with the gateway configuration, so name another file", textdiff.Escape(o.out), p.what), cmd: c}
+			return o.protectedOutError(c, p)
 		}
 	}
 	return refuseForeignOut(c, o.out)
+}
+
+// protectedOutError is the usage error for an --out that names a protected file.
+func (o *emitOptions) protectedOutError(c *command, p protectedFile) error {
+	return &usageError{msg: fmt.Sprintf("--out %s is %s; emit would replace it with the gateway configuration, so name another file", textdiff.Escape(o.out), p.what), cmd: c}
+}
+
+// samePath reports whether two spellings name the same path once each is made
+// absolute and cleaned, with its directory resolved through symlinks when the
+// directory exists. It needs no file at either path, which is what catches a
+// SQLite sibling that is absent at the moment of the check.
+func samePath(a, b string) bool {
+	ca, okA := canonicalPath(a)
+	cb, okB := canonicalPath(b)
+	return okA && okB && ca == cb
+}
+
+// canonicalPath is the absolute, cleaned spelling of a path with its parent
+// directory resolved through symlinks when that directory exists; false when
+// the working directory cannot be determined.
+func canonicalPath(p string) (string, bool) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", false
+	}
+	dir, base := filepath.Split(abs)
+	if resolved, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+		dir = resolved
+	}
+	return filepath.Join(dir, base), true
 }
 
 // refuseForeignOut refuses an existing regular file at --out whose first lines

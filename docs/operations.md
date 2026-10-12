@@ -965,8 +965,9 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   read of a named pipe would block `emit` for ever; cmd
   `TestEmitRefusesAnIrregularOut`), and since the seventh round `emit` also
   refuses an `--out` that is the catalog database, its `-wal` or `-shm`
-  sibling or the `--gateway-binary` path (the same file by device and inode,
-  however spelled), and refuses to replace an existing regular file whose
+  sibling or the `--gateway-binary` path (compared by canonical path, so a
+  sibling that does not exist at that moment is refused too, and by device and
+  inode when the file exists, however spelled), and refuses to replace an existing regular file whose
   header lines are not emit's own; a file the gateway rewrote through the
   admin API keeps the header lines and stays replaceable, so the re-emit after
   a CONFIG-EDITED still works. Each is a usage error naming the fix (D17; the

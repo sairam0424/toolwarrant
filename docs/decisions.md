@@ -1756,8 +1756,12 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   the emitted bind is loopback; each difference is one LIVE-CONFIG-MISMATCH
   line. The name is the server name, so it may be shown.
 - Decision (j): `emit` refuses `--out` that is the catalog database, its
-  `-wal` or `-shm` sibling or the `--gateway-binary` path (compared with
-  `os.SameFile`), and refuses to replace an existing regular file whose
+  `-wal` or `-shm` sibling or the `--gateway-binary` path (compared by
+  canonical path and, when the file exists, with `os.SameFile`; the first
+  cut compared by `os.SameFile` alone, and the runtime drive after the round
+  saw `emit --out <db>-wal` accepted while the sibling was absent, SQLite
+  removing the written configuration at the next open), and refuses to
+  replace an existing regular file whose
   header lines are not emit's (a file the gateway rewrote keeps the header
   lines and stays replaceable, so the documented re-emit after a
   CONFIG-EDITED still works), each as a usage error naming the fix.

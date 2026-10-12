@@ -852,6 +852,19 @@ the statements of this file:
   server.resumed entry (TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt
   and TestServers_PausedFlagWithoutAnEntryIsCorrupt), so an un-pause by one
   UPDATE serves nothing and a resume is ErrCorrupt.
+- Runtime drive of the round's CLI surfaces (2026-10-12, after the fixes
+  landed): emit --out <db>-wal exited 0 and wrote the gateway configuration
+  into the WAL slot because the check compared only existing files and SQLite
+  removes the sibling on a clean close; the next open removed the written file.
+  Fixed: the protected paths are compared by canonical path as well
+  (TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite gained the absent
+  -wal and -shm cases and a relative spelling of the -wal). Everything else
+  the drive exercised behaved as documented: the forged processor_addr and
+  paused column refused by server list, emit, list and server resume with the
+  chain's value named; the positive-id guard refusing a planted approvals row
+  ("approvals ids start at 1"); with the guard dropped, audit verify naming
+  both problems and every other command refusing the file at open; the
+  audit_log sequential guard refusing a seq 0 insert outright.
 - Decisions added since: D16 (the release design) and D17, in
   docs/decisions.md, with the pin limit stated as the code has it (README
   "Trust model", "The audit log" and L19; SECURITY.md's scope and checklist;
