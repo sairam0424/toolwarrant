@@ -39,14 +39,16 @@ const (
 	auditPage   = 5000
 	auditCols   = `seq, ts, actor, actor_type, event, subject, before_hash, after_hash, detail, prev_hash, hash`
 	insertAudit = `INSERT INTO audit_log (` + auditCols + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	// beforeFirstSeq is the lower bound of every read of the log from its
-	// start: below any seq SQLite can store, so that a row at seq 0 or below,
-	// which the catalog never writes (the chain starts at seq 1), is read by
-	// the chain walks, by Integrity and by the listing instead of being skipped
-	// by a bound of seq > 0, and is refused as a break (D17 d; the seventh
-	// review placed a version.proposed entry at seq 0 that no walk read while
-	// the decision path read it and refused every decision on the tool).
-	beforeFirstSeq = math.MinInt64
+	// firstPossibleSeq is where every read of the log from its start begins,
+	// bound included: the smallest value the seq column can hold, so that a
+	// row at seq 0 or below, which the catalog never writes (the chain starts
+	// at seq 1), is read by the chain walks, by Integrity and by the listing
+	// instead of being skipped by a bound of seq > 0, and is refused as a break
+	// (D17 d; the seventh review placed a version.proposed entry at seq 0 that
+	// no walk read while the decision path read it and refused every decision
+	// on the tool; the eighth review planted one at this very value, which an
+	// exclusive bound could not reach).
+	firstPossibleSeq = math.MinInt64
 )
 
 func scanAudit(sc rowScanner) (audit.Entry, error) {
@@ -202,9 +204,13 @@ func detailField(detail, key string) (string, bool) {
 	return "", false
 }
 
-func queryAudit(ctx context.Context, q queryer, after int64, limit int) ([]audit.Entry, error) {
+// queryAudit reads up to limit entries whose seq is from or above, in order.
+// The bound is inclusive so that a read from firstPossibleSeq, the smallest
+// value the column can hold, misses no row: with an exclusive bound that one
+// value was unreachable (eighth review).
+func queryAudit(ctx context.Context, q queryer, from int64, limit int) ([]audit.Entry, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT `+auditCols+` FROM audit_log WHERE seq > ? ORDER BY seq LIMIT ?`, after, limit)
+		`SELECT `+auditCols+` FROM audit_log WHERE seq >= ? ORDER BY seq LIMIT ?`, from, limit)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: read audit log: %w", err)
 	}
@@ -229,13 +235,14 @@ func (s *Store) AuditEntries(ctx context.Context, after int64, limit int) ([]aud
 	if limit <= 0 {
 		limit = noLimit
 	}
+	from := after + 1
 	if after == 0 {
-		after = beforeFirstSeq
+		from = firstPossibleSeq
 	}
 	var out []audit.Entry
 	err := s.inRead(ctx, func(q queryer) error {
 		var err error
-		out, err = queryAudit(ctx, q, after, limit)
+		out, err = queryAudit(ctx, q, from, limit)
 		return err
 	})
 	if err != nil {

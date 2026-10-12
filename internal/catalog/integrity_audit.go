@@ -58,8 +58,8 @@ func isDecisionEvent(event string) bool {
 	return event == string(lifecycle.EvApproved) || event == string(lifecycle.EvRejected) || event == string(lifecycle.EvRolledBack)
 }
 
-// readLog streams the whole log in pages, oldest first, from below the
-// smallest seq SQLite can store (D17 d), verifies every entry's seal and its
+// readLog streams the whole log in pages, oldest first, from the smallest
+// seq SQLite can store, bound included (D17 d), verifies every entry's seal and its
 // link to the entry before it (checkLink, D15 c) and notes what every entry
 // says. A row at seq 0 or below is outside the chain: it is reported as a
 // break and neither linked nor noted, so a forged row placed there cannot
@@ -67,8 +67,8 @@ func isDecisionEvent(event string) bool {
 func (c *integrityCheck) readLog() error {
 	var prev audit.Entry
 	walked := 0
-	for after := int64(beforeFirstSeq); ; {
-		page, err := queryAudit(c.ctx, c.q, after, auditPage)
+	for next := int64(firstPossibleSeq); ; {
+		page, err := queryAudit(c.ctx, c.q, next, auditPage)
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func (c *integrityCheck) readLog() error {
 		if len(page) < auditPage {
 			break
 		}
-		after = page[len(page)-1].Seq
+		next = page[len(page)-1].Seq + 1
 	}
 	return c.checkLogCount(walked)
 }

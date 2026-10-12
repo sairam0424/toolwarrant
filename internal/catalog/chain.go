@@ -47,7 +47,7 @@ import (
 // column for RecheckTTL) was not enough: an entry below the head rewritten in
 // place was served, and an after_hash edited with the hash column kept was
 // served for ten minutes. The seventh review showed that a walk bounded by
-// seq > 0 never read a row at seq 0 or below (D17 d, beforeFirstSeq) and that
+// seq > 0 never read a row at seq 0 or below (D17 d, firstPossibleSeq) and that
 // a reader whose snapshot predated the pin was told the log was truncated
 // (D17 f, checkFile).
 
@@ -188,18 +188,18 @@ func decodeEntryHash(s string) (entryHash, bool) {
 // pin) and hands every verified page to visit, which may be nil. It returns
 // the new head and the number of entries walked. A break is returned as
 // audit.VerifyFrom reports it, unwrapped, so VerifyAudit can hand it on as is.
-// A walk from the genesis starts below the smallest seq SQLite can store, so a
-// row at seq 0 or below, which the catalog never writes, is read and refused
-// as a break (expected seq 1) instead of skipped (D17 d).
+// A walk from the genesis starts at the smallest seq SQLite can store, bound
+// included, so a row at seq 0 or below, which the catalog never writes, is
+// read and refused as a break (expected seq 1) instead of skipped (D17 d).
 func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit.Entry)) (chainPin, int, error) {
 	prev := audit.Entry{Seq: from.seq, Hash: from.hash}
-	after := prev.Seq
+	next := prev.Seq + 1
 	if from.seq == 0 {
-		after = beforeFirstSeq
+		next = firstPossibleSeq
 	}
 	walked := 0
 	for {
-		page, err := queryAudit(ctx, q, after, auditPage)
+		page, err := queryAudit(ctx, q, next, auditPage)
 		if err != nil {
 			return chainPin{}, 0, err
 		}
@@ -212,7 +212,7 @@ func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit
 		walked += len(page)
 		if len(page) > 0 {
 			prev = page[len(page)-1]
-			after = prev.Seq
+			next = prev.Seq + 1
 		}
 		if len(page) < auditPage {
 			return chainPin{seq: prev.Seq, hash: prev.Hash}, walked, nil

@@ -3,6 +3,7 @@ package catalog
 import (
 	"database/sql"
 	"errors"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -30,7 +31,9 @@ func plantEntryBelowOne(t *testing.T, db *sql.DB, seq int64, digest string) {
 		Subject: "alpha/echo", Detail: "digest=" + digest + " state=discovered->pending_review last_seen=" + digest + " proposals=0->1", PrevHash: audit.Genesis}
 	h, err := audit.HashOf(e)
 	if err != nil {
-		t.Fatal(err)
+		// HashOf refuses a seq the chain can never hold; a forger writes any
+		// 64 hex characters, and so does this helper.
+		h = strings.Repeat("ab", 32)
 	}
 	e.Hash = h
 	mustExec(t, db, insertAudit, e.Seq, e.TS, e.Actor, e.ActorType, e.Event, e.Subject, e.BeforeHash, e.AfterHash, e.Detail, e.PrevHash, e.Hash)
@@ -53,7 +56,7 @@ func wantBreakAt(t *testing.T, what string, err error, seq int64) {
 // read and decision refuses the file naming it, a fresh open refuses the file,
 // and a forensic open can still inspect it. Removing the row restores the log.
 func TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk(t *testing.T) {
-	for _, seq := range []int64{0, -7} {
+	for _, seq := range []int64{0, -7, math.MinInt64} {
 		t.Run("seq "+itoa(seq), func(t *testing.T) {
 			s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 			d1 := approvedEcho(t, s)
