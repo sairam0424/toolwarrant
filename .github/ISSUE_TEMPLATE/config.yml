@@ -1,0 +1,7 @@
+# The new-issue chooser: ordinary issues stay open; security reports are routed
+# to the security policy instead of a public issue.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/sairam0424/toolwarrant/security/policy
+    about: Vulnerabilities go through the security policy, never a public issue.
