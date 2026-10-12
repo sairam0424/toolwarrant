@@ -8,6 +8,15 @@ before:
   hooks:
     - go mod verify
 
+# The previous tag, which bounds the changelog, is chosen by semantic version
+# and skips pre-release tags when the current tag is a final release, so the
+# notes of vX.Y.Z start after the last final release rather than at the last
+# release candidate (goreleaser v2.12+; the candidates of v0.1.0 would
+# otherwise have emptied its notes). A candidate still takes the candidate
+# before it as previous.
+git:
+  tag_sort: smartsemver
+
 builds:
   - id: toolwarrant
     main: ./cmd/toolwarrant

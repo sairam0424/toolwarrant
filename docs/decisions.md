@@ -1506,7 +1506,10 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   between tags, grouped by type (feat, fix, perf, refactor, test, build, ci,
   docs), and the release notes open with a fixed header naming the pinned
   gateway version (agentgateway v1.6.0) and the catalog schema version, since
-  both decide whether an operator can upgrade in place.
+  both decide whether an operator can upgrade in place. The previous tag is
+  chosen with goreleaser's `smartsemver` sort, which skips pre-release tags
+  when the current tag is a final release, so the release candidates tagged
+  on 2026-10-12 do not shorten the notes of v0.1.0.
 - Decision (e): the workflow `.github/workflows/release.yml` runs on `v*` tags
   only, with permissions `contents: write` and `id-token: write` and nothing
   else, after the existing CI jobs have passed on the same commit; every
