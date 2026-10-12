@@ -35,7 +35,8 @@ release.
 
 ## Pending actions for the owner
 
-- Complete the reporting section above.
+- Complete the reporting section above (enable private vulnerability
+  reporting on the repository, or name an address).
 - Report two behaviours of agentgateway v1.6.0 to the agentgateway project, by
   hand: a `tools/call` sent as a JSON-RPC notification (no `id`, or `id: null`)
   is forwarded to the upstream without the ExtMCP hook and without the
@@ -43,10 +44,14 @@ release.
   listener accepts `POST /api/config` and answers `GET /config_dump` without
   authentication (known limit L18). toolwarrant's controls for both are
   documented below and in [docs/threat-model.md](docs/threat-model.md) rows 25
-  and 26; the reports are not written yet.
+  and 26; no public report of either existed on 2026-10-11.
 - Record the SHA-256 of the linux release asset of agentgateway v1.6.0 in the
   `e2e` job of [.github/workflows/ci.yml](.github/workflows/ci.yml), which
   refuses to run until the placeholder is replaced.
+- Add `dist/` to `.gitignore` (the goreleaser output directory).
+- Push the repository private, let `ci` pass, then tag `v0.1.0`, inspect the
+  draft release and make the repository public before publishing it
+  ([docs/operations.md](docs/operations.md), Releasing).
 
 ## Scope
 

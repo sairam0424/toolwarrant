@@ -1104,6 +1104,42 @@ call-time gap of limit L1 is bounded by this cadence, and so is the time until
 a reverted or rolled-back tool is callable again (decision D9): crawl right
 after a rollback.
 
+## Releasing
+
+A release is one tag (decision D16). Before the tag, on the maintainer's
+machine:
+
+```sh
+make release-check       # the release configuration parses and is consistent
+make release-snapshot    # four archives, four SBOMs and the checksums into dist/, unsigned
+make test && make e2e && demo/run.sh
+```
+
+Then push `main`, let the `ci` workflow pass, tag `vX.Y.Z` on that commit and
+push the tag. The `release` workflow refuses a tag whose commit has no
+successful `ci` run, builds the `toolwarrant` binary for darwin/arm64,
+darwin/amd64, linux/amd64 and linux/arm64 with CGO off and `-trimpath`, writes
+one SPDX SBOM per archive with syft, signs the checksums file keyless with
+cosign under the workflow's own identity, and creates a draft release whose
+notes open with the pinned gateway version and the catalog schema version and
+group the commits since the previous tag by type. Inspect the draft (the four
+archives, the `.spdx.json` files, the `.txt`, `.txt.sig` and `.txt.pem`), then
+publish it. The seam and mock binaries are never released.
+
+A user verifies a release before running it:
+
+```sh
+cosign verify-blob --certificate toolwarrant_0.1.0_checksums.txt.pem --signature toolwarrant_0.1.0_checksums.txt.sig \
+  --certificate-identity "https://github.com/sairam0424/toolwarrant/.github/workflows/release.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  toolwarrant_0.1.0_checksums.txt
+shasum -a 256 -c --ignore-missing toolwarrant_0.1.0_checksums.txt
+```
+
+The first command proves the checksums file was produced by this repository's
+release workflow at that tag; the second proves the downloaded archive is the
+one it lists. The binary prints its version with `toolwarrant version`.
+
 ## Exit codes
 
 - `0`: success. For `verify-gateway`, OK or MISSING only. For

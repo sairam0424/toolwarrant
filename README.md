@@ -130,7 +130,9 @@ v1.6.0 release binary for your platform, downloaded from the agentgateway
 repository on GitHub (github.com/agentgateway/agentgateway, release v1.6.0) and
 checked against its published SHA-256. The seam scripts and the end-to-end test
 expect it at `.cache/agentgateway-darwin-arm64` (`TOOLWARRANT_GATEWAY_BIN`
-overrides the path); that directory is ignored by git.
+overrides the path); that directory is ignored by git. Released binaries are
+verified with cosign before use; see the Releasing section of
+[docs/operations.md](docs/operations.md).
 
 ```sh
 # 0. Build the control plane and the mock upstream.
