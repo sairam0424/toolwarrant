@@ -36,8 +36,9 @@ The trust boundary, in six lines:
 - Whoever can write the 0600 catalog file can append a correctly sealed audit
   entry that approves a definition; the recorded audit head, the git export and
   backups detect it, nothing inside the file does (known limit L19, decision D14).
-- Whoever reaches the processor without the shared secret decides what is
-  served (known limit L11).
+- Whoever reaches the processor without the shared secret, or without a
+  client certificate its `--tls-client-ca` accepts, decides what is served
+  (known limit L11, decision D19).
 - Every local user of the gateway host reaches the admin API, which hands out
   the loaded configuration and accepts a replacement (known limit L18).
 - The upstream is hostile: everything it sends is attacker-controlled input.
@@ -176,15 +177,25 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   of its own, and the link is plaintext gRPC unless `serve` is given
   `--tls-cert` and `--tls-key` (TLS 1.3 only; with `--tls-client-ca` every
   connection must present a client certificate that authority signed, which
-  authenticates the hooks as the secret does, owner decision O-2, D19 planned;
-  the key file must be owner-only, as the database is; the gateway's
-  `backendTLS` block is written by a later `emit`, so until then the
-  processor's TLS is proven against grpc-go clients only: cmd
-  `TestServeTLSOverGRPCEnforcesApprovals`,
+  authenticates the hooks as the secret does, owner decision O-2, decision
+  D19; the key file must be owner-only, as the database is) and the gateway's
+  file carries the matching `backendTLS` block, which `emit --processor-tls
+  NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME` writes on every emit (it is
+  not recorded in the catalog; an emit without it writes a plaintext entry,
+  which a processor started with `--tls-cert` refuses in the handshake, so
+  the route fails closed; the gateway's `--validate-only` opens the three
+  files, so `emit --gateway-binary` needs them on the emitting host). The
+  handshake against the real gateway is observed by end-to-end scenario Q,
+  not landed yet, so until then the processor's TLS is proven against grpc-go
+  clients only: cmd `TestServeTLSOverGRPCEnforcesApprovals`,
   `TestServeTLSRefusesAClientWithoutACertificate`,
-  `TestServeTLSRefusesAGroupReadableKey`; processor
+  `TestServeTLSRefusesAGroupReadableKey`,
+  `TestEmitWritesBackendTLSForAProcessorOverride`,
+  `TestEmitWithTheGatewayBinaryNeedsTheTLSFilesOnThisHost`; processor
   `TestServe_TLSListenerRefusesPlaintextAndUnknownClients`,
-  `TestServe_TLSWithClientCARequiresAClientCertificate`); every processor
+  `TestServe_TLSWithClientCARequiresAClientCertificate`; emit
+  `TestProcessorTLSIsWrittenUnderPolicies`,
+  `TestGatewayValidateOnlyOpensBackendTLSFiles`); every processor
   entry `emit` writes carries the gateway's
   `requestHeaders` filter (only the `:method` pseudo-header allowed;
   `authorization`, `cookie` and `proxy-authorization` denied by name as well),
@@ -214,8 +225,9 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   addresses, a changed listener address, an added route or gateway, a route
   moved to another path, a removed processor, a changed allow rule, a changed
   or removed `requestHeaders` filter, a `backendTLS` block under the
-  processor's `policies` that only one side carries or whose `cert`, `key`,
-  `root` or `hostname` differs (limit L11; a `backendTLS` field or processor
+  processor's `policies` (the one `emit --processor-tls` writes) that only one
+  side carries or whose `cert`, `key`,
+  `root` or `hostname` differs (limit L11, D19; a `backendTLS` field or processor
   policy the file does not carry, `insecure` among them, is reported by
   name), changed processor metadata (compared as
   a hash, never printed), and in every live route any key other than `name`,

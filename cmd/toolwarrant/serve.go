@@ -160,7 +160,7 @@ type listenPolicy struct {
 // checkListenAddr refuses a TCP address that is not loopback unless the
 // operator said so explicitly, and refuses it even then unless the hooks will
 // be authenticated (a shared secret or a verified client certificate; either
-// one is enough, D19 planned) or --insecure-no-secret records that the
+// one is enough, D19) or --insecure-no-secret records that the
 // operator accepts a processor that anyone who reaches it can steer. A unix
 // socket or a loopback address passes whatever the policy says: the flags are
 // permissions, not requests, and change nothing where nothing is exposed.

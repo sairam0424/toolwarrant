@@ -56,7 +56,7 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   `--tls-client-ca` unless `--insecure-no-secret` is passed as well, because
   anyone who reaches an unauthenticated processor decides what the gateway
   serves; a `--secret-env` or `--tls-client-ca` always wins over
-  `--insecure-no-secret` (owner decision O-2, D19 planned: a verified client
+  `--insecure-no-secret` (owner decision O-2, D19: a verified client
   certificate authenticates the hooks as the secret does; cmd
   `TestServeTLSClientCASatisfiesTheNonLoopbackRule`,
   `TestCheckListenAddrPolicy`). Use the pairing only on a network nobody but
@@ -98,12 +98,14 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   The listening line names the mode after the target: `TLS 1.3 with a client
   certificate required` or `TLS 1.3 with a server certificate only`. The
   gateway's side of the link is the `backendTLS` block on its processor entry,
-  which the live comparison already compares and which a later `emit` writes
-  (D19, planned, together with the end-to-end scenario Q that observes the
-  handshake against the real gateway; until then the processor's TLS is proven
-  against grpc-go clients only). Rotate a certificate as the secret is rotated
-  (see "Rotating the shared secret"): a second processor on a new port with the
-  new files, re-emit, retire the first. (cmd
+  which `emit --processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME`
+  writes and the live comparison compares (D19; see "Re-emitting the gateway
+  configuration"). The handshake against the real gateway is observed by the
+  end-to-end scenario Q, which has not landed yet, so until then the
+  processor's TLS is proven against grpc-go clients only. Rotate a certificate
+  as the secret is rotated (see "Rotating the shared secret"): a second
+  processor on a new port with the new files, re-emit with the new block,
+  retire the first. (cmd
   `TestServeTLSOverGRPCEnforcesApprovals`,
   `TestServeTLSRefusesAClientWithoutACertificate`,
   `TestServeTLSFlagsNeedCertAndKeyTogether`,
@@ -490,10 +492,11 @@ Verdicts, one line per tool or per check:
   `TestLiveComparisonComparesTheProcessorTLS`,
   `TestLiveComparisonReportsAnInsecureTLSFlag`,
   `TestCompareProcessorsSeesAMissingBackendTLS`,
-  `TestEmittedConfigReadsTheProcessorTLS`; `emit` writes no `backendTLS`
-  block yet, so those tests hand-build the block where `emit` will write it,
-  and what the running gateway renders for it in `GET /api/config` is not yet
-  observed). Scenario
+  `TestEmittedConfigReadsTheProcessorTLS`; the reader was pinned before
+  `emit` wrote the block, so those tests hand-build it where `emit` writes it
+  since D19 and `TestEmittedConfigReadsWhatEmitWrites` reads the real emitted
+  block; what the running gateway renders for it in `GET /api/config` is not
+  yet observed, scenario Q will record it). Scenario
   P posted the emitted document plus a `binds` section with a listener on
   another port, and plus a top-level `mcp` shortcut, through the admin API of
   the running gateway: each was accepted with status 200 and rendered by
@@ -670,8 +673,13 @@ hands the loaded configuration, secret included, to any local user (limit L18).
 A processor certificate (`serve --tls-cert`, `--tls-key`) and the client
 authority it requires (`--tls-client-ca`) are rotated the same way: a second
 processor on a new port with the new files, a re-emit that points the server at
-it (with the gateway's `backendTLS` block, once `emit` writes it; D19 planned),
-and the old processor stopped after the longest session lifetime you tolerate.
+it with the gateway's `backendTLS` block for the new files (`emit --processor
+github=127.0.0.1:9101 --processor-tls github=cert=...,key=...,root=...,hostname=...`;
+D19), and the old processor stopped after the longest session lifetime you
+tolerate. The gateway's own client certificate and key are rotated by a re-emit
+whose `--processor-tls` names the new files, and the processor's
+`--tls-client-ca` bundle must hold the authority that signed them before the
+gateway reloads, or every new session fails closed in the handshake.
 
 ## Reading the audit log and recording its head
 
@@ -1210,13 +1218,15 @@ scenario E through the real gateway).
 ## Re-emitting the gateway configuration
 
 Run `emit` whenever the set of approved tool names changes, a server is added,
-or a processor address, a listener address or a secret changes:
+or a processor address, a listener address, a secret or a processor's TLS
+files change:
 
 ```sh
 toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   --listen-port 3000 --bind-address 127.0.0.1 \
   --processor-base-port 9001 \
   --processor github=127.0.0.1:9101 \
+  --processor-tls github=cert=/etc/toolwarrant/gateway.pem,key=/etc/toolwarrant/gateway-key.pem,root=/etc/toolwarrant/processor-ca.pem,hostname=toolwarrant-processor \
   --secret-env TOOLWARRANT_SECRET_GITHUB \
   --gateway-binary /usr/local/bin/agentgateway
 ```
@@ -1316,6 +1326,49 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   printed `serve` command carries `--allow-non-loopback`, which `serve`
   accepts only together with `--secret-env` or `--tls-client-ca`, or the
   explicit `--insecure-no-secret` (limit L11).
+- `--processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME` puts the
+  gateway's `backendTLS` block on one server's processor entry (repeatable,
+  one per server; D19). The gateway then dials that processor with TLS 1.3:
+  it presents the client certificate at `cert` with the key at `key`,
+  verifies the processor's certificate against the PEM bundle at `root` and
+  under `hostname`, which it also sends as SNI. The three paths are files on
+  the gateway host, named from `/`; `emit` never opens them, except that
+  `--gateway-binary` makes the gateway's `--validate-only` read all three
+  (and parse the certificate and the key, not the root bundle), so with that
+  flag the files must exist at those paths on the host that emits, readable
+  by the user that emits, or `emit` exits 1 with the gateway's `read resource
+  file PATH` message and writes nothing (cmd
+  `TestEmitWithTheGatewayBinaryNeedsTheTLSFilesOnThisHost`, emit
+  `TestGatewayValidateOnlyOpensBackendTLSFiles`). All four fields are
+  required, each path must be absolute, printable ASCII and at most 4096
+  bytes, and `hostname` must be the DNS name the processor's certificate
+  carries as a subject alternative name (`serve --tls-cert`): an IP literal,
+  which the gateway would accept, is refused so that one certificate shape is
+  documented (emit `TestProcessorTLSRequiresEveryField`,
+  `TestProcessorTLSPathsMustBeAbsolute`,
+  `TestProcessorTLSHostnameIsADNSName`, `TestGatewayParsesBackendTLS`). Those
+  refusals are the emitter's, exit code 1, and leave the file untouched; a
+  value that is not the grammar, or that names a server the catalog does not
+  hold, is a usage error, exit code 2 (cmd `TestEmitProcessorTLSFlagGrammar`,
+  `TestEmitProcessorTLSNamesUnknownServer`). Nothing of the block is recorded
+  in the catalog (the paths are the gateway host's, which the catalog cannot
+  anchor; recording them would be a schema change), so give the flag on every
+  emit, as you give `--secret-env`: an emit without it writes an entry the
+  gateway dials in plaintext, and a processor started with `--tls-cert`
+  refuses that handshake, so the route fails closed rather than unguarded. The
+  block is written after the request-header filter and before the metadata,
+  where the canary reads it (`TestEmittedConfigReadsWhatEmitWrites`), and the
+  printed `serve` command for the server ends `--tls-cert PROCESSOR_CERT
+  --tls-key PROCESSOR_KEY --tls-client-ca GATEWAY_CA`, placeholders for the
+  processor's own files on its own host; with `--tls-client-ca` the processor
+  accepts a non-loopback listener without `--secret-env` (owner decision
+  O-2). The warning for a processor off loopback then says the hooks cross
+  the network under TLS and names the hostname (cmd
+  `TestEmitWritesBackendTLSForAProcessorOverride`,
+  `TestEmitPrintsTheServeCommandWithTLSPlaceholders`; emit
+  `TestProcessorTLSIsWrittenUnderPolicies`, `TestNoTLSMeansNoPolicies`,
+  `TestWarningNamesTheLinkProtection`). The handshake against the real
+  gateway is observed by end-to-end scenario Q, which has not landed yet.
 - `--bind-address ADDR` (default `127.0.0.1`) is the address the gateway binds
   the serving port to (`gateways.bindAddress`). A wildcard (`0.0.0.0` or `::`)
   also needs `--allow-all-interfaces`, a permission that changes nothing for
@@ -1848,9 +1901,12 @@ pinned; the documents keep describing v1.6.0 until one is.
   failing verdict line was printed or no check completed, or that ended at a
   check with a failing verdict without `--keep-going`, a `crawl --every`
   run stopped by a catalog error or with no complete crawl, `emit` when the
-  gateway binary refuses the file, a processor address falls on one of the
+  gateway binary refuses the file (a `--processor-tls` file it cannot open on
+  this host included), a processor address falls on one of the
   gateway's own sockets, its host does not parse as an IP literal although
-  it looks like one or is a name on a port the gateway binds (D15), or the
+  it looks like one or is a name on a port the gateway binds (D15), a
+  `--processor-tls` block has a path that is not absolute or a hostname that
+  is not a DNS name (D19), or the
   path at `--out` is not a regular file,
   `crawl --strict` with a rejected or unusable tool, `audit verify` with a
   broken chain, another head or integrity problems, `init` on a path whose
@@ -1870,7 +1926,10 @@ pinned; the documents keep describing v1.6.0 until one is.
   but without `--secret-env`, `--tls-client-ca` or `--insecure-no-secret`,
   `serve` with one of `--tls-cert` and `--tls-key` without the other, with
   `--tls-client-ca` alone or with a TLS flag on a unix socket, `emit` with a
-  wildcard `--bind-address` without `--allow-all-interfaces`, and `emit` with
+  wildcard `--bind-address` without `--allow-all-interfaces`, `emit
+  --processor-tls` with a value that is not
+  `NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME` or that names a server the
+  catalog does not hold (D19), and `emit` with
   an `--out` that is the catalog database, its `-wal` or `-shm` sibling, the
   `--gateway-binary` path or an existing regular file whose header lines are
   not emit's (D17; name another path, or remove the foreign file yourself).
