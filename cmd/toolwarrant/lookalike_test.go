@@ -10,16 +10,16 @@ import (
 const (
 	// copySchemaCyrillicPath spells the path parameter with a Cyrillic a
 	// (U+0430) in the property name and in the required list.
-	copySchemaCyrillicPath = `{"type":"object","properties":{"pаth":{"type":"string"}},"required":["pаth"]}`
-	cyrillicAText          = "а"
-	cyrillicCapitalA       = "А"
-	cyrillicOText          = "о"
+	copySchemaCyrillicPath = `{"type":"object","properties":{"p\u0430th":{"type":"string"}},"required":["p\u0430th"]}`
+	cyrillicAText          = "\u0430"
+	cyrillicCapitalA       = "\u0410"
+	cyrillicOText          = "\u043E"
 	// Japanese, Korean and Chinese descriptions with a Latin acronym: the UTS
 	// #39 Highly Restrictive profile allows each combination.
-	tokyoDescription  = "東京のAPIを呼ぶ"
-	osakaDescription  = "大阪のAPIを呼ぶ"
-	seoulDescription  = "한국API 호출"
-	taipeiDescription = "ㄅㄆAPI 台北"
+	tokyoDescription  = "\u6771\u4EAC\u306EAPI\u3092\u547C\u3076"
+	osakaDescription  = "\u5927\u962A\u306EAPI\u3092\u547C\u3076"
+	seoulDescription  = "\uD55C\uAD6DAPI \uD638\uCD9C"
+	taipeiDescription = "\u3105\u3106API \u53F0\u5317"
 )
 
 // A parameter renamed to a look-alike of the approved one is invisible in the
