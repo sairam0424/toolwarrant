@@ -1387,10 +1387,13 @@ and by the classifier's `TestCompare_DescriptionChangeIsWarningNotInfo`,
 ## Reviewing suspicious text before approving
 
 `approve` reads the definition for three kinds of text an approver cannot see
-for what it is, lists what it found on stderr by code point and never by the
-character, and refuses unless `--accept-suspicious` is passed; the one flag
-covers all three classes, because each is accepted the same way: by reading
-the list.
+for what it is, lists what it found on stderr and refuses unless
+`--accept-suspicious` is passed; the one flag covers all three classes, because
+each is accepted the same way: by reading the list. The detail of every line
+names code points and scripts, never the character; the path in front of it
+spells an object key as the upstream did, escaping only what a person cannot
+see or a terminal would obey (`\u{200B}`, `\n`), so a look-alike key reads as
+ordinary there, which is why the code points are what to read.
 
 - Suspicious characters: a character a person cannot see or a terminal would
   obey (zero-width characters, bidi controls, tag characters, terminal
