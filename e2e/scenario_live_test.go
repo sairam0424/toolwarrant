@@ -101,7 +101,8 @@ func scenarioP(t *testing.T, s *stack) {
 // the top-level sections and whether the request-header filter of mock's
 // processor is among the fields, since cmd/toolwarrant/testdata/admin_config.json
 // was recorded before the emitter wrote the filter. The note carries the
-// letter of the scenario that called it (P, and Q on the TLS entry).
+// letter of the running scenario (noteHere); P is its only caller, Q records
+// the backendTLS block itself through describeLiveTLS.
 func (s *stack) noteLiveShape(t *testing.T, doc []byte) {
 	t.Helper()
 	sections, err := liveSections(doc)

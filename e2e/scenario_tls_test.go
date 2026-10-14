@@ -44,9 +44,27 @@ const (
 	insecureField  = "insecure"
 	insecureNaming = tlsBlockField + " field " + insecureField
 	// tlsEmittedCopyName is the byte-identical copy of the emitted file with
-	// the block that the canary steps compare against.
+	// the block that the canary steps compare against; tlsGarbageCopyName is
+	// the copy with the garbage root the insecure step compares against, so
+	// that the posted flag is the only difference the comparison can name.
 	tlsEmittedCopyName = "gateway.emitted-tls.yaml"
+	tlsGarbageCopyName = "gateway.emitted-tls-garbage.yaml"
 	statsPrefix        = "stats:"
+	// What the processor's stderr says when a handshake is refused, one line
+	// per step, so a route that is dark for another reason cannot pass as the
+	// stated refusal. The strings are grpc-go's and crypto/tls's, not the
+	// pinned gateway's: a plaintext client dialling the TLS listener, a client
+	// certificate from an authority the listener does not trust, the client's
+	// alert when its root bundle does not sign the processor's certificate,
+	// and a TLS ClientHello arriving at a plaintext listener.
+	plaintextClientRefusal = "first record does not look like a TLS handshake"
+	unknownClientCARefusal = "x509: certificate signed by unknown authority"
+	unknownRootRefusal     = "remote error: tls: unknown certificate authority"
+	tlsClientRefusal       = "received bogus greeting from client"
+	// refusalLogWait bounds the wait for that line: grpc-go writes it from the
+	// goroutine that refused the handshake, and the gateway's answer to the
+	// client can arrive first.
+	refusalLogWait = 5 * time.Second
 )
 
 // logMarks is where the processor's stderr and the gateway's two streams
@@ -66,8 +84,10 @@ type logMarks struct{ proc, gwOut, gwErr int }
 // root bundle of garbage, which the pinned binary's --validate-only accepts,
 // fails at the handshake; a plaintext processor behind the TLS entry fails
 // closed (the second downgrade). verify-gateway --admin is healthy on the TLS
-// entry and what GET /api/config renders for the block is recorded; a posted
-// insecure: true is LIVE-CONFIG-MISMATCH naming the field and the document is
+// entry and what GET /api/config renders for the block is recorded; with the
+// garbage root back in the block a posted insecure: true makes the route
+// serve, which shows the gateway skipped the verification of the processor's
+// certificate, and is LIVE-CONFIG-MISMATCH naming the field; the document is
 // restored; finally the stack returns to a plaintext processor and an entry
 // without the block, which the next scenarios start from.
 func scenarioQ(t *testing.T, s *stack) {
@@ -108,9 +128,10 @@ func (s *stack) logsSince(name string, m logMarks) string {
 }
 
 // expectDark opens a new session through mock's route and requires the link
-// to fail closed: tools/list fails and tools/call echo is denied. What each
-// answered is returned for the note.
-func (s *stack) expectDark(t *testing.T, when string) string {
+// to fail closed: tools/list fails, tools/call echo is denied, and the
+// processor's stderr since the marks names the refusal with reason. What each
+// side answered is returned for the note.
+func (s *stack) expectDark(t *testing.T, m logMarks, when, reason string) string {
 	t.Helper()
 	cs := s.connect(t, "mock")
 	names, err := listNames(cs)
@@ -118,7 +139,32 @@ func (s *stack) expectDark(t *testing.T, when string) string {
 		t.Fatalf("%s, tools/list served %v instead of failing closed\n%s", when, names, s.logHints())
 	}
 	o := s.expectDenied(t, cs, "echo")
+	s.expectProcessorLogged(t, m, when, reason)
 	return fmt.Sprintf("tools/list -> %v; tools/call echo -> %s", err, o)
+}
+
+// expectProcessorLogged requires mock's processor to have logged reason on
+// its stderr since the marks, within refusalLogWait.
+func (s *stack) expectProcessorLogged(t *testing.T, m logMarks, when, reason string) {
+	t.Helper()
+	stderr := s.servers["mock"].processor.stderr
+	pollUntil(refusalLogWait, func() bool {
+		return strings.Contains(strings.Join(newLines(stderr, m.proc), "\n"), reason)
+	})
+	mustContain(t, when+": processor stderr since the mark", strings.Join(newLines(stderr, m.proc), "\n"), reason)
+}
+
+// copyConfig writes a byte-identical copy of the emitted file as it is on
+// disk under the work directory, apart from the file the gateway watches and
+// may rewrite, and returns the path and the bytes.
+func (s *stack) copyConfig(t *testing.T, name string) (path string, data []byte) {
+	t.Helper()
+	data = s.config(t)
+	path = filepath.Join(s.h.workdir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path, data
 }
 
 // expectServing requires mock's route to list add and echo again and echo to
@@ -138,7 +184,7 @@ func scenarioQPlaintextEntry(t *testing.T, s *stack, lab tlsLab) {
 	mustContain(t, "listening line", listening, tlsListeningNote, tlsAuthNote)
 	s.note(t, "Q: the processor started with --tls-cert, --tls-key and --tls-client-ca printed: %s", strings.TrimSpace(listening))
 	m := s.markLogs("mock")
-	outcome := s.expectDark(t, "with the plaintext entry in the file and the processor terminating TLS")
+	outcome := s.expectDark(t, m, "with the plaintext entry in the file and the processor terminating TLS", plaintextClientRefusal)
 	s.note(t, "Q: plaintext entry, TLS processor: %s", outcome)
 	s.note(t, "Q: during that, %s", s.logsSince("mock", m))
 }
@@ -184,7 +230,7 @@ func scenarioQWrongClientCA(t *testing.T, s *stack, lab tlsLab) {
 		t.Errorf("the TLS processor counted no served list although the route listed through it")
 	}
 	m := s.markLogs("mock")
-	outcome := s.expectDark(t, "with the processor requiring client certificates from an authority that did not sign the gateway's")
+	outcome := s.expectDark(t, m, "with the processor requiring client certificates from an authority that did not sign the gateway's", unknownClientCARefusal)
 	s.note(t, "Q: client certificate from another authority: %s", outcome)
 	s.note(t, "Q: during that, %s", s.logsSince("mock", m))
 	s.restartProcessor(t, "mock", lab.serveFlags(lab.clientCA)...)
@@ -202,7 +248,7 @@ func scenarioQGarbageRoot(t *testing.T, s *stack, lab tlsLab) {
 	r := s.emit(t, nil, "--processor-tls", lab.spec(lab.garbageRoot), "--gateway-binary", s.h.gatewayBin)
 	mustContain(t, "emit --gateway-binary with a garbage root", r.stdout, "validated with "+s.h.gatewayBin)
 	mustContain(t, "emitted file", string(s.config(t)), `root: "`+lab.garbageRoot+`"`)
-	outcome := s.expectDark(t, "with a root bundle of garbage, which --validate-only accepted and the gateway reloaded")
+	outcome := s.expectDark(t, m, "with a root bundle of garbage, which --validate-only accepted and the gateway reloaded", unknownRootRefusal)
 	s.note(t, "Q: root bundle of garbage (accepted by --validate-only, reloaded by the gateway): %s", outcome)
 	s.note(t, "Q: during that, %s", s.logsSince("mock", m))
 	s.emit(t, nil, "--processor-tls", lab.spec(lab.root))
@@ -217,7 +263,7 @@ func scenarioQPlaintextProcessor(t *testing.T, s *stack, lab tlsLab) {
 	_, listening := s.restartProcessor(t, "mock")
 	mustNotContain(t, "plaintext listening line", listening, "TLS")
 	m := s.markLogs("mock")
-	outcome := s.expectDark(t, "with the block in the file and a plaintext processor")
+	outcome := s.expectDark(t, m, "with the block in the file and a plaintext processor", tlsClientRefusal)
 	s.note(t, "Q: TLS entry, plaintext processor: %s", outcome)
 	s.note(t, "Q: during that, %s", s.logsSince("mock", m))
 	s.restartProcessor(t, "mock", lab.serveFlags(lab.clientCA)...)
@@ -229,14 +275,10 @@ func scenarioQPlaintextProcessor(t *testing.T, s *stack, lab tlsLab) {
 // as the emitted-file reader expects (D19 e); what it renders is recorded
 // field by field without printing a value, and the answer is searched for a
 // PEM private key, since a rendering that inlined the key would widen limit
-// L18. Then insecure: true is posted into the block through the admin API.
+// L18. Then the insecure step posts into the block through the admin API.
 func scenarioQCanary(t *testing.T, s *stack, lab tlsLab) {
 	s.expectLiveHealthy(t, "with the block in the emitted file and the gateway dialling the processor under TLS")
-	original := s.config(t)
-	copyPath := filepath.Join(s.h.workdir, tlsEmittedCopyName)
-	if err := os.WriteFile(copyPath, original, 0o600); err != nil {
-		t.Fatalf("write %s: %v", copyPath, err)
-	}
+	copyPath, original := s.copyConfig(t, tlsEmittedCopyName)
 	liveDoc := s.liveConfig(t)
 	routes, err := routeCount(liveDoc)
 	if err != nil {
@@ -252,30 +294,40 @@ func scenarioQCanary(t *testing.T, s *stack, lab tlsLab) {
 		inlined = "HOLDS"
 	}
 	s.note(t, "Q: GET %s renders mock's processor policies.%s with the keys %v (%s); the %d-byte answer %s a PEM private key", adminConfigPath, tlsBlockField, keys, fields, len(liveDoc), inlined)
-	scenarioQInsecure(t, s, liveLab{original: original, copyPath: copyPath, doc: liveDoc, routes: routes})
+	scenarioQInsecure(t, s, lab, liveLab{original: original, copyPath: copyPath, doc: liveDoc, routes: routes})
 }
 
-// scenarioQInsecure: the live document with insecure: true inside mock's
-// backendTLS block, posted through the unauthenticated admin API (limit L18);
-// the gateway then skips the verification of the processor's certificate.
-// What the route does under it is recorded; against a byte-identical copy of
-// the emitted file the check must be LIVE-CONFIG-MISMATCH naming the field,
-// exit 1, and the original document is posted back and proven healthy.
-func scenarioQInsecure(t *testing.T, s *stack, live liveLab) {
-	doc, err := withTLSField(live.doc, "mock", insecureField, true)
+// scenarioQInsecure: insecure: true posted into mock's backendTLS block
+// through the unauthenticated admin API (limit L18), with the block naming
+// the garbage root, so that what the flag does is observable: under that root
+// the route has just failed closed, and under the flag it must serve, which
+// shows the gateway skipped the verification of the processor's certificate.
+// Against a byte-identical copy of the garbage-root file the check must be
+// LIVE-CONFIG-MISMATCH naming the field, exit 1, and the original document
+// (the real root, no flag) is posted back and proven healthy. The pinned
+// binary accepts the post (D19 (8)); a gateway that refuses it fails the
+// scenario, since the documents state the acceptance.
+func scenarioQInsecure(t *testing.T, s *stack, lab tlsLab, live liveLab) {
+	m := s.markLogs("mock")
+	s.emit(t, nil, "--processor-tls", lab.spec(lab.garbageRoot))
+	outcome := s.expectDark(t, m, "with the garbage root back in the block, before the "+insecureField+" flag", unknownRootRefusal)
+	s.note(t, "Q: garbage root again, before %s: %s", insecureField, outcome)
+	garbageCopy, _ := s.copyConfig(t, tlsGarbageCopyName)
+	doc, err := withTLSField(s.liveConfig(t), "mock", insecureField, true)
 	if err != nil {
 		t.Fatalf("set %s in the live configuration: %v", insecureField, err)
 	}
+	m = s.markLogs("mock")
 	if !s.tryReplaceLive(t, doc) {
-		s.note(t, "Q: the gateway refused the document with %s: true in mock's %s block, so the flag cannot reach the running configuration through the admin API", insecureField, tlsBlockField)
-		s.restoreLive(t, live, "after the refused "+insecureField+" flag")
-		return
+		t.Fatalf("the gateway refused the document with %s: true in mock's %s block; the pinned binary accepts it (D19 (8))\n%s", insecureField, tlsBlockField, s.logHints())
 	}
 	if !s.awaitLiveTLSField(t, "mock", insecureField, true) {
 		t.Fatalf("GET %s never rendered the posted %s field; the live comparison cannot see it", adminConfigPath, insecureField)
 	}
-	s.note(t, "Q: with %s: true posted into mock's %s block, %s", insecureField, tlsBlockField, s.observeRoute("mock"))
-	s.expectLiveMismatch(t, live.copyPath, "with "+insecureField+": true posted into mock's "+tlsBlockField+" block", insecureNaming)
+	o := s.expectAllowed(t, s.eventuallyServes(t, "mock", "add", "echo"), "echo", "hello")
+	s.note(t, "Q: with %s: true posted into mock's %s block whose root is the garbage bundle, a new session listed add and echo and tools/call echo -> %s: the gateway dialled the processor without verifying its certificate", insecureField, tlsBlockField, o)
+	s.note(t, "Q: during that, %s", s.logsSince("mock", m))
+	s.expectLiveMismatch(t, garbageCopy, "with "+insecureField+": true posted into mock's "+tlsBlockField+" block", insecureNaming)
 	s.restoreLive(t, live, "after the "+insecureField+" flag")
 }
 
