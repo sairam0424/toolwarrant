@@ -16,7 +16,7 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "server pause NAME", "server resume NAME",
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
 		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
-		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]",
+		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME ...] [--secret-env VAR] [--gateway-binary PATH]",
 		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]",
 		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
 	out = c.ok("version")

@@ -409,7 +409,7 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 - L8. Single tenant: one SQLite file, one processor per upstream, one operator, no high availability.
 - L9. Any `_meta` change is drift, and a `_meta` member the gateway does not preserve hides the tool.
 - L10. The serving port binds to 127.0.0.1 by default; any other bind exposes every route to that network.
-- L11. The processor link is plain `host:port` gRPC without TLS; keep it on loopback with the shared secret.
+- L11. The processor link is `host:port` gRPC, plaintext unless `serve --tls-cert --tls-key --tls-client-ca` and `emit --processor-tls` put TLS 1.3 with the gateway's client certificate on it (D19); the handshake against the real gateway is observed by scenario Q, not landed yet, so keep a plaintext processor on loopback with the shared secret.
 - L12. Added latency is measured on a 3-tool page only: +0.95 ms list p50 and +0.87 ms call p50 in scenario M.
 - L13. Operators are not authenticated: `--as` and `TOOLWARRANT_ACTOR` are taken as given.
 - L14. Homoglyphs pass the diff renderer unflagged; a behaviour change behind an unchanged definition is invisible.

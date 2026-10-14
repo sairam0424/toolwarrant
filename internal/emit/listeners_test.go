@@ -21,11 +21,11 @@ const (
 	freeListenerPort = "16000"
 )
 
-// goldenCases is every golden input: the original nine, the listener cases
-// and the dollar-sign case. New cases are appended so the positional
-// references in older tests keep pointing at the same inputs.
+// goldenCases is every golden input: the original nine, the listener cases,
+// the dollar-sign case and the TLS case. New cases are appended so the
+// positional references in older tests keep pointing at the same inputs.
 func goldenCases() []goldenCase {
-	return slices.Concat(baseGoldenCases(), listenerGoldenCases(), dollarGoldenCases())
+	return slices.Concat(baseGoldenCases(), listenerGoldenCases(), dollarGoldenCases(), tlsGoldenCases())
 }
 
 func listenerGoldenCases() []goldenCase {

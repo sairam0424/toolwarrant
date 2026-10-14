@@ -12,7 +12,7 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
-// TLS on the processor listener (D19 planned, owner decision O-2). The three
+// TLS on the processor listener (D19, owner decision O-2). The three
 // files are operator-given paths and go through readRegularFile like every
 // other file the CLI opens by path; the private key must be owner-only, as the
 // database is, because whoever reads it can stand in for the processor.

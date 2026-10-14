@@ -5,7 +5,7 @@
 // certificate is made when a test asks, so the repository holds no key
 // material, and the package is imported by test files only (the processor's
 // TLS tests, the serve command's, and end-to-end scenario Q once it lands).
-// The TLS link it serves is recorded as D19 (planned).
+// The TLS link it serves is recorded as D19.
 package testcert
 
 import (
@@ -27,7 +27,7 @@ import (
 const (
 	// ServerName is the DNS name the server certificate carries, and so the
 	// name a client verifies the processor under (the gateway's backendTLS
-	// hostname once emit writes it, D19 planned).
+	// hostname emit --processor-tls writes, D19).
 	ServerName = "toolwarrant-processor"
 	// validFor bounds every certificate's life. Tests finish in minutes; a
 	// certificate that outlived the test run would be a secret worth keeping.

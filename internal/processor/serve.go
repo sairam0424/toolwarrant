@@ -179,7 +179,7 @@ func (s *Server) watchRefusal(ctx context.Context, dec func(any) error) func(any
 // unless the operator opted in. Opting in with neither a shared secret nor a
 // verified client certificate is logged, because then whoever reaches the port
 // decides what the gateway serves; server-only TLS protects the bytes, not the
-// port, so it does not silence the warning (O-2, D19 planned).
+// port, so it does not silence the warning (O-2, D19).
 func (s *Server) checkListener(addr net.Addr) error {
 	local, err := isLocalAddr(addr)
 	if err != nil {

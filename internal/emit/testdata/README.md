@@ -38,12 +38,24 @@ none). The block never depends on the input.
   secret, written as `\u0024` (doubly escaped inside the CEL literals): the
   gateway substitutes environment variables into the raw file text, and
   binary_rules_test.go proves that a raw `$NAME` makes it refuse the file.
+- `with_tls` gives both servers a `backendTLS` block (`Server.TLS`, D19):
+  `policies:` after the request-header filter, `backendTLS:` under it, and
+  `cert`, `key`, `root` and `hostname` as quoted scalars, before `methods`
+  on the first entry and before `metadata` on the second, which also carries
+  a secret. The paths are paths on a gateway host
+  (`/etc/toolwarrant/gateway.pem`, `gateway-key.pem`, `processor-ca.pem`)
+  and the hostname is `toolwarrant-processor`, the DNS name
+  `internal/testcert` issues; the same values the canary's tests hand-build
+  the block with. No other golden carries a processor `policies` block
+  (`TestNoTLSMeansNoPolicies`).
 
 What the tests in this package prove about these files, and what they do not:
 
-- `binary_test.go`, `binary_rules_test.go`, `socket_test.go` and
-  `headers_test.go` run the real agentgateway v1.6.0 binary in
-  `--validate-only` mode over every file. That proves the YAML shape, the CEL
+- `binary_test.go`, `binary_rules_test.go`, `socket_test.go`,
+  `headers_test.go` and `tls_binary_test.go` run the real agentgateway v1.6.0
+  binary in `--validate-only` mode over every file; `with_tls` is validated
+  with its three paths pointed at files that exist, because the binary opens
+  them (below). That proves the YAML shape, the CEL
   syntax of the allow rules and of the secret literals, that the `config`
   listener addresses and `bindAddress` parse (host names, host:port forms,
   brackets, zones and the empty string are refused as IPs; an IPv6 listener
@@ -54,7 +66,18 @@ What the tests in this package prove about these files, and what they do not:
   included, is looked up in the gateway's environment, that the escaped forms
   the emitter writes are accepted, and that the request-header filter is read
   as two lists of header names (a scalar, an unknown key, an invalid name and
-  an unknown pseudo-header are refused, `TestGatewayParsesTheRequestHeaderFilter`).
+  an unknown pseudo-header are refused, `TestGatewayParsesTheRequestHeaderFilter`),
+  and that the `backendTLS` block is read: `--validate-only` opens the
+  block's three files and refuses a path it cannot open with `read resource
+  file PATH` (so `emit --gateway-binary` needs the files on the emitting
+  host), parses the certificate and the key (`no certificate`, `no key`) but
+  not the root bundle (a file of garbage there validates), refuses an unknown
+  field naming the ten the schema has, and refuses a hostname that is not a
+  DNS name or an IP literal (`invalid dns name`: empty, bracketed, `host:port`,
+  the resolver's numeric shorthand); it accepts a block without `cert` and
+  `key`, without a hostname, with an IPv4 or IPv6 literal as hostname, and an
+  empty block, each of which the emitter refuses on its own account
+  (`TestGatewayValidateOnlyOpensBackendTLSFiles`, `TestGatewayParsesBackendTLS`).
   It proves nothing about runtime semantics: `--validate-only` accepts unknown
   CEL variables (`mcp.tool.nmae`), type errors (`mcp.tool.name == 5`),
   non-boolean rules, empty and deny-only rule sets, `failOpen`, unknown method
@@ -71,11 +94,14 @@ What the tests in this package prove about these files, and what they do not:
   starts no admin listener, that the routes attached by name are served, which
   methods the allow rule filters at runtime, that `mcp.tool.name` binds to the
   served tool name, that the processor really receives `toolwarrant_secret`,
-  and which headers the gateway puts on the wire towards the processor (by the
-  gateway's module source, `:method` and nothing else) are verified only by the
-  end-to-end test (package `e2e`, gateway running as a server against a mock
-  upstream), not here. The emitted file is defence in depth behind the
-  processor; the processor is the guard.
+  which headers the gateway puts on the wire towards the processor (by the
+  gateway's module source, `:method` and nothing else), and whether the
+  gateway completes a TLS handshake with a processor from the `backendTLS`
+  block, presenting the certificate at `cert` and verifying the processor
+  under `hostname`, are verified only by the end-to-end test (package `e2e`,
+  gateway running as a server against a mock upstream; the handshake by
+  scenario Q, not landed yet), not here. The emitted file is defence in depth
+  behind the processor; the processor is the guard.
 - `integrity_test.go` checks that every file here verifies with `emit.Verify`,
   so a hand edit of a golden file fails the suite the same way an edited
   deployed config fails the operator's canary. `TestVerifyIsUnkeyed` pins the

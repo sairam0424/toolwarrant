@@ -92,7 +92,9 @@ func TestGoldenFilesValidateWithRealGateway(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requireValid(t, binary, data, file)
+			// The binary opens the backendTLS files, so the with_tls golden
+			// is validated with its paths pointed at files that exist.
+			requireValid(t, binary, materialiseTLSPaths(t, data), file)
 		})
 	}
 }

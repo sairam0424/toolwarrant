@@ -15,10 +15,11 @@ which is D16, and the commits of the seventh round (2026-10-12, the fixes
 after the seventh review, scoped to the catalog chain and the canary), which
 state D17, and the L17 decision of 2026-10-14 (owner decision O-1 of the
 post-v0.1 plan, taken after the research of that day), which is D18, and the
-v0.2 release round of 2026-10-14 (the plan's PR 1.4 with owner decisions O-4
+TLS decision of 2026-10-14 (owner decision O-2 of the same plan, landed as
+the processor's listener TLS, the canary's reader and the emitter's block),
+which is D19, and the v0.2 release round of 2026-10-14 (the plan's PR 1.4 with owner decisions O-4
 and O-5, landed as pull requests #15, #16, #20 and the release workflow
-change), which is D20; D19, TLS on the processor link, is written by the pull
-request that lands it. The
+change), which is D20. The
 post-review sections of [../seam/RESULTS.md](../seam/RESULTS.md) quote the same
 decisions and record the corrections they forced to the spike's findings. Each
 record gives the context (what a review found), the decision, its consequences
@@ -2062,6 +2063,190 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   (KNOWN-LIMIT L17)`, exited 0, and the hostile upstream's request log gained
   one probe request. Each of the three new tests fails on the code before this
   decision with `flag provided but not defined: -expect-unhooked`, exit 2.
+
+## D19. TLS and client certificates on the processor link
+
+- Context. The link between the gateway and a processor was plain `host:port`
+  gRPC (limit L11, [threat-model.md](threat-model.md) row 17 and L11): the
+  processor's only guard against a caller who reaches its port was the shared
+  secret (D8), confidential against other hosts only, and every hook crossed
+  the network in clear whenever a processor ran off loopback. The post-v0.1
+  research (2026-10-14) found that agentgateway v1.6.0 already dials a
+  processor with TLS when its entry carries
+  `routes[].policies.mcpGuardrails.processors[].policies.backendTLS` (`cert`,
+  `key`, `root`, `hostname`; the schema also accepts `insecure`,
+  `insecureHost`, `alpn`, `subjectAltNames`, `keyExchangeGroups` and
+  `spiffe`, and `requestHeaderModifier`, `transformations` and `backendAuth`
+  beside the block), and that the gateway's Rust source deserialises
+  `policies: backendTLS: {}` under a `host:` processor; the handshake against
+  a grpc-go listener was unobserved. The owner decided on 2026-10-14
+  (decision O-2 of the plan): TLS on the link without moving the gateway pin,
+  in four pull requests (the processor's listener, the canary's reader, the
+  emitter's block, the end-to-end scenario Q), and a verified client
+  certificate satisfies the non-loopback listen rule in place of the shared
+  secret.
+- Decision (a): the processor terminates TLS. `serve --tls-cert PATH --tls-key
+  PATH` makes the listener TLS 1.3 only (`processor.Config.TLS`, forced to
+  1.3 on a copy of the caller's configuration), and `--tls-client-ca PATH`
+  makes every connection present a client certificate that authority signed
+  (`RequireAndVerifyClientCert`); a connection without one, from another
+  authority or in plaintext is refused in the handshake and never reaches a
+  hook. Certificate and key go together, the authority needs both, and any
+  TLS flag with `--listen unix:` is refused, each a usage error (exit 2); the
+  three files pass `readRegularFile` and the key must be owner-only, as the
+  database is (exit 1 otherwise). A configuration with no certificate, or
+  with client verification against no authority, is refused by the processor
+  itself, because crypto/tls would otherwise verify against the system roots.
+  The listening line names the mode after the target. Landed first (pull
+  request 2.4a), ahead of any producer of the gateway's block.
+- Decision (b): the emitter writes the block from a flag that is not
+  persisted. `emit --processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME`
+  (repeatable, one per server; all four fields, each once; a path cannot
+  carry a comma) puts `policies: backendTLS:` with the four quoted fields on
+  that server's processor entry, after the request-header filter and before
+  the metadata. Nothing of it goes into the catalog: the paths are files on
+  the gateway host, which the catalog cannot anchor to anything it verifies,
+  and recording them would be schema v7 with the first migration, for a value
+  the operator holds anyway. The flag is therefore given on every emit, as
+  `--secret-env` is, and omission fails closed: an entry without the block is
+  dialled in plaintext, which a processor started with `--tls-cert` refuses
+  in the handshake, so the route goes dark instead of unguarded. The first
+  step of the emitter's pull request was a probe of the pinned binary:
+  `--validate-only` opens the block's three files (`read resource file PATH`,
+  exit 1, for a path it cannot open), parses the certificate and the key (`no
+  certificate`, `no key`), does not parse the root bundle (a file of garbage
+  validates), reads the hostname as a DNS name or an IP literal (`invalid dns
+  name` for an empty one, a bracketed address, a `host:port` and the
+  resolver's numeric shorthand), and accepts a block without `cert` and
+  `key`, without `hostname`, with an IPv4 or IPv6 literal as `hostname`, and
+  an empty block. So `emit --gateway-binary` needs the three files at those
+  paths on the host that emits, readable by the user that emits, and the
+  rules below are the emitter's own, not a repeat of the gateway's parser.
+- Decision (c): every field is required and the hostname is a DNS name. A
+  block is all four fields or nothing, each path absolute (the gateway reads
+  a relative path from its own working directory, which the emitter cannot
+  know), printable ASCII and at most 4096 bytes, written through `quote` like
+  every other value; the hostname is printable ASCII within 253 bytes,
+  matches the processor-host pattern and is neither an IP literal nor a
+  numeric spelling the resolver would read as one. The hostname is the name
+  the gateway verifies the processor's certificate under and sends as SNI, so
+  requiring it, and refusing the IP literals the gateway would accept, leaves
+  one certificate shape to document and to issue: a DNS subject alternative
+  name equal to the hostname (`toolwarrant-processor` in the tests,
+  `internal/testcert`). The gateway's own validation accepts the partial and
+  numeric shapes, so a block the emitter refuses is never one the gateway
+  would have loaded differently.
+- Decision (d): a verified client certificate satisfies the listen policy
+  (owner decision O-2). `serve --allow-non-loopback` is accepted with
+  `--tls-client-ca` and without `--secret-env`, because the certificate
+  authenticates every hook as the secret does; a secret given as well is
+  checked on every hook as before; `--insecure-no-secret` is still the only
+  way to listen off loopback with neither. The emitter's warning for a
+  processor off loopback states the protection: with the block it says the
+  hooks cross the network under TLS, names the hostname and says serve must
+  require that certificate with `--tls-client-ca` or carry the shared secret;
+  without the block the plaintext line is unchanged. The printed serve
+  command for a server with the block ends `--tls-cert PROCESSOR_CERT
+  --tls-key PROCESSOR_KEY --tls-client-ca GATEWAY_CA`: the processor's files
+  live on its own host, so emit prints names to fill in, not paths.
+- Decision (e): the canary's shape, pinned before the producer existed (pull
+  request 2.4b). The emitted-file reader opens `policies:` at indent 8 after
+  the request-header filter and before the metadata, `backendTLS:` at indent
+  10, and reads `cert`, `key`, `root` and `hostname` as quoted scalars at
+  indent 12; a second block, an unquoted scalar (the schema's `insecure:
+  true`) or a list is refused rather than guessed at, and a policy beside the
+  block is left unread. The live side reads the same four fields from
+  `policies.backendTLS` of `GET /api/config`, keeps the map nil for an absent,
+  null or empty policies object and for a null block, and the shape walk
+  reports every other field of the block (`insecure`, `insecureHost`, `alpn`,
+  `subjectAltNames`, `keyExchangeGroups`, `spiffe`) and every other processor
+  policy (`requestHeaderModifier`, `transformations`, `backendAuth`) by name
+  as `not in the emitted file`. The comparison prints `processor backendTLS:
+  the live processor has none while the emitted file carries it; the gateway
+  dials this processor without TLS` and `processor backendTLS: the live
+  processor carries backendTLS the emitted file does not` for a block one side
+  lacks (an empty block differs from no block), and one `processor backendTLS
+  KEY: emitted X, live Y` line per field that differs, in file order, both
+  values shown because they are paths and a name, not secrets. The emitter
+  writes exactly that shape, so the reader needed no change when the producer
+  landed.
+- Consequence. A processor that must run off loopback runs with `--tls-cert`,
+  `--tls-key` and `--tls-client-ca`, and the gateway's file carries its block
+  from `emit --processor-tls` on every emit; a rotation is a second processor
+  on a new port with the new files, a re-emit with the new block, and the old
+  processor retired after the longest session lifetime tolerated, as the
+  secret is rotated. `emit --gateway-binary` with the flag needs the three
+  files on the emitting host, else it exits 1 with the gateway's message and
+  writes nothing. Exit codes: a value that is not the grammar or names an
+  unknown server is a usage error (2); a path that is not absolute, a missing
+  field or a hostname that is not a DNS name is the emitter's refusal (1),
+  and the file is untouched. Limit L11 narrows to what remains: the handshake
+  against the real gateway and what `GET /api/config` renders for the block
+  are unobserved in this tree until scenario Q, the hook still carries the
+  client's headers after the filter, and a processor on a unix socket stays
+  plaintext. What D19 does not do: no catalog columns for the block, no
+  `alpn` written (grpc-go requires h2; if the gateway's rustls client does not
+  offer it, scenario Q will show it and emit will write `alpn: ["h2"]`), no
+  TLS on unix sockets, no change to the probe or to what the processor
+  enforces.
+- Where. `cmd/toolwarrant/servetls.go` (the three flags, their rules, the
+  files, the listening-line notes), `cmd/toolwarrant/serve.go`
+  (`listenPolicy.hasClientCA`), `internal/processor/processor.go`
+  (`Config.TLS`), `internal/processor/serve.go` and
+  `internal/processor/tls.go` (the hardened copy, the refusals, the
+  warning), `internal/testcert` (the test-only material);
+  `cmd/toolwarrant/emittls.go` (the flag's grammar, the plans), `cmd/toolwarrant/emit.go`
+  (the placeholders), `internal/emit/tls.go` (`ProcessorTLS`, its rules,
+  the writer), `internal/emit/route.go`, `internal/emit/validate.go`,
+  `internal/emit/warning.go`, `internal/emit/testdata/with_tls.yaml`;
+  `cmd/toolwarrant/livetls.go`, `liveconsts.go`, `liveconfig.go`,
+  `liveadmin.go`, `liveshape.go`, `livecompare.go` (the canary); SECURITY.md,
+  README.md, CLAUDE.md, [threat-model.md](threat-model.md) (rows 17 and 22,
+  L11 and their notes), [operations.md](operations.md) ("Running the
+  processor", "Running the canary", "Rotating the shared secret",
+  "Re-emitting the gateway configuration", "Exit codes").
+- Tests. Processor `TestServe_TLSListenerRefusesPlaintextAndUnknownClients`,
+  `TestServe_TLSWithClientCARequiresAClientCertificate`,
+  `TestServe_TLSWithoutClientCAAcceptsAnyClient`,
+  `TestServe_ClientCertificateSilencesTheNoSecretWarning`,
+  `TestServe_RefusesAnUnusableTLSConfig`; cmd
+  `TestServeTLSFlagsNeedCertAndKeyTogether`,
+  `TestServeTLSRefusesAUnixSocketListener`,
+  `TestServeTLSRefusesAGroupReadableKey`,
+  `TestServeTLSOverGRPCEnforcesApprovals`,
+  `TestServeTLSRefusesAClientWithoutACertificate`,
+  `TestServeTLSClientCASatisfiesTheNonLoopbackRule`,
+  `TestCheckListenAddrPolicy` (decisions (a) and (d)); emit
+  `TestGatewayValidateOnlyOpensBackendTLSFiles` (the probe: each missing file
+  refused with `read resource file`, a relative path refused, a garbage root
+  accepted), `TestGatewayParsesBackendTLS` (the unknown field, `no
+  certificate`, `no key`, `invalid dns name`, and the lenient acceptances),
+  `TestProcessorTLSIsWrittenUnderPolicies`,
+  `TestProcessorTLSRequiresEveryField`,
+  `TestProcessorTLSPathsMustBeAbsolute`,
+  `TestProcessorTLSHostnameIsADNSName`, `TestNoTLSMeansNoPolicies`,
+  `TestWarningNamesTheLinkProtection`, the `with_tls` golden in `TestGolden`
+  and `TestGoldenFilesValidateWithRealGateway` (decisions (b) and (c)); cmd
+  `TestEmitWritesBackendTLSForAProcessorOverride` (the block, the warning,
+  the placeholders, nothing in `server list` or the audit log, the next emit
+  without the flag writing no block), `TestEmitProcessorTLSFlagGrammar`,
+  `TestEmitProcessorTLSNamesUnknownServer`,
+  `TestEmitPrintsTheServeCommandWithTLSPlaceholders`,
+  `TestEmitWithTheGatewayBinaryNeedsTheTLSFilesOnThisHost` (decisions (b)
+  and (d)); canary `TestEmittedConfigReadsTheProcessorTLS`,
+  `TestLiveComparisonComparesTheProcessorTLS`,
+  `TestLiveComparisonReportsAnInsecureTLSFlag`,
+  `TestCompareProcessorsSeesAMissingBackendTLS` and
+  `TestEmittedConfigReadsWhatEmitWrites`, which since the emitter landed
+  reads the real emitted block (decision (e)). The emit tests fail on the
+  code before this decision with `unknown field TLS in struct literal`, and
+  the cmd tests with `flag provided but not defined: -processor-tls`, exit 2.
+  Observations from end-to-end scenario Q: none yet as of 2026-10-14; pull
+  request 2.4d records here the first handshake between agentgateway v1.6.0
+  and a processor started with the three flags, both sides' logs, what
+  `GET /api/config` renders for the block, the refusal of a client
+  certificate from another authority and of both downgrades, and the
+  LIVE-CONFIG-MISMATCH for a posted `insecure: true`.
 
 ## D20. The v0.2 release round: build provenance, immutable releases, the tag policy, the changelog as the notes, the response time, the reproducible build and the catalog's durability
 

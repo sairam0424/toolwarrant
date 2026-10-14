@@ -37,11 +37,11 @@ func TestHeaderFilterNamesArePinned(t *testing.T) {
 
 // TestEveryProcessorEntryFiltersClientHeaders ports the third review's
 // finding processor-emit-6: every processor entry carries the gateway's
-// request-header filter, directly after failureMode and before the metadata
-// or methods block, once per server and nowhere else, whatever the tools,
-// secrets and addresses of the input. Before this the entry had no filter and
-// agentgateway forwarded every client header, Authorization and Cookie
-// included, with each hook.
+// request-header filter, directly after failureMode and before the policies,
+// metadata or methods block, once per server and nowhere else, whatever the
+// tools, secrets, TLS blocks and addresses of the input. Before this the
+// entry had no filter and agentgateway forwarded every client header,
+// Authorization and Cookie included, with each hook.
 func TestEveryProcessorEntryFiltersClientHeaders(t *testing.T) {
 	block := "        failureMode: " + quote("failClosed") + "\n" + requestHeadersBlock()
 	for _, tc := range goldenCases() {
@@ -57,9 +57,9 @@ func TestEveryProcessorEntryFiltersClientHeaders(t *testing.T) {
 		if got := strings.Count(yaml, "requestHeaders:"); got != servers {
 			t.Errorf("%s: requestHeaders appears %d times, want %d", tc.name, got, servers)
 		}
-		followed := strings.Count(yaml, block+"        metadata:\n") + strings.Count(yaml, block+"        methods:\n")
+		followed := strings.Count(yaml, block+"        metadata:\n") + strings.Count(yaml, block+"        methods:\n") + strings.Count(yaml, block+policiesLine)
 		if followed != servers {
-			t.Errorf("%s: %d filter blocks are followed by metadata or methods, want %d:\n%s", tc.name, followed, servers, yaml)
+			t.Errorf("%s: %d filter blocks are followed by policies, metadata or methods, want %d:\n%s", tc.name, followed, servers, yaml)
 		}
 	}
 }

@@ -160,6 +160,9 @@ func validateServer(s Server, reserved map[int]gatewaySocket) error {
 	if err := validateSecret(s.Secret); err != nil {
 		return invalid("server %s: %v", s.Name, err)
 	}
+	if err := validateProcessorTLS(s.TLS); err != nil {
+		return invalid("server %s: %v", s.Name, err)
+	}
 	return nil
 }
 

@@ -149,7 +149,7 @@ func TestServeTLSRefusesAGroupReadableKey(t *testing.T) {
 	wantContains(t, "stderr", r.stderr, "--tls-key", "is a directory")
 }
 
-// D19 (planned): over TLS the processor enforces approvals exactly as in
+// D19: over TLS the processor enforces approvals exactly as in
 // plaintext, the listening line names the mode, and a shared secret given as
 // well is still checked on every hook.
 func TestServeTLSOverGRPCEnforcesApprovals(t *testing.T) {
@@ -207,7 +207,7 @@ func TestServeTLSOverGRPCEnforcesApprovals(t *testing.T) {
 	wantNotContains(t, "output", out.String()+errb.String(), canary, pemKeyMarker)
 }
 
-// D19 (planned): with --tls-client-ca a connection without a certificate that
+// D19: with --tls-client-ca a connection without a certificate that
 // authority signed never reaches a hook, and neither does a plaintext one;
 // nothing is counted because nothing was read.
 func TestServeTLSRefusesAClientWithoutACertificate(t *testing.T) {

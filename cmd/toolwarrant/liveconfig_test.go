@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 
@@ -10,13 +11,14 @@ import (
 )
 
 // The emitted-file reader is pinned to what internal/emit writes today: a
-// freshly emitted file with a shared secret and two servers yields every
-// gateway and every route with exactly the fields the comparison needs, and
-// never the secret.
+// freshly emitted file with a shared secret and two servers, one of them with
+// the backendTLS block, yields every gateway and every route with exactly the
+// fields the comparison needs, and never the secret.
 func TestEmittedConfigReadsWhatEmitWrites(t *testing.T) {
 	out, err := emit.AgentGateway(emit.Input{ListenPort: 8080, BindAddress: "::1", Servers: []emit.Server{
 		{Name: "beta", URL: "http://127.0.0.1:3002/mcp?q=" + plant("query"), ProcessorAddr: "127.0.0.1:9002", Secret: plant("shared"), ApprovedTools: []string{"b"}},
-		{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: plant("shared"), ApprovedTools: []string{"x", "a"}},
+		{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: plant("shared"), ApprovedTools: []string{"x", "a"},
+			TLS: &emit.ProcessorTLS{Cert: tlsCertPath, Key: tlsKeyPath, Root: tlsRootPath, Hostname: tlsHostname}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -39,18 +41,23 @@ func TestEmittedConfigReadsWhatEmitWrites(t *testing.T) {
 		describeMethods(rc.processors[0].methods) != "tools/call=request,tools/list=response" {
 		t.Errorf("processor: %+v", rc.processors)
 	}
-	// emit writes no backendTLS block today, so the reader must give such a
-	// file no block either: a file without policies compares as it did before
-	// the block was read (TestEmittedConfigReadsTheProcessorTLS pins the
-	// block itself).
-	if len(rc.processors) == 1 && rc.processors[0].tls != nil {
-		t.Errorf("a file emit writes today carries a backendTLS block: %q", rc.processors[0].tls)
+	// The block emit writes for alpha (D19) is read as the four fields the
+	// comparison compares, and beta's entry, emitted without one, keeps a nil
+	// map, so a file without the block compares as it did before the block
+	// was read (TestEmittedConfigReadsTheProcessorTLS pins the hand-built
+	// shapes; this is the real emitted block).
+	wantTLS := map[string]string{keyTLSCert: tlsCertPath, keyTLSKey: tlsKeyPath, keyTLSRoot: tlsRootPath, keyTLSHostname: tlsHostname}
+	if len(rc.processors) == 1 && !maps.Equal(rc.processors[0].tls, wantTLS) {
+		t.Errorf("the emitted backendTLS block reads as %q, want %q", rc.processors[0].tls, wantTLS)
+	}
+	if !strings.Contains(string(out.YAML), tlsBlock(tlsCertPath, tlsKeyPath, tlsRootPath, tlsHostname)+"        metadata:\n") {
+		t.Errorf("emit does not write the block where the reader expects it:\n%s", out.YAML)
 	}
 	if len(rc.backendHosts) != 1 || rc.backendHosts[0] != "http://127.0.0.1:3001/mcp" || len(rc.backendTargets) != 1 || rc.backendTargets[0] != "alpha" {
 		t.Errorf("backends: %q %q", rc.backendTargets, rc.backendHosts)
 	}
 	beta, n := doc.route("beta")
-	if n != 1 || len(beta.backendHosts) != 1 || !strings.Contains(beta.backendHosts[0], plant("query")) || len(beta.processors) != 1 || beta.processors[0].host != "127.0.0.1:9002" {
+	if n != 1 || len(beta.backendHosts) != 1 || !strings.Contains(beta.backendHosts[0], plant("query")) || len(beta.processors) != 1 || beta.processors[0].host != "127.0.0.1:9002" || beta.processors[0].tls != nil {
 		t.Errorf("route beta: %d %+v", n, beta)
 	}
 	for _, p := range beta.processors {
