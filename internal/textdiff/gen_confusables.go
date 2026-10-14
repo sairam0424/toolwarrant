@@ -13,11 +13,11 @@
 // field stops the run, and nothing from the file is echoed into an error.
 //
 // The header version is pinned: the file must say "Version: 18.0.0" (the
-// confusablesVersion below), the version that was vendored and recorded in the
-// README licence paragraph. Any other version is refused, so the table cannot
-// move without the pin, the test
+// confusablesVersion below), the version that was vendored together with its
+// licence, third_party/unicode/LICENSE. Any other version is refused, so the
+// table cannot move without the pin, the test
 // TestConfusables_versionIsTheVendoredHeaderAndNotOlderThanTheToolchains and
-// the licence record moving with it. The toolchain's unicode.Version (17.0.0
+// the vendored licence moving with it. The toolchain's unicode.Version (17.0.0
 // for go1.27) is allowed to lag: see the comment on Skeleton.
 package main
 

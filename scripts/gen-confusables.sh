@@ -9,8 +9,9 @@
 # internal/textdiff/gen_confusables.go (built with the ignore tag, so it is
 # never part of the package), pins the data file's "Version:" header and
 # refuses any other version, so the table cannot move without the pin, the
-# licence record in README.md and the version test moving with it. The lint
-# job of ci.yml runs the --check form on every pull request.
+# licence vendored next to the data file (third_party/unicode/LICENSE) and
+# the version test moving with it. The lint job of ci.yml runs the --check
+# form on every pull request.
 #
 # Usage:
 #   scripts/gen-confusables.sh          regenerate in place
