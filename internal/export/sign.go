@@ -32,9 +32,12 @@ const (
 	// maxSignatureFileBytes bounds the signature file read back: a 64-byte
 	// signature is 88 base64 characters and a newline.
 	maxSignatureFileBytes = 256
-	// maxKeyFileBytes bounds a PEM key file: an Ed25519 PKCS#8 or PKIX block
-	// is a few lines, so anything larger is not a key this package reads.
-	maxKeyFileBytes = 8 << 10
+	// MaxKeyFileBytes bounds a PEM key file, the signing key ReadSigningKey
+	// opens and the public key this package reads back from MANIFEST.json.pub
+	// or a caller hands to ParsePublicKey: an Ed25519 PKCS#8 or PKIX block is
+	// a few lines, so anything larger is not a key this package reads. It is
+	// exported so that the CLI's --pub-key reader applies the same bound.
+	MaxKeyFileBytes = 8 << 10
 	// keySharedBits are the permission bits that give group or others any
 	// access to the signing key, the catalog's rule for the database file.
 	keySharedBits os.FileMode = 0o077
@@ -115,7 +118,7 @@ func checkPrivateKeyMode(mode fs.FileMode) error {
 
 // readPrivateKeyFile opens the key without following a link or waiting on a
 // pipe, checks what it opened against the same rule as the entry, and reads
-// at most maxKeyFileBytes.
+// at most MaxKeyFileBytes.
 func readPrivateKeyFile(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -129,14 +132,14 @@ func readPrivateKeyFile(path string) ([]byte, error) {
 	if err := checkPrivateKeyMode(fi.Mode()); err != nil {
 		return nil, err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxKeyFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, MaxKeyFileBytes+1))
 	if err != nil {
 		clear(data)
 		return nil, fmt.Errorf("export: read signing key: %w", err)
 	}
-	if len(data) > maxKeyFileBytes {
+	if len(data) > MaxKeyFileBytes {
 		clear(data)
-		return nil, fmt.Errorf("export: signing key file is larger than %d bytes, which no Ed25519 key file is", maxKeyFileBytes)
+		return nil, fmt.Errorf("export: signing key file is larger than %d bytes, which no Ed25519 key file is", MaxKeyFileBytes)
 	}
 	return data, nil
 }
@@ -242,7 +245,7 @@ func readSignature(root *os.Root) ([]byte, error) {
 
 // readRecordedPublicKey reads the key MANIFEST.json.pub records.
 func readRecordedPublicKey(root *os.Root) (ed25519.PublicKey, error) {
-	data, exists, err := readSmallFile(root, publicKeyName, maxKeyFileBytes)
+	data, exists, err := readSmallFile(root, publicKeyName, MaxKeyFileBytes)
 	if err != nil {
 		return nil, err
 	}

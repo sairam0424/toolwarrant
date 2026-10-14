@@ -25,6 +25,10 @@ const (
 	// it; the bound exists so that a replaced file cannot make the canary
 	// read without limit.
 	maxEmittedFileBytes = 64 << 20
+	// The kinds of file readRegularFile names in its size refusal.
+	emittedFileNoun  = "emitted file"
+	pemFileNoun      = "PEM file"
+	pemPublicKeyNoun = "PEM public key file"
 	// rootUID owns the symbolic links an operating system installs in its own
 	// directories (on macOS /var and /tmp are links into /private). A link
 	// nobody but root could have made is not one planted in a shared working
@@ -74,11 +78,13 @@ func refuseIrregularFile(path, flagName string) error {
 }
 
 // readRegularFile reads a file that must be a regular one, at most maxBytes
-// long. The Lstat refusal comes first so the message names what was found;
-// the open itself never follows a link and never blocks (O_NOFOLLOW,
-// O_NONBLOCK), and the open file is checked again, so a pipe planted between
-// the two calls is refused instead of waited on.
-func readRegularFile(path, flagName string, maxBytes int64) ([]byte, error) {
+// long; what names the kind of file the caller expects ("emitted file", "PEM
+// public key file"), so the size refusal says what no such file is. The Lstat
+// refusal comes first so the message names what was found; the open itself
+// never follows a link and never blocks (O_NOFOLLOW, O_NONBLOCK), and the open
+// file is checked again, so a pipe planted between the two calls is refused
+// instead of waited on.
+func readRegularFile(path, flagName, what string, maxBytes int64) ([]byte, error) {
 	if err := refuseIrregularFile(path, flagName); err != nil {
 		return nil, err
 	}
@@ -99,7 +105,7 @@ func readRegularFile(path, flagName string, maxBytes int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("%s %s is larger than %d bytes, which no emitted file is", flagName, textdiff.Escape(path), maxBytes)
+		return nil, fmt.Errorf("%s %s is larger than %d bytes, which no %s is", flagName, textdiff.Escape(path), maxBytes, what)
 	}
 	return data, nil
 }

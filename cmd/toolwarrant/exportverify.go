@@ -8,13 +8,7 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
-const (
-	flagPubKey = "--pub-key"
-	// maxPublicKeyFileBytes bounds the public key file verify reads; a PKIX
-	// PEM of an Ed25519 key is a few lines, the bound only stops a planted
-	// file from being read without limit.
-	maxPublicKeyFileBytes = 1 << 20
-)
+const flagPubKey = "--pub-key"
 
 // exportCommands is the table behind "export verify". "export" itself runs
 // runExport, which hands the first argument to this table when it names a
@@ -63,10 +57,12 @@ func runExportVerify(a *app, c *command, args []string) error {
 	return a.stdout.broken()
 }
 
-// loadPublicKey reads the --pub-key file through the CLI's file rules and
-// parses it as one PKIX Ed25519 public key.
+// loadPublicKey reads the --pub-key file through the CLI's file rules (a
+// regular file, no link followed, no pipe waited on) under the export
+// package's own bound for a PEM key file, the one it applies to the key an
+// export records, and parses it as one PKIX Ed25519 public key.
 func loadPublicKey(path string) (ed25519.PublicKey, error) {
-	data, err := readRegularFile(path, flagPubKey, maxPublicKeyFileBytes)
+	data, err := readRegularFile(path, flagPubKey, pemPublicKeyNoun, export.MaxKeyFileBytes)
 	if err != nil {
 		return nil, err
 	}

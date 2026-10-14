@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -12,9 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sairam0424/toolwarrant/internal/export"
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
 
@@ -232,8 +235,11 @@ func TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything(t *testing.T) {
 }
 
 // export verify needs both flags, its help and the export help name the new
-// flags and the subcommand, and a public key file that is not one, or a
-// directory that is not an export, fail with exit 1 naming what was found.
+// flags and the subcommand, and a public key file that is not one (garbage, a
+// private key, a directory, or a file past the export package's bound for a
+// PEM key file, refused before it is parsed with a message that names a key
+// file), or a directory that is not an export, fail with exit 1 naming what
+// was found.
 func TestExportVerifyUsageHelpAndRefusals(t *testing.T) {
 	c := newCLI(t)
 	keys := newExportKeys(t)
@@ -261,6 +267,12 @@ func TestExportVerifyUsageHelpAndRefusals(t *testing.T) {
 	wantNotContains(t, "stderr", r.stderr, keys.seed)
 	r = c.fail(exitFailure, "export", "verify", "--dir", dir, "--pub-key", t.TempDir())
 	wantContains(t, "stderr", r.stderr, flagPubKey, "is a directory")
+	oversized := filepath.Join(t.TempDir(), "big.pub")
+	if err := os.WriteFile(oversized, append([]byte(readFile(t, keys.pub)), bytes.Repeat([]byte{'\n'}, export.MaxKeyFileBytes)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r = c.fail(exitFailure, "export", "verify", "--dir", dir, "--pub-key", oversized)
+	wantContains(t, "stderr", r.stderr, flagPubKey+" "+oversized, "larger than "+strconv.Itoa(export.MaxKeyFileBytes)+" bytes, which no PEM public key file is")
 	r = c.fail(exitFailure, "export", "verify", "--dir", dir, "--pub-key", keys.pub)
 	wantContains(t, "stderr", r.stderr, "export in "+dir+" does not verify", manifestFile+" not found")
 	r = c.fail(exitFailure, "export", "verify", "--dir", filepath.Join(dir, "missing"), "--pub-key", keys.pub)

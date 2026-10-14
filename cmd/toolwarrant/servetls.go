@@ -128,7 +128,7 @@ func refuseSharedKey(path string) error {
 // the flag and the path in the error unless the refusal already does (a path
 // that is not a regular file).
 func readTLSFile(path, flagName string) ([]byte, error) {
-	data, err := readRegularFile(path, flagName, maxTLSFileBytes)
+	data, err := readRegularFile(path, flagName, pemFileNoun, maxTLSFileBytes)
 	switch {
 	case err == nil:
 		return data, nil
