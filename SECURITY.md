@@ -13,19 +13,20 @@ worked around here where the design allows.
 ## Reporting a vulnerability
 
 Use GitHub private vulnerability reporting on this repository: the Security tab,
-"Report a vulnerability". It is switched on when the repository is made public,
-which happens before a release is published (docs/operations.md, Releasing), so
-it exists wherever this file is read as part of a release. The report is
-visible to the maintainer only. GitHub
-is a CVE numbering authority, so a CVE can be requested through the advisory the
-report creates. Please do not open a public issue for a vulnerability; the
-new-issue chooser points here for that reason.
+"Report a vulnerability". It is switched on (docs/operations.md, Releasing,
+lists the repository settings as they stand), so it exists wherever this file
+is read as part of a release. The report is visible to the maintainer only.
+GitHub is a CVE numbering authority, so a CVE can be requested through the
+advisory the report creates. Please do not open a public issue for a
+vulnerability; the new-issue chooser points here for that reason.
 
-The maintainer acknowledges a report within seven days and aims to ship a fix
-in the next tag. The two behaviours of agentgateway v1.6.0 itself (known limits
-L17 and L18 below) are the maintainer's to report to the agentgateway project,
-by hand; that report is pending, and toolwarrant documents its own controls for
-both in [docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
+The maintainer acknowledges a report within two days and aims to ship a fix in
+the next tag; a confirmed problem not fixed within fourteen days of the report
+gets a dated note in the advisory saying why and when. The two behaviours of
+agentgateway v1.6.0 itself (known limits L17 and L18 below) are the
+maintainer's to report to the agentgateway project, by hand; that report is
+pending, and toolwarrant documents its own controls for both in
+[docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
 
 ## Scope
 
@@ -358,10 +359,20 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   push to `main` succeeded; the `release` workflow's gate refuses a tag whose
   commit has no such run, and the release job checks that the commit it
   built is the one the gate verified. Who may create a `v*` tag is a matter
-  of write access and, once the repository is public, of the tag ruleset named
-  in docs/operations.md, Releasing; the workflow cannot enforce it, since
+  of write access and of the tag ruleset `v* tags: owner only` (id 24941252;
+  docs/operations.md, Releasing); the workflow cannot enforce it, since
   GitHub runs the workflow file of the tagged commit. A published release is
   never re-run (a fix is a new tag).
+- A tag is never moved or deleted. The Go module system treats a tag as
+  immutable: a tag re-pointed to another commit gives every `go install` user
+  a `SECURITY ERROR` from the go command, because the download no longer
+  matches what sum.golang.org recorded for that version, and a deleted tag's
+  content stays on proxy.golang.org. A bad release is a new tag plus a
+  `retract vX.Y.Z // reason` directive in `go.mod` (a `retract` changes
+  nothing in `THIRD_PARTY_NOTICES.md`: the notices script reads only the
+  `require` blocks). The tag ruleset blocks the creation, update and deletion
+  of `v*` tags for everyone but the repository owner, who holds to the same
+  rule.
 - The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with
@@ -369,9 +380,23 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   (`.sigstore.json`: signature, certificate and transparency-log entry). No build provenance
   attestation is produced yet; the signature over the checksums file is the
   integrity statement.
+- Two public transparency logs anchor a release already. The sigstore bundle
+  carries the entry that Sigstore's public Rekor log recorded for the
+  signature, and `cosign verify-blob --bundle` checks that entry (the v0.1.0
+  bundle carries one). sum.golang.org, the Go checksum database, records the
+  module's `go.sum` lines at a tag the first time that version is fetched
+  through proxy.golang.org, and the go command checks every later download of
+  the version against the record. The Releasing section of
+  docs/operations.md fetches each tag right after publishing and checks the
+  record, so the record exists before any user's first download; the record
+  for v0.1.0 exists.
 - `toolwarrant version` prints the build version (the tag without its `v`,
   set at link time) and the pinned gateway version, so a deployment can be
-  matched to a release.
+  matched to a release. A binary built with
+  `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` prints
+  `dev` instead, since nothing sets the version at link time;
+  `go version -m toolwarrant` names the module version and its `go.sum` hash
+  for such a binary.
 - The seam and mock binaries are never released.
 
 Verifying a release before running it:
@@ -387,3 +412,29 @@ shasum -a 256 -c --ignore-missing toolwarrant_0.1.0_checksums.txt
 The first command proves the checksums file was produced by this repository's
 release workflow at that tag; the second proves the downloaded archive is the
 one it lists.
+
+Rebuilding a release to check it, with the verified archive in the directory
+you clone into: the build is reproducible (CGO disabled, `-trimpath`, no date
+in the link flags, archive timestamps taken from the commit), so a clean clone
+at the tag, built with the toolchain `go.mod` names, gives the archive's
+binary byte for byte. The checkout must be clean: the version control state
+is a build input, so a tree with local changes, or an archive without `.git`,
+gives another binary.
+
+```sh
+git clone --branch v0.1.0 https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
+git status --short   # prints nothing
+CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o rebuilt ./cmd/toolwarrant
+tar -xzf ../toolwarrant_0.1.0_linux_amd64.tar.gz toolwarrant
+cmp rebuilt toolwarrant
+```
+
+`GOTOOLCHAIN` names the toolchain `go.mod` pins (`toolchain go1.27.2`), which
+the go command downloads when the host has another; `GOOS` and `GOARCH` select
+the archive being checked. `cmp` prints nothing when the two files are equal.
+v0.1.0 was rebuilt this way on 2026-10-14, on a host other than the release
+runner, for linux/amd64 (SHA-256 of the binary
+`34e1fd446d9f89606e282aeb38e34484f79ab269b59bcac3d96fd42023d2934e`) and for
+darwin/arm64 (`aa60e92b74c8c360d186ea340284c08f70bd913b54c8e7663e9b7cfbabefc0f4`),
+and `cmp` printed nothing for either.

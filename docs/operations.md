@@ -1256,9 +1256,8 @@ one SPDX SBOM per archive with syft, signs the checksums file keyless with
 cosign under the workflow's own identity, and creates a draft release whose
 notes open with the pinned gateway version and the catalog schema version and
 group the commits since the previous tag by type. Inspect the draft (the four
-archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`); for
-the first release, make the repository public and set the items listed below
-first, then publish it. The seam and mock binaries are never released.
+archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`),
+then publish it. The seam and mock binaries are never released.
 
 A user verifies a release before running it:
 
@@ -1274,6 +1273,58 @@ The first command proves the checksums file was produced by this repository's
 release workflow at that tag; the second proves the downloaded archive is the
 one it lists. The binary prints its version with `toolwarrant version`.
 
+Right after publishing, from a scratch directory outside any module, fetch the
+tag through the module proxy, check the record the fetch leaves, and run the
+two verification commands above with the new version in place of 0.1.0:
+
+```sh
+GOFLAGS= GOPRIVATE= GONOSUMDB= GOSUMDB=sum.golang.org GOPROXY=https://proxy.golang.org,direct \
+  GOBIN="$PWD/bin" go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z
+go version -m bin/toolwarrant    # the mod line names the module version and its go.sum hash
+curl -fsS "https://sum.golang.org/lookup/github.com/sairam0424/toolwarrant@vX.Y.Z"
+```
+
+The `go install` makes proxy.golang.org fetch the tag and sum.golang.org record
+the module's `go.sum` lines for it, so the record exists before any user's
+first download and the go command checks every later download of that version
+against it (SECURITY.md, Release integrity). The variables are set on the
+command because a shell that carries `GOPRIVATE` or `GONOSUMDB` for the
+maintainer's own namespace, or `GOSUMDB=off`, makes the go command skip the
+checksum database (and, with `GOPRIVATE`, the proxy as well), and
+`go install` exits 0 either way; `GOFLAGS` is cleared so the build flags this
+repository's shells export play no part. The `curl` is what proves the
+record: the lookup must return a record whose first line carries the same
+`h1:` hash as the `mod` line (the second line is the `go.mod` hash); a 404,
+which `curl -f` turns into a failure, or a different hash means the record is
+missing or wrong: stop and find out why before announcing the release. The
+binary the install leaves prints `dev` as its version, since nothing sets the
+version at link time; the `mod` line of `go version -m` is what names the
+tag. The record for v0.1.0 exists and lists the same `h1:` hash the `mod`
+line shows.
+
+Then, with the verified archive in the directory you clone into, rebuild one
+platform and compare it with the archive. The build is reproducible (CGO
+disabled, `-trimpath`, no date in the link flags, archive timestamps taken
+from the commit), so a clean clone at the tag built with the toolchain
+`go.mod` names gives the archive's binary byte for byte; the checkout must be
+clean, since the version control state is a build input:
+
+```sh
+git clone --branch vX.Y.Z https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
+git status --short   # prints nothing
+CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -ldflags "-s -w -X main.version=X.Y.Z" -o rebuilt ./cmd/toolwarrant
+tar -xzf ../toolwarrant_X.Y.Z_linux_amd64.tar.gz toolwarrant
+cmp rebuilt toolwarrant
+```
+
+`cmp` prints nothing when the two files are equal; a difference is an incident,
+not a note. v0.1.0 rebuilt this way on 2026-10-14 gave the released binaries
+byte for byte for linux/amd64 and darwin/arm64 (SECURITY.md, Release integrity,
+records the hashes). `GOTOOLCHAIN` names the toolchain `go.mod` pins; a later
+`go.mod` that moves it changes this command and SECURITY.md's in the same
+commit.
+
 A published release is never re-run: the workflow keeps an existing
 release's notes and the existing assets make a second upload fail, so a fix
 is a new tag. The gate accepts only the newest `ci` run that a push to `main`
@@ -1282,32 +1333,71 @@ request has such a run, a tag on any other commit is refused, and the release
 job stops if the commit it checked out is not the one the gate verified. The
 gate lives in the workflow file of the tagged commit, so it binds only tags
 created by someone who could not also change that file; who can create a tag
-is limited by write access and, once the repository is public, by the tag
-ruleset below.
+is limited by write access and by the tag ruleset `v* tags: owner only`
+(id 24941252) listed below.
+
+A tag is never moved or deleted. The Go module system treats a tag as
+immutable: a tag re-pointed to another commit gives every `go install` user a
+`SECURITY ERROR` from the go command, because the download no longer matches
+what sum.golang.org recorded for that version, and a deleted tag's content
+stays on proxy.golang.org. A bad release is a new tag plus a
+`retract vX.Y.Z // reason` directive in `go.mod`; a `retract` changes nothing
+in `THIRD_PARTY_NOTICES.md`, since `scripts/gen-third-party-notices.sh` reads
+only the `require` blocks. The tag ruleset blocks the creation, update and
+deletion of `v*` tags for everyone but the repository owner, who holds to the
+same rule.
 
 A release candidate (`vX.Y.Z-rc.N`) exercises the same workflow and is marked
 a pre-release by goreleaser. The notes of a release list the commits since
-the previous tag by version, and a candidate tag counts as one, so before the
-final tag delete the candidate tags and their draft releases, or the notes of
-the release start at the last candidate. goreleaser's `smartsemver` sort, which would skip them, is a
+the previous tag by version, and a candidate tag counts as one, so the notes
+of a final release start at the last candidate. Candidate tags and their
+releases are kept: a candidate tag is a `v*` tag, so the tag policy above
+covers it, and the owner has decided so ahead of the move to immutable
+releases listed below. That supersedes the rule of D16 (d) that deleted the
+candidates before a final tag; the rule is retired in docs/decisions.md with
+D18, when the notes come from `CHANGELOG.md` instead of the tag range.
+goreleaser's `smartsemver` sort, which would skip the candidates, is a
 GoReleaser Pro feature and fails the open-source build (D16).
 
-When the repository is made public, and before the draft is published, set by
-hand on GitHub (rulesets, private vulnerability reporting and secret scanning
-with push protection exist only for a public repository on the free plan;
-Dependabot alerts can be switched on while it is private):
+The repository settings as they stand, read with `gh api` on 2026-10-14 (the
+repository has been public since v0.1.0 was published on 2026-10-12; rulesets,
+private vulnerability reporting and secret scanning with push protection exist
+only for a public repository on the free plan):
 
 - Description: toolwarrant for MCP: a control plane that approves exact
   tool-definition digests and enforces them at agentgateway v1.6.0 as an
-  ExtMCP processor.
-- Topics: mcp, model-context-protocol, agentgateway, ai-agents,
-  tool-poisoning, supply-chain-security, audit-log, sqlite, go. No website.
-- Security: private vulnerability reporting, Dependabot alerts, secret scanning
-  with push protection (all free on a public repository).
-- Rules: a ruleset on `main` that requires a pull request and the `ci` checks,
-  and one on `v*` tags that lets only the owner create them.
+  ExtMCP processor. Topics: agentgateway, ai-agents, audit-log, go, mcp,
+  model-context-protocol, sqlite, supply-chain-security, tool-poisoning. No
+  website.
+- Rulesets, both active. `main: pull request and ci` (id 24941251) on the
+  default branch forbids deletion and non-fast-forward pushes, requires a pull
+  request (no approving review is required: there is one maintainer) and
+  requires the nine `ci` job names as status checks (`gofmt, go vet,
+  golangci-lint v2.14.0`; `go build and go vet`; `go test -race -short`; `full
+  textdiff Unicode walk, slow catalog tests and the processor gRPC size test`;
+  `govulncheck`; `gitleaks`; `scripts/gen-third-party-notices.sh --check`;
+  `goreleaser check and the schema version in the release notes`; `cited tests
+  and relative links exist`), with no bypass actor, so a renamed job blocks
+  every merge until the ruleset is edited. `v* tags: owner only` (id 24941252)
+  blocks the creation, update and deletion of `v*` tags for everyone but the
+  repository owner, whose Admin role bypasses it always and who holds to the
+  tag policy above.
+- Security: private vulnerability reporting on; secret scanning on with push
+  protection; Dependabot alerts on, with weekly version updates for the GitHub
+  Actions and the Go modules from `.github/dependabot.yml`; Dependabot
+  security updates off (a Dependabot `go.mod` pull request fails the `notices`
+  job until `THIRD_PARTY_NOTICES.md` is regenerated on its branch, as the
+  dependabot file says).
 - Wiki off; issues on (the issue chooser routes security reports to the
   policy).
+- Immutable releases: not yet enabled. The owner enables them (Settings,
+  General, Releases) before the first v0.2.0 release candidate. From then on
+  GitHub locks each published release's tag to its commit and freezes its
+  assets while the release exists, irreversibly per published release (a
+  draft is unaffected until published), and issues a release attestation that
+  `gh release verify` (gh 2.81 or later) checks; a fix stays a new tag.
+  Releases published before that are governed by the ruleset and the tag
+  policy alone.
 
 ## Exit codes
 
