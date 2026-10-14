@@ -1,33 +1,34 @@
-# Design decisions D1 to D20
+# Design decisions D1 to D21
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
-emit, c728172 crawl and fetch, 20e32b4 textdiff and export), the catalog
-commit 8b7a574, the emitter commit 611e081, the end-to-end commit 21164fd, the
-commits of the third round (2026-10-11, the fixes after the second review),
-which state D11 and D12 and the catalog integrity changes recorded in
+emit, c728172 crawl and fetch, 20e32b4 textdiff and export), the catalog commit
+8b7a574, the emitter commit 611e081, the end-to-end commit 21164fd, the commits
+of the third round (2026-10-11, the fixes after the second review), which state
+D11 and D12 and the catalog integrity changes recorded in
 [threat-model.md](threat-model.md) rows 20 and 21, and the commits of the fourth
-round (2026-10-11, the fixes after the third review), which state D13, and
-the commits of the fifth round (2026-10-12, the fixes after the fourth review),
-which state D14, the commits of the sixth round (2026-10-12, the fixes
-after the fifth review), which state D15, the release design of 2026-10-12,
-which is D16, and the commits of the seventh round (2026-10-12, the fixes
-after the seventh review, scoped to the catalog chain and the canary), which
-state D17, and the L17 decision of 2026-10-14 (owner decision O-1 of the
-post-v0.1 plan, taken after the research of that day), which is D18, and the
-TLS decision of 2026-10-14 (owner decision O-2 of the same plan, landed as
-the processor's listener TLS, the canary's reader and the emitter's block),
-which is D19, and the v0.2 release round of 2026-10-14 (the plan's PR 1.4 with owner decisions O-4
-and O-5, landed as pull requests #15, #16, #20 and the release workflow
-change), which is D20. The
-post-review sections of [../seam/RESULTS.md](../seam/RESULTS.md) quote the same
-decisions and record the corrections they forced to the spike's findings. Each
-record gives the context (what a review found), the decision, its consequences
-for operators and for other packages, and where it lives in code with the tests
-that pin it. Where a decision is proven on the real gateway, the end-to-end
-scenario is named: `TestEndToEnd` in `e2e/` runs scenarios A to Q against the
-agentgateway v1.6.0 binary (`make e2e`; `demo/run.sh` keeps the last run in
-`demo/last-run.log`).
+round (2026-10-11, the fixes after the third review), which state D13, and the
+commits of the fifth round (2026-10-12, the fixes after the fourth review),
+which state D14, the commits of the sixth round (2026-10-12, the fixes after the
+fifth review), which state D15, the release design of 2026-10-12, which is D16,
+and the commits of the seventh round (2026-10-12, the fixes after the seventh
+review, scoped to the catalog chain and the canary), which state D17, and the
+L17 decision of 2026-10-14 (owner decision O-1 of the post-v0.1 plan, taken
+after the research of that day), which is D18, and the TLS decision of
+2026-10-14 (owner decision O-2 of the same plan, landed as the processor's
+listener TLS, the canary's reader and the emitter's block), which is D19, and
+the v0.2 release round of 2026-10-14 (the plan's PR 1.4 with owner decisions O-4
+and O-5, landed as pull requests #15, #16, #20 and the release workflow change),
+which is D20, and the v0.3 round of 2026-10-14 and 2026-10-15 (the plan's Phases
+4 and 5 with owner decisions O-6, O-7 and O-8, landed as pull requests #29, #30,
+#31, #32, #33 and #34), which is D21. The post-review sections of
+[../seam/RESULTS.md](../seam/RESULTS.md) quote the same decisions and record the
+corrections they forced to the spike's findings. Each record gives the context
+(what a review found), the decision, its consequences for operators and for
+other packages, and where it lives in code with the tests that pin it. Where a
+decision is proven on the real gateway, the end-to-end scenario is named:
+`TestEndToEnd` in `e2e/` runs scenarios A to R against the agentgateway v1.6.0
+binary (`make e2e`; `demo/run.sh` keeps the last run in `demo/last-run.log`).
 
 ## D1. The digest covers the whole definition: profile `full-v1`
 
@@ -343,33 +344,35 @@ agentgateway v1.6.0 binary (`make e2e`; `demo/run.sh` keeps the last run in
   approved digest in place, and `LastSeen` could be a marker rather than a
   digest.
 - Decision (29dd670 processor). A call is allowed only when every piece of
-  evidence equals the approved digest: the digest observed in the latest
-  gateway listing and the digest the latest crawl recorded in `LastSeen`. A
-  `LastSeen` that is not a 64-character lowercase hex digest (the
-  `UnusableDigest` marker) denies as unverified. No evidence at all denies. An
-  empty `LastSeen` with a matching observed digest allows, so a tool the gateway
-  listed correctly is callable even if the last crawl missed it. Observed
-  evidence can expire (`Config.MaxEvidenceAge`).
-- Consequence. A client that never re-lists is caught by the crawl's
-  `LastSeen` within the crawl cadence (limit L1); the end-to-end scenario C
-  measured both paths (denied 1.5 ms after another session listed the drifted
-  definition through the gateway, and otherwise as soon as the crawl recorded
-  the drift). A tool that was never listed through the gateway and never
-  crawled is denied. The rule is one-directional on purpose: after an upstream
-  revert, or after a rollback, the tool is listed again on the very next
-  `tools/list` because the live bytes hash to the approved digest, but
-  `tools/call` is denied as `changed since approval` until the next crawl
-  records the revert in `LastSeen` (scenario D). Crawl right after a rollback.
-  A `LastSeen` that is the unusable marker hides the tool from listings as well
-  as from calls (D3), so a tool hidden for a marker is also uncallable; the
-  reverse does not hold. A `LastSeen` that is another real digest (a stale
-  crawl, a rollback not yet followed by a crawl, an upstream that shows the
-  crawler something else, limit L4) still lists the tool while the live bytes
-  hash to the approved digest and denies its calls until the next crawl
-  records the revert, which is the rule above. The third review found the
-  earlier wording of this record, "what is listed is exactly what is callable",
-  contradicted by this very paragraph; the marker direction is the one that
-  holds. `MaxEvidenceAge` also ages conflict markers (limit L15).
+  evidence equals the approved digest: the digest observed in the latest gateway
+  listing and the digest the latest crawl recorded in `LastSeen`. A `LastSeen`
+  that is not a 64-character lowercase hex digest (the `UnusableDigest` marker)
+  denies as unverified. No evidence at all denies. An empty `LastSeen` with a
+  matching observed digest allows, so a tool the gateway listed correctly is
+  callable even if the last crawl missed it. Observed evidence that agrees with
+  the approval can expire (`Config.MaxEvidenceAge`); the crawl's word can too
+  (`Config.MaxCrawlAge`; both in D21 (a)).
+- Consequence. A client that never re-lists is caught by the crawl's `LastSeen`
+  within the crawl cadence (limit L1); the end-to-end scenario C measured both
+  paths (denied 1.5 ms after another session listed the drifted definition
+  through the gateway, and otherwise as soon as the crawl recorded the drift). A
+  tool that was never listed through the gateway and never crawled is denied.
+  The rule is one-directional on purpose: after an upstream revert, or after a
+  rollback, the tool is listed again on the very next `tools/list` because the
+  live bytes hash to the approved digest, but `tools/call` is denied as `changed
+  since approval` until the next crawl records the revert in `LastSeen`
+  (scenario D). Crawl right after a rollback. A `LastSeen` that is the unusable
+  marker hides the tool from listings as well as from calls (D3), so a tool
+  hidden for a marker is also uncallable; the reverse does not hold. A
+  `LastSeen` that is another real digest (a stale crawl, a rollback not yet
+  followed by a crawl, an upstream that shows the crawler something else, limit
+  L4) still lists the tool while the live bytes hash to the approved digest and
+  denies its calls until the next crawl records the revert, which is the rule
+  above. The third review found the earlier wording of this record, "what is
+  listed is exactly what is callable", contradicted by this very paragraph; the
+  marker direction is the one that holds. `MaxEvidenceAge` aged conflict markers
+  too (limit L15) until D21 (a), which ages only agreeing evidence and closes
+  the limit.
 - Label note. The catalog commit 8b7a574 also labels `PauseServer` and
   `ResumeServer` "(D9)". To keep the numbering of RESULTS.md, that decision is
   recorded here as D9a: a paused server refuses crawls (`ErrPaused`), its
@@ -892,23 +895,27 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   pin never protected the CLI. And by D17 (a) and (c): the columns a decision
   or a server view acts on were still trusted through the tables; since the
   seventh round they are trusted only through the chain too.
-- Decision (a): the serving-path evidence reaches the chain. For every
-  approved version, `Snapshot`, `Approved` and `Versions` read the newest
+- Decision (a): the serving-path evidence reaches the chain. For every approved
+  version, `Snapshot`, `Approved` and `Versions` read the newest
   `version.approved` or `version.rolled_back` audit entry about the tool,
   require its `after_hash` to equal the approved digest, and require the entry
   to re-seal from its predecessor (`audit.Seal`), next to the newest-decision
   rule of D13 (a). The verifier memory of `RecheckTTL` caches the result by
   entry hash, so the price is one indexed read and one seal per approved tool
-  per ten minutes per `Store`. A forger who rewrites a definition and its
-  `hash_seen` under re-created guards must now also rewrite and re-chain the
-  log suffix, which `audit verify --expect-head` betrays. Corrected by D15 (a)
-  and (b): the re-seal against the predecessor alone accepted an entry
-  rewritten in place (a new `after_hash` or actor, the hash recomputed from
-  the real `prev_hash`) with the head unchanged, and the verifier memory keyed
-  by the stored hash column accepted a rewritten `after_hash` alone while the
-  memory was warm; the fifth review served such an entry from a long-lived
-  `Store` and from a fresh one, with `Integrity` clean. Since the sixth round
-  the entry must be part of the chain the `Store` verified.
+  per ten minutes per `Store` (history: the memory and the byte re-hash on the
+  serving path were removed by D21 (d); since the v0.3 round the serving path
+  hands out digests anchored to verified entries and reads no bytes, and every
+  path that reads the stored bytes behind a digest hashes them on every call
+  with no memory). A forger who rewrites a definition and its `hash_seen` under
+  re-created guards must now also rewrite and re-chain the log suffix, which
+  `audit verify --expect-head` betrays. Corrected by D15 (a) and (b): the
+  re-seal against the predecessor alone accepted an entry rewritten in place (a
+  new `after_hash` or actor, the hash recomputed from the real `prev_hash`) with
+  the head unchanged, and the verifier memory keyed by the stored hash column
+  accepted a rewritten `after_hash` alone while the memory was warm; the fifth
+  review served such an entry from a long-lived `Store` and from a fresh one,
+  with `Integrity` clean. Since the sixth round the entry must be part of the
+  chain the `Store` verified.
 - Decision (b): chain pinning. A `Store` remembers the sequence number and
   hash of the newest audit entry it has verified; every `Snapshot` verifies
   that the entry still has that hash and that the suffix since it re-seals,
@@ -2481,3 +2488,931 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   the goreleaser v2.18.2 source read for the path of the notes file through
   the pipes, `gh release upload` read to resolve a draft by its tag, and
   actionlint v1.7.12 and `make release-check` passing on the tree.
+
+## D21. v0.3: approval UX and the catalog design items
+
+- Context. The post-v0.1 research of 2026-10-14 and the catalog design pass of
+  the same day produced the plan of the next releases; the owner decided its
+  open questions on 2026-10-14. O-6: a description change is graded WARNING; the
+  UTS #39 confusables table is vendored under `third_party/unicode` with its
+  licence recorded by hand; `internal/toolname` is unchanged; the narrower
+  digest profile and component hashes are deferred. O-7: `--max-crawl-age`
+  default off; `--max-evidence-age` changed so that a contradiction never ages;
+  scenario R may restart a processor mid-run as H does. O-8: digests on the
+  serving path and bytes hashed where bytes are handed out, with the guarantee
+  rewording, after a measurement. The round landed on 2026-10-14 and 2026-10-15
+  as pull requests #29 (4.1, the two ages), #31 (4.2, the drift classifier), #33
+  (4.3, look-alikes and mixed-script words), #32 (5.1, the reload measurement),
+  #34 (5.2, verify-on-read) and #30 (5.3, the signed export), under a
+  document-ownership rule: each feature pull request owned its code, its tests,
+  its [operations.md](operations.md) section and its CHANGELOG.md line, and this
+  record, the known limits and the guarantee sentences of README.md, SECURITY.md
+  and [threat-model.md](threat-model.md) were written once, afterwards, from the
+  decision texts the six pull requests handed over. Each sub-decision below
+  carries its own context, decision, consequence, where and proof. In
+  [threat-model.md](threat-model.md) this round changed the catalog bullet of
+  the actors list, rows 3, 4, 13 and 21, the notes of rows 21, L1 and L19, and
+  the limits L1, L6, L9, L13, L14, L15 (closed) and L16 (closed).
+
+### D21 (a). Only agreeing evidence ages; `--max-crawl-age` bounds L1 when crawls stop
+
+- Context. The call rule (D9) judges a `tools/call` from two pieces of evidence:
+  the digest the gateway last listed for the tool (observed) and the digest the
+  latest crawl recorded (`LastSeen`). Two limits followed from how each was
+  aged. L15: `observedDigest` applied `Config.MaxEvidenceAge` to every entry of
+  the observed table, and conflict markers are entries (`digest ==
+  observedConflict`, written by `markConflicts`), so a contradiction older than
+  the age stopped denying and the call passed on the crawl's word although the
+  most recent page the processor had seen showed another definition; the catalog
+  design pass of 2026-10-14 confirmed it in `observed.go` and `judgeCall`. L1: a
+  `LastSeen` equal to the approval carried a call for ever, so a crawler that
+  stopped left the gap unbounded. The research proposed a bound on the crawl's
+  age and the owner decided O-7.
+- Decision (1): ageing only ever removes evidence that would allow.
+  `observedDigest` returns `(digest, seenAt, ok)` and no longer ages;
+  `judgeCall` reads the clock once and `listingEvidence` drops an observation
+  only when it equals the approved digest and is older than `MaxEvidenceAge`,
+  because a digest the gateway listed long ago says nothing about what the
+  upstream serves now. A contradiction, another digest or the conflict marker,
+  is returned whatever its age and denies as `changed since approval` until a
+  clean page shows the approved bytes, because its age does not undo the change
+  it recorded. This closes L15; its README one-liner and its threat-model row
+  keep the number, marked closed, so the numbering of the later limits holds.
+- Decision (2): `Config.MaxCrawlAge`, `serve --max-crawl-age DURATION`, default
+  zero. In the `LastSeen == Approved` branch the call is allowed when a fresh
+  agreeing listing stands or `crawlFresh` holds: `MaxCrawlAge == 0`, or
+  `Snapshot.CrawledAt` (the start of the latest complete crawl of the server) is
+  within the age; a snapshot with no complete crawl is never fresh. Otherwise
+  the call is denied `crawl evidence too old` (`causeStale`), counted in
+  `Stats.CallsStale` beside `CallsDenied`, and the stats line reads `calls
+  allowed=N denied=N (stale=N)`. A negative value is a usage error, exit 2. One
+  `s.now()` and a subtraction per call. The bound holds when crawls stop; it
+  does not shorten L1 below the crawl cadence, and a listing contradiction
+  denies as changed whatever the crawl's age.
+- Consequence. An operator who sets nothing sees no new denial and `stale` stays
+  0. With `--max-crawl-age` at a few crawl periods, a stopped crawler shows as
+  `stale` growing with `denied`, while a changed definition does not move
+  `stale`. A client that never re-lists is denied once both the crawl and its
+  listing are older than their ages, which is the L1 gap bounded; a listing by
+  any session refreshes the tool for every session, because evidence is per
+  tool, not per session. A server with no complete crawl needs a listing before
+  any call under the flag. What (a) does not do: `LastSeen` carries no per-tool
+  timestamp (the age is the server's latest complete crawl); list filtering is
+  unchanged; the crawler host's clock writes `CrawledAt` and the processor
+  host's clock reads it, so a crawler clock ahead of the processor's makes a
+  crawl look fresher than it is, and the flag assumes the two hosts keep time
+  together (NTP, or the same host). The example `serve` command in
+  [operations.md](operations.md) is unchanged; the flag bullets there describe
+  both ages.
+- Where. `internal/processor/processor.go` (`Config.MaxEvidenceAge` reworded,
+  `Config.MaxCrawlAge`, `Stats.CallsStale`), `internal/processor/call.go`
+  (`judgeCall`, `listingEvidence`, `crawlFresh`, `denyCall` counting the stale
+  cause), `internal/processor/observed.go` (`observedDigest`),
+  `internal/processor/results.go` (`causeStale`); `cmd/toolwarrant/serve.go`
+  (the flag, the negative check, `writeStats`), `cmd/toolwarrant/main.go` (the
+  synopsis); `e2e/scenario_freshness_test.go` (scenario R, registered right
+  after I in `e2e/e2e_test.go`); [operations.md](operations.md) ("Running the
+  processor": the two age bullets and the stats line); CHANGELOG.md (Added and
+  Changed); README.md L1 and L15, [threat-model.md](threat-model.md) row 4, L1
+  and L15, CLAUDE.md and the pointers in D9 through this record.
+- Tests and proof. processor `TestEvidence_ContradictionsNeverExpire` (another
+  digest and the conflict marker, with `LastSeen` the approval and empty; denied
+  as changed before, at, one second past and 1000 hours past the age; a clean
+  page releases; on the code before this round it failed with `call was not
+  denied: pass:{}` and `not yet verified` where `changed since approval` is
+  required), `TestEvidence_ObservedDigestsExpire` (kept by name; its third case,
+  which asserted the L15 behaviour, now asserts that an aged agreeing listing
+  leaves the call to the crawl and the entry stays in the table),
+  `TestJudgeCall_StaleCrawlDeniesUnlessFreshlyListed` (exactly the age is fresh,
+  a second past is stale; a fresh listing carries the call and ages too; a new
+  complete crawl carries it with no listing; no complete crawl is never fresh; a
+  contradiction wins over the crawl's age; a stale crawl that never saw the tool
+  stays not yet verified), `TestCheckRequest_MaxCrawlAgeZeroKeepsTheOldRule`,
+  `TestCheckRequest_StaleCrawlCountsInStats` (two stale of four denied; the log
+  carries `cause="crawl evidence too old"` twice; an allowed call moves
+  nothing), `TestJudgeCall_RuleTable` (eight stale rows: only the row whose sole
+  allowing evidence is the crawl's word changes); cmd
+  `TestServeRejectsANegativeMaxCrawlAge` (exit 2 naming the flag; 0 and 1h start
+  and print `(stale=0)`; on the old code `flag provided but not defined:
+  -max-crawl-age`), `TestWriteStatsPinsTheLine`,
+  `TestServeEnforcesApprovalsOverGRPC`; e2e scenario R
+  (`R_StaleCrawlDeniesCalls`) on 2026-10-14 against agentgateway v1.6.0 with
+  `--max-crawl-age 2s --max-evidence-age 2s` and the catalog's latest crawl
+  minutes old: `2.1 ms after the session listed, ... tools/call echo -> allowed:
+  hello`; `3006.5 ms after the listing, tools/call echo on the same session ->
+  denied (result isError): tool "echo": crawl evidence too old`; `a new session
+  listed, tools/call echo -> allowed: hello`; `100.3 ms after a crawl and with
+  no listing since the denial, tools/call echo -> allowed: hello`; the processor
+  printed `calls allowed=3 denied=2 (stale=2)` on SIGTERM; `TestEndToEnd` passed
+  A to R and N in 47.8 s (the first run showed the same shape at 1.3, 3005.0 and
+  248.4 ms). The plan placed R after M; scenario N reads the wrong-backend count
+  scenario J leaves on mock's processor and a restart after J resets it (N
+  failed with `mock's processor counted no wrong-backend hooks before its
+  restart`), so R runs right after I, while mock is the only server, as Q runs
+  right after H.
+
+### D21 (b). Drift classification: a grade and the kinds of change before the diff, advisory only
+
+- Context. An approver who read the escaped diff of a tool with many versions
+  could not tell a description tweak from a removed parameter without reading
+  every line, and the digest that decides what is served (D1) says nothing about
+  how a version differs; `show` listed the versions with no way to pick out the
+  one that also removes a parameter (the picker limit L6 names), and L9 made
+  every `_meta` change drift without saying which member. The research proposed
+  a classifier over the two canonical documents; the owner decided (O-6) that a
+  description change is graded WARNING, not the INFO other classifiers give it,
+  because the description-first rug pull is threat-model row 3. The review of
+  the first implementation found two shapes of change that graded `none` while
+  the documents differed; the never-none promise below records what closed them.
+- Decision. `internal/drift` (`Compare(fromCanonical, toCanonical []byte)
+  (Report, error)`) classifies the change between two canonical documents as
+  `catalog.VersionView.Canonical` hands them out: every top-level member that
+  differs gets a kind and a grade, and the grade of the report is the largest
+  one. CRITICAL widens what the tool may do or breaks the contract the approver
+  reviewed: `parameter-removed`, `parameter-type-changed`,
+  `required-parameter-added`, `parameter-made-required`, `annotations-loosened`
+  (readOnlyHint true to false, destructiveHint false to true, openWorldHint
+  false to true, idempotentHint true to false; an absent hint reads at its MCP
+  default, so dropping `readOnlyHint: true` is CRITICAL, and a hint that stood
+  at its safe value and now cannot be read as a boolean counts as loosened,
+  while a move from an unreadable value is `annotations-changed`),
+  `name-changed`. WARNING changes what the model reads or what the host does
+  without widening the tool: `description-changed` (O-6),
+  `optional-parameter-added`, `input-schema-changed` (an enum, a constraint, a
+  nested schema, a parameter made optional, a `required` list that changed in a
+  way no parameter explains, a parameter `type` that changed between two values
+  outside the JSON Schema vocabulary or whose type array was reordered, an empty
+  `properties` object that appeared or vanished), `output-schema-changed`,
+  `annotations-changed` (a hint tightened included), `meta-changed` (hosts act
+  on `_meta`, D1; agentgateway acts on `_meta.ui`), `other` (a top-level key the
+  package does not know). INFO is display only: `title-changed`,
+  `icons-changed`. A kind the package does not know grades CRITICAL, failing
+  closed. The grades are ordered none < Info < Warning < Critical: `Max()` over
+  an empty report is `none` and `Summary()` prints `none`. A tool that appears
+  or disappears is a crawl-level change (`ChangeNew`, `ChangeMissing`,
+  `ChangeDeprecated`), not a kind. Two documents that differ never grade `none`:
+  every member that differs yields at least one finding, and two documents the
+  classifier reads as equal yield none, so `drift: none` never stands above a
+  diff that shows a change. Both documents are hostile text: every path goes
+  through `textdiff.Escape` (a line break inside a key is spelled `\n`, as
+  textdiff spells it in the paths it prints under the drift line; drift imports
+  textdiff, never the reverse), every detail comes from a closed vocabulary
+  (`added`, `removed`, `changed`, `made required`, `string -> integer`, `true ->
+  absent`), and a document that is not exactly one JSON object in valid UTF-8
+  (decoded with `UseNumber`, trailing data refused as `textdiff/walk.go` does)
+  is refused through sentinel errors that name the side and never a byte.
+  `Report` sorts its findings by severity, the most severe first, then by path;
+  `Max`, `Kinds` (unique, the worst first and then by name) and `Summary`
+  (`CRITICAL (parameter-removed, description-changed)`, or `none`) are what the
+  commands print. Shown: `diff` prints `drift: GRADE (kinds)` after the `to:`
+  header, and `drift: not classified (nothing approved to compare with)` against
+  the empty document, since grading a first proposal against nothing would call
+  every member added; `show` adds a CHANGE column with each version's grade
+  against the approved one (the grade alone; `-` for the approved version and
+  while nothing is approved) and one line under the table grouping the other
+  versions by identical kind set, the worst group first, with the kinds (`change
+  versus the approved version 1: 1 version (4) CRITICAL (parameter-removed,
+  description-changed); 2 versions (2-3) WARNING (description-changed)`), which
+  is the L6 picker without auto-approval; `show --json` gives every version
+  `"change": {"severity", "kinds"}`, `null` where the column shows `-`;
+  `approve` prints the same `change versus the approved version N: GRADE
+  (kinds)` line on stderr before the suspicious-text review and never gates on
+  it; `list` is unchanged, since `Tools` carries no bytes.
+- Consequence. The classification is advice: the gate stays the digest (D1),
+  nothing here approves, hides or serves anything, and a CRITICAL grade is the
+  reason to read the diff, not a refusal; the digest the operator names is what
+  is approved. A stored canonical form the classifier refuses stops `show` and
+  `approve` with an error naming the version numbers, never the bytes: the
+  catalog hashes every form it hands out, so that is a fault to stop on, not a
+  grade, and both commands fail closed. What (b) does not do: no change to the
+  suspicious-text review (D21 (c) extends it), no auto-approval of INFO or
+  WARNING versions, no classification across servers, no look-alike detection,
+  no export of textdiff's inline escaper.
+- Where. `internal/drift/drift.go` (the grades, the kinds, `Compare`, the
+  top-level rules), `internal/drift/schema.go` (the inputSchema rules;
+  `typeMemberDiffers` and the empty-properties rule are the two never-none
+  fixes), `internal/drift/annotations.go` (the four hints with their MCP
+  defaults, `hintRule.loosened`), `internal/drift/path.go` (escaped path
+  segments); `cmd/toolwarrant/drift.go`, `cmd/toolwarrant/view.go` (diff and
+  show), `cmd/toolwarrant/decide.go` (approve); [operations.md](operations.md)
+  ("Reading a drift classification"), CLAUDE.md (the layout bullet),
+  CHANGELOG.md (three Unreleased lines); README.md ("Drift shows as hidden, and
+  classified") and [threat-model.md](threat-model.md) (row 3 proof, L6 and L9)
+  through this record.
+- Tests and proof. `internal/drift`: `TestCompare_ParameterRemovedIsCritical`,
+  `TestCompare_ParameterTypeChangedIsCritical`,
+  `TestCompare_RequiredParameterAddedIsCriticalOptionalIsWarning`,
+  `TestCompare_ExistingParameterMadeRequiredIsCritical`,
+  `TestCompare_DescriptionChangeIsWarningNotInfo` (O-6; with the description
+  graded INFO it fails with `description change graded INFO, want WARNING`),
+  `TestCompare_AnnotationHintLoosenedIsCriticalTightenedIsWarning` (the four
+  loosenings, the MCP default for an absent hint, `true -> other` loosened, a
+  tightening and a move from an unsafe value WARNING),
+  `TestCompare_MetaChangeIsWarningBecauseHostsActOnIt`,
+  `TestCompare_TitleAndIconsAreInfo`,
+  `TestCompare_IdenticalDocumentsHaveNoFindings`,
+  `TestCompare_FindingsAreSortedBySeverityThenPath`,
+  `TestCompare_RefusesInvalidDocumentsWithoutEchoingThem` (both sides, every
+  sentinel, the error names the side and never the marker),
+  `TestCompare_HostileKeysAreEscapedInPaths` (zero-width space, ESC, bidi
+  override and a line break in keys),
+  `TestCompare_OutputSchemaAndUnknownKeysAreWarning`,
+  `TestCompare_RequiredListChangesTheParametersDoNotExplain`,
+  `TestCompare_TypeChangesOutsideTheVocabularyAreWarning` (`"foo"` to `"bar"`,
+  `5` to `6`, `{"a":1}` to `{"a":2}`, `["string","null"]` to
+  `["null","string"]`, each one `input-schema-changed` at
+  `$.inputSchema.properties.mode.type`, WARNING),
+  `TestCompare_EmptyPropertiesObjectAddedOrRemovedIsWarning`,
+  `TestSeverity_StringsAndUnknownKindFailsClosed`; rapid:
+  `TestProperty_compareSwapsAddedAndRemovedKinds`,
+  `TestProperty_maxSeverityIsTheLargestFinding`,
+  `TestProperty_compareNeverPanicsOnRandomJSON` and, beyond the plan's three,
+  `TestProperty_everyMemberChangedOnItsOwnYieldsAFinding`, which is the pin of
+  the never-none promise: it mutates every member of a drawn definition one at a
+  time (delete, or replace by a value of the same shape) and holds the invariant
+  that the decoded documents are equal exactly when the report is empty; on the
+  code before the fix it failed after 2 checks with `documents equal: false,
+  findings: []`, while the same invariant in the two independent-draw tests
+  passed 3000 checks on that code, because two independently drawn documents
+  almost never differ in a reordered type array alone; the two holes the review
+  found and it pins are the parameter `type` member compared only through the
+  parameter rules and `properties` absent on one side and `{}` on the other;
+  `FuzzCompare` (the same invariant runs inside it; 30 s on 2026-10-14: 408,911
+  execs, 104 new interesting inputs, PASS). `cmd/toolwarrant`:
+  `TestDiffPrintsTheDriftClassification`, `TestShowGroupsVersionsByChangeKinds`,
+  `TestApprovePrintsTheClassificationAndNeverGatesOnIt` (a CRITICAL approval
+  exits 0 and the catalog's refusals still decide); against `view.go` and
+  `decide.go` before the change the three fail with `first diff lacks ... drift:
+  not classified`, `show before approval lacks CHANGE` and `stderr lacks change
+  versus the approved version 1: CRITICAL (parameter-removed)`; the two
+  never-none unit tests fail on the first implementation with `findings = []`,
+  and `TestCompare_HostileKeysAreEscapedInPaths` fails on the first path
+  spelling with `Path:$._meta["a\"b\\c\u{000A}d"] ..., want ...
+  Path:$._meta["a\"b\\c\nd"]`.
+
+### D21 (c). Look-alikes and mixed-script words: UTS #39 skeletons over a vendored table, three classes under one flag
+
+- Context. Since the first release the review of a changed definition has been
+  the escaped diff of `internal/textdiff`, which makes a character a person
+  cannot see or a terminal would obey visible as `\u{...}` (row 13) and said of
+  look-alikes only that they pass (L14): a Cyrillic letter at U+0430 where a
+  Latin a stood is a printable character that draws the same glyph, so an escape
+  has nothing to make visible, and a parameter renamed from `path` to that
+  spelling showed in the diff as two identical words while the digest and the
+  drift classifier (D21 (b)) reported a removed and a newly required parameter
+  with no hint that the two names read the same. The research proposed UTS #39:
+  the skeleton transform over the confusables table and the Highly Restrictive
+  script profile. The owner decided (O-6) that the table is vendored under
+  `third_party/unicode` with its licence recorded by hand, since
+  THIRD_PARTY_NOTICES.md is generated from the module cache only, and that
+  `internal/toolname` is unchanged in v0.3. One fact changed the plan while
+  vendoring: unicode.org publishes the security data only as 16.0.0 and latest
+  (18.0.0 of 2026-08-06, 6712 mappings), with no 17.0.0 directory, while
+  go1.27.2 ships `unicode.Version` 17.0.0.
+- Decision (1): the skeleton and its table. `textdiff.Skeleton(s)` is UTS #39
+  section 4: NFD, each code point replaced by its table prototype, NFD again; a
+  byte that is not UTF-8 is kept as it is. The table is
+  `internal/textdiff/confusables_table.go`, a sorted `[]confusable{src rune; dst
+  string}` of 6712 entries looked up by binary search, generated by
+  `gen_confusables.go` (behind `//go:build ignore`, never part of the package),
+  which reads `third_party/unicode/confusables.txt` as data under the rules for
+  upstream text (bounded lines, every code point checked, a duplicate source or
+  a malformed field stops the run, nothing from the file echoed into an error)
+  and writes only ASCII escapes. The generator pins the header to
+  `confusablesVersion = "18.0.0"` and refuses any other version;
+  `scripts/gen-confusables.sh --check`, modelled on `gen-proto.sh`, regenerates
+  into a temporary directory and compares, and the `ci` lint job runs it after
+  `make lint` (the Makefile is unchanged), so a hand edit of the table or a data
+  file swapped under it fails every pull request. Version policy: the vendored
+  header is 18.0.0 while go1.27 ships Unicode 17.0.0 tables;
+  `TestConfusables_versionIsTheVendoredHeaderAndNotOlderThanTheToolchains` pins
+  the header equal to the constant and not older than the toolchain's version,
+  since a table older than the toolchain would miss code points the toolchain
+  knows (the test the plan named, which would have pinned the header to the
+  toolchain's own Unicode version, could not be written because no 17.0.0 data
+  exists); when unicode.org publishes a newer table the owner decides whether to
+  re-vendor, and a re-vendoring moves the constant, the README's version and
+  date and a CHANGELOG line together, never as a toolchain side effect. Why the
+  one-version lead is safe: the table maps code points to prototypes and is data
+  compared for equality, nothing in it is executed, and it consults no toolchain
+  table, so a code point assigned in 18.0.0 is still folded by the skeleton; the
+  toolchain not knowing it only means the mixed-script rule reads its script as
+  `Unknown` and the suspicious-character scan reports it as unassigned, both of
+  them refusals and never a silent pass. The split between the two rules: a word
+  made only of code points the toolchain does not know has one script,
+  `Unknown`, so it is not a mixed-script word and the suspicious-character scan
+  is what reports it, while an `Unknown` code point beside letters of any script
+  makes the word mixed-script.
+- Decision (2): what is found and how it is said. `LookAlike(from, to)` is true
+  when the skeletons are equal and the strings differ.
+  `LookAlikeChanges(fromCanonical, toCanonical)` runs over two canonical
+  documents: every string value that changed at the same path, and object keys
+  paired by skeleton within one object, in every object (`outputSchema` and
+  `_meta` as well as `inputSchema.properties`, a superset of the plan's "keys
+  under inputSchema.properties", because a swapped key anywhere is equally
+  invisible in the diff; a key that vanished and a key that appeared in the same
+  object with equal skeletons is one swap), each reported as `catLookAlike` with
+  per-rune pairs `U+0430 (Cyrillic) for U+0061 (Latin) at byte N`. A visible
+  change is never a look-alike and a value present on one side only is not
+  either. `MixedScriptWords(s)` splits on whitespace and, for each word,
+  collects the scripts of its letters ignoring Common and Inherited (digits,
+  punctuation, combining marks); one script passes, and so do the three UTS #39
+  Highly Restrictive combinations (Latin with Han, Hiragana and Katakana; Latin
+  with Han and Hangul; Latin with Han and Bopomofo); anything else is
+  `catMixedScript`, the line naming each script with its code points, the script
+  with the fewest first since that is usually the intruder, at most eight
+  (`maxScriptRunes`) per script before a count. Script names come from the
+  stdlib `unicode.Scripts` map and a code point in none of its tables is
+  `Unknown`. Code points are printed, never rune names and never the character
+  in the detail; the path in front of a detail spells an object key as the
+  upstream did, through the same escaper as every other path (invisible and
+  terminal-controlling characters only), so a look-alike key reads as ordinary
+  there, the documents say so, and that is why the code points are what to read
+  (re-rendering a flagged key's path by code point would make one section's
+  paths differ from the drift line's and the Changed text section's for the same
+  key, so the path is left as spelt). `Tool` prints both classes for the new
+  document in a `Look-alike changes` section after `Changed text`: the counts
+  first (`4 (look-alike: 2, mixed-script: 2)`), then at most `maxLookAlikeLines`
+  (100) detail lines and a `... N more not listed` line, `none` when there is
+  nothing. Invalid documents are refused through sentinel errors without echoing
+  a byte.
+- Decision (3): the review in `approve`. `reviewSuspicious` gathers three
+  classes and gates them behind the one flag `--accept-suspicious`, because each
+  is accepted the same way, by reading the list: the suspicious characters of
+  the version being approved (as before), its mixed-script words over every
+  string value and object key (a parameter name is text the model reads too),
+  and, while a version is approved, the look-alike changes of the new version
+  against the approved one (`gatherSuspicion` compares nothing when there is no
+  approved version, so a first approval has an empty look-alike class). Without
+  the flag the command prints the lists on stderr after the drift line of (b),
+  then `refusing to approve: the definition holds 2 mixed-script word(s) and 2
+  look-alike change(s), listed above; review them and pass --accept-suspicious
+  to approve anyway`, exits 1 and records nothing; with the flag the same lists
+  are printed, then `warning: approving despite 2 mixed-script word(s) and 2
+  look-alike change(s)`, and the approval is recorded as any other. `diff` shows
+  the same two classes in its section so the review can be read before `approve`
+  is run.
+- Consequence. The rename of `path` to its Cyrillic spelling, invisible in the
+  escaped diff, is now listed twice (as a look-alike swap against the approved
+  version and as a mixed-script word on its own) and refused; a Latin acronym
+  inside Japanese, Korean or Chinese text is approved without a word of warning;
+  a reader of the refusal gets code points and scripts, never a glyph to
+  misread. What (c) does not do: the gate stays the digest (D1), nothing here
+  approves or serves anything; `internal/toolname` is unchanged (a script rule
+  there would quarantine across crawler, processor and emitter; an owner
+  decision later, tracked in (f)); a look-alike the table does not list and a
+  mixed-script word the profile allows stay invisible, so L14 is narrowed, not
+  closed, row 13's control grows and the L14 row shrinks; no go.mod change
+  (`golang.org/x/text/unicode/norm` was already a dependency); the escapes-only
+  rule for look-alikes in test files was applied to every new test file and the
+  older `internal/textdiff` test files that hold visible accented letters are
+  out of scope. The vendored table moves only with its pin, the version test and
+  the vendored licence together.
+- Where. `internal/textdiff/skeleton.go` (`Skeleton`, `confusableOf`,
+  `LookAlike`), `internal/textdiff/scripts.go` (`MixedScriptWords`,
+  `highlyRestrictive`, the script index built once on first use),
+  `internal/textdiff/lookalike.go` (`LookAlikeChanges`, the key pairing, the
+  section writer and its cap), `internal/textdiff/confusables_table.go`
+  (generated), `internal/textdiff/gen_confusables.go` (`//go:build ignore`),
+  `internal/textdiff/classify.go` (`catLookAlike`, `catMixedScript`, the package
+  comment), `internal/textdiff/escape.go` (the comment on what `Escape` does not
+  do), `internal/textdiff/tool.go` and `compare.go` (the section after `Changed
+  text`); `cmd/toolwarrant/lookalike.go` (`gatherSuspicion`, `scanMixedScripts`,
+  the printing) and `cmd/toolwarrant/decide.go` (`reviewSuspicious`);
+  `scripts/gen-confusables.sh`; `.github/workflows/ci.yml` (the lint job's
+  `scripts/gen-confusables.sh --check` step);
+  `third_party/unicode/confusables.txt` and `third_party/unicode/LICENSE`
+  (sha256 `6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd57b2e2ce18f5b92` and
+  `e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96`, recorded
+  in the README Licence paragraph); [operations.md](operations.md) ("Reviewing
+  suspicious text before approving"); CLAUDE.md (the command block, the lint
+  sentence, the `internal/textdiff` and `scripts/` bullets, the pinned
+  versions); CHANGELOG.md (two Added lines, one Changed line); README.md (L14,
+  the Licence paragraph), SECURITY.md (the out-of-scope bullet) and
+  [threat-model.md](threat-model.md) (row 13, L14) through this record.
+- Tests and proof. `internal/textdiff`: `TestSkeleton_matchesUTS39Examples` (the
+  UTS #39 examples: paypal with U+0430, U+0440 U+043E U+0440 to pop, rn for m,
+  the fi ligature, 1I| to lll), `TestSkeleton_isIdempotent`,
+  `TestSkeleton_keepsBytesThatAreNotUTF8`,
+  `TestLookAlike_onlyWhenSkeletonsAgreeAndBytesDiffer`,
+  `TestSwapsBetween_listCodePointsAndScripts`,
+  `TestSwap_capsTheCodePointsItLists`, `TestCodePoints`,
+  `TestMixedScriptWords_highlyRestrictiveProfile` (a Cyrillic letter inside
+  Latin, Cyrillic with Han, Greek inside Latin, Hangul with Hiragana, an
+  unassigned code point with Latin, byte offsets, two words),
+  `TestMixedWord_listsTheRarestScriptFirstAndCapsEachList`,
+  `TestScriptOf_agreesWithTheStdlibTables`,
+  `TestHighlyRestrictive_combinations`,
+  `TestConfusables_tableIsGeneratedFromTheVendoredFile` (the same sources and
+  targets as the vendored file, sorted, no duplicate, the header naming version
+  and count, no raw non-ASCII byte),
+  `TestConfusables_versionIsTheVendoredHeaderAndNotOlderThanTheToolchains`,
+  `TestConfusablesCI_lintJobRunsTheCheck` (ci.yml's `lint` job runs the check
+  after `make lint`), `TestTool_lookAlikeSwapIsListedWithCodePoints`,
+  `TestTool_visibleChangesAreNotLookAlikes`,
+  `TestTool_mixedScriptWordsAreListed`,
+  `TestTool_lookAlikeSectionIsCappedButCountsAreComplete`,
+  `TestLookAlikeChange_detailCapsTheSwaps`,
+  `TestLookAlikeChanges_refusesInvalidDocumentsWithoutEchoingThem`; rapid:
+  `TestProperty_skeletonIsInvariantUnderConfusableSubstitution`,
+  `TestProperty_lookAlikeSectionNeverHoldsRawSuspiciousRunes`; `FuzzSkeleton`
+  (30 s on 2026-10-14: `fuzz: elapsed: 30s, execs: 190988 (0/sec), new
+  interesting: 27 (total: 197)`, PASS; an earlier 30 s run the same day: 246428
+  execs, 81 new interesting, PASS). `cmd/toolwarrant`:
+  `TestApproveRefusesALookAlikeSwapUnlessAccepted`,
+  `TestApproveRefusesMixedScriptWordsUnlessAccepted`,
+  `TestApproveAcceptsCJKWithLatinAcronyms`; every new test file spells its
+  look-alikes as `\u` escapes (`grep -cP '[^\x00-\x7F]'` is 0 on each).
+  Mutations run on 2026-10-14 in scratch copies, never in the tree: with
+  `Skeleton` returning its input, `TestSkeleton_matchesUTS39Examples` fails on
+  all five examples (the first line reading `cyrillic a:
+  Skeleton("p<U+0430>ypal") = "p<U+0430>ypal", want "paypal"`, the glyph spelt
+  here by its code point),
+  `TestProperty_skeletonIsInvariantUnderConfusableSubstitution` fails after 0
+  tests and `TestTool_lookAlikeSwapIsListedWithCodePoints` fails on the section;
+  with `highlyRestrictive` always true,
+  `TestMixedScriptWords_highlyRestrictiveProfile` fails on all seven cases
+  (`MixedScriptWords(...) = [], want [...]`),
+  `TestTool_mixedScriptWordsAreListed` fails and
+  `TestApproveRefusesMixedScriptWordsUnlessAccepted` fails with `exit 0, want
+  1`; with `reviewSuspicious` never refusing,
+  `TestApproveRefusesSuspiciousCharactersUnlessAccepted`,
+  `TestApproveRefusesALookAlikeSwapUnlessAccepted` and
+  `TestApproveRefusesMixedScriptWordsUnlessAccepted` each fail with `exit 0,
+  want 1`; with the `scripts/gen-confusables.sh --check` step removed from a
+  copy of ci.yml, moved before `make lint`, or the job renamed,
+  `TestConfusablesCI_lintJobRunsTheCheck` fails with `the lint job lacks the
+  step ...`, `the lint job runs ... before "- run: make lint"` and `has no job
+  "lint"`; the reviewer's independent mutations (`pairKeys` a no-op,
+  `approvedVersion` nil, the value-side `LookAlike` dropped) each failed their
+  targeted test. The race suites without `-short` passed on 2026-10-14
+  (`internal/textdiff` ok in 33.964 s alone and 92.158 s sharing the machine
+  with the cmd suite and the fuzzer; `cmd/toolwarrant` ok in 82.774 s alone and
+  144.206 s shared), and `scripts/gen-confusables.sh --check` prints
+  `confusables_table.go is up to date`.
+
+### D21 (d). The 10000-tool reload: measured first, then digests on the serving path and bytes hashed where bytes are handed out (verify-on-read, closes L16)
+
+- Context. Every `Snapshot` re-hashed the canonical bytes of the approved
+  version of every non-deprecated tool of the server (`recheckApproved`, in
+  chunks of 256) unless the Store's verifier remembered the row from a check
+  less than `RecheckTTL` (ten minutes) ago; that memory was the ten-minute
+  window of L16 in which a rewrite of a verified row's bytes went unreported
+  (D14 (a)). The two anchors, the newest `version.approved` or
+  `version.rolled_back` entry about the tool and the newest state-bearing entry,
+  were read back and re-hashed with `audit.HashOf` on every reload with no
+  memory, so the floor of a reload was two small hashes per tool plus the policy
+  query, which carried three correlated subqueries per row. The processor
+  reloads on every generation bump, which every crawl and every decision makes,
+  inside one hook under `loadMu` with `sourceTimeout` 10 s on the catalog reads
+  and `maxConcurrentHooks` 32; hooks that arrive during a reload hold a slot
+  while they wait on `loadMu` and the 33rd is denied as throttled, so a slow
+  reload stalls every hook and a burst during it is partly refused. The upper
+  bound that `RecheckTTL`'s comment, README L16 and the threat model's L16 row
+  named, `MaxToolBytes` 256 KiB times `MaxToolsPerCrawl` 10000, about 2.5 GiB of
+  canonical bytes, is not reachable: `MaxServerBytes` caps one server's
+  canonical bytes across every version at 1 GiB, so the reachable worst case is
+  1 GiB. The owner decided (O-8) option A, digests on the serving path and bytes
+  hashed where bytes are handed out, with the guarantee rewording, after a
+  measurement; the plan's contingency said that if the measurement showed the
+  floor dominating, the floor batching would be folded in.
+- Measurement (part 1, pull request #32, before any change).
+  `BenchmarkSnapshot1000Approved`, `BenchmarkSnapshot10000Approved8KiB` and
+  `BenchmarkSnapshot10000ApprovedAtCap` in
+  `internal/catalog/recheck_bench_test.go`, each then with an "uncached"
+  sub-benchmark (a verifier with no memory, so every reload re-hashed every
+  approved version) and a "cached" one (one warm reload, then reloads within
+  `RecheckTTL`); hashes/op counted the verifier's SHA-256 of canonical bytes
+  only, not the two anchor hashes. A store was filled by successive complete
+  crawls of disjoint slices, because `MaxCrawlBytes` forbids one crawl of 80 MiB
+  or 2.5 GiB, under a policy with `DeprecateAfter` 0 so no slice was deprecated
+  out of the snapshot; `benchFill` logs the split it chose. Host: darwin/arm64,
+  Apple M4, go1.27.2, modernc.org/sqlite (pure Go) with SQLite's default page
+  cache, WAL mode, the store on the internal SSD under the test's TempDir; every
+  figure is read off the run logs. 1000 tools of 8 KiB (a raw definition of 8278
+  bytes, 86 bytes of skeleton plus an 8192-byte description; one crawl; 35 MiB
+  on disk): uncached 61.5, 63.0 and 64.9 ms/op over three runs of 19 iterations
+  and 67.0 ms/op at `-benchtime 3x`, 1000 hashes/op, 37.57 MB/op, 319.2k
+  allocs/op; cached 48.0, 49.9 and 51.1 ms/op and 55.8 ms/op at 3x, 0 hashes/op,
+  17.87 MB/op, 310.6k allocs/op. 10000 tools of 8 KiB, the plan's fixed point
+  (three complete crawls of 4053, 4053 and 1894 tools; 256 MiB on disk):
+  uncached 652, 722 and 791 ms/op over three runs of 10 iterations, 663, 748 and
+  752 ms/op over three runs of 20, 840 ms/op at 3x with `-v`, 10000 hashes/op in
+  every run, 367.26 MB/op, 3.162M allocs/op; cached 548, 624 and 664 ms/op (10
+  iterations), 575, 600 and 701 ms/op (20), 553 ms/op at 3x, 0 hashes/op, 171.10
+  MB/op, 3.071M allocs/op. So a reload took 0.65 to 0.84 s with every byte
+  re-hashed and 0.55 to 0.70 s within `RecheckTTL`; the byte re-hash was 50 to
+  130 ms of it in the paired runs (98, 104, 127, 63 and 51 ms; the single 3x run
+  is noisier at 287 ms); time and allocations scaled about linearly with tools
+  (ten times the tools, 10.5 to 11 times the time; about 307 allocations and 17
+  KB per tool at the floor); and the uncached reload allocated 196 MB more than
+  the cached one for 82.8 MB of canonical bytes read, so each blob was copied
+  about 2.4 times on its way to the hash. The CPU profile of the uncached 8 KiB
+  reload (20 iterations, 11.83 s inside `Store.Snapshot`, 592 ms of CPU per
+  reload against 748 ms of wall, the rest waiting on reads), cumulative inside
+  `Snapshot`: `readPolicyRows` 5050 ms, 42.7 percent (252 ms per reload, of
+  which 3940 ms is `pread` of SQLite pages under the three correlated
+  subqueries); the two anchors (`verifyAnchors` 2060 ms plus `anchorStates` 2460
+  ms) 4520 ms, 38.2 percent (226 ms per reload; `chainMemory.verify` 3550 ms,
+  inside it `audit.HashOf` 3420 ms and `jcs.Transform` 2730 ms; `readEntries`
+  1020 ms); `recheckApproved`, the byte re-hash, 2250 ms, 19.0 percent (112 ms
+  per reload, of which 2140 ms is `pread` of the canonical blobs, and
+  crypto/sha256 160 ms flat for the whole run, 8 ms per reload). Flat by
+  package, of the 10410 ms attributed inside `Snapshot`: crypto/sha256 160 ms,
+  1.5 percent; modernc.org/sqlite reads through `pread` 6970 ms, 67.0 percent
+  (the blob reads under `recheckApproved` 2140 ms, 20.6 percent; the page reads
+  of the policy query and of the entry reads 4830 ms, 46.4 percent);
+  gowebpki/jcs plus encoding/json plus internal/audit and gate (the anchors'
+  canonicalisation and hashing) 1400 ms, 13.4 percent; modernc.org/sqlite and
+  libc VM, btree and pager code 780 ms, 7.5 percent; runtime 540 ms, 5.2
+  percent; database/sql scanning 10 ms, 0.1 percent (`database/sql.Rows.Next` is
+  7920 ms cumulative, but that is the SQLite step beneath it). The cached 8 KiB
+  profile (20 iterations, 9.67 s inside `Snapshot`, 484 ms of CPU per reload
+  against 575 ms of wall) had the same shape without `recheckApproved`:
+  `readPolicyRows` 4980 ms, 51.5 percent; `chainMemory.verify` 3350 ms
+  (`audit.HashOf` 3280, jcs 2750); flat `pread` 5920 ms, 67.4 percent; jcs 1030
+  ms, 11.7 percent; runtime 810 ms, 9.2 percent; crypto/sha256 70 ms, 0.8
+  percent. At the cap (`BenchmarkSnapshot10000ApprovedAtCap`,
+  `TOOLWARRANT_BENCH_LARGE=1`, run twice with 45 GiB free): each raw definition
+  exactly 262144 bytes, 79 complete crawls of at most 128 tools; the benchmark
+  lifts only its own Store's per-server byte cap, as the cap tests lower theirs,
+  because `MaxServerBytes` refuses the 33rd crawl of a real server, so the
+  figure is the plan's paper bound with the per-server cap lifted and not a
+  store a real catalog can hold; 5248 MiB on disk, not 2.5 GiB, because the raw
+  definition is stored next to the canonical one. First run, five iterations
+  each: uncached 15.78 s/op, 10000 hashes/op, 5.419 GB/op, 3.154M allocs/op;
+  cached 0.825 s/op, 0 hashes/op, 169.0 MB/op, 3.064M allocs/op; 766 s for the
+  whole benchmark including the fill. Second run, one iteration each with `-v`:
+  uncached 13.44 s/op, cached 0.568 s/op, 534 s in all. Profile of the first run
+  inside `Snapshot`: 23.05 s of CPU over the five uncached reloads, 4.6 s per
+  reload against 15.8 s of wall, so two thirds of an at-cap reload waited on
+  reads; flat, of 29530 ms: `pread` 23830 ms, 80.7 percent (`recheckApproved`
+  24.05 s cumulative, of which `_vdbeColumnFromOverflow` 18.86 s, the overflow
+  pages of the 256 KiB blobs); crypto/sha256 3060 ms, 10.4 percent, about 612 ms
+  per uncached reload for 2.5 GiB; runtime 900 ms; sqlite and libc 760 ms;
+  memmove and memclr of blob copies 410 ms; jcs 350 ms. The cached at-cap reload
+  (0.57 to 0.83 s) was the same floor as at 8 KiB: within `RecheckTTL` the
+  per-reload cost did not depend on definition size. Reading: at the plan's
+  fixed point the byte re-hash did not dominate (at most a fifth of an uncached
+  reload; crypto/sha256 itself 1.5 percent); four fifths was the floor every
+  reload paid within `RecheckTTL`, the policy query with its three correlated
+  subqueries (about 250 ms, 43 to 52 percent, almost all SQLite page reads) and
+  the canonicalisation and hashing of the 20000 anchor entries (about 170 to 230
+  ms, 29 to 38 percent, almost all jcs). So removing the byte re-hash from the
+  reload saves about 0.1 s of a 0.7 s reload at 10000 tools of 8 KiB and leaves
+  the stall under `loadMu` in place, which is what made the plan's contingency
+  apply; the change earns its place at the tail: at the cap the re-hash was the
+  whole cost (13 to 16 s uncached against 0.6 to 0.8 s cached), which exceeds
+  `sourceTimeout` 10 s and would fail the reloading hook, and at the reachable 1
+  GiB a linear extrapolation from the cap, not measured, gives 5.4 to 6.3 s per
+  uncached reload on this SSD, under `sourceTimeout` with no margin for a slower
+  disk. Corrections to the plan's estimates, recorded so they are not copied:
+  the at-cap file is about 5 GiB on disk, not 2.5 GiB; the 2.5 GiB bound is
+  unreachable and 1 GiB is the reachable one; 10000 is the plan's fixed
+  measurement point and not the worst case for the floor, which scales with the
+  non-deprecated approved tools that `MaxToolsPerCrawl` does not bound
+  (`MaxToolsPerServer` is 50000, and rotation under `DeprecateAfter` 3 can hold
+  about three crawls' worth in a snapshot).
+- Decision (part 2, pull request #34): digests on the serving path, bytes hashed
+  where bytes are handed out, and the floor batched. The processor never uses
+  catalog bytes: it compares the digest of the live definition with
+  `ToolPolicy.Approved`, a column the anchor of D14 (a) and D15 already binds to
+  a verified audit entry. So `Snapshot`, `Tools` and `Tool` hand out digests and
+  read no canonical bytes: their statements name no canonical or raw column, the
+  approved digest is checked against the newest-decision rule (D13) and anchored
+  to the verified chain (D15), and the state column to its newest entry (D17
+  (c)), in one anchor pass per read (`anchorTools`: one `readEntries` pass over
+  the entries both rules name, each distinct entry hashed once within that read
+  and never across reads; both anchors of a tool are one entry while its
+  approval is the newest lifecycle entry about it). Every path that reads the
+  stored bytes behind a digest hashes them against that digest on every call,
+  with no memory between calls: `Approved` and `ApprovedWithHead` (`export`,
+  `emit`) and `Versions` (`show`, `diff`) through `gate.DigestOfCanonical`,
+  `loadTool` (every decision) as before, `Integrity` as before; `export`, `show`
+  and `diff` are the paths that hand those bytes out. `verifier.go`,
+  `RecheckTTL`, `Store.verified` and the forensic bound wiring are deleted. The
+  snapshot's policy query takes the seq of the newest decision entry and of the
+  newest state-bearing entry about every tool of the server from one range read
+  of the `audit_log_by_subject` index grouped by subject
+  (`newestEntriesOfServer`, a covering SEARCH joined to the tool rows through an
+  automatic index, both pinned by the plan test) in place of two correlated
+  subqueries per row; the approvals' newest-decision rule stays a correlated
+  subquery (folding it into a derived table measured slower). What is not done,
+  as the plan required: no memory keyed by the stored hash column or any
+  metadata column, no longer TTL, no hashing only when the generation moved. No
+  schema change.
+- Consequence. The guarantee reads: every path that reads the stored bytes
+  behind a digest (`export`, `emit`, `show`, `diff`, every decision) hashes them
+  against that digest on every call, with no memory between calls; `export`,
+  `show` and `diff` are the paths that hand those bytes out; the serving path
+  (the snapshot the processor serves from, and `list`) hands out digests alone,
+  each anchored to a verified audit entry, and reads no bytes. The residual,
+  stated plainly: a rewrite of an approved version's stored bytes with the
+  digest column intact is invisible to `Snapshot` and `list`, cannot change what
+  the gateway serves (the processor compares the live definition's digest with
+  the anchored digest, never with the stored bytes), and is refused at once by
+  `export`, `emit`, `show`, `diff` and every decision and named by `Integrity`
+  (`checkApprovedBytes`), which `audit verify` runs. A rewritten digest column
+  is caught by the snapshot at once, by the newest-decision rule alone or by the
+  chain anchor when `hash_seen` was rewritten with it. The ten-minute window of
+  D14 (a) is gone on both sides: a rewritten definition is refused on the next
+  call of the Store that read it clean a moment ago, of a fresh Store and of a
+  read-only Store. A reload is O(entries) with one or two small hashes per tool
+  and zero definition bytes read, whatever the definitions' size, so L16 closes;
+  its README one-liner and threat-model row cite this record and carry no
+  figures. Measured on the same host under the load of other sessions, the
+  before and after binaries run interleaved three times on the same 10000-tool 8
+  KiB store (3 x 10 iterations): before 747, 638 and 851 ms per reload cold and
+  528, 566 and 574 ms warm; after 272, 271 and 283 ms with 10000 hashes/op (one
+  audit entry per tool), 95.2 MB/op against 367.3 cold and 171.1 warm, 1.668M
+  allocs/op against 3.162M and 3.071M; the same benchmark on the tree rebased
+  onto main measured 255, 292 and 283 ms (load average 2 to 5). Of the gain, the
+  serving path without bytes and with the single anchor pass measured 377, 371
+  and 415 ms, and the one-pass audit read brought it to 267, 348 and 282 ms
+  (same store, successive windows); a derived table for the approvals'
+  newest-decision rule on top measured 489, 462 and 313 ms and is not kept. The
+  1000-tool reload measured 56.4, 28.5 and 29.9 ms (25.2, 26.9 and 25.4 ms on
+  the rebased tree; 1000 hashes/op, 9.9 MB/op) against 61.5 to 67.0 ms cold and
+  48.0 to 55.8 ms warm in part 1. The at-cap benchmark keeps its name and
+  definition and was not re-run after the change: a reload no longer reads the
+  bytes, so their size cannot enter the reload cost, and the before figures
+  above stand as the record of what the change removed. The hashes/op the
+  benchmarks report count the anchor pass alone: the pin check and the suffix
+  walk hash through `audit.HashOf` and `audit.VerifyFrom` and do not grow with
+  the tool count. Two items the profile points at are tracked under Phase 6 of
+  the plan, not done: a `cache_size` or `mmap_size` measurement on the catalog's
+  read pool, and a one-join rewrite of the remaining floor. D14 (a)'s
+  verifier-memory text stays as history with a cross-reference here; the
+  post-review line of seam/RESULTS.md that says every read path re-hashes the
+  approved bytes it hands out is historical, seam/ is not edited by this round,
+  and a dated correction there is the owner's.
+- Where. `internal/catalog/snapshot.go` (`Snapshot`, `snapshotQuery`,
+  `newestEntriesOfServer`, `snapshotTools`), `views.go` (`Tools`, `Tool`,
+  `Versions`, `scanVersionView`), `approved.go` (`Approved`, `ApprovedWithHead`,
+  `readApprovedAnchored`, `scanApproved`), `anchor.go` (`anchorTools`,
+  `anchorSeqs`, `readAllEntries`, `entryChecker`, `anchorApproved` as a wrapper,
+  `anchorKnownTools`), `stateanchor.go` (`knownStateRefs`, `anchorStates` as a
+  wrapper), `chain.go` (`hashCount`, `chainMemory.hashed`), `recheck.go`
+  (`wireStore`, `approvedRef`, `checkApprovedProfile`), `recheck_bench_test.go`
+  (the three benchmarks and `benchFill`), `store.go`, `catalog.go` and
+  `schema.go` comments; `verifier.go` deleted; [operations.md](operations.md)
+  ("What the catalog checks before it trusts the file"); CHANGELOG.md;
+  SECURITY.md (the finding scope), [threat-model.md](threat-model.md) (the
+  catalog bullet, row 21 and its note, L16), README.md L16, CLAUDE.md (the
+  catalog line) and the cross-reference in D14 (a) through this record.
+- Tests and proof.
+  `TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest` (the three
+  statements name no byte column; after a bytes-only rewrite `Snapshot`, `Tools`
+  and `Tool` serve the unchanged anchored digest on the same and on a fresh
+  Store, the reload hashed two entries for two tools, `Approved` and `Versions`
+  are `ErrCorrupt` mentioning `does not hash to its`, `Disable` is `ErrCorrupt`,
+  `Integrity` names the row), `TestApproved_TamperedBytesAreCaughtAtOnce`
+  (`Approved` and `Versions` clean, bytes rewritten, `ErrCorrupt` at once on the
+  same Store, a fresh Store and a read-only Store, `Disable` `ErrCorrupt`,
+  `Versions` of the untouched tool still answering, the repaired row clean at
+  once), `TestVersions_TamperedBytesAreCaughtAtOnce` (a superseded and an
+  approved version each rewritten and repaired; `Versions` `ErrCorrupt` naming
+  the version number on the writer and on a read-only reader, `Tool` still
+  answering with the anchored digest),
+  `TestSnapshot_AChangedDigestColumnIsCaughtByTheAnchor` (the digest alone:
+  `newest approval decision`; the digest and `hash_seen` under re-created
+  guards: `is not the one its newest approval entry`, on `Snapshot`, `Tools` and
+  `Tool`, and `ErrCorrupt` on `Approved` and `Versions`),
+  `TestSnapshot_AnchorsTheDigestAndApprovedCatchesTamperedBytes` (in place of
+  the test the documents cited before, which re-checked the digest on the
+  snapshot: the consistent digest and `hash_seen` forgery `ErrCorrupt` naming
+  the anchor, the bytes-only rewrite served by `Snapshot` and refused by
+  `Approved`, the dropped guard named on every load),
+  `TestBenchmarkSnapshotHashesOnlyAuditEntries` (8 tools: 8 hashes per reload
+  after approval, 16 after an empty complete crawl writes a `tool.missing` entry
+  per tool, and `testing.Benchmark` over `benchSnapshot` reports hashes/op 16
+  with one tool's bytes rewritten),
+  `TestAnchorQueries_StayOnTheAuditLogBySubjectIndex` (`snapshotQuery`'s log
+  access is `SEARCH l USING COVERING INDEX audit_log_by_subject (subject>? AND
+  subject<?)` and its join is `SEARCH n USING AUTOMATIC COVERING INDEX
+  (subject=?)` with no `SCAN n`),
+  `TestApprovedWithHead_HeadAndToolsComeFromOneSnapshot` and
+  `TestAuditHead_IsTheVerifiedHeadAndMovesWithTheLog` ((e) unchanged by the
+  one-pass anchor); the full `internal/catalog` suite under `-race` without
+  `-short`, ok in 288.7 s on the rebased tree; `make e2e` against agentgateway
+  v1.6.0, `TestEndToEnd` PASS in 35.4 s with scenarios A to R;
+  `BenchmarkSnapshot10000Approved8KiB` and `BenchmarkSnapshot1000Approved` as
+  quoted above. The tests that pinned the ten-minute memory, the verifier tests
+  and the recheck tests of `internal/catalog`, are deleted or renamed with it.
+
+### D21 (e). The export is signed and names the log it mirrors: manifest version 3, `export --sign-key`, `export verify`, and the approvals and the head read from one snapshot
+
+- Context. Since D14 the documents named three anchors against the one boundary
+  the chain cannot close, an entry appended or a suffix rewritten by whoever can
+  write the 0600 file while no `Store` holds a pin: the head the operator
+  records after `audit verify`, the git export of approved definitions and
+  backups. The export was a write-only mirror with a crash-safe manifest
+  (version 2: the files, their digests, approvers and times), and nothing tied
+  it to a head: the plan called the recorded head and the export two unlinked
+  anchors, so an export could be re-made from a rewritten log and nothing in it
+  said which log it mirrored, and nothing authenticated the export directory
+  against whoever could write it or its repository. The owner decided (section
+  10 of the plan, as recommended): sign the manifest with an Ed25519 key read
+  from a file, bind it to the audit head, keep per-person signing of approval
+  records for L13, and keep the narrower digest profile and component hashes out
+  of this round (O-6, (f) below). The first review of the pull request found
+  that the export read the head in a second read transaction after `Approved`,
+  so a commit between the two (the scheduled crawl appends every minute and can
+  deprecate a tool out of `Approved`'s state filter after
+  `Policy.DeprecateAfter` absences; another operator can approve or revoke) made
+  `MANIFEST.json` name a head whose approval set was not the one the files
+  mirrored, and that the head was read after `checkFile` had released the walk
+  lock, so a walk by another handle of the same `Store` could advance it past
+  the snapshot that read had verified; both are fixed here.
+- Decision (1): the manifest is version 3 and the export reads its two inputs
+  from one snapshot. `MANIFEST.json` records, between `status` and `tools`,
+  `audit_head` (64 lower-case hex digits: the hash of the newest audit entry as
+  the catalog's own walk computed it from the entry's fields, `audit.Genesis`
+  for an empty log) and `digest_profile` (`gate.DigestProfile`, `full-v1`). The
+  decision is `Store.ApprovedWithHead`, one read transaction for the approvals
+  and the head: its first statement, the chain walk to the head and the read of
+  the pin all happen under one hold of the walk lock (`checkFilePinned`, which
+  `checkFile` now wraps), followed by the approvals and every anchor from the
+  same snapshot; `Approved` is `ApprovedWithHead` without the head, and
+  `Store.AuditHead`, which returns the head alone under the same lock, is not
+  offered to the export as a path of its own. A commit made while the export
+  runs therefore lands in both the head and the files or in neither.
+  `parseManifest` reads version 2 and version 3 each only in its own shape, so
+  an export directory from v0.2 is still cleaned up rather than left behind, and
+  `Write` refuses options the manifest cannot carry.
+- Decision (2): the signature. `export --sign-key PATH` reads an Ed25519 private
+  key from that path only: a regular file whose mode gives group and others
+  nothing (0600 or stricter), checked by `Lstat` before the open and again on
+  the opened file, opened with `O_NOFOLLOW|O_NONBLOCK` so no link is followed
+  and no pipe waited on, at most `export.MaxKeyFileBytes` (8 KiB), holding
+  exactly one PEM `PRIVATE KEY` block whose PKCS#8 content is an Ed25519 key
+  (`crypto/x509.ParsePKCS8PrivateKey`); a symbolic link, a directory, a missing
+  file, a shared mode, a second PEM block, a `PUBLIC KEY` block, an ECDSA key or
+  a garbage block is refused with exit 1 before the catalog is opened and before
+  the export directory exists. The key is never taken from the environment or a
+  flag value, never printed or logged (the CLI tests assert no PEM header and no
+  seed in any output), and every buffer it passed through is cleared, the parsed
+  key when the command ends. The export writes `MANIFEST.json.pub` (the public
+  key as PKIX PEM) and then `MANIFEST.json.sig` (base64 of the Ed25519 signature
+  over the exact bytes of the complete manifest, one line), each only when its
+  bytes differ, the signature last so a crash never leaves a verifying signature
+  without its key; the manifest's digests cover every tool file, so one
+  signature binds the whole export to the head. An export without `--sign-key`
+  after a signed one leaves the stale `.sig` and `.pub` in place, and `export
+  verify` and `Commit` refuse the pair (`MANIFEST.json.sig does not sign the
+  current MANIFEST.json`) until the next signed export or until both files are
+  removed; `Commit` stages the pair only when the signature verifies over the
+  current manifest under the recorded key, refusing one file without the other
+  or a stale pair; git's own commit signing stays off (D13's
+  `commit.gpgsign=false`), the manifest signature is the export's signature.
+- Decision (3): the verifier. `export verify --dir DIR --pub-key FILE
+  [--expect-head HEX]` opens no database. It fails closed, exit 1 naming what
+  was found, unless: `MANIFEST.json` is a complete manifest this version reads;
+  `MANIFEST.json.pub` records exactly the key in FILE (a directory signed by
+  another key is refused before its signature is tried); `MANIFEST.json.sig` is
+  that key's signature over the manifest's bytes; every listed file's bytes,
+  less the trailing newline, hash to its digest; the entries on disk are exactly
+  the listed files, their server directories, the manifest and its two signature
+  files (an extra, missing, renamed or nested entry, a symlink, a pending
+  manifest and a foreign manifest each fail; a top-level `.git` is the
+  repository `--commit` keeps and is skipped); and, with `--expect-head`, the
+  manifest records that head. The `--pub-key` file is read under the CLI's
+  regular-file rules and the export package's own bound for a PEM key file
+  (`export.MaxKeyFileBytes`), the bound it applies to `MANIFEST.json.pub`, and
+  the size refusal names a PEM public key file, not an emitted file. Names from
+  the directory and the manifest are quoted with `strconv.Quote`, paths escaped
+  with `textdiff.Escape`, and the head and profile are validated against
+  `[0-9a-f]{64}` and `[a-z0-9-]+` before they are printed.
+- Consequence. The recorded head and the export now name each other: an export
+  that verifies under the operator's key and records the head the operator
+  recorded mirrors the log as it stood at that head, so a rewrite made while no
+  store held a pin has to pass two anchors that agree instead of two that did
+  not. Every crawl and every decision moves the head, so an export after the log
+  grew rewrites the manifest and its signature with no tool file touched, and
+  `--commit` records that as a commit; `export` prints the head and the profile,
+  and `export verify` prints them back or says that a version 2 manifest records
+  none. A head recorded beside an export is the head of exactly the approvals
+  the export carries, under a concurrent crawl or decision as well. The
+  hardening checklist of SECURITY.md gains `export verify --dir DIR --pub-key
+  FILE --expect-head HEAD` as a routine step beside `audit verify
+  --expect-head`. What (e) does not do: the signature authenticates the export
+  against whoever can write the export directory or its repository and binds it
+  to a head; it does not authenticate the person who approved (L13: per-person
+  keys and signed approval records wait for that round; the L13 row says so, and
+  the threat model gains no row for the export directory's writer), the entries
+  inside the catalog are not signed, and the digest profile stays `full-v1`
+  (O-6). A head in a manifest proves nothing by itself: the operator must still
+  record the head outside the database and keep the public key outside the
+  export, because the copy inside the directory only says which key signed;
+  [operations.md](operations.md) carries that rule and the quickstart gains no
+  reminder.
+- Where. `internal/catalog/chain.go` (`checkFilePinned`),
+  `internal/catalog/approved.go` (`ApprovedWithHead`, `readApprovedAnchored`),
+  `internal/catalog/audithead.go` (`AuditHead`, `headOf`);
+  `internal/export/manifest.go` (version 3, `parseManifest` for versions 2 and
+  3), `internal/export/sign.go` (`ReadSigningKey`, `ParsePublicKey`,
+  `MaxKeyFileBytes`, `signManifest`, `signatureFiles`),
+  `internal/export/verify.go` (`Verify`, `VerifyReport`),
+  `internal/export/export.go` (`Options`, `Report`), `internal/export/guard.go`;
+  `cmd/toolwarrant/export.go` (`--sign-key`, `exportInputs`),
+  `cmd/toolwarrant/exportverify.go` (`export verify`),
+  `cmd/toolwarrant/paths.go` (`readRegularFile` with the kind of file it reads),
+  `cmd/toolwarrant/main.go`; CHANGELOG.md (two Added lines, one Changed line);
+  [operations.md](operations.md) ("Exporting the approved definitions and
+  verifying an export", "The recorded head, the export and backups");
+  SECURITY.md (the Scope boundary, the finding scope, the checklist), README.md
+  (the trust model and the one rule), [threat-model.md](threat-model.md) (the
+  boundary in the catalog bullet, row 21 and its note, L13, the L19 note) and
+  CLAUDE.md (the catalog and export bullets) through this record.
+- Tests and proof. catalog: `TestAuditHead_IsTheVerifiedHeadAndMovesWithTheLog`
+  (the genesis on an empty log, equal to `VerifyAudit`'s head and to the pin
+  after every decision, agreeing between a long-lived and a fresh read-only
+  Store, moving with a crawl, `ErrReplaced` on a replaced file),
+  `TestApprovedWithHead_HeadAndToolsComeFromOneSnapshot` (two readers, one on
+  the writer's Store and one on a read-only Store of the same file, against a
+  writer toggling the only approved tool for two seconds and recording the head
+  of every commit: every result pairs the approvals with that commit's head; on
+  the tree before this decision the two-call read paired 76 of 208 results with
+  another commit's head, and one transaction with the pin read after the lock
+  paired 5 of 239; five runs under `-race` showed none, at 66 writes and 315
+  reads, then 63/295, 63/306, 65/311, 41/193 and 60/290 writes and reads).
+  export: `TestWrite_ManifestRecordsTheAuditHeadAndProfile`,
+  `TestWrite_RefusesOptionsTheManifestCannotCarry`,
+  `TestParseManifest_ReadsVersionTwoAndThreeInTheirOwnShapes`,
+  `TestWrite_CleansUpAfterAVersionTwoManifest`,
+  `TestReadSigningKey_RefusesEveryUnsafeShape` (mode 0644, symlink, directory,
+  not PKCS#8, not Ed25519, two blocks, oversized),
+  `TestWrite_SignsTheManifestAndASecondWriteTouchesNothing`,
+  `TestWrite_WithoutAKeyLeavesTheSignatureFilesAloneAndVerifyRefusesThem`,
+  `TestCommit_StagesTheSignatureFilesAndRefusesAStalePair`,
+  `TestVerify_RoundTripsASignedExport`, `TestVerify_FailsClosedOnEveryTamper` (a
+  flipped byte, a missing file, an extra file, a renamed file, a nested
+  directory, a symlink, a wrong key, a stale signature, a pending manifest, a
+  wrong expected head), `TestVerify_ReadsAVersionTwoManifestWithoutAHead`,
+  `TestVerify_RefusesAKeyOfTheWrongSize`. cmd:
+  `TestExportSignsTheManifestAndVerifyRoundTrips` (export, the same head from
+  `audit verify`, verify with and without `--expect-head`, exit 1 for a changed
+  byte, a removed file, an extra file, another key and the head from before a
+  crawl, the re-export printing `0 written, 0 removed, 1 unchanged` with a new
+  head, `--commit` tracking the pair and refusing a stale one),
+  `TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything` (every refusal
+  with exit 1, the flag and the path named, no PEM header or seed in the output,
+  the export directory not created), `TestExportVerifyUsageHelpAndRefusals`
+  (usage exit 2, the help text, garbage, a private key, a directory, an
+  oversized file past `export.MaxKeyFileBytes` refused as a PEM public key file,
+  a directory that is not an export). Each test fails on the code before this
+  decision: the new test files do not compile against it (`Options`,
+  `AuditHead`, `ApprovedWithHead`, `manifestFile` undefined), `export
+  --sign-key` and `export verify --pub-key` exit 2 with `flag provided but not
+  defined`, a plain export wrote `"version": 2`, and the oversized key was read
+  under a 1 MiB bound and reported the directory instead. An `openssl genpkey
+  -algorithm ed25519` key run through the built binary exported, verified with
+  exit 0, and was refused at mode 0644 with exit 1. Suites on 2026-10-14: the
+  full catalog suite under `-race` 288.304 s (357 s in the earlier run),
+  `cmd/toolwarrant` 79.409 s, `internal/export` 9.419 s.
+
+### D21 (f). What v0.3 leaves out: the narrower digest profile and component hashes, and what is tracked instead
+
+- Context. The catalog design kept two items from the research that would change
+  what a digest covers or what the catalog stores about it: a narrower digest
+  profile (`core-v1`, chosen per server with `server add --digest-profile
+  core-v1` and a `servers.digest_profile` column) that would leave members such
+  as `_meta` out of the digest, and stored component hashes
+  (`tool_versions.components`, bound into the chain by a `components=` detail
+  token) that would let the processor say which component of a definition
+  mismatched. Either one needs the first released schema bump: v7, a guard DDL
+  change and the chain binding, with an in-place migration in `migrate`
+  rebuilding the table and a release note saying that a v6 file is migrated in
+  place. The owner decided on 2026-10-14 (O-6): neither in v0.3.
+- Decision. The digest profile stays `full-v1` and the schema stays v6.
+  `core-v1` is not offered because it reopens the hole D1 closed, unapproved
+  `_meta` riding on an approved tool while agentgateway acts on `_meta.ui`; it
+  weakens the gate per server through a knob; and MCP #2743 is open, so a
+  profile fixed now risks two realignments. Component hashes are not stored
+  because what they buy, a processor-side "which component mismatched" line, is
+  not worth the first released schema bump and the chain binding it needs. The
+  cheap substitute the plan names in their place, logging the live digest (64
+  hex digits, safe to print) on the processor's `digest mismatch` line so that
+  the operator can `show` and `diff` it against the version the crawl records as
+  pending, is not implemented in v0.3 either. It is tracked under Phase 6 of the
+  plan together with the mixed-script rule for `internal/toolname` (c), the
+  `cache_size` or `mmap_size` measurement on the catalog's read pool and the
+  one-join rewrite of the remaining reload floor (d), the at-cap after-figure of
+  (d), the dated correction of the historical serving-path line in
+  seam/RESULTS.md (d), and immutable releases (O-5, D20 (b); not enabled when
+  v0.2.0 was published and still not enabled).
+- Consequence. L2 and L9 stand as written: a tool with a key the gateway drops
+  or with a volatile `_meta` member cannot stay approved, and the remedy stays
+  with the upstream (D10). The `digest mismatch` log line still carries the
+  server, the count and the quoted names, not the live digest, so an operator
+  who sees it runs a crawl and reads `show` for the pending version. A later
+  decision that takes `core-v1` or component hashes takes the schema bump with
+  it; the design text for both is kept in the research folder, not in this
+  repository.
+- Where. Nothing in code changed for (f); the plan (section 8, "Not in v0.3",
+  and section 9, Phase 6) and this record.
+- Tests and proof. The tests that pin what stands: gate
+  `TestDigestProfile_IsFullV1WithNoExclusions` and
+  `TestDigest_MetaIsPartOfTheDigest` (D1); catalog
+  `TestOpen_RefusesOtherSchemaVersions` (schema v6 is the only version a `Store`
+  opens).

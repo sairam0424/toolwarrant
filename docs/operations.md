@@ -6,7 +6,7 @@ table in `cmd/toolwarrant/main.go` (`toolwarrant help COMMAND` prints them).
 Every behaviour described here is covered by an in-process test of
 `cmd/toolwarrant` or of the package behind the command, and the chain through
 the real gateway by a scenario of the end-to-end test (`e2e/`, `make e2e`,
-scenarios A to Q); see [threat-model.md](threat-model.md) for the test names.
+scenarios A to R); see [threat-model.md](threat-model.md) for the test names.
 The fourth round (the fixes after the third review, 2026-10-11, decision D13 in
 [decisions.md](decisions.md)) changed the canary, `crawl --every`, `emit`,
 `audit verify` and the recovery procedures. The fifth round (the fixes after
@@ -997,42 +997,46 @@ the pin limit as the code has it,
 ### The recorded head, the export and backups
 
 The one operational rule: record the head hash outside the database. The chain
-proves that nothing inside it was altered since the first entry; it cannot
-prove that the whole log was not replaced by a shorter, internally valid one,
-and nothing inside the file can prove that an entry was not appended by
-whoever can write the file (decision D14, known limit L19). What the checks
-inside the file cannot do: whoever can write the 0600 file can append a new,
-correctly sealed audit entry that approves a definition, and nothing inside the
-file can refute it; only the head you recorded, the git export of approved
-definitions (`export --dir`) and your backups betray it. Since the sixth round
-an audit entry is trusted only when it is part of the chain the store
-verified: a store verifies the whole chain once when it opens and the suffix
-after its pin on every reload, and the serving path and the decision path
-accept an entry only when the hash computed from its fields equals the one
-that walk recorded for its sequence number (D15; before, the newest approval
-entry was re-sealed against its predecessor only, so the fifth review rewrote
-it in place below the head and it was served); since the seventh round the
-same holds for every column a decision or a server view acts on: a version's
-status and ever-approved flag, a rollback target's prior approval, a server's
-processor address, URL hash and allow-private flag and an export's approver are
-taken from or checked against the verified entries, never from a table alone
-(D17). A forger must therefore rewrite every entry from the forged one to the
-head. A running store catches that through the head it pinned. While no store
-holds a pin, which is the CLI's state between commands and the processors'
-state while they are stopped, any such rewrite verifies clean on the next open
-and is caught by the head you recorded alone (the pin limit; D15 as corrected
-by D17: the sixth round's documents said a chain rewritten completely before
-any store opened it, but any suffix from the forged entry to the head does,
-with the entries before it byte for byte unchanged: the seventh review rewrote
-the entries about one tool from its first version entry to the head with the
-store closed, left the entries before them byte for byte unchanged, and fresh
-stores served the result with `audit verify` and the integrity report clean).
-The processor's pin protects only while a processor runs; the CLI is never
-protected by a pin. So: record the head after every verify, and compare it
+proves that nothing inside it was altered since the first entry; it cannot prove
+that the whole log was not replaced by a shorter, internally valid one, and
+nothing inside the file can prove that an entry was not appended by whoever can
+write the file (decision D14, known limit L19). What the checks inside the file
+cannot do: whoever can write the 0600 file can append a new, correctly sealed
+audit entry that approves a definition, and nothing inside the file can refute
+it; only the head you recorded, the git export of approved definitions (`export
+--dir`, signed with `--sign-key` and recording the head it mirrors) and your
+backups betray it. Since the sixth round an audit entry is trusted only when it
+is part of the chain the store verified: a store verifies the whole chain once
+when it opens and the suffix after its pin on every reload, and the serving path
+and the decision path accept an entry only when the hash computed from its
+fields equals the one that walk recorded for its sequence number (D15; before,
+the newest approval entry was re-sealed against its predecessor only, so the
+fifth review rewrote it in place below the head and it was served); since the
+seventh round the same holds for every column a decision or a server view acts
+on: a version's status and ever-approved flag, a rollback target's prior
+approval, a server's processor address, URL hash and allow-private flag and an
+export's approver are taken from or checked against the verified entries, never
+from a table alone (D17). A forger must therefore rewrite every entry from the
+forged one to the head. A running store catches that through the head it pinned.
+While no store holds a pin, which is the CLI's state between commands and the
+processors' state while they are stopped, any such rewrite verifies clean on the
+next open and is caught by the head you recorded alone (the pin limit; D15 as
+corrected by D17: the sixth round's documents said a chain rewritten completely
+before any store opened it, but any suffix from the forged entry to the head
+does, with the entries before it byte for byte unchanged: the seventh review
+rewrote the entries about one tool from its first version entry to the head with
+the store closed, left the entries before them byte for byte unchanged, and
+fresh stores served the result with `audit verify` and the integrity report
+clean). The processor's pin protects only while a processor runs; the CLI is
+never protected by a pin. So: record the head after every verify, and compare it
 with `audit verify --expect-head` before every decision you make after the
-processors were stopped. The git export of approved definitions
-(`export --dir`) and your backups are the other two anchors. Record the head,
-keep the export, keep backups.
+processors were stopped. The git export of approved definitions (`export --dir`)
+and your backups are the other two anchors; since D21 (e) the export records the
+head it mirrors in `MANIFEST.json` and `--sign-key` signs it, so `export verify
+--dir DIR --pub-key FILE --expect-head HEAD` checks the export against the key
+you hold and the head you recorded (see "Exporting the approved definitions and
+verifying an export" below). Record the head, keep the export signed, keep
+backups.
 
 Every connection the catalog opens runs with the journal in WAL mode,
 `synchronous` at FULL and foreign keys on: the one writer and the eight readers
@@ -1427,18 +1431,20 @@ ordinary there, which is why the code points are what to read.
   path, byte offset, code point, name and category. These are the characters
   the diff writes as `\u{...}`
   (`TestApproveRefusesSuspiciousCharactersUnlessAccepted`).
-- Mixed-script words: every whitespace-delimited word of the definition,
-  object keys included, whose letters come from scripts the UTS #39 Highly
-  Restrictive profile does not allow together. One script passes, and so do
-  Latin with Han, Hiragana and Katakana (Japanese), Latin with Han and Hangul
-  (Korean) and Latin with Han and Bopomofo (Chinese), so a Latin acronym in
-  Japanese, Korean or Chinese text is approved without a word of warning
+- Mixed-script words: every whitespace-delimited word of the definition, object
+  keys included, whose letters come from scripts the UTS #39 Highly Restrictive
+  profile does not allow together. One script passes, and so do Latin with Han,
+  Hiragana and Katakana (Japanese), Latin with Han and Hangul (Korean) and Latin
+  with Han and Bopomofo (Chinese), so a Latin acronym in Japanese, Korean or
+  Chinese text is approved without a word of warning
   (`TestApproveAcceptsCJKWithLatinAcronyms`,
   `TestMixedScriptWords_highlyRestrictiveProfile`). Digits, punctuation and
   combining marks (the scripts Common and Inherited) never count. The script
   names are the toolchain's (`unicode.Scripts`); a code point in none of its
-  tables is the script `Unknown` and mixes with everything. A Cyrillic letter
-  inside a Latin word is what this exists to catch
+  tables is the script `Unknown` and mixes with every other script, while a word
+  made only of such code points has one script, is not a mixed-script word, and
+  is reported by the suspicious-character scan as unassigned (D21 (c)). A
+  Cyrillic letter inside a Latin word is what this exists to catch
   (`TestApproveRefusesMixedScriptWordsUnlessAccepted`).
 - Look-alike changes: while a version is approved, every string value and
   every object key of the version being approved that differs from the
