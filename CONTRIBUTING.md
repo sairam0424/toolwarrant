@@ -23,6 +23,10 @@ make e2e      # needs the agentgateway v1.6.0 binary at .cache/ (README, Quickst
 - Open a pull request to `main`; the `ci` checks must pass. Keep the branch's
   commits as they are and merge with a merge commit: the design records in
   `docs/decisions.md` cite commit hashes.
+- A tag is never moved or deleted ([SECURITY.md](SECURITY.md), Release
+  integrity): a bad release is a new tag plus a `retract vX.Y.Z // reason`
+  directive in `go.mod`. The tag ruleset lets only the owner create, update
+  or delete a `v*` tag, and the owner holds to the same rule.
 
 ## Before you open a pull request
 

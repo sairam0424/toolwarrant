@@ -360,10 +360,20 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   push to `main` succeeded; the `release` workflow's gate refuses a tag whose
   commit has no such run, and the release job checks that the commit it
   built is the one the gate verified. Who may create a `v*` tag is a matter
-  of write access and, once the repository is public, of the tag ruleset named
-  in docs/operations.md, Releasing; the workflow cannot enforce it, since
+  of write access and of the tag ruleset `v* tags: owner only` (id 24941252;
+  docs/operations.md, Releasing); the workflow cannot enforce it, since
   GitHub runs the workflow file of the tagged commit. A published release is
   never re-run (a fix is a new tag).
+- A tag is never moved or deleted. The Go module system treats a tag as
+  immutable: a tag re-pointed to another commit gives every `go install` user
+  a `SECURITY ERROR` from the go command, because the download no longer
+  matches what sum.golang.org recorded for that version, and a deleted tag's
+  content stays on proxy.golang.org. A bad release is a new tag plus a
+  `retract vX.Y.Z // reason` directive in `go.mod` (a `retract` changes
+  nothing in `THIRD_PARTY_NOTICES.md`: the notices script reads only the
+  `require` blocks). The tag ruleset blocks the creation, update and deletion
+  of `v*` tags for everyone but the repository owner, who holds to the same
+  rule.
 - The workflow builds the `toolwarrant` binary for darwin/arm64, darwin/amd64,
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with

@@ -1282,8 +1282,19 @@ request has such a run, a tag on any other commit is refused, and the release
 job stops if the commit it checked out is not the one the gate verified. The
 gate lives in the workflow file of the tagged commit, so it binds only tags
 created by someone who could not also change that file; who can create a tag
-is limited by write access and, once the repository is public, by the tag
-ruleset below.
+is limited by write access and by the tag ruleset `v* tags: owner only`
+(id 24941252) listed below.
+
+A tag is never moved or deleted. The Go module system treats a tag as
+immutable: a tag re-pointed to another commit gives every `go install` user a
+`SECURITY ERROR` from the go command, because the download no longer matches
+what sum.golang.org recorded for that version, and a deleted tag's content
+stays on proxy.golang.org. A bad release is a new tag plus a
+`retract vX.Y.Z // reason` directive in `go.mod`; a `retract` changes nothing
+in `THIRD_PARTY_NOTICES.md`, since `scripts/gen-third-party-notices.sh` reads
+only the `require` blocks. The tag ruleset blocks the creation, update and
+deletion of `v*` tags for everyone but the repository owner, who holds to the
+same rule.
 
 A release candidate (`vX.Y.Z-rc.N`) exercises the same workflow and is marked
 a pre-release by goreleaser. The notes of a release list the commits since
