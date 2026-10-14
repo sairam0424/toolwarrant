@@ -1,4 +1,4 @@
-# Design decisions D1 to D18
+# Design decisions D1 to D20
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
@@ -14,7 +14,11 @@ after the fifth review), which state D15, the release design of 2026-10-12,
 which is D16, and the commits of the seventh round (2026-10-12, the fixes
 after the seventh review, scoped to the catalog chain and the canary), which
 state D17, and the L17 decision of 2026-10-14 (owner decision O-1 of the
-post-v0.1 plan, taken after the research of that day), which is D18. The
+post-v0.1 plan, taken after the research of that day), which is D18, and the
+v0.2 release round of 2026-10-14 (the plan's PR 1.4 with owner decisions O-4
+and O-5, landed as pull requests #15, #16, #20 and the release workflow
+change), which is D20; D19, TLS on the processor link, is written by the pull
+request that lands it. The
 post-review sections of [../seam/RESULTS.md](../seam/RESULTS.md) quote the same
 decisions and record the corrections they forced to the spike's findings. Each
 record gives the context (what a review found), the decision, its consequences
@@ -2058,3 +2062,167 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   (KNOWN-LIMIT L17)`, exited 0, and the hostile upstream's request log gained
   one probe request. Each of the three new tests fails on the code before this
   decision with `flag provided but not defined: -expect-unhooked`, exit 2.
+
+## D20. The v0.2 release round: build provenance, immutable releases, the tag policy, the changelog as the notes, the response time, the reproducible build and the catalog's durability
+
+- Context. v0.1.0 (2026-10-12) and v0.1.1 (2026-10-14) were cut with the D16
+  pipeline: goreleaser, syft, a keyless cosign bundle over the checksums file,
+  and notes grouped from the commits since the previous tag. The post-v0.1
+  research of 2026-10-14 (three reports and a synthesis in the research
+  folder) rated what the pipeline still lacked: the cosign bundle is a
+  message signature, not a provenance statement, so a release carried no
+  build provenance (SLSA Build Level 0 in effect); GitHub's immutable
+  releases and release attestations were not in use; the tag policy was
+  unwritten and `go.mod` unguarded against a `replace` that would build a
+  release nobody else can fetch; the notes were the raw commit list, which the
+  OpenSSF Best Practices `release_notes` criterion forbids; SECURITY.md
+  promised seven days without saying what follows; the build was reproducible
+  in fact (a verifier rebuilt v0.1.0 byte for byte on another host) but the
+  procedure was unwritten; and the catalog relied on the SQLite driver's
+  compile-time default for `synchronous`. The owner decided on 2026-10-14
+  (O-3, O-4 and O-5 of the plan, the rest as recommended) and the round
+  landed as pull requests #15 (policy and anchors), #16 (durability), #20
+  (guards and CHANGELOG.md) and the release workflow change.
+- Decision (a): build provenance. After goreleaser, the release workflow runs
+  `actions/attest-build-provenance`, pinned to the commit its v4.2.2 tag
+  pointed at, with `subject-checksums` naming the checksums file, so the
+  subjects of the statement are the four archives and the four SBOMs by name
+  and SHA-256; the predicate is SLSA provenance v1
+  (`https://slsa.dev/provenance/v1`) naming this repository, the workflow
+  path, the tag ref and the commit; the statement is signed keyless under the
+  workflow's OIDC identity, recorded in Sigstore's public Rekor log (the
+  repository is public) and stored by GitHub, which is SLSA Build Level 2:
+  the attestation is made in the job that built the binaries, and Level 3,
+  which needs the build inside a reusable workflow, is not taken. The bundle
+  is uploaded to the draft as `toolwarrant_<version>_provenance.intoto.jsonl`,
+  the asset name the OpenSSF Scorecard Signed-Releases check awards its full
+  score for, and the job holds `attestations: write` for the store. The
+  cosign bundle over the checksums file stays: it is verified without gh or a
+  GitHub account.
+- Decision (b): immutable releases and the published-tag refusal. The owner
+  enables immutable releases before the first v0.2.0 candidate (O-5). From
+  then on a published release's tag is locked to its commit and its assets
+  are frozen while the release exists, and GitHub issues a release
+  attestation that `gh release verify` and `gh release verify-asset` (gh 2.81
+  or later) check. Candidates and their releases are kept, as immutable
+  releases require; the rule of D16 (d) that deleted the candidate tags
+  before a final tag is retired, which (d) below makes possible. The gate of
+  the release workflow refuses a tag whose release is already published:
+  "Get a release by tag name" answers only for a published release, and any
+  answer other than a release or a 404 stops the gate rather than passing
+  it, so a re-run can never try to swap assets under a known version, with
+  or without the setting.
+- Decision (c): the tag policy and the go.mod guard. A tag is never moved or
+  deleted: the Go module system treats a tag as immutable, a re-pointed tag
+  gives every `go install` user a SECURITY ERROR from the go command and a
+  deleted tag's content stays on proxy.golang.org; a bad release is a new tag
+  plus a `retract vX.Y.Z // reason` directive in `go.mod`. The tag ruleset
+  (`v* tags: owner only`, id 24941252) blocks the creation, update and
+  deletion of `v*` tags for everyone but the owner, who holds to the same
+  rule. `make release-check` refuses a `go.mod` with a `replace` or `exclude`
+  directive, or one it cannot read (a `retract` is allowed), since a release
+  must build from published modules only.
+- Decision (d): CHANGELOG.md is the release notes. The file follows keep a
+  changelog: a pull request adds one prose line under `## [Unreleased]`
+  naming the test that proves it, the release commit moves those lines under
+  `## [x.y.z] - YYYY-MM-DD` and leaves an empty Unreleased heading above
+  them, and `make release-check` refuses a tree without the Unreleased
+  heading and, run as `make release-check VERSION=x.y.z`, one without the
+  version's heading. The release workflow runs `scripts/release-notes.sh`
+  before goreleaser: a final tag takes its own section; a candidate takes the
+  version's section once the release commit has added it and the Unreleased
+  section until then, so a candidate cut on the release commit and one cut
+  before it both carry the notes the final tag will; a section ends at the
+  next level-two heading or the first link reference definition; a missing
+  heading, a heading that appears twice or an empty section stops the run
+  before any draft exists. goreleaser gets the file as `--release-notes` and
+  the release pipe puts the header and footer of `.goreleaser.yaml` around
+  it. The `changelog` block with its `use: git` groups is gone and is not
+  replaced by `changelog: disable: true`: in goreleaser v2.18.2 that setting
+  skips the changelog pipe, which is where the `--release-notes` file is
+  read, so the body would be the header and footer around nothing (read in
+  `internal/pipe/changelog` and `internal/pipe/release` at the tag on
+  2026-10-14; the plan had assumed the file survives the setting). The
+  previous tag no longer decides anything about the notes, which is what lets
+  (b) keep the candidates.
+- Decision (e): the response time and the public anchors. SECURITY.md
+  promises an acknowledgement within two days and aims at a fix in the next
+  tag; a confirmed problem still open fourteen days after the report gets a
+  dated note in the advisory saying why and when (O-4; seven days before,
+  with no fallback). The policy names the two public logs that already anchor
+  a release, the Rekor entry inside the cosign bundle and sum.golang.org's
+  record of the module at each tag, and the Releasing procedure fetches each
+  tag through proxy.golang.org right after publishing and checks the record,
+  so it exists before any user's first download.
+- Decision (f): the reproducible build, written down and run on every
+  release. SECURITY.md and [operations.md](operations.md) give the command: a
+  clean clone at the tag, `CGO_ENABLED=0 GOFLAGS=-mod=readonly
+  GOTOOLCHAIN=go1.27.2 GOOS=... GOARCH=... go build -trimpath -ldflags "-s -w
+  -X main.version=<v>"`, then `cmp` against the archive's binary; v0.1.0 was
+  rebuilt that way on another host on 2026-10-14 for linux/amd64 and
+  darwin/arm64. The release workflow's last step runs the same command for
+  linux/amd64 on the tagged commit, with the toolchain read from `go.mod`,
+  and compares the result with the archive goreleaser just built, so a build
+  input the documented command does not carry fails the release run instead
+  of a verifier.
+- Decision (g): the catalog pins `synchronous(FULL)` in the connection string
+  of every pooled connection of every open mode (O-3: FULL made explicit,
+  the driver's default until then; NORMAL only after a measured, verified
+  benchmark), so a returned decision is on the disk across a power loss and
+  not only across a crash of the process, and the anchor queries are pinned
+  to the audit log's subject index with EXPLAIN QUERY PLAN. The round's two
+  test-infrastructure changes (the gotestsum timing table with the `-short`
+  policy, and the L2 golden of the keys the gateway drops) are recorded in
+  CLAUDE.md and in [threat-model.md](threat-model.md) rather than here.
+- Consequence. Operators verify a release with gh alone (`gh attestation
+  verify`, `gh release verify`, `gh release verify-asset`) or with cosign and
+  shasum as before, and can rebuild it with one documented command; the notes
+  they read are the prose the pull requests wrote; a candidate stays visible
+  as a pre-release; a published release never changes. Maintainers write the
+  changelog line with the change, make the release commit with
+  `make release-check VERSION=x.y.z`, and may run
+  `scripts/release-notes.sh vx.y.z` to read the notes a tag will publish; the
+  release run has three more steps and one more permission, and a step that
+  fails after goreleaser leaves a draft that is not published and is replaced
+  by a re-run. What D20 does not do: no reusable workflow (Build Level 3), no
+  container image, no package-manager formula, no automatic publication (a
+  draft still needs a person), no provenance for the seam or mock binaries,
+  which are never released.
+- Where. `.github/workflows/release.yml` (the gate's second step; the version,
+  notes, attestation, upload and rebuild steps; the third permission),
+  `.goreleaser.yaml` (no changelog block, the footer), `scripts/release-notes.sh`
+  (new), `Makefile` (`release-guards`), `CHANGELOG.md`, SECURITY.md
+  (Supported versions, Reporting a vulnerability, Release integrity),
+  README.md (the install paragraph and Status), CONTRIBUTING.md, CLAUDE.md,
+  [operations.md](operations.md) (Releasing), `internal/catalog/openmodes.go`.
+- Tests and proof. `internal/releaseguards`:
+  `TestReleaseNotes_aFinalTagTakesItsOwnSectionAndStopsAtTheLinks`,
+  `TestReleaseNotes_aCandidateTakesUnreleasedUntilTheReleaseCommit`,
+  `TestReleaseNotes_refuseAnEmptySectionOrAMissingHeading`,
+  `TestReleaseNotes_refuseATagThatIsNotAVersion`,
+  `TestReleaseNotes_everyReleasedVersionInTheTreeHasNotes` (the tree's own
+  changelog, every dated heading) and
+  `TestReleaseNotes_theWorkflowHandsTheFileToGoreleaserAndKeepsThePipe` (the
+  workflow runs the script and passes the file, attests the checksums file
+  with `attestations: write` and uploads the `.intoto.jsonl`;
+  `.goreleaser.yaml` has no `disable:` line and no `use: git`), beside the
+  guards of (c) and (d)
+  (`TestReleaseGuards_refuseAReplaceOrExcludeDirectiveInGoMod`,
+  `TestReleaseGuards_refuseAChangelogWithoutAnUnreleasedSection`,
+  `TestReleaseGuards_refuseAVersionWithoutADatedChangelogEntry`,
+  `TestReleaseGuards_runFirstInReleaseCheck`) and the catalog tests of (g)
+  (`TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL`,
+  `TestAnchorQueries_StayOnTheAuditLogBySubjectIndex`). The workflow cannot
+  run before a tag, so its proof is the first v0.2.0 candidate: its run must
+  show the notes step printing the changelog section, the attestation step
+  naming eight subjects, the `.intoto.jsonl` as the eleventh asset, the
+  rebuild step's `cmp` silent, and `gh attestation verify`, `gh release
+  verify`, `gh release verify-asset` and the cosign path succeeding against
+  the published candidate (the plan's section 6). What was checked on
+  2026-10-14 before the tag: the action's v4.2.2 tag peeled with `gh api` (a
+  lightweight tag at commit 4d101475d8b20a2381f78447822ac1eab6504dd8), its
+  `action.yml` read at that commit (`subject-checksums` in, `bundle-path`
+  out, and the SLSA provenance predicate when no predicate input is given),
+  the goreleaser v2.18.2 source read for the path of the notes file through
+  the pipes, `gh release upload` read to resolve a draft by its tag, and
+  actionlint v1.7.12 and `make release-check` passing on the tree.

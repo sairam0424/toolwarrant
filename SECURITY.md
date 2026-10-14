@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes: fixes land on `main` and ship in the next tag. |
+| 0.2.x | Yes: fixes land on `main` and ship in the next tag. |
+| 0.1.x | No: fixes are not backported; the newest 0.2.x tag opens a 0.1.x catalog file as it is, since both write schema v6. |
 
 There is no long-term branch; a fix is a new tag from `main`. A problem found
 in the pinned agentgateway v1.6.0 itself is reported upstream (see below) and
@@ -154,7 +155,7 @@ test or seam result that proves it, is in [docs/threat-model.md](docs/threat-mod
 Its second table lists the residual risks and what an operator can do about
 each. The spike findings F1 to F5 and the design decisions are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md);
-the design decisions run to D18.
+the design decisions run to D20.
 
 ## Operator hardening checklist
 
@@ -429,9 +430,30 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   linux/amd64 and linux/arm64 with CGO disabled and `-trimpath`, writes one
   SPDX SBOM per archive with syft, and signs the checksums file keyless with
   cosign under the workflow's own OIDC identity, as a sigstore bundle
-  (`.sigstore.json`: signature, certificate and transparency-log entry). No build provenance
-  attestation is produced yet; the signature over the checksums file is the
-  integrity statement.
+  (`.sigstore.json`: signature, certificate and transparency-log entry).
+- From v0.2.0 on the workflow also attests the build (decision D20 (a)).
+  After goreleaser, `actions/attest-build-provenance`, pinned by commit, reads
+  the checksums file, so the subjects of the statement are the four archives
+  and the four SBOMs by name and SHA-256; the predicate is SLSA provenance v1
+  (`https://slsa.dev/provenance/v1`) naming this repository, the workflow
+  path `.github/workflows/release.yml`, the tag ref and the commit; the
+  statement is signed keyless under the workflow's identity, recorded in
+  Sigstore's public Rekor log and stored by GitHub, which is SLSA Build
+  Level 2 (the attestation is produced in the job that built the binaries).
+  The bundle is also a release asset,
+  `toolwarrant_<version>_provenance.intoto.jsonl`, for offline verification.
+  Releases before v0.2.0 carry the cosign bundle alone.
+- The release notes are the version's section of `CHANGELOG.md`, extracted by
+  `scripts/release-notes.sh` before goreleaser runs; a tag whose section is
+  empty publishes nothing (D20 (d)). The workflow's gate refuses a tag whose
+  release is already published, and once the owner has enabled immutable
+  releases (before the first v0.2.0 candidate; D20 (b)) a published release's
+  tag is locked to its commit and its assets are frozen for as long as the
+  release exists, with a release attestation from GitHub that
+  `gh release verify vX.Y.Z --repo sairam0424/toolwarrant` and
+  `gh release verify-asset vX.Y.Z <file> --repo sairam0424/toolwarrant`
+  (gh 2.81 or later) check; a fix is a new tag. Release candidates
+  (`vX.Y.Z-rc.N`) are published as pre-releases and kept.
 - Two public transparency logs anchor a release already. The sigstore bundle
   carries the entry that Sigstore's public Rekor log recorded for the
   signature, and `cosign verify-blob --bundle` checks that entry (the v0.1.0
@@ -454,7 +476,27 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   binary.
 - The seam and mock binaries are never released.
 
-Verifying a release before running it:
+Verifying a release before running it, with gh (2.81 or later; releases from
+v0.2.0 on):
+
+```sh
+gh attestation verify toolwarrant_0.2.0_linux_amd64.tar.gz --repo sairam0424/toolwarrant \
+  --signer-workflow sairam0424/toolwarrant/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.2.0
+gh release verify v0.2.0 --repo sairam0424/toolwarrant
+gh release verify-asset v0.2.0 toolwarrant_0.2.0_linux_amd64.tar.gz --repo sairam0424/toolwarrant
+```
+
+The first command fetches the provenance GitHub stores for the archive's
+SHA-256 and proves the archive was built by this repository's release workflow
+from that tag, checking the SLSA predicate type by default; without network,
+pass the downloaded bundle and a trusted root fetched earlier
+(`gh attestation trusted-root > trusted_root.jsonl` while online, then the
+same command with `--bundle toolwarrant_0.2.0_provenance.intoto.jsonl
+--custom-trusted-root trusted_root.jsonl`). The second and third commands
+check GitHub's release attestation of an immutable release: that the release
+under the tag and that asset are the ones published. With cosign and shasum,
+which need no GitHub account and work for every release since v0.1.0:
 
 ```sh
 cosign verify-blob --bundle toolwarrant_0.1.0_checksums.txt.sigstore.json \
