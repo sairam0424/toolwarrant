@@ -215,10 +215,14 @@ func compareToolKeys(t *testing.T, want, got toolKeys, observed string) {
 // added are noted, written next to the process logs and compared with the
 // golden. The named assertion that the unknown top-level key x-vendor is
 // dropped stays, because it is what keeps the tool mismatching with the
-// processor in place.
+// processor in place. The MCP protocol version the gateway negotiated with
+// the raw client is noted too: scripts/requalify-gateway.sh compares it with
+// the revision the probe and the crawler send when the pin moves (L7).
 func scenarioLKeys(t *testing.T, s *stack, vendor json.RawMessage) {
 	t.Helper()
-	served := servedTool(t, openRaw(t, s.routeURL("hostile")).listRaw(t), "vendor_tool")
+	raw := openRaw(t, s.routeURL("hostile"))
+	s.note(t, "L: the gateway negotiated MCP protocol version %s with a raw client that asked for %s", raw.protocol, defaultProtocol)
+	served := servedTool(t, raw.listRaw(t), "vendor_tool")
 	got, err := observeToolKeys(vendor, served)
 	if err != nil {
 		t.Fatalf("compare definitions: %v", err)

@@ -18,12 +18,16 @@ import (
 // shape of the loaded file (cmd/toolwarrant/testdata/admin_config.json pins
 // what the e2e harness recorded); POST /api/config takes the same document
 // back and answers 415 to anything but Content-Type application/json, which
-// the harness learnt by posting the YAML first. The API has no authentication
-// (limit L18), which is what the scenario demonstrates.
+// the harness learnt by posting the YAML first and which noteAdminAPIShape
+// now records on every run, with the status of GET /config_dump, for the
+// re-qualification checklist (L7). The API has no authentication (limit
+// L18), which is what the scenario demonstrates.
 const (
 	adminConfigPath    = "/api/config"
+	adminDumpPath      = "/config_dump"
 	adminMaxBody       = 4 << 20
 	mediaJSON          = "application/json"
+	mediaYAML          = "application/yaml"
 	policiesKey        = "policies"
 	guardrailsField    = "mcpGuardrails"
 	authorizationField = "mcpAuthorization"
@@ -54,27 +58,36 @@ func (s *stack) postLiveConfig(t *testing.T, doc []byte) (int, []byte) {
 // its size or a short prefix, never the whole of it.
 func (s *stack) adminDo(t *testing.T, method string, body []byte, contentType string) (int, []byte) {
 	t.Helper()
+	return s.adminRequest(t, method, adminConfigPath, body, contentType)
+}
+
+// adminRequest performs one request against any path of the admin API and
+// reads the bounded answer; adminDo is the /api/config case and
+// noteAdminAPIShape reads /config_dump through it. The same rule about the
+// answer holds: it may carry a secret, so callers never print it whole.
+func (s *stack) adminRequest(t *testing.T, method, path string, body []byte, contentType string) (int, []byte) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, s.adminURL()+adminConfigPath, reader)
+	req, err := http.NewRequestWithContext(ctx, method, s.adminURL()+path, reader)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, adminConfigPath, err)
+		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, adminConfigPath, err)
+		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, adminMaxBody))
 	if err != nil {
-		t.Fatalf("%s %s: read answer: %v", method, adminConfigPath, err)
+		t.Fatalf("%s %s: read answer: %v", method, path, err)
 	}
 	return resp.StatusCode, data
 }

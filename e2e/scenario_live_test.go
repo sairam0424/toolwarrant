@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,7 @@ func scenarioP(t *testing.T, s *stack) {
 		t.Fatalf("count the live routes: %v", err)
 	}
 	s.noteLiveShape(t, liveDoc)
+	s.noteAdminAPIShape(t, original)
 	lab := liveLab{original: original, copyPath: emittedCopy, doc: liveDoc, routes: routes}
 	scenarioPNoProcessor(t, s, lab)
 	scenarioPExtraRoute(t, s, lab)
@@ -110,6 +112,20 @@ func (s *stack) noteLiveShape(t *testing.T, doc []byte) {
 		t.Fatalf("read mock's processor in the live configuration: %v", err)
 	}
 	s.note(t, "P: GET %s renders the top-level sections %v; mock's processor entry carries the %s filter: %v", adminConfigPath, sections, headerFilterField, has)
+}
+
+// noteAdminAPIShape records the two facts about the admin API that item 10 of
+// the re-qualification checklist (scripts/requalify-gateway.sh, L7) reads
+// beside the live shape: a POST whose body is not JSON is refused (agentgateway
+// v1.6.0 answers 415 to the emitted YAML), and GET /config_dump answers
+// without any authentication (limit L18). Only statuses and sizes are noted,
+// because the dump carries every processor secret in clear.
+func (s *stack) noteAdminAPIShape(t *testing.T, emitted []byte) {
+	t.Helper()
+	status, body := s.adminRequest(t, http.MethodPost, adminConfigPath, emitted, mediaYAML)
+	s.note(t, "P: POST %s with Content-Type %s -> status %d, %d-byte answer", adminConfigPath, mediaYAML, status, len(body))
+	status, body = s.adminRequest(t, http.MethodGet, adminDumpPath, nil, "")
+	s.note(t, "P: GET %s -> status %d, %d-byte answer", adminDumpPath, status, len(body))
 }
 
 // scenarioPNoProcessor: the gateway's own document minus every mcpGuardrails
