@@ -89,3 +89,36 @@ func FuzzTool(f *testing.F) {
 		assertSafe(t, out)
 	})
 }
+
+func FuzzSkeleton(f *testing.F) {
+	addCorpusSeeds(f)
+	f.Add("p\u0430th")
+	f.Add("m rn \uFB01le 1I| 0O")
+	f.Add("\u6771\u4EAC\u306EAPI \uD55C\uAD6DAPI \u3105\u3106API")
+	for i := 0; i < len(confusables); i += len(confusables) / 50 {
+		f.Add("x" + string(confusables[i].src) + "y")
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		sk := Skeleton(s)
+		if again := Skeleton(sk); again != sk {
+			t.Fatalf("Skeleton is not idempotent: %q -> %q -> %q", s, sk, again)
+		}
+		if utf8.ValidString(s) != utf8.ValidString(sk) {
+			t.Fatalf("Skeleton(%q) = %q changed the validity of the text", s, sk)
+		}
+		if LookAlike(s, s) {
+			t.Fatalf("LookAlike(s, s) for %q", s)
+		}
+		prev := -1
+		for _, w := range MixedScriptWords(s) {
+			if w.Offset <= prev || w.Offset >= len(s) || len(w.Scripts) < 2 {
+				t.Fatalf("bad mixed word %+v in %q", w, s)
+			}
+			prev = w.Offset
+			assertSafe(t, w.Detail())
+		}
+		for _, sw := range swapsBetween(s, sk) {
+			assertSafe(t, sw.String())
+		}
+	})
+}

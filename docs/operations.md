@@ -1410,6 +1410,111 @@ and by the classifier's `TestCompare_DescriptionChangeIsWarningNotInfo`,
 `TestCompare_HostileKeysAreEscapedInPaths` and
 `TestCompare_RefusesInvalidDocumentsWithoutEchoingThem` in `internal/drift`.
 
+## Reviewing suspicious text before approving
+
+`approve` reads the definition for three kinds of text an approver cannot see
+for what it is, lists what it found on stderr and refuses unless
+`--accept-suspicious` is passed; the one flag covers all three classes, because
+each is accepted the same way: by reading the list. The detail of every line
+names code points and scripts, never the character; the path in front of it
+spells an object key as the upstream did, escaping only what a person cannot
+see or a terminal would obey (`\u{200B}`, `\n`), so a look-alike key reads as
+ordinary there, which is why the code points are what to read.
+
+- Suspicious characters: a character a person cannot see or a terminal would
+  obey (zero-width characters, bidi controls, tag characters, terminal
+  escapes and the other categories of `internal/textdiff`), each with its
+  path, byte offset, code point, name and category. These are the characters
+  the diff writes as `\u{...}`
+  (`TestApproveRefusesSuspiciousCharactersUnlessAccepted`).
+- Mixed-script words: every whitespace-delimited word of the definition,
+  object keys included, whose letters come from scripts the UTS #39 Highly
+  Restrictive profile does not allow together. One script passes, and so do
+  Latin with Han, Hiragana and Katakana (Japanese), Latin with Han and Hangul
+  (Korean) and Latin with Han and Bopomofo (Chinese), so a Latin acronym in
+  Japanese, Korean or Chinese text is approved without a word of warning
+  (`TestApproveAcceptsCJKWithLatinAcronyms`,
+  `TestMixedScriptWords_highlyRestrictiveProfile`). Digits, punctuation and
+  combining marks (the scripts Common and Inherited) never count. The script
+  names are the toolchain's (`unicode.Scripts`); a code point in none of its
+  tables is the script `Unknown` and mixes with everything. A Cyrillic letter
+  inside a Latin word is what this exists to catch
+  (`TestApproveRefusesMixedScriptWordsUnlessAccepted`).
+- Look-alike changes: while a version is approved, every string value and
+  every object key of the version being approved that differs from the
+  approved version's at the same path but reads the same, decided by the UTS
+  #39 skeleton (NFD, the confusables table, NFD again;
+  `TestSkeleton_matchesUTS39Examples`,
+  `TestLookAlike_onlyWhenSkeletonsAgreeAndBytesDiffer`). A parameter renamed
+  from `path` to the same word spelt with a Cyrillic а (U+0430) is what this
+  exists to catch: the diff shows both spellings and they look identical
+  (`TestApproveRefusesALookAlikeSwapUnlessAccepted`). A first approval has
+  nothing to compare with, so this class is empty then.
+
+The run of `TestApproveRefusesALookAlikeSwapUnlessAccepted` printed, for a
+copy tool whose `path` parameter was respelt with U+0430 in the property name
+and in `required` (the key in the paths below is that spelling, which is why
+the code points are what to read, not the path):
+
+```
+change versus the approved version 1: CRITICAL (parameter-removed, required-parameter-added)
+mixed-script words in this definition:
+  $.inputSchema.properties.pаth (key) byte 0: Cyrillic (U+0430) with Latin (U+0070 U+0074 U+0068)
+  $.inputSchema.required[0] byte 0: Cyrillic (U+0430) with Latin (U+0070 U+0074 U+0068)
+look-alike changes against the approved version 1:
+  $.inputSchema.required[0]: U+0430 (Cyrillic) for U+0061 (Latin) at byte 1
+  $.inputSchema.properties["pаth"] (key): U+0430 (Cyrillic) for U+0061 (Latin) at byte 1
+toolwarrant: refusing to approve: the definition holds 2 mixed-script word(s) and 2 look-alike change(s), listed above; review them and pass --accept-suspicious to approve anyway
+```
+
+The exit code is 1 and nothing is recorded. With `--accept-suspicious` the
+same lines are printed, then `warning: approving despite 2 mixed-script
+word(s) and 2 look-alike change(s)`, and the approval is recorded as any
+other. Each look-alike line names the new code points, their scripts, the code
+points they replaced and the byte offset in the new text; a mixed-script line
+names each script of the word with its code points, the script with the
+fewest first, since that is usually the intruder, and at most eight code
+points per script before a count.
+
+`diff SERVER TOOL` ends with a `Look-alike changes` section that lists the
+same two classes for the new version, with the counts first and the lines
+capped at 100, so the review can be read before `approve` is run; the same
+run printed:
+
+```
+Look-alike changes
+  4 (look-alike: 2, mixed-script: 2)
+    $.inputSchema.required[0]: U+0430 (Cyrillic) for U+0061 (Latin) at byte 1 (look-alike)
+    $.inputSchema.properties["pаth"] (key): U+0430 (Cyrillic) for U+0061 (Latin) at byte 1 (look-alike)
+    $.inputSchema.properties["pаth"] (key) byte 0: Cyrillic (U+0430) with Latin (U+0070 U+0074 U+0068) (mixed-script)
+    $.inputSchema.required[0] byte 0: Cyrillic (U+0430) with Latin (U+0070 U+0074 U+0068) (mixed-script)
+```
+
+A visible change is never a look-alike, a value present on one side only is
+not either, and keys are paired within one object only
+(`TestTool_visibleChangesAreNotLookAlikes`); the section reads `none` when
+there is nothing to list (`TestTool_lookAlikeSwapIsListedWithCodePoints`,
+`TestTool_mixedScriptWordsAreListed`,
+`TestTool_lookAlikeSectionIsCappedButCountsAreComplete`).
+
+What the review cannot see. The table is the UTS #39 confusables file for
+Unicode 18.0.0, vendored with its licence under `third_party/unicode/` and
+generated into `internal/textdiff/confusables_table.go` by
+`scripts/gen-confusables.sh`, whose `--check` form the `ci` lint job runs
+(`TestConfusablesCI_lintJobRunsTheCheck`); the generator refuses a data file of
+any other version (`TestConfusables_tableIsGeneratedFromTheVendoredFile`,
+`TestConfusables_versionIsTheVendoredHeaderAndNotOlderThanTheToolchains`). A
+look-alike the table does not list, and a mixed-script word whose scripts the
+profile allows, are not reported (known limit L14). The scripts are those of
+the toolchain's tables (Unicode 17.0.0 in go1.27): a code point assigned in
+18.0.0 is reported as unassigned by the suspicious-character scan and as
+`Unknown` here, and the table still maps it, since the table consults no
+toolchain table. Property-tested: replacing any code point by its prototype
+anywhere in a text leaves the skeleton unchanged
+(`TestProperty_skeletonIsInvariantUnderConfusableSubstitution`), and the
+section is safe to print whatever the documents hold
+(`TestProperty_lookAlikeSectionNeverHoldsRawSuspiciousRunes`, `FuzzSkeleton`).
+
 ## Pausing a server
 
 ```sh
