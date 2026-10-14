@@ -1,16 +1,141 @@
 package catalog
 
 import (
+	"database/sql"
+	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// The index the anchor reads rest on (PR 1.3 of the 2026-10-14 plan). Every
-// read that anchors a row to the newest audit entry about its subject costs
-// one probe of audit_log_by_subject only while that index exists and the
-// statements keep a shape the planner can use; nothing else in the suite would
-// notice a schema or query change that brings the walk of the log back, so
-// this test pins the plan of every such read.
+// The durability settings and the index the anchor reads rest on (PR 1.3 of
+// the 2026-10-14 plan, owner decision O-3). SQLite applies a PRAGMA to the
+// connection that ran it, and database/sql hands out whichever pooled
+// connection is free, so a setting the catalog relies on must travel in the
+// connection string, where the driver applies it to every connection it opens.
+// These two tests pin what the catalog relies on: every connection of every
+// pool runs WAL, synchronous FULL and foreign keys, and every read that anchors
+// a row to the newest audit entry about its subject is an index seek, never a
+// scan of the log.
+
+const (
+	// wantSynchronousFull is what PRAGMA synchronous returns for FULL.
+	wantSynchronousFull = 2
+	// wantForeignKeysOn is what PRAGMA foreign_keys returns when enforced.
+	wantForeignKeysOn = 1
+	// synchronousPragma is the DSN value every connection kind must carry,
+	// spelled out here so that the test pins the level and not a constant.
+	synchronousPragma = "synchronous(FULL)"
+)
+
+// TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL borrows
+// every connection of every pool of a read-write, a read-only and a forensic
+// store at once and reads the three pragmas back from each, so that a setting
+// applied to one connection and not the others, or left at a build's default,
+// is caught. The DSN of all four connection kinds is checked as well, since
+// the immutable kind opens only a file that is no longer in WAL mode.
+func TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL(t *testing.T) {
+	rw, path := newStoreAt(t, lifecycle.DefaultPolicy())
+	mustAddServer(t, rw, "alpha")
+	mustCrawl(t, rw, "alpha", tool("echo", "v1"))
+	mustApprove(t, rw, "alpha", "echo", digestOf(t, "echo", "v1"))
+	ro, err := OpenWith(path, OpenOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("read-only open: %v", err)
+	}
+	defer func() { _ = ro.Close() }()
+	forensic, err := OpenWith(path, OpenOptions{Forensic: true})
+	if err != nil {
+		t.Fatalf("forensic open: %v", err)
+	}
+	defer func() { _ = forensic.Close() }()
+
+	pools := []struct {
+		name string
+		db   *sql.DB
+	}{
+		{"read-write writer", rw.wdb},
+		{"read-write reader", rw.rdb},
+		{"read-only reader", ro.rdb},
+		{"forensic reader", forensic.rdb},
+	}
+	for _, p := range pools {
+		checkEveryConnection(t, p.name, p.db)
+	}
+	for _, kind := range []connKind{connWriter, connReader, connReadOnlyFile, connImmutableFile} {
+		checkDSNPragma(t, kind, dsnFor(path, kind, DefaultBusyTimeout))
+	}
+}
+
+// checkEveryConnection takes every connection the pool may open and holds
+// them together, so that each PRAGMA is read on a distinct connection.
+func checkEveryConnection(t *testing.T, pool string, db *sql.DB) {
+	t.Helper()
+	n := db.Stats().MaxOpenConnections
+	if n < 1 {
+		t.Fatalf("%s: the pool has no connection limit, so not every connection can be reached", pool)
+	}
+	conns := make([]*sql.Conn, 0, n)
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	for i := range n {
+		c, err := db.Conn(bg)
+		if err != nil {
+			t.Fatalf("%s: take connection %d of %d: %v", pool, i+1, n, err)
+		}
+		conns = append(conns, c)
+	}
+	for i, c := range conns {
+		checkConnectionPragmas(t, fmt.Sprintf("%s, connection %d of %d", pool, i+1, n), c)
+	}
+}
+
+// checkConnectionPragmas reads synchronous, foreign_keys and journal_mode back
+// from one connection.
+func checkConnectionPragmas(t *testing.T, conn string, c *sql.Conn) {
+	t.Helper()
+	var (
+		synchronous, foreignKeys int
+		journal                  string
+	)
+	if err := c.QueryRowContext(bg, `PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatalf("%s: PRAGMA synchronous: %v", conn, err)
+	}
+	if err := c.QueryRowContext(bg, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("%s: PRAGMA foreign_keys: %v", conn, err)
+	}
+	if err := c.QueryRowContext(bg, `PRAGMA journal_mode`).Scan(&journal); err != nil {
+		t.Fatalf("%s: PRAGMA journal_mode: %v", conn, err)
+	}
+	if synchronous != wantSynchronousFull {
+		t.Errorf("%s: PRAGMA synchronous = %d, want %d (FULL): the WAL sync at commit is what makes a returned decision survive a power loss", conn, synchronous, wantSynchronousFull)
+	}
+	if foreignKeys != wantForeignKeysOn {
+		t.Errorf("%s: PRAGMA foreign_keys = %d, want %d", conn, foreignKeys, wantForeignKeysOn)
+	}
+	if !strings.EqualFold(journal, walMode) {
+		t.Errorf("%s: PRAGMA journal_mode = %q, want %q", conn, journal, walMode)
+	}
+}
+
+// checkDSNPragma requires the connection string of one kind to carry the
+// synchronous pragma, which is how it reaches every pooled connection.
+func checkDSNPragma(t *testing.T, kind connKind, dsn string) {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("connection kind %d: parse DSN: %v", kind, err)
+	}
+	if !slices.Contains(u.Query()["_pragma"], synchronousPragma) {
+		t.Errorf("connection kind %d: the DSN %q does not carry %s", kind, dsn, synchronousPragma)
+	}
+}
 
 // anchorQuery is one read the serving path or a decision runs against the
 // log, with what its plan must say about the log: a MAX(seq) form needs only
