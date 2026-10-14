@@ -306,7 +306,12 @@ Verdicts, one line per tool or per check:
   gateway and every route the file carries must be present exactly once with
   the same bind address, port, allow rules, backend hosts and match path, and
   with the same processors, each compared by host, kind, failure mode,
-  methods, `requestHeaders` filter (the allowed and the disallowed list) and a
+  methods, `requestHeaders` filter (the allowed and the disallowed list), the
+  `backendTLS` block under the processor's `policies` (its `cert`, `key`,
+  `root` and `hostname`, which are paths on the gateway host and the name the
+  processor's certificate is verified against, so the line shows them; a
+  block only one side carries is one line of its own, since without it the
+  gateway dials the processor in plaintext, limit L11) and a
   hash of its canonical metadata, which holds the shared secret and is never
   printed; the MCP backend target's name is compared as well as its host
   (D17; the name is the server name, so the line may show it: before the
@@ -332,7 +337,13 @@ Verdicts, one line per tool or per check:
   for a route key, `match 1: field KEY: not in the emitted file` for a match,
   `backend 2: field host: not in the emitted file` for a backend,
   `config KEY: not in the emitted file` for a `config` field and
-  `gateway NAME: field KEY: not in the emitted file` for a gateway field; a
+  `gateway NAME: field KEY: not in the emitted file` for a gateway field,
+  `processor 1: backendTLS field insecure: not in the emitted file` for a
+  `backendTLS` field `emit` does not write (`insecure`, `insecureHost`,
+  `alpn`, `subjectAltNames`, `keyExchangeGroups`, `spiffe`) and `processor 1:
+  policy backendAuth: not in the emitted file; the gateway applies it to the
+  link to this processor` for a processor policy other than `backendTLS`
+  (`requestHeaderModifier`, `transformations`, `backendAuth`); a
   place that is not the object or list the file has there is reported as a
   whole (`not an object as in the emitted file`), keys are escaped and values
   are never shown (cmd
@@ -374,7 +385,19 @@ Verdicts, one line per tool or per check:
   `TestCompareCanaryAddresses`). The line for an extra section reads `section
   binds: not in the emitted file; it may bind ports and routes the comparison
   cannot see`; the line for a stripped filter reads `processor requestHeaders
-  allowed: emitted :method, live (none)` with its `disallowed` twin. Scenario
+  allowed: emitted :method, live (none)` with its `disallowed` twin; the lines
+  for the TLS block read `processor backendTLS hostname: emitted NAME, live
+  NAME` (one per field that differs, in file order), `processor backendTLS:
+  the live processor has none while the emitted file carries it; the gateway
+  dials this processor without TLS` and `processor backendTLS: the live
+  processor carries backendTLS the emitted file does not` (cmd
+  `TestLiveComparisonComparesTheProcessorTLS`,
+  `TestLiveComparisonReportsAnInsecureTLSFlag`,
+  `TestCompareProcessorsSeesAMissingBackendTLS`,
+  `TestEmittedConfigReadsTheProcessorTLS`; `emit` writes no `backendTLS`
+  block yet, so those tests hand-build the block where `emit` will write it,
+  and what the running gateway renders for it in `GET /api/config` is not yet
+  observed). Scenario
   P posted the emitted document plus a `binds` section with a listener on
   another port, and plus a top-level `mcp` shortcut, through the admin API of
   the running gateway: each was accepted with status 200 and rendered by
