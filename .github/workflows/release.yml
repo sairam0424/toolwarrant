@@ -1,11 +1,28 @@
 # .github/workflows/release.yml: a v* tag becomes a draft GitHub release
-# (D16). Runs only after the ci workflow succeeded on the same commit; every
-# action is pinned by commit SHA (the tag is the bare trailing comment
-# Dependabot maintains). The gate job needs
-# actions: read to list workflow runs and contents: read to read the tag ref
-# and peel the tag object (v0.1.0-rc.1 failed with HTTP 403 without it); the
-# release job needs contents: write to create the draft and id-token: write
-# for the keyless cosign signature; nothing else.
+# (D16, D20). Runs only after the ci workflow succeeded on the same commit;
+# every action is pinned by commit SHA (the tag is the bare trailing comment
+# Dependabot maintains). The gate job needs actions: read to list workflow
+# runs and contents: read to read the tag ref, peel the tag object
+# (v0.1.0-rc.1 failed with HTTP 403 without it) and ask whether a release for
+# the tag is already published; the release job needs contents: write to
+# create the draft and upload the provenance bundle, id-token: write for the
+# keyless cosign signature and the keyless attestation signature, and
+# attestations: write to store the attestation with GitHub; nothing else.
+#
+# What the release job does, in order: the release notes are the tag's
+# section of CHANGELOG.md (scripts/release-notes.sh; a candidate takes the
+# version's section once the release commit added it, else Unreleased) and
+# the job stops when that section is empty; goreleaser builds, signs and
+# creates the draft with those notes between the header and footer of
+# .goreleaser.yaml; actions/attest-build-provenance signs a SLSA provenance
+# statement whose subjects are the archives and SBOMs the checksums file
+# lists, and the bundle is uploaded to the draft as
+# toolwarrant_<version>_provenance.intoto.jsonl; last, linux/amd64 is rebuilt
+# with the command SECURITY.md documents and compared byte for byte with the
+# archive's binary, so the documented command and the release never drift
+# apart. A step that fails after goreleaser leaves a draft nobody publishes;
+# a re-run on the same tag replaces it, since the gate refuses only a tag
+# whose release is already published.
 name: release
 
 on:
@@ -22,11 +39,11 @@ concurrency:
 
 jobs:
   gate:
-    name: ci succeeded on this commit
+    name: ci succeeded on this commit and the tag is unreleased
     runs-on: ubuntu-latest
     permissions:
       actions: read # list the ci runs of the tagged commit
-      contents: read # read the tag ref and peel the tag object; a permissions block zeroes everything it does not name
+      contents: read # read the tag ref, peel the tag object and read the releases; a permissions block zeroes everything it does not name
     outputs:
       commit: ${{ steps.gate.outputs.commit }}
     steps:
@@ -58,18 +75,40 @@ jobs:
             echo "the newest ci push run on main for this commit is not a success (${newest}); push main, let ci pass, then tag that commit" >&2
             exit 1
           fi
+      - name: refuse a tag whose release is already published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # "Get a release by tag name" answers only for a published release;
+          # a draft is not found by its tag. A published release is never
+          # re-run, a fix is a new tag (docs/operations.md, Releasing), and
+          # once immutable releases are on, the assets could not change anyway.
+          # Any answer other than a release or a 404 stops the gate: a gate
+          # that took an API error for "not published" would have checked
+          # nothing.
+          if url=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .html_url 2>&1); then
+            echo "a release for ${TAG} is already published (${url}); a published release is never re-run, a fix is a new tag" >&2
+            exit 1
+          fi
+          case "${url}" in
+            *"HTTP 404"*) echo "no published release for ${TAG} yet" ;;
+            *) echo "could not read the releases of ${TAG}: ${url}" >&2; exit 1 ;;
+          esac
 
   release:
-    name: goreleaser release (draft)
+    name: goreleaser release (draft), provenance and rebuild
     needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # the changelog needs every commit since the previous tag
+          fetch-depth: 0 # goreleaser reads the tag object and the previous tag; a shallow clone is a warning we do not want in a release log
           persist-credentials: false # nothing in this job pushes; the token stays out of .git/config
       - name: the checkout is the commit the gate verified
         env:
@@ -85,6 +124,33 @@ jobs:
             echo "the tag moved between the gate and the checkout; tag again and let the gate see the final commit" >&2
             exit 1
           fi
+      - name: version from the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # goreleaser's {{ .Version }} is the tag without its v; the asset
+          # names below are built from the same value, so the shape is checked
+          # once here before it reaches a file name or a linker flag.
+          version=${TAG#v}
+          case "${version}" in
+            *[!0-9A-Za-z.-]*|"") echo "tag ${TAG} is not a version tag (vX.Y.Z or vX.Y.Z-rc.N)" >&2; exit 1 ;;
+          esac
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "version ${version}"
+      - name: release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # The script exits 1 for a missing heading or an empty section and 2
+          # for a tag it does not read as a version, so no draft is created
+          # with notes that are not the changelog's prose (D20 (d)).
+          scripts/release-notes.sh "${TAG}" > "${RUNNER_TEMP}/release-notes.md"
+          echo "--- release notes ---"
+          cat "${RUNNER_TEMP}/release-notes.md"
+          echo "--- end ---"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -102,7 +168,59 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.18.2 # the version the snapshot proof ran with (D16); bump deliberately
-          args: release --clean
+          # The action starts goreleaser without a shell, so the path is
+          # written out as an expression; runner.temp has no spaces on the
+          # GitHub runners. goreleaser reads the file in its changelog pipe
+          # and the release pipe puts the header and footer around it.
+          args: release --clean --release-notes ${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOFLAGS: -mod=readonly
+      - name: attest the archives and SBOMs the checksums file lists
+        id: attest
+        # Pinned to the commit the v4.2.2 tag pointed at on 2026-10-14 (gh api
+        # repos/actions/attest-build-provenance/git/ref/tags/v4.2.2, a
+        # lightweight tag). The action signs a SLSA provenance v1 statement
+        # keyless under this workflow's identity, records it in Sigstore's
+        # public Rekor log (the repository is public) and stores it with
+        # GitHub for gh attestation verify; the subjects are every name and
+        # SHA-256 the checksums file lists, the four archives and four SBOMs.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/toolwarrant_${{ steps.version.outputs.version }}_checksums.txt
+      - name: upload the provenance bundle to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -eu
+          # bundle-path is one Sigstore bundle per line (JSON lines), which is
+          # what gh attestation verify --bundle reads; the .intoto.jsonl name
+          # is the one the OpenSSF Scorecard Signed-Releases check looks for.
+          # gh release upload resolves a draft by its tag.
+          asset="dist/toolwarrant_${VERSION}_provenance.intoto.jsonl"
+          cp "${BUNDLE}" "${asset}"
+          test -s "${asset}"
+          gh release upload "${TAG}" "${asset}"
+          echo "uploaded ${asset}"
+      - name: rebuild linux/amd64 with the documented command and compare
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          # The command is the one SECURITY.md (Release integrity) and
+          # docs/operations.md (Releasing) give a verifier, run on the same
+          # commit against the archive goreleaser just built: a flag or an
+          # input added to the release build that the documented command does
+          # not carry fails here, not on a verifier's machine. The checkout
+          # must be clean, as for the verifier; dist/ is gitignored.
+          toolchain=$(sed -n 's/^toolchain //p' go.mod)
+          test -n "${toolchain}"
+          test -z "$(git status --short)"
+          CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN="${toolchain}" GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${RUNNER_TEMP}/rebuilt" ./cmd/toolwarrant
+          tar -xzf "dist/toolwarrant_${VERSION}_linux_amd64.tar.gz" -C "${RUNNER_TEMP}" toolwarrant
+          cmp "${RUNNER_TEMP}/rebuilt" "${RUNNER_TEMP}/toolwarrant"
+          echo "linux/amd64 rebuilt from the documented command equals the archive's binary"
