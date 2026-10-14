@@ -390,22 +390,38 @@ agentgateway v1.6.0 binary (`make e2e`; `demo/run.sh` keeps the last run in
   `Stats.ToolsOversized`) and logged at Info as `digest mismatch` with quoted
   names. v0.1 does not hash a projection of what the gateway re-serialises; it
   detects the case and reports it, so the tool stays hidden.
-- What the gateway strips. The end-to-end scenario L lists a tool carrying an
-  unknown top-level key, an unknown `annotations` member and a `_meta` member
-  through the gateway and diffs what a client received against what the
-  upstream served (`demo/last-run.log`): dropped `x-vendor` (with its member
-  `x-vendor.tier`) and `annotations.x-risk`; kept `annotations.title`,
-  `annotations.readOnlyHint` and the `_meta` member `vendor/ui`; nothing added.
-  The second review's lab, which is not pinned by a test in this tree,
-  additionally observed a `_meta` member named `ui` and a top-level `execution`
-  key dropped while `openai/outputTemplate` under `_meta`, `title`,
-  `outputSchema`, `icons` and vendor keys inside `inputSchema` survived, and
-  numbers re-serialised (`1e2` as `100.0`, harmless under RFC 8785). The two
-  observations agree on unknown top-level and `annotations` keys; on `_meta`
-  they show that some members survive and some do not, and neither log records
-  the rule, so a `_meta` member must be assumed droppable until the pinned
-  gateway version shows otherwise (limits L2 and L9). Scenario L re-derives the
-  list on every run, so a move of the gateway pin re-derives it.
+- What the gateway strips. The end-to-end scenario L lists a tool carrying the
+  top-level members MCP revision 2025-11-25 names (`title`, `outputSchema`,
+  `icons`, `execution`), three `_meta` members (`vendor/ui`, `ui`,
+  `openai/outputTemplate`), a vendor member inside `inputSchema`, an unknown
+  `annotations` member and an unknown top-level key through the gateway,
+  derives from what a raw client received the key paths the gateway dropped,
+  kept and added, and compares the three sorted lists exactly with the golden
+  `e2e/testdata/gateway_tool_keys.json`, recorded on 2026-10-14 from one run on
+  the pinned binary. Dropped: `x-vendor` (with `x-vendor.tier`),
+  `annotations.x-risk`, `execution` (with `execution.taskSupport`) and the
+  `_meta` member `ui` (with `_meta.ui.resourceUri`). Kept: `name`, `title`,
+  `description`, `inputSchema` with every member under it,
+  `inputSchema.x-vendor` included, `outputSchema` with every member under it,
+  `icons[0].src`, `icons[0].mimeType`, `icons[0].sizes`, `annotations.title`,
+  `annotations.readOnlyHint`, `_meta.vendor/ui` and
+  `_meta.openai/outputTemplate`. Added: nothing. This agrees with the first
+  recording of scenario L (`x-vendor` and `annotations.x-risk` dropped;
+  `annotations.title`, `annotations.readOnlyHint` and `_meta.vendor/ui` kept)
+  and pins what the second review's lab saw and this tree did not (`_meta.ui`
+  and `execution` dropped; `openai/outputTemplate` under `_meta`, `title`,
+  `outputSchema`, `icons` and vendor keys inside `inputSchema` kept); the
+  lab's number observation (`1e2` re-serialised as `100.0`, harmless under RFC
+  8785) is about values, which the golden does not compare. The logs do not
+  show the rule behind the `_meta` member named `ui`, so a `_meta` member must
+  still be assumed droppable until the golden shows otherwise (limits L2 and
+  L9). A run whose lists differ fails scenario L naming the list and the
+  entries on each side and writes the lists it derived to
+  `gateway_tool_keys.observed.json` next to the process logs; a move of the
+  gateway pin (L7) re-records the golden by copying that file and reviewing
+  the diff. `TestToolKeysGoldenRefusesWhatItCannotCompare` pins that a golden
+  naming another release, carrying an unknown field or holding an unsorted
+  list is refused rather than compared.
 - Consequence. Limit L2: such a tool cannot be served in v0.1 at all, because
   the catalog can only approve what the crawl saw and the gateway never serves
   those bytes. With the processor in place the tool is hidden, so
@@ -422,7 +438,8 @@ agentgateway v1.6.0 binary (`make e2e`; `demo/run.sh` keeps the last run in
   the package comments of `internal/gate` and `internal/processor`. Tests:
   `TestCheckResponse_MismatchedAndUnapprovedAreCountedApart`,
   `TestCheckResponse_LogNamesTheBrokenToolButTheClientReasonDoesNot`; e2e
-  scenario L.
+  scenario L (`e2e/toolkeys_test.go`) against the golden
+  `e2e/testdata/gateway_tool_keys.json`.
 
 ## D11. No data plane of its own: the seam is hardened instead
 

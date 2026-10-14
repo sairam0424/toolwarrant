@@ -191,62 +191,15 @@ func padTool(size int) json.RawMessage {
 	return json.RawMessage(`{"name":"pad","description":"` + strings.Repeat("x", size) + `","inputSchema":{"type":"object"}}`)
 }
 
-// vendorTool carries keys agentgateway v1.6.0 does not know: a top-level
-// x-vendor, an annotations member x-risk, and a _meta member. Scenario L
-// records which of them the gateway drops before the processor sees the
-// definition (limit L2).
+// vendorTool is the definition scenario L lists through the gateway to record
+// which key paths agentgateway v1.6.0 drops, keeps and adds before the hook
+// (limit L2, the golden e2e/testdata/gateway_tool_keys.json). It carries the
+// top-level members the MCP revision 2025-11-25 names (title, outputSchema,
+// icons, execution), a _meta member of three shapes (a vendor-prefixed string,
+// the ui object of MCP Apps, the openai/outputTemplate string), a vendor key
+// inside inputSchema, an unknown annotations member x-risk and the unknown
+// top-level key x-vendor whose dropping the scenario asserts by name, so that
+// the tool keeps mismatching and MISSING vendor_tool keeps meaning something.
 func vendorTool() json.RawMessage {
-	return json.RawMessage(`{"name":"vendor_tool","description":"Vendor tool with extension keys.","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}},"annotations":{"title":"Vendor","readOnlyHint":true,"x-risk":"low"},"_meta":{"vendor/ui":"https://example.invalid/ui"},"x-vendor":{"tier":"gold"}}`)
-}
-
-// keyPaths lists every object key path in a JSON document, so two renderings
-// of one tool can be compared key by key.
-func keyPaths(v any, prefix string) []string {
-	var out []string
-	switch x := v.(type) {
-	case map[string]any:
-		for k, child := range x {
-			path := k
-			if prefix != "" {
-				path = prefix + "." + k
-			}
-			out = append(out, path)
-			out = append(out, keyPaths(child, path)...)
-		}
-	case []any:
-		for i, child := range x {
-			out = append(out, keyPaths(child, fmt.Sprintf("%s[%d]", prefix, i))...)
-		}
-	}
-	return out
-}
-
-// keyDiff reports the key paths present in upstream but not in served
-// (dropped) and the reverse (added).
-func keyDiff(upstream, served json.RawMessage) (dropped, added []string, err error) {
-	var up, sv any
-	if err := json.Unmarshal(upstream, &up); err != nil {
-		return nil, nil, fmt.Errorf("upstream definition: %w", err)
-	}
-	if err := json.Unmarshal(served, &sv); err != nil {
-		return nil, nil, fmt.Errorf("served definition: %w", err)
-	}
-	upKeys, svKeys := keyPaths(up, ""), keyPaths(sv, "")
-	return missing(upKeys, svKeys), missing(svKeys, upKeys), nil
-}
-
-// missing returns the sorted members of a that are not in b.
-func missing(a, b []string) []string {
-	have := map[string]bool{}
-	for _, k := range b {
-		have[k] = true
-	}
-	var out []string
-	for _, k := range a {
-		if !have[k] {
-			out = append(out, k)
-		}
-	}
-	sortStrings(out)
-	return out
+	return json.RawMessage(`{"name":"vendor_tool","title":"Vendor Tool","description":"Vendor tool with extension keys.","inputSchema":{"type":"object","properties":{"q":{"type":"string"}},"x-vendor":{"schema":"gold"}},"outputSchema":{"type":"object","properties":{"answer":{"type":"string"}}},"icons":[{"src":"https://example.invalid/icon.png","mimeType":"image/png","sizes":["48x48"]}],"execution":{"taskSupport":"optional"},"annotations":{"title":"Vendor","readOnlyHint":true,"x-risk":"low"},"_meta":{"vendor/ui":"https://example.invalid/ui","ui":{"resourceUri":"ui://vendor/panel"},"openai/outputTemplate":"ui://vendor/widget"},"x-vendor":{"tier":"gold"}}`)
 }

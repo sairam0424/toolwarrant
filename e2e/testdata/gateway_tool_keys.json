@@ -1,0 +1,40 @@
+{
+  "gateway": "v1.6.0",
+  "dropped": [
+    "_meta.ui",
+    "_meta.ui.resourceUri",
+    "annotations.x-risk",
+    "execution",
+    "execution.taskSupport",
+    "x-vendor",
+    "x-vendor.tier"
+  ],
+  "kept": [
+    "_meta",
+    "_meta.openai/outputTemplate",
+    "_meta.vendor/ui",
+    "annotations",
+    "annotations.readOnlyHint",
+    "annotations.title",
+    "description",
+    "icons",
+    "icons[0].mimeType",
+    "icons[0].sizes",
+    "icons[0].src",
+    "inputSchema",
+    "inputSchema.properties",
+    "inputSchema.properties.q",
+    "inputSchema.properties.q.type",
+    "inputSchema.type",
+    "inputSchema.x-vendor",
+    "inputSchema.x-vendor.schema",
+    "name",
+    "outputSchema",
+    "outputSchema.properties",
+    "outputSchema.properties.answer",
+    "outputSchema.properties.answer.type",
+    "outputSchema.type",
+    "title"
+  ],
+  "added": []
+}

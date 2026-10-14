@@ -215,11 +215,13 @@ func scenarioK(t *testing.T, s *stack) {
 // directly and approved. The gateway re-serialises it before the hook, so the
 // processor sees another digest and hides it (counted as a mismatch, D10,
 // limit L2), and verify-gateway reports the hidden tool as MISSING with exit
-// 0. Which keys the gateway dropped is recorded by listing the CEL-only
-// variant with a raw client; there the gateway serves the re-serialised bytes
-// and verify-gateway reports a LEAK with the MISMATCH sub-label, exit 1,
-// with or without --config (decision D12; before the third round the check
-// without --config printed a non-failing MISMATCH verdict).
+// 0. Which key paths the gateway dropped, kept and added is derived by listing
+// the CEL-only variant with a raw client and compared with the golden
+// e2e/testdata/gateway_tool_keys.json (scenarioLKeys); there the gateway
+// serves the re-serialised bytes and verify-gateway reports a LEAK with the
+// MISMATCH sub-label, exit 1, with or without --config (decision D12; before
+// the third round the check without --config printed a non-failing MISMATCH
+// verdict).
 func scenarioL(t *testing.T, s *stack) {
 	hostile := s.servers["hostile"].hostile
 	vendor := vendorTool()
@@ -244,17 +246,7 @@ func scenarioL(t *testing.T, s *stack) {
 
 	original := s.config(t)
 	s.writeConfig(t, stripGuardrails(original))
-	served := servedTool(t, openRaw(t, s.routeURL("hostile")).listRaw(t), "vendor_tool")
-	dropped, added, err := keyDiff(vendor, served)
-	if err != nil {
-		t.Fatalf("compare definitions: %v", err)
-	}
-	s.note(t, "L: keys the gateway dropped before the hook: %v; keys it added: %v", dropped, added)
-	s.note(t, "L: upstream served %s", vendor)
-	s.note(t, "L: gateway served  %s", served)
-	if !slices.Contains(dropped, "x-vendor") {
-		t.Errorf("the gateway kept the unknown top-level key x-vendor, so the processor's mismatch has another cause; dropped %v", dropped)
-	}
+	scenarioLKeys(t, s, vendor)
 	// The re-serialised bytes reach a client only without the processor. With
 	// --config the hand edit is CONFIG-EDITED as well; without it the LEAK
 	// alone fails the check, because the catalog has no record of drift and
