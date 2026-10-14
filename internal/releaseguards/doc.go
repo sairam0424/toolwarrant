@@ -11,4 +11,17 @@
 // and run make there, so the tree is never edited and goreleaser is not needed;
 // each refusal is pinned by the message the guard prints, so a guard failing
 // for another reason is not mistaken for the right one.
+//
+// The package also holds the tests of scripts/release-notes.sh, the release
+// workflow's notes step (decision D20 (d)): a final tag takes its own dated
+// changelog section, a candidate takes the version's section once the release
+// commit has added it and the Unreleased section until then, a section ends
+// at the next level-two heading or the first link reference, and a missing
+// heading, a heading that appears twice, an empty section or a tag that is not
+// a version is refused with the exit status and message the script documents.
+// The script runs against scratch changelogs written by the tests and once
+// against the tree's own CHANGELOG.md for every released version; one more
+// test reads release.yml and .goreleaser.yaml to pin that the workflow hands
+// the file to goreleaser and that .goreleaser.yaml has no changelog block,
+// since that block's disable setting would skip the pipe that reads the file.
 package releaseguards

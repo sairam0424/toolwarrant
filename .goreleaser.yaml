@@ -70,41 +70,19 @@ signs:
       - ${artifact}
     artifacts: checksum
 
-changelog:
-  sort: asc
-  use: git
-  groups:
-    - title: Features
-      regexp: '^(?:[0-9a-f]+ )?feat(\([^)]*\))?!?:'
-      order: 0
-    - title: Fixes
-      regexp: '^(?:[0-9a-f]+ )?fix(\([^)]*\))?!?:'
-      order: 1
-    - title: Performance
-      regexp: '^(?:[0-9a-f]+ )?perf(\([^)]*\))?!?:'
-      order: 2
-    - title: Refactoring
-      regexp: '^(?:[0-9a-f]+ )?refactor(\([^)]*\))?!?:'
-      order: 3
-    - title: Tests
-      regexp: '^(?:[0-9a-f]+ )?test(\([^)]*\))?!?:'
-      order: 4
-    - title: Build and CI
-      regexp: '^(?:[0-9a-f]+ )?(build|ci)(\([^)]*\))?!?:'
-      order: 5
-    - title: Documentation
-      regexp: '^(?:[0-9a-f]+ )?docs(\([^)]*\))?!?:'
-      order: 6
-    # goreleaser matches these against '<abbreviated sha> <subject>' lines, so
-    # every pattern allows the sha prefix; the last group has no regexp and
-    # keeps whatever the others did not match, so no commit is dropped in
-    # silence.
-    - title: Other
-      order: 99
-  filters:
-    exclude:
-      - '^(?:[0-9a-f]+ )?chore'
-      - '(?i)^(?:[0-9a-f]+ )?merge[: ]'
+# The release notes are the tag's section of CHANGELOG.md, which the release
+# workflow writes with scripts/release-notes.sh and passes as
+# `goreleaser release --release-notes FILE` (D20 (d)); the commit list grouped
+# by type that stood here until v0.1.1 (D16 (d)) is gone. There is no
+# changelog block on purpose: goreleaser v2.18.2 reads the --release-notes
+# file inside its changelog pipe (internal/pipe/changelog, Run returns right
+# after loading it), and `changelog: disable: true` skips that pipe, file
+# included, so the release body would be the header and footer below around
+# nothing. With the pipe enabled and the file given, no commit is listed; the
+# header and footer are applied by the release pipe around the notes.
+# internal/releaseguards pins both facts
+# (TestReleaseNotes_theWorkflowHandsTheFileToGoreleaserAndKeepsThePipe).
+# `make release-snapshot` skips the pipe, as every snapshot does.
 
 release:
   # The target is named so that goreleaser check works before the first
@@ -132,5 +110,10 @@ release:
   footer: |
     Binaries are built from the tagged commit with CGO disabled and
     -trimpath; an SPDX SBOM produced by syft sits beside each archive
-    (`<archive>.spdx.json`), and the checksums file is signed keyless with
-    cosign by this repository's release workflow.
+    (`<archive>.spdx.json`), the checksums file is signed keyless with
+    cosign by this repository's release workflow, and the SLSA build
+    provenance of the archives and SBOMs, signed by the same workflow, is
+    the `toolwarrant_<version>_provenance.intoto.jsonl` asset
+    (`gh attestation verify <archive> --repo sairam0424/toolwarrant`;
+    SECURITY.md, Release integrity). The notes above are this version's
+    section of CHANGELOG.md.

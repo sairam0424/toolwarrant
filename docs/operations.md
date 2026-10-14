@@ -1425,6 +1425,7 @@ machine:
 ```sh
 make release-check                # the release configuration parses and is consistent; go.mod has no replace or exclude; CHANGELOG.md has an Unreleased section
 make release-check VERSION=X.Y.Z  # and CHANGELOG.md has the `## [X.Y.Z] - YYYY-MM-DD` heading the release commit added
+scripts/release-notes.sh vX.Y.Z   # prints the notes the tag will publish, the `## [X.Y.Z]` section of CHANGELOG.md; exit 1 when it is empty
 make release-snapshot             # four archives, four SBOMs and the checksums into dist/, unsigned
 make test && make e2e && demo/run.sh
 ```
@@ -1446,17 +1447,47 @@ are `make release-guards` on their own, and
 first.
 
 Then push `main`, let the `ci` workflow pass, tag `vX.Y.Z` on that commit and
-push the tag. The `release` workflow refuses a tag whose commit has no
-successful `ci` run, builds the `toolwarrant` binary for darwin/arm64,
-darwin/amd64, linux/amd64 and linux/arm64 with CGO off and `-trimpath`, writes
-one SPDX SBOM per archive with syft, signs the checksums file keyless with
-cosign under the workflow's own identity, and creates a draft release whose
-notes open with the pinned gateway version and the catalog schema version and
-group the commits since the previous tag by type. Inspect the draft (the four
-archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`),
-then publish it. The seam and mock binaries are never released.
+push the tag. The `release` workflow's gate refuses a tag whose commit has no
+successful `ci` run and a tag whose release is already published (decision
+D20 (b)). The release job then writes the notes with
+`scripts/release-notes.sh`: the tag's section of `CHANGELOG.md`, where a
+candidate takes the version's section once the release commit has added it
+and the Unreleased section until then, and a missing heading or an empty
+section stops the run before any draft exists (D20 (d);
+`TestReleaseNotes_aFinalTagTakesItsOwnSectionAndStopsAtTheLinks`,
+`TestReleaseNotes_aCandidateTakesUnreleasedUntilTheReleaseCommit`,
+`TestReleaseNotes_refuseAnEmptySectionOrAMissingHeading`). goreleaser builds
+the `toolwarrant` binary for darwin/arm64, darwin/amd64, linux/amd64 and
+linux/arm64 with CGO off and `-trimpath`, writes one SPDX SBOM per archive
+with syft, signs the checksums file keyless with cosign under the workflow's
+own identity, and creates a draft release whose notes are that section between
+a header naming the pinned gateway version and the catalog schema version and
+a footer naming the assets. After the draft exists, the job attests the build
+with `actions/attest-build-provenance` over the checksums file (the subjects
+are the four archives and the four SBOMs; the predicate is SLSA provenance v1,
+signed keyless under the workflow's identity, recorded in Sigstore's Rekor log
+and stored by GitHub; D20 (a)) and uploads the bundle to the draft as
+`toolwarrant_X.Y.Z_provenance.intoto.jsonl`; last, it rebuilds linux/amd64
+with the command given below, the toolchain read from `go.mod`, and compares
+the result byte for byte with the archive's binary, so a difference fails the
+run (D20 (f)). Inspect the draft (the four archives, the `.spdx.json` files,
+the `.txt`, its `.txt.sigstore.json` and the `.intoto.jsonl`: eleven assets),
+then publish it. A run that failed after goreleaser created the draft leaves a
+draft, which is not published; a re-run of the workflow on the same tag
+replaces it. The seam and mock binaries are never released.
 
-A user verifies a release before running it:
+A user verifies a release before running it, with gh (2.81 or later; releases
+from v0.2.0 on):
+
+```sh
+gh attestation verify toolwarrant_0.2.0_linux_amd64.tar.gz --repo sairam0424/toolwarrant \
+  --signer-workflow sairam0424/toolwarrant/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.2.0
+gh release verify v0.2.0 --repo sairam0424/toolwarrant
+gh release verify-asset v0.2.0 toolwarrant_0.2.0_linux_amd64.tar.gz --repo sairam0424/toolwarrant
+```
+
+or with cosign and shasum, for every release since v0.1.0:
 
 ```sh
 cosign verify-blob --bundle toolwarrant_0.1.0_checksums.txt.sigstore.json \
@@ -1466,13 +1497,19 @@ cosign verify-blob --bundle toolwarrant_0.1.0_checksums.txt.sigstore.json \
 shasum -a 256 -c --ignore-missing toolwarrant_0.1.0_checksums.txt
 ```
 
-The first command proves the checksums file was produced by this repository's
-release workflow at that tag; the second proves the downloaded archive is the
-one it lists. The binary prints its version with `toolwarrant version`.
+`gh attestation verify` fetches the provenance GitHub stores for the archive's
+SHA-256 and proves the archive was built by this repository's release workflow
+from that tag (offline: `--bundle toolwarrant_0.2.0_provenance.intoto.jsonl`
+with a trusted root fetched earlier by `gh attestation trusted-root`);
+`gh release verify` and `gh release verify-asset` check GitHub's release
+attestation of an immutable release. The cosign command proves the checksums
+file was produced by this repository's release workflow at that tag; shasum
+proves the downloaded archive is the one it lists. The binary prints its
+version with `toolwarrant version`.
 
 Right after publishing, from a scratch directory outside any module, fetch the
 tag through the module proxy, check the record the fetch leaves, and run the
-two verification commands above with the new version in place of 0.1.0:
+verification commands above with the new version in place of the one shown:
 
 ```sh
 GOFLAGS= GOPRIVATE= GONOSUMDB= GOSUMDB=sum.golang.org GOPROXY=https://proxy.golang.org,direct \
@@ -1528,9 +1565,12 @@ records the hashes). `GOTOOLCHAIN` names the toolchain `go.mod` pins; a later
 `go.mod` that moves it changes this command and SECURITY.md's in the same
 commit.
 
-A published release is never re-run: the workflow keeps an existing
-release's notes and the existing assets make a second upload fail, so a fix
-is a new tag. The gate accepts only the newest `ci` run that a push to `main`
+A published release is never re-run: the gate refuses a tag whose release is
+already published before anything is built (the API's "get a release by tag"
+answers only for a published release, and any answer other than a release or
+a 404 stops the gate as well), the workflow would keep an existing release's
+notes and the existing assets would make a second upload fail in any case, so
+a fix is a new tag. The gate accepts only the newest `ci` run that a push to `main`
 triggered for the tagged commit; a commit that reached `main` through a pull
 request has such a run, a tag on any other commit is refused, and the release
 job stops if the commit it checked out is not the one the gate verified. The
@@ -1551,16 +1591,16 @@ deletion of `v*` tags for everyone but the repository owner, who holds to the
 same rule.
 
 A release candidate (`vX.Y.Z-rc.N`) exercises the same workflow and is marked
-a pre-release by goreleaser. The notes of a release list the commits since
-the previous tag by version, and a candidate tag counts as one, so the notes
-of a final release start at the last candidate. Candidate tags and their
-releases are kept: a candidate tag is a `v*` tag, so the tag policy above
-covers it, and the owner has decided so ahead of the move to immutable
-releases listed below. That supersedes the rule of D16 (d) that deleted the
-candidates before a final tag; the rule is retired in docs/decisions.md with
-D18, when the notes come from `CHANGELOG.md` instead of the tag range.
-goreleaser's `smartsemver` sort, which would skip the candidates, is a
-GoReleaser Pro feature and fails the open-source build (D16).
+a pre-release by goreleaser. Its notes come from `CHANGELOG.md` like a final
+tag's: the `## [X.Y.Z]` section when the candidate is cut on the release
+commit, the Unreleased section when it is cut before it; the previous tag
+plays no part in the notes, so a candidate costs the final release nothing.
+Candidate tags and their releases are kept: a candidate tag is a `v*` tag, so
+the tag policy above covers it, and immutable releases require it. That
+retires the rule of D16 (d) that deleted the candidates before a final tag
+(decision D20 (b) and (d) in [decisions.md](decisions.md)). goreleaser's
+`smartsemver` sort, which would skip the candidates, is a GoReleaser Pro
+feature and fails the open-source build (D16); nothing here needs it.
 
 The repository settings as they stand, read with `gh api` on 2026-10-14 (the
 repository has been public since v0.1.0 was published on 2026-10-12; rulesets,
@@ -1598,9 +1638,10 @@ only for a public repository on the free plan):
   GitHub locks each published release's tag to its commit and freezes its
   assets while the release exists, irreversibly per published release (a
   draft is unaffected until published), and issues a release attestation that
-  `gh release verify` (gh 2.81 or later) checks; a fix stays a new tag.
-  Releases published before that are governed by the ruleset and the tag
-  policy alone.
+  `gh release verify` and `gh release verify-asset` (gh 2.81 or later; the
+  verification block above) check; a fix stays a new tag (decision D20 (b)).
+  Releases published before that are governed by the ruleset, the tag policy
+  and the gate's refusal of a published tag alone.
 
 ## Moving the gateway pin (L7)
 

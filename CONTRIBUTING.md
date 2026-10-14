@@ -64,7 +64,7 @@ make e2e      # needs the agentgateway v1.6.0 binary at .cache/ (README, Quickst
   that adds one is out of scope until a later version says otherwise.
 - Changes to `internal/emit`, `internal/processor`, `internal/extmcpv1`,
   `cmd/toolwarrant/verify.go` or `cmd/toolwarrant/liveadmin.go` need a read of
-  [docs/decisions.md](docs/decisions.md) (D10 to D18) and
+  [docs/decisions.md](docs/decisions.md) (D10 to D20) and
   [seam/RESULTS.md](seam/RESULTS.md) first: the gateway's behaviour on v1.6.0
   is pinned there.
 

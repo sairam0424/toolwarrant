@@ -157,10 +157,12 @@ mock upstream, the default of `cmd/mockupstream`), 9001 (the first processor;
 
 Install from a release instead of building in step 0:
 download `toolwarrant_<version>_<os>_<arch>.tar.gz` for your platform from the
-GitHub release together with the checksums file, its `.sigstore.json` signature bundle,
-verify them as the [Release integrity](SECURITY.md#release-integrity) section of
-SECURITY.md says (the checksums file is verified with cosign and the archive
-against it before use), and untar the archive. `cmd/mockupstream` is not in the release, so the
+GitHub release together with the checksums file, its `.sigstore.json` signature bundle
+and, from v0.2.0 on, the `toolwarrant_<version>_provenance.intoto.jsonl` build
+provenance; verify them as the [Release integrity](SECURITY.md#release-integrity)
+section of SECURITY.md says (`gh attestation verify` on the archive, or cosign
+on the checksums file and the archive checked against it, before use), and
+untar the archive. `cmd/mockupstream` is not in the release, so the
 demo upstream still needs `go build -o bin/ ./cmd/mockupstream`.
 
 ```sh
@@ -422,7 +424,13 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 v0.1.0 is the first release: a tagged GitHub release with the `toolwarrant`
 binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64, an SPDX
 SBOM per archive and a keyless cosign signature over the checksums file
-(verification in [SECURITY.md](SECURITY.md), Release integrity). There is no
+(verification in [SECURITY.md](SECURITY.md), Release integrity). From v0.2.0
+on a release also carries the SLSA build provenance of its archives and SBOMs
+(`toolwarrant_<version>_provenance.intoto.jsonl`, verified with
+`gh attestation verify`), its notes are the version's section of
+[CHANGELOG.md](CHANGELOG.md), the release run rebuilds linux/amd64 with the
+command SECURITY.md documents and compares it with the archive, and a published
+release is immutable once the owner enables the setting (decision D20). There is no
 container image; the Go module is the repository itself, so `go install
 github.com/sairam0424/toolwarrant/cmd/toolwarrant@v0.1.0` builds the same
 commit, checked against the sum.golang.org record of the tag. Such a binary
@@ -449,7 +457,7 @@ dispatch that names a candidate release, checking the seventeen items of
 it. The security policy, including
 how to report a problem and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D18 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D20 are in
 [docs/decisions.md](docs/decisions.md). Contributions follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the code of conduct is
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
