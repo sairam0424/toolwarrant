@@ -30,17 +30,17 @@ import (
 
 // The SQL that selects the seq of the newest version.approved or
 // version.rolled_back entry about a subject, NULL when there is none. It rests
-// on the audit_log_by_subject index, so it costs one probe per tool. Three
-// forms exist for the three ways the queries name the subject: a bound
-// parameter, a tool row aliased t whose server name is a bound parameter, and
-// a tool row aliased t joined with its server aliased s.
+// on the audit_log_by_subject index, so it costs one probe per tool. Two
+// forms exist for the two ways the queries name the subject: a bound
+// parameter, and a tool row aliased t joined with its server aliased s. The
+// snapshot, which reads every tool of one server, takes the same seq from one
+// pass over the server's entries instead (newestEntriesOfServer, D21 d).
 const (
 	decisionEvents    = `'` + string(lifecycle.EvApproved) + `', '` + string(lifecycle.EvRolledBack) + `'`
 	decisionEntryHead = `(SELECT MAX(l.seq) FROM audit_log l WHERE l.subject = `
 	decisionEntryTail = ` AND l.event IN (` + decisionEvents + `))`
 
 	decisionEntryOfSubject    = decisionEntryHead + `?` + decisionEntryTail
-	decisionEntryOfTool       = decisionEntryHead + `? || '/' || t.name` + decisionEntryTail
 	decisionEntryOfServerTool = decisionEntryHead + `s.name || '/' || t.name` + decisionEntryTail
 )
 

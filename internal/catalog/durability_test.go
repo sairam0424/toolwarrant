@@ -158,13 +158,13 @@ const (
 )
 
 // anchorQueries lists every statement that reads the newest entry or entries
-// about a subject: the stand-alone forms, the three queries that embed the
-// correlated forms, and the two full-row forms.
+// about a subject: the stand-alone forms, the snapshot's one-pass form, the
+// two views that embed the correlated forms, and the two full-row forms.
 func anchorQueries() []anchorQuery {
 	return []anchorQuery{
 		{"decisionEntryOfSubject (anchorOne)", `SELECT ` + decisionEntryOfSubject, planCovering},
 		{"stateEntryOfSubject (anchorToolState)", `SELECT ` + stateEntryOfSubject, planCovering},
-		{"snapshotQuery (Snapshot; decisionEntryOfTool and stateEntryOfTool)", snapshotQuery, planCovering},
+		{"snapshotQuery (Snapshot; newestEntriesOfServer, one range read per reload)", snapshotQuery, planCovering},
 		{"toolViewQuery (Tool; decisionEntryOfServerTool and stateEntryOfServerTool)", toolViewQuery, planCovering},
 		{"toolViewsQuery (Tools)", toolViewsQuery, planCovering},
 		{"approvedQuery (Approved; decisionEntryOfServerTool)", approvedQuery, planCovering},

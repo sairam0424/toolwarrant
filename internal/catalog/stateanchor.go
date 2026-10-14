@@ -34,13 +34,13 @@ const toolStateEvents = `'` + string(lifecycle.EvDiscovered) + `', '` + string(l
 	string(lifecycle.EvUnusable) + `'`
 
 // The SQL that selects the seq of the newest state-bearing entry about a
-// subject, NULL when there is none, in the three forms the queries name the
-// subject (see decisionEntryOfSubject and its siblings).
+// subject, NULL when there is none, in the two forms the queries name the
+// subject (see decisionEntryOfSubject and its sibling); the snapshot takes it
+// from one pass over the server's entries (newestEntriesOfServer).
 const (
 	stateEntryHead = `(SELECT MAX(l.seq) FROM audit_log l WHERE l.event IN (` + toolStateEvents + `) AND l.subject = `
 
 	stateEntryOfSubject    = stateEntryHead + `?)`
-	stateEntryOfTool       = stateEntryHead + `? || '/' || t.name)`
 	stateEntryOfServerTool = stateEntryHead + `s.name || '/' || t.name)`
 )
 

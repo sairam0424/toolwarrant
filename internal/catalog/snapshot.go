@@ -98,11 +98,16 @@ func latestCompleteCrawl(ctx context.Context, q queryer, serverID int64) (time.T
 // The approved version is aliased v so that the shared evidence
 // expression applies; its tool id comes along so that a pointer at another
 // tool's version is caught here, and so do whether the tool's newest decision
-// names it and the seq of the newest approval entry about the tool (looked up
-// only for tools with an approval), in the same query rather than one per
-// tool), and the seq of the newest state-bearing entry about the tool, which
-// anchors the state column (D17 c). The parameters are the server name twice
-// and its id. Every row of the server comes back, deprecated ones included:
+// names it and the seq of the newest approval entry about the tool (kept
+// only for tools with an approval) and the seq of the newest state-bearing
+// entry about the tool, which anchors the state column (D17 c). The two seqs
+// come from one pass over the server's audit entries (newestEntriesOfServer)
+// joined by subject, where before D21 (d) two correlated subqueries probed the
+// log per tool (in the runs of D21 (d) the 10000-tool reload took 371 to 415
+// ms with the probes and 267 to 348 ms with the one pass, same store, once the
+// bytes were gone). The parameters are the server name three
+// times (the prefix range twice, the join once) and its id. Every row of the
+// server comes back, deprecated ones included:
 // readPolicyRows anchors the state of each and only then leaves a deprecated
 // row out of the policy, so a tool flipped to deprecated by hand is ErrCorrupt
 // rather than a tool quietly gone (the review of the v0.1.0 fix named this as
@@ -110,10 +115,27 @@ func latestCompleteCrawl(ctx context.Context, q queryer, serverID int64) (time.T
 const snapshotQuery = `SELECT t.id, t.name, t.state, t.approved_version_id, v.id, v.tool_id,
 		COALESCE(v.digest, ''), COALESCE(v.digest_profile, ''), t.last_seen_digest,
 		` + newestDecisionNames + `,
-		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE ` + decisionEntryOfTool + ` END,
-		` + stateEntryOfTool + `
+		CASE WHEN t.approved_version_id IS NULL THEN NULL ELSE n.decision_seq END,
+		n.state_seq
 	FROM tools t LEFT JOIN tool_versions v ON v.id = t.approved_version_id
+	LEFT JOIN (` + newestEntriesOfServer + `) n ON n.subject = ? || '/' || t.name
 	WHERE t.server_id = ?`
+
+// newestEntriesOfServer is the one pass over the audit log that replaces two
+// correlated subqueries per tool: for every subject under the server's prefix
+// (the range from server/ up to, excluded, the server name followed by the
+// character after the slash; server names hold no slash, validateServerName)
+// it takes the seq of the newest decision entry and of the newest
+// state-bearing entry in one range read of the audit_log_by_subject index,
+// which TestAnchorQueries_StayOnTheAuditLogBySubjectIndex keeps a covering
+// SEARCH. Decision entries are state-bearing entries too, so the one filter
+// serves both. The parameters are the server name twice.
+const newestEntriesOfServer = `SELECT l.subject AS subject,
+		MAX(CASE WHEN l.event IN (` + decisionEvents + `) THEN l.seq END) AS decision_seq,
+		MAX(l.seq) AS state_seq
+	FROM audit_log l
+	WHERE l.subject >= ? || '/' AND l.subject < ? || '0' AND l.event IN (` + toolStateEvents + `)
+	GROUP BY l.subject`
 
 // snapshotTools maps every non-deprecated tool of a server to its policy and
 // anchors the approved versions and the state columns to the verified chain in
@@ -136,7 +158,7 @@ func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[s
 // version to anchor of the non-deprecated ones. Its rows are closed before it
 // returns, so the anchor's own queries never interleave with them.
 func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, []approvedRef, []stateRef, error) {
-	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.Name, srv.ID)
+	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.Name, srv.Name, srv.ID)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("catalog: read snapshot: %w", err)
 	}
