@@ -1348,9 +1348,14 @@ same rule.
 
 A release candidate (`vX.Y.Z-rc.N`) exercises the same workflow and is marked
 a pre-release by goreleaser. The notes of a release list the commits since
-the previous tag by version, and a candidate tag counts as one, so before the
-final tag delete the candidate tags and their draft releases, or the notes of
-the release start at the last candidate. goreleaser's `smartsemver` sort, which would skip them, is a
+the previous tag by version, and a candidate tag counts as one, so the notes
+of a final release start at the last candidate. Candidate tags and their
+releases are kept: a candidate tag is a `v*` tag, so the tag policy above
+covers it, and the owner has decided so ahead of the move to immutable
+releases listed below. That supersedes the rule of D16 (d) that deleted the
+candidates before a final tag; the rule is retired in docs/decisions.md with
+D18, when the notes come from `CHANGELOG.md` instead of the tag range.
+goreleaser's `smartsemver` sort, which would skip the candidates, is a
 GoReleaser Pro feature and fails the open-source build (D16).
 
 The repository settings as they stand, read with `gh api` on 2026-10-14 (the
