@@ -34,11 +34,29 @@ const (
 	connImmutableFile
 )
 
-// dsnFor builds the connection string for one kind of connection.
+// synchronousFull is the synchronous level every connection runs at, spelled
+// as the DSN carries it. FULL is SQLite's compile-time default and is pinned
+// here on purpose (owner decision O-3 of the 2026-10-14 plan): in WAL mode it
+// syncs the WAL file after every commit, which is what makes a decision whose
+// command returned durable across a power loss and not only across a crash of
+// the process; NORMAL syncs only around checkpoints and may lose the newest
+// commits with the power. It changes only after a measured benchmark on the
+// target file system.
+const synchronousFull = "FULL"
+
+// dsnFor builds the connection string for one kind of connection. The pragmas
+// travel in the DSN because the driver runs them on every connection the pool
+// opens; a PRAGMA run through Exec would reach the one pooled connection that
+// ran it and leave the others as they were. synchronous and foreign_keys are
+// set for every kind alike: they are harmless on a query_only or immutable
+// connection, which never commits, and that uniformity is what
+// TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL reads
+// back from every connection of every pool.
 func dsnFor(absPath string, kind connKind, timeout time.Duration) string {
 	q := url.Values{}
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", timeout.Milliseconds()))
 	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "synchronous("+synchronousFull+")")
 	switch kind {
 	case connWriter:
 		q.Set("_txlock", "immediate")

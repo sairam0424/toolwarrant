@@ -806,6 +806,32 @@ processors were stopped. The git export of approved definitions
 (`export --dir`) and your backups are the other two anchors. Record the head,
 keep the export, keep backups.
 
+Every connection the catalog opens runs with the journal in WAL mode,
+`synchronous` at FULL and foreign keys on: the one writer and the eight readers
+of a read-write store, the eight readers of a read-only store (the processor)
+and the connections of a forensic open. The three settings travel in the
+connection string, so the pool cannot hand out a connection that was left at a
+build's default
+(`TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL` borrows
+every connection of every pool at once and reads the three pragmas back from
+each). FULL is also SQLite's compile-time default; it is pinned on purpose
+rather than inherited (owner decision O-3): in WAL mode it syncs the WAL file
+after every commit, so an approval, a rollback or a crawl is in the synced log
+before its command returns, which is what SQLite documents as making a
+transaction durable across a power loss and not only across a crash of the
+process. NORMAL would skip that sync and sync only around checkpoints, which
+SQLite's own matrix marks "maybe not durable": the newest commits can be lost
+with the power, so it is not used, and a measured benchmark on the target file
+system is the condition for ever changing it. The cost is one sync per commit,
+nothing at the rate at which people make decisions. The reads that anchor a
+tool's state and approval, a server's row and a version's history to the
+newest audit entry about them rest on the `audit_log_by_subject` index;
+`TestAnchorQueries_StayOnTheAuditLogBySubjectIndex` runs `EXPLAIN QUERY PLAN`
+over each of those reads and fails when any one reaches the log without that
+index, because without it every probe walks the log in sequence order instead
+of seeking the subject's own entries (the research pass of 2026-10-14 measured
+ten thousand such probes at 0.07 s with the index and 58.9 s without it).
+
 ## Recovering from ErrCorrupt and ErrSchema
 
 `catalog: database integrity check failed` (`ErrCorrupt`) means the file

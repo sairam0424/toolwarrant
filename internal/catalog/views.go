@@ -28,6 +28,15 @@ const toolViewSelect = `SELECT s.name, t.id, t.name, t.state,
 	LEFT JOIN tool_versions v ON v.id = t.approved_version_id
 	LEFT JOIN tool_versions pv ON pv.tool_id = t.id AND pv.status = 'pending'`
 
+// toolViewsQuery and toolViewQuery are toolViewSelect as Tools (one server, or
+// every server when the name is empty) and Tool run it; both are named so that
+// TestAnchorQueries_StayOnTheAuditLogBySubjectIndex explains the statements
+// the views run rather than copies of them.
+const (
+	toolViewsQuery = toolViewSelect + ` WHERE (? = '' OR s.name = ?) ORDER BY s.name, t.name`
+	toolViewQuery  = toolViewSelect + ` WHERE s.name = ? AND t.name = ?`
+)
+
 // scanToolView reads one row of toolViewSelect and checks the approval
 // evidence that needs no bytes; the returned reference (id 0 when the tool has
 // no approval) is what the caller re-checks and anchors afterwards.
@@ -92,7 +101,7 @@ func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 // readToolViews runs toolViewSelect for one server or all, appends the views
 // to out and returns the approvals to check once the rows are closed.
 func (s *Store) readToolViews(ctx context.Context, q queryer, server string, out *[]ToolView) ([]approvedRef, []stateRef, error) {
-	rows, err := q.QueryContext(ctx, toolViewSelect+` WHERE (? = '' OR s.name = ?) ORDER BY s.name, t.name`, server, server)
+	rows, err := q.QueryContext(ctx, toolViewsQuery, server, server)
 	if err != nil {
 		return nil, nil, fmt.Errorf("catalog: list tools: %w", err)
 	}
@@ -139,7 +148,7 @@ func (s *Store) Tool(ctx context.Context, server, tool string) (ToolView, error)
 			st  stateRef
 			err error
 		)
-		v, ref, st, err = scanToolView(q.QueryRowContext(ctx, toolViewSelect+` WHERE s.name = ? AND t.name = ?`, server, tool))
+		v, ref, st, err = scanToolView(q.QueryRowContext(ctx, toolViewQuery, server, tool))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("%w: tool %s/%s", ErrNotFound, quote(server), quote(tool))

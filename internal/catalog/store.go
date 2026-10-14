@@ -105,10 +105,11 @@ type Store struct {
 }
 
 // Open opens or creates the database at path with the default options: read
-// and write, create a missing file, DefaultBusyTimeout. It enables WAL,
-// foreign keys and the busy timeout, creates the schema, and refuses a
-// database written by another schema version (ErrSchema) or by another
-// application. See OpenWith for the rules on the file itself.
+// and write, create a missing file, DefaultBusyTimeout. It enables WAL, and on
+// every connection synchronous FULL, foreign keys and the busy timeout
+// (dsnFor), creates the schema, and refuses a database written by another
+// schema version (ErrSchema) or by another application. See OpenWith for the
+// rules on the file itself.
 func Open(path string, policy lifecycle.Policy) (*Store, error) {
 	return OpenWith(path, OpenOptions{Policy: policy})
 }
