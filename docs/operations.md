@@ -1256,9 +1256,8 @@ one SPDX SBOM per archive with syft, signs the checksums file keyless with
 cosign under the workflow's own identity, and creates a draft release whose
 notes open with the pinned gateway version and the catalog schema version and
 group the commits since the previous tag by type. Inspect the draft (the four
-archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`); for
-the first release, make the repository public and set the items listed below
-first, then publish it. The seam and mock binaries are never released.
+archives, the `.spdx.json` files, the `.txt` and its `.txt.sigstore.json`),
+then publish it. The seam and mock binaries are never released.
 
 A user verifies a release before running it:
 
@@ -1342,22 +1341,45 @@ final tag delete the candidate tags and their draft releases, or the notes of
 the release start at the last candidate. goreleaser's `smartsemver` sort, which would skip them, is a
 GoReleaser Pro feature and fails the open-source build (D16).
 
-When the repository is made public, and before the draft is published, set by
-hand on GitHub (rulesets, private vulnerability reporting and secret scanning
-with push protection exist only for a public repository on the free plan;
-Dependabot alerts can be switched on while it is private):
+The repository settings as they stand, read with `gh api` on 2026-10-14 (the
+repository has been public since v0.1.0 was published on 2026-10-12; rulesets,
+private vulnerability reporting and secret scanning with push protection exist
+only for a public repository on the free plan):
 
 - Description: toolwarrant for MCP: a control plane that approves exact
   tool-definition digests and enforces them at agentgateway v1.6.0 as an
-  ExtMCP processor.
-- Topics: mcp, model-context-protocol, agentgateway, ai-agents,
-  tool-poisoning, supply-chain-security, audit-log, sqlite, go. No website.
-- Security: private vulnerability reporting, Dependabot alerts, secret scanning
-  with push protection (all free on a public repository).
-- Rules: a ruleset on `main` that requires a pull request and the `ci` checks,
-  and one on `v*` tags that lets only the owner create them.
+  ExtMCP processor. Topics: agentgateway, ai-agents, audit-log, go, mcp,
+  model-context-protocol, sqlite, supply-chain-security, tool-poisoning. No
+  website.
+- Rulesets, both active. `main: pull request and ci` (id 24941251) on the
+  default branch forbids deletion and non-fast-forward pushes, requires a pull
+  request (no approving review is required: there is one maintainer) and
+  requires the nine `ci` job names as status checks (`gofmt, go vet,
+  golangci-lint v2.14.0`; `go build and go vet`; `go test -race -short`; `full
+  textdiff Unicode walk, slow catalog tests and the processor gRPC size test`;
+  `govulncheck`; `gitleaks`; `scripts/gen-third-party-notices.sh --check`;
+  `goreleaser check and the schema version in the release notes`; `cited tests
+  and relative links exist`), with no bypass actor, so a renamed job blocks
+  every merge until the ruleset is edited. `v* tags: owner only` (id 24941252)
+  blocks the creation, update and deletion of `v*` tags for everyone but the
+  repository owner, whose Admin role bypasses it always and who holds to the
+  tag policy above.
+- Security: private vulnerability reporting on; secret scanning on with push
+  protection; Dependabot alerts on, with weekly version updates for the GitHub
+  Actions and the Go modules from `.github/dependabot.yml`; Dependabot
+  security updates off (a Dependabot `go.mod` pull request fails the `notices`
+  job until `THIRD_PARTY_NOTICES.md` is regenerated on its branch, as the
+  dependabot file says).
 - Wiki off; issues on (the issue chooser routes security reports to the
   policy).
+- Immutable releases: not yet enabled. The owner enables them (Settings,
+  General, Releases) before the first v0.2.0 release candidate. From then on
+  GitHub locks each published release's tag to its commit and freezes its
+  assets while the release exists, irreversibly per published release (a
+  draft is unaffected until published), and issues a release attestation that
+  `gh release verify` (gh 2.81 or later) checks; a fix stays a new tag.
+  Releases published before that are governed by the ruleset and the tag
+  policy alone.
 
 ## Exit codes
 

@@ -13,13 +13,12 @@ worked around here where the design allows.
 ## Reporting a vulnerability
 
 Use GitHub private vulnerability reporting on this repository: the Security tab,
-"Report a vulnerability". It is switched on when the repository is made public,
-which happens before a release is published (docs/operations.md, Releasing), so
-it exists wherever this file is read as part of a release. The report is
-visible to the maintainer only. GitHub
-is a CVE numbering authority, so a CVE can be requested through the advisory the
-report creates. Please do not open a public issue for a vulnerability; the
-new-issue chooser points here for that reason.
+"Report a vulnerability". It is switched on (docs/operations.md, Releasing,
+lists the repository settings as they stand), so it exists wherever this file
+is read as part of a release. The report is visible to the maintainer only.
+GitHub is a CVE numbering authority, so a CVE can be requested through the
+advisory the report creates. Please do not open a public issue for a
+vulnerability; the new-issue chooser points here for that reason.
 
 The maintainer acknowledges a report within two days and aims to ship a fix in
 the next tag; a confirmed problem not fixed within fourteen days of the report
