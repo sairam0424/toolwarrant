@@ -17,6 +17,7 @@ const (
 	causeNotApproved     cause = "not approved"
 	causeChanged         cause = "changed since approval"
 	causeUnverified      cause = "not yet verified"
+	causeStale           cause = "crawl evidence too old"
 	causeUnavailable     cause = "catalog unavailable"
 	causeUnreadable      cause = "request could not be read"
 	causeWrongBackend    cause = "wrong backend"

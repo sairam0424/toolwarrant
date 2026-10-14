@@ -45,7 +45,7 @@ func TestCheckResponse_EvidenceIsKeptForEveryCatalogTool(t *testing.T) {
 			t.Fatalf("stats = %+v", st)
 		}
 		for name, raw := range map[string][]byte{"p1": p1, "p2": p2, "off": off, "add": add2} {
-			if seen, ok := s.observedDigest(name); !ok || seen != mustDigest(t, raw) {
+			if seen, _, ok := s.observedDigest(name); !ok || seen != mustDigest(t, raw) {
 				t.Errorf("evidence for %s = %q, %v; want the digest the page showed", name, seen, ok)
 			}
 		}
@@ -66,7 +66,7 @@ func TestCheckResponse_EvidenceIsKeptForEveryCatalogTool(t *testing.T) {
 		if st := s.Stats(); st.EvidenceDropped == 0 {
 			t.Fatalf("stats = %+v: the two slots hold contradictions, so the rest must have been dropped", st)
 		}
-		if seen, ok := s.observedDigest("add"); ok && seen != dAdd2 {
+		if seen, _, ok := s.observedDigest("add"); ok && seen != dAdd2 {
 			t.Fatalf("evidence for add = %q; if kept it must be the changed digest", seen)
 		}
 		res := call(t, s, callReq("add"))
@@ -93,10 +93,10 @@ func TestCheckResponse_FullObservedTableEvictsAgreeingEvidenceNeverAContradictio
 	if got := servedNames(t, list(t, s, listBody("", add2))); len(got) != 0 {
 		t.Fatalf("served %v", got)
 	}
-	if seen, ok := s.observedDigest("add"); !ok || seen != mustDigest(t, add2) {
+	if seen, _, ok := s.observedDigest("add"); !ok || seen != mustDigest(t, add2) {
 		t.Fatalf("evidence for add = %q, %v; want the changed digest", seen, ok)
 	}
-	if _, ok := s.observedDigest("echo"); ok {
+	if _, _, ok := s.observedDigest("echo"); ok {
 		t.Fatal("echo, which agreed with its approval, should have been evicted")
 	}
 	if n := s.trackedCount(); n != 1 {
@@ -113,7 +113,7 @@ func TestCheckResponse_FullObservedTableEvictsAgreeingEvidenceNeverAContradictio
 
 	// A denied page listing add keeps the marker: the name is tracked.
 	requireListDenied(t, list(t, s, listBody("", add2, add2)), api.AuthorizationError_INVALID)
-	if seen, ok := s.observedDigest("add"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("add"); !ok || seen != observedConflict {
 		t.Fatalf("evidence for add after the denied page = %q, %v; want the conflict marker", seen, ok)
 	}
 	requireCallDenied(t, call(t, s, callReq("add")), "add", causeChanged)
@@ -123,10 +123,10 @@ func TestCheckResponse_FullObservedTableEvictsAgreeingEvidenceNeverAContradictio
 	if got := servedNames(t, list(t, s, listBody("", echo1))); !reflect.DeepEqual(got, []string{"echo"}) {
 		t.Fatalf("served %v, want [echo]: the live bytes are the approved ones", got)
 	}
-	if seen, ok := s.observedDigest("add"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("add"); !ok || seen != observedConflict {
 		t.Fatalf("the conflict marker for add was evicted: evidence = %q, %v", seen, ok)
 	}
-	if _, ok := s.observedDigest("echo"); ok {
+	if _, _, ok := s.observedDigest("echo"); ok {
 		t.Fatal("echo was recorded although the only slot holds a contradiction")
 	}
 	requireCallDenied(t, call(t, s, callReq("add")), "add", causeChanged)
@@ -154,7 +154,7 @@ func TestCheckRequest_DroppedEvidenceDeniesUnlistedToolsUntilListed(t *testing.T
 	if got := servedNames(t, list(t, s, listBody("", add2))); len(got) != 0 {
 		t.Fatalf("served %v", got)
 	}
-	if _, ok := s.observedDigest("add"); ok {
+	if _, _, ok := s.observedDigest("add"); ok {
 		t.Fatal("add was recorded although the only slot holds a contradiction")
 	}
 	if st := s.Stats(); st.EvidenceDropped != 1 || st.ToolsMismatched != 2 {

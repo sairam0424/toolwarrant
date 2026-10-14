@@ -44,7 +44,7 @@ func TestCheckResponse_OversizedPageMarksEveryServableToolBeforeDenial(t *testin
 		t.Fatalf("served %v", got)
 	}
 	requireAllowed(t, call(t, s, callReq("add")))
-	if seen, ok := s.observedDigest("pend"); !ok || seen != dPend {
+	if seen, _, ok := s.observedDigest("pend"); !ok || seen != dPend {
 		t.Fatalf("evidence for pend after the clean page = %q, %v; want its digest (D15)", seen, ok)
 	}
 
@@ -53,7 +53,7 @@ func TestCheckResponse_OversizedPageMarksEveryServableToolBeforeDenial(t *testin
 		t.Errorf("reason = %q", e.GetReason())
 	}
 	for _, name := range []string{"echo", "add", "pend"} {
-		if seen, ok := s.observedDigest(name); !ok || seen != observedConflict {
+		if seen, _, ok := s.observedDigest(name); !ok || seen != observedConflict {
 			t.Errorf("evidence for %s after the oversized page = %q, %v; want the conflict marker", name, seen, ok)
 		}
 	}
@@ -127,7 +127,7 @@ func TestCache_PauseAndResumeKeepTheListingEvidence(t *testing.T) {
 
 		src.publish(paused) // server pause: an empty snapshot
 		requireCallDenied(t, call(t, s, callReq("add")), "add", causeNotApproved)
-		if seen, ok := s.observedDigest("add"); !ok || seen != d2 {
+		if seen, _, ok := s.observedDigest("add"); !ok || seen != d2 {
 			t.Fatalf("the listing evidence for add was discarded by the pause: %q, %v", seen, ok)
 		}
 		if limit, tracked := s.trackedLimit(), s.trackedCount(); limit < tracked || tracked != 1 {
@@ -141,7 +141,7 @@ func TestCache_PauseAndResumeKeepTheListingEvidence(t *testing.T) {
 		src.publish(paused)
 		requireCallDenied(t, call(t, s, callReq("add")), "add", causeNotApproved)
 		src.publish(tools)
-		if seen, ok := s.observedDigest("add"); !ok || seen != observedConflict {
+		if seen, _, ok := s.observedDigest("add"); !ok || seen != observedConflict {
 			t.Fatalf("the conflict marker for add was discarded by the pause: %q, %v", seen, ok)
 		}
 		requireCallDenied(t, call(t, s, callReq("add")), "add", causeChanged)
@@ -167,10 +167,10 @@ func TestCache_PauseAndResumeKeepTheListingEvidence(t *testing.T) {
 		if got := servedNames(t, list(t, s, listBody("", add2, tool("new", "n")))); len(got) != 0 {
 			t.Fatalf("served %v during the pause", got)
 		}
-		if seen, ok := s.observedDigest("add"); !ok || seen != d2 {
+		if seen, _, ok := s.observedDigest("add"); !ok || seen != d2 {
 			t.Fatalf("evidence for add after the listing during the pause = %q, %v; want the changed digest", seen, ok)
 		}
-		if _, ok := s.observedDigest("new"); ok || s.trackedCount() != 1 {
+		if _, _, ok := s.observedDigest("new"); ok || s.trackedCount() != 1 {
 			t.Fatalf("a name the table did not track was recorded during the pause (%d tracked)", s.trackedCount())
 		}
 		src.publish(tools) // resume, no crawl in between
@@ -188,7 +188,7 @@ func TestCache_PauseAndResumeKeepTheListingEvidence(t *testing.T) {
 		src.publish(paused)
 		for name, page := range map[string][]byte{"not an array": []byte(`{"tools":"not an array"}`), "over the cap": oversizedPage()} {
 			requireListDenied(t, list(t, s, page), api.AuthorizationError_INVALID)
-			if seen, ok := s.observedDigest("add"); !ok || seen != observedConflict {
+			if seen, _, ok := s.observedDigest("add"); !ok || seen != observedConflict {
 				t.Fatalf("%s: evidence for add = %q, %v; want the conflict marker", name, seen, ok)
 			}
 		}
@@ -221,7 +221,7 @@ func TestCache_ListingWhileDisabledDeniesTheEnabledCallUntilACleanListing(t *tes
 	if got := servedNames(t, list(t, s, listBody("", add2))); len(got) != 0 {
 		t.Fatalf("served %v while disabled", got)
 	}
-	if seen, ok := s.observedDigest("add"); !ok || seen != mustDigest(t, add2) {
+	if seen, _, ok := s.observedDigest("add"); !ok || seen != mustDigest(t, add2) {
 		t.Fatalf("evidence for add after the listing while disabled = %q, %v; want the changed digest", seen, ok)
 	}
 	requireCallDenied(t, call(t, s, callReq("add")), "add", causeNotApproved)
@@ -276,7 +276,7 @@ func TestCheckResponse_OverCapPageIsRefusedBeforeNamesAreRead(t *testing.T) {
 	if !strings.Contains(logs.String(), "more tools than the limit") {
 		t.Errorf("the log should say why:\n%s", logs.String())
 	}
-	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 		t.Errorf("a page stopped at the cap is evidence about nothing: echo = %q, %v, want the conflict marker", seen, ok)
 	}
 	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
