@@ -108,7 +108,7 @@ type Config struct {
 	// (and a ClientCAs pool, which is required then) every connection must
 	// present a certificate that pool signed, which authenticates the hooks as
 	// the shared secret does and so silences the no-secret warning of a
-	// non-loopback listener (owner decision O-2, D19 planned); any other
+	// non-loopback listener (owner decision O-2, D19); any other
 	// ClientAuth value protects the bytes on the wire only. A connection the
 	// handshake refuses never reaches a hook, so Stats does not count it; the
 	// transport's log line does. Nil serves plaintext, as every version before

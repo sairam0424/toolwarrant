@@ -113,7 +113,7 @@ func serveOnce(t *testing.T, s *Server, lis net.Listener) error {
 	}
 }
 
-// D19 (planned): a TLS listener refuses what is not a TLS 1.3 client holding a
+// D19: a TLS listener refuses what is not a TLS 1.3 client holding a
 // certificate the configured authority signed, and a refused handshake leaves
 // no trace in the hook counters because no hook was ever read.
 func TestServe_TLSListenerRefusesPlaintextAndUnknownClients(t *testing.T) {
@@ -146,7 +146,7 @@ func TestServe_TLSListenerRefusesPlaintextAndUnknownClients(t *testing.T) {
 	}
 }
 
-// D19 (planned): with a client CA the gateway must present a certificate that
+// D19: with a client CA the gateway must present a certificate that
 // CA signed; with one, both hooks work exactly as in plaintext.
 func TestServe_TLSWithClientCARequiresAClientCertificate(t *testing.T) {
 	lab := newTLSLab(t)
@@ -176,7 +176,7 @@ func TestServe_TLSWithClientCARequiresAClientCertificate(t *testing.T) {
 	}
 }
 
-// D19 (planned): without a client CA the listener protects the bytes, not the
+// D19: without a client CA the listener protects the bytes, not the
 // port: any TLS 1.3 client is served, with or without a certificate, while a
 // plaintext client is still refused.
 func TestServe_TLSWithoutClientCAAcceptsAnyClient(t *testing.T) {
@@ -204,7 +204,7 @@ func TestServe_TLSWithoutClientCAAcceptsAnyClient(t *testing.T) {
 	}
 }
 
-// O-2, D19 (planned): a verified client certificate authenticates the hooks as
+// O-2, D19: a verified client certificate authenticates the hooks as
 // the shared secret does, so a non-loopback listener with a client CA and no
 // secret is not warned about; server-only TLS still is.
 func TestServe_ClientCertificateSilencesTheNoSecretWarning(t *testing.T) {

@@ -15,7 +15,7 @@ var (
 	// certificate but names no authority to verify it against. crypto/tls
 	// would then verify against the system roots, so any certificate a public
 	// authority issued would pass as the gateway; the processor fails closed
-	// instead (D19 planned).
+	// instead (D19).
 	errTLSNoClientCAs = errors.New("processor: tls requires a verified client certificate but names no client certificate authority")
 )
 
@@ -23,7 +23,7 @@ var (
 // nil for nil. The caller's configuration is never written to; the copy is
 // what Serve hands to the transport. 1.3 is the floor because the link carries
 // every decision the gateway acts on and nothing on it needs an older peer:
-// the gateway's rustls client speaks 1.3 (D19 planned). A caller that asked for
+// the gateway's rustls client speaks 1.3 (D19). A caller that asked for
 // a higher minimum keeps it.
 func hardenTLS(c *tls.Config) *tls.Config {
 	if c == nil {
