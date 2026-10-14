@@ -34,8 +34,13 @@ pending, and toolwarrant documents its own controls for both in
 The trust boundary, in six lines:
 
 - Whoever can write the 0600 catalog file can append a correctly sealed audit
-  entry that approves a definition; the recorded audit head, the git export and
-  backups detect it, nothing inside the file does (known limit L19, decision D14).
+  entry that approves a definition; the recorded audit head, the git export
+  (since D21 (e) signed with `export --sign-key` and recording the head it
+  mirrors, so `export verify --dir DIR --pub-key FILE --expect-head HEAD` checks
+  the export against the key you hold and the head you recorded) and backups
+  detect it, nothing inside the file does (row 21 of the threat model and the
+  note of known limit L19, which carries the catalog file's boundary; decisions
+  D14 and D21 (e)).
 - Whoever reaches the processor without the shared secret, or without a
   client certificate its `--tls-client-ca` accepts, decides what is served
   (known limit L11, decision D19).
@@ -91,36 +96,38 @@ the system actor or by a proposer of the version (a rollback by a proposer is
 permitted by design: the target was approved by someone before, see decision D4
 and `internal/lifecycle/decide.go`, and since the seventh round a verified
 `version.approved` or `version.rolled_back` audit entry about the digest must
-show that, decision D17); the crawler reaching an address or scheme
-the egress policy forbids; an edit to the database that the catalog's integrity
-checks do not report (the digest re-check, the newest-decision rule and the
-newest audit entry for every approved version, the rule that the serving and
-decision paths trust an audit entry only when it is part of the chain the
-`Store` verified at open and extended on every reload, the reconstruction of
-every version's status and ever-approved flag from the verified entries on
-every decision, the anchoring of every server's processor address, URL hash
-and allow-private flag and of every exported approver's name to the verified
+show that, decision D17); the crawler reaching an address or scheme the egress
+policy forbids; an edit to the database that the catalog's integrity checks do
+not report (the hash of a definition's stored bytes against its digest on every
+path that reads them, `export`, `emit`, `show`, `diff` and every decision, with
+no memory between calls, the digest the serving path and `list` hand out
+anchored to a verified audit entry, the newest-decision rule and the newest
+audit entry for every approved version, the rule that the serving and decision
+paths trust an audit entry only when it is part of the chain the `Store`
+verified at open and extended on every reload, the reconstruction of every
+version's status and ever-approved flag from the verified entries on every
+decision, the anchoring of every server's processor address, URL hash and
+allow-private flag and of every exported approver's name to the verified
 entries, the refusal of audit rows at seq 0 or below and of approvals and
-history rows with id below 1, the chain pin, the
-catalog identity and file identity compared on every read, the guard, table
-and index definitions and the absence of foreign triggers, views, unique
-indexes and unaccounted automatic indexes, all applied at open and on every
-snapshot load, the audit chain, and `Store.Integrity`'s verification of every
-entry's seal and link and its cross-check of every mutable column the log
-describes and every subject the log describes against the rows, which
-`audit verify` runs after the chain check and when the chain is broken), with
-one stated boundary: an entry appended to the audit log by whoever can write
-the 0600 file, correctly sealed, is not detectable inside the file, and
-neither is a rewrite from any entry to the head made while no `Store` holds a
-pin (the CLI between commands, the processors while stopped); both are
-detected by the recorded head, the git export and backups
-(decisions D14, D15 and D17, known limit L19); a processor that keeps serving
-after the catalog file at its path was replaced; upstream text reaching a terminal, a
-log line or a file name
-unescaped; a bearer token, shared secret or credential-bearing URL printed,
-stored, logged or written into a file that is not owner-only; anything under
-`internal/export` writing outside its directory or running a program during
-`Commit`.
+history rows with id below 1, the chain pin, the catalog identity and file
+identity compared on every read, the guard, table and index definitions and the
+absence of foreign triggers, views, unique indexes and unaccounted automatic
+indexes, all applied at open and on every snapshot load, the audit chain, and
+`Store.Integrity`'s verification of every entry's seal and link and its
+cross-check of every mutable column the log describes and every subject the log
+describes against the rows, which `audit verify` runs after the chain check and
+when the chain is broken), with one stated boundary: an entry appended to the
+audit log by whoever can write the 0600 file, correctly sealed, is not
+detectable inside the file, and neither is a rewrite from any entry to the head
+made while no `Store` holds a pin (the CLI between commands, the processors
+while stopped); both are detected by the recorded head, the git export (signed
+and bound to the head it mirrors since D21 (e)) and backups (decisions D14, D15,
+D17 and D21 (e), known limit L19); a processor that keeps serving after the
+catalog file at its path was replaced; upstream text reaching a terminal, a log
+line or a file name unescaped; a bearer token, shared secret or
+credential-bearing URL printed, stored, logged or written into a file that is
+not owner-only; anything under `internal/export` writing outside its directory
+or running a program during `Commit`.
 
 Out of scope:
 
@@ -144,9 +151,12 @@ Out of scope:
   non-loopback bind on the serving gateway that is not firewalled, a shared or
   world-readable database, a hand-edited configuration file, a gateway host
   with other local users.
-- Homoglyph detection in the diff renderer (a documented limit of
-  `internal/textdiff`) and behaviour change behind an unchanged definition (the
-  digest detects definition drift only).
+- Look-alikes outside the UTS #39 confusables table and mixed-script words the
+  Highly Restrictive profile allows (a documented limit of `internal/textdiff`;
+  a listed look-alike against the approved version and a word that mixes scripts
+  are reported by code point and refused by `approve` unless
+  `--accept-suspicious`, D21 (c)), and behaviour change behind an unchanged
+  definition (the digest detects definition drift only).
 - Denial of service of an operator's own catalog by that operator.
 
 ## Threat model
@@ -321,21 +331,25 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   with write access and nothing inside the file can refute it (decision D14).
   Inside the file an audit entry, and since the seventh round every column a
   decision or a server view acts on, is trusted only through the chain the
-  `Store` verified when it opened, so a forger must rewrite every entry from
-  the forged one to the head. A running `Store` catches that through the head
-  it pinned; a rewrite made while no `Store` holds a pin, which is the CLI's
-  state between commands and the processors' state while they are stopped,
-  verifies clean on the next open and is caught by the recorded head alone
-  (decision D15 as corrected by D17). The processor's pin protects only while
-  a processor runs and the CLI is never protected by a pin, so record the
-  head after every verify and compare it with `--expect-head` before every
-  decision you make after the processors were stopped.
-  Keep the git export of approved definitions (`export --dir`) and backups as
-  the other two anchors. `audit log ok` in forensic mode means the chain is
-  consistent, not that the file is intact; every other command, `list` and
-  `show` included, refuses a file whose guard objects are missing or
-  redefined, or that holds a trigger, view or unique index the schema did not
-  create.
+  `Store` verified when it opened, so a forger must rewrite every entry from the
+  forged one to the head. A running `Store` catches that through the head it
+  pinned; a rewrite made while no `Store` holds a pin, which is the CLI's state
+  between commands and the processors' state while they are stopped, verifies
+  clean on the next open and is caught by the recorded head alone (decision D15
+  as corrected by D17). The processor's pin protects only while a processor runs
+  and the CLI is never protected by a pin, so record the head after every verify
+  and compare it with `--expect-head` before every decision you make after the
+  processors were stopped. Keep the git export of approved definitions (`export
+  --dir`, signed with `--sign-key` so that it records the head it mirrors) and
+  backups as the other two anchors, and run `export verify --dir DIR --pub-key
+  FILE --expect-head HEAD` beside `audit verify --expect-head` with the head you
+  recorded: the export then verifies against the key you hold and the head you
+  recorded, opening no database (decision D21 (e);
+  `TestExportSignsTheManifestAndVerifyRoundTrips`). `audit log ok` in forensic
+  mode means the chain is consistent, not that the file is intact; every other
+  command, `list` and `show` included, refuses a file whose guard objects are
+  missing or redefined, or that holds a trigger, view or unique index the schema
+  did not create.
 - Keep upstreams unreachable except from the gateway and the control plane
   host. The emitted file binds the gateway's serving port to 127.0.0.1 by
   default (e2e scenario I); a non-loopback `emit --bind-address` is an explicit

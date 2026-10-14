@@ -96,27 +96,29 @@ computing base (known limit L18).
 
 Strict mode: a tool is served only while the definition the upstream serves
 right now equals the approved digest, so a changed tool is hidden and its calls
-are denied, and the processor denies anything it cannot verify. Nothing is served
-until a named person has approved an exact digest; a catalog miss, an unreadable
-page, an unreachable catalog or a hook from another backend all deny. The catalog
-hands out an approval only when the newest approve or rollback decision about
-the tool names that exact version and digest and the newest approval or rollback
-entry about the tool in the hash-chained audit log carries the same digest and
-is part of the chain the catalog verified from its first entry when it opened.
-Every decision and every version listing reconstruct each version's status from
-the verified audit entries, and a stored column that disagrees is corruption. A
-forged approval must therefore rewrite every entry from the forged one to the
-head; a running catalog catches that through the head it pinned, and while no
-catalog is open (the CLI between commands, the processors while stopped) only
-the head you recorded catches it. A crawl never approves anything: it records
+are denied, and the processor denies anything it cannot verify. Nothing is
+served until a named person has approved an exact digest; a catalog miss, an
+unreadable page, an unreachable catalog or a hook from another backend all deny.
+The catalog hands out an approval only when the newest approve or rollback
+decision about the tool names that exact version and digest and the newest
+approval or rollback entry about the tool in the hash-chained audit log carries
+the same digest and is part of the chain the catalog verified from its first
+entry when it opened. Every decision and every version listing reconstruct each
+version's status from the verified audit entries, and a stored column that
+disagrees is corruption. A forged approval must therefore rewrite every entry
+from the forged one to the head; a running catalog catches that through the head
+it pinned, and while no catalog is open (the CLI between commands, the
+processors while stopped) only the head you recorded catches it, together with a
+signed export that names that head (`export --sign-key`, checked with `export
+verify --expect-head`, D21 (e)). A crawl never approves anything: it records
 proposals, drift, reverts, absences and unusable definitions, and the person who
 ran the crawl that proposed a version cannot approve that version. Operator
 names are asserted, not authenticated: `--as NAME` and `TOOLWARRANT_ACTOR` are
-taken as given beyond the OS account that runs the command (residual risk L13
-in the threat model), so the per-person rule and the proposer rule hold against
-the name given. Whoever can reach the processor without the shared secret, or
-the gateway's admin listener, decides what is served; both are inside the
-trusted computing base ([docs/threat-model.md](docs/threat-model.md)).
+taken as given beyond the OS account that runs the command (residual risk L13 in
+the threat model), so the per-person rule and the proposer rule hold against the
+name given. Whoever can reach the processor without the shared secret, or the
+gateway's admin listener, decides what is served; both are inside the trusted
+computing base ([docs/threat-model.md](docs/threat-model.md)).
 
 ## Quickstart
 
@@ -283,10 +285,19 @@ pinned gateway version.
   that digest. The proposer of the digest cannot approve it
   (`--allow-self-approval` relaxes that for a lab); the system actor `crawler`
   can never decide.
-- Drift shows as hidden. When a crawl sees a digest other than the approved
-  one, the tool moves to `changed_pending_reapproval`, `list` flags it `DRIFT`,
-  and the processor hides it and denies its calls. The approved version is
-  still approved; it is just not what the upstream serves.
+- Drift shows as hidden, and classified. When a crawl sees a digest other than
+  the approved one, the tool moves to `changed_pending_reapproval`, `list` flags
+  it `DRIFT`, and the processor hides it and denies its calls. The approved
+  version is still approved; it is just not what the upstream serves. `diff`
+  prints `drift: GRADE (kinds)` above the escaped diff and `show` carries a
+  CHANGE column and groups the pending versions by what they change (CRITICAL
+  for a parameter removed, retyped or newly required, an annotation hint
+  loosened or the name changed; WARNING for a description, schema, annotations
+  or `_meta` change; INFO for the title and icons), so an approver reads what
+  changed before reading how; two definitions that differ never grade none. The
+  grade is advice, the digest decides (D21 (b);
+  `TestDiffPrintsTheDriftClassification`,
+  `TestShowGroupsVersionsByChangeKinds`).
 - Re-approve or reject. `approve` with the new digest makes the new definition
   the served one. `reject SERVER TOOL --hash DIGEST` records that the new
   digest must not be served; the tool stays hidden until the upstream goes back
@@ -347,8 +358,12 @@ compares every guard, table and index with its schema before it trusts a file.
 entry can be named; nothing is served or written from such an open. The one rule
 the chain cannot replace: record the head `audit verify` prints outside the
 database after every verify, and compare it with `audit verify --expect-head
-HASH` before every decision you make after the processors were stopped. How the
-checks work, what they cannot see and what to do on `ErrCorrupt` are in
+HASH` before every decision you make after the processors were stopped. An
+export made with `--sign-key` records that head in its signed `MANIFEST.json`,
+and `export verify --dir DIR --pub-key FILE --expect-head HASH` checks the
+mirror against the key you hold and the head you recorded, opening no database
+(D21 (e); `TestExportSignsTheManifestAndVerifyRoundTrips`). How the checks work,
+what they cannot see and what to do on `ErrCorrupt` are in
 [docs/operations.md](docs/operations.md).
 
 ## Non-goals
@@ -399,7 +414,7 @@ What the repository's own evidence says about the alternatives, and no more.
 One line each. The full text of every limit and what an operator can do about
 it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md).
 
-- L1. A client that never re-lists can call a changed tool until a gateway listing or a crawl refreshes the evidence.
+- L1. A client that never re-lists can call a changed tool until a gateway listing or a crawl refreshes the evidence; `serve --max-crawl-age` bounds the gap when the crawler stops (D21 (a)).
 - L2. agentgateway v1.6.0 drops keys it does not know before the hook, so a tool that carries one is never served.
 - L3. The processor chain is bound per MCP session; a reload that drops it unguards new sessions only.
 - L4. The crawler is fingerprintable, so an upstream can show it one definition and the gateway another.
@@ -412,9 +427,9 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 - L11. The processor link is `host:port` gRPC, plaintext unless `serve --tls-cert --tls-key --tls-client-ca` and `emit --processor-tls` put TLS 1.3 with the gateway's client certificate on it (D19); end-to-end scenario Q drives the handshake against the real gateway (the route serves under TLS with the client certificate; a plaintext side, a client certificate from another authority or a garbage root fails closed, D19); a plaintext processor stays on loopback with the shared secret.
 - L12. Added latency is measured on a 3-tool page only: +0.95 ms list p50 and +0.87 ms call p50 in scenario M.
 - L13. Operators are not authenticated: `--as` and `TOOLWARRANT_ACTOR` are taken as given.
-- L14. Homoglyphs pass the diff renderer unflagged; a behaviour change behind an unchanged definition is invisible.
-- L15. `--max-evidence-age` also ages conflict markers, so an old contradiction stops denying until re-listed.
-- L16. A reload of a 10000-tool server costs up to about 2.5 GB of hashing.
+- L14. Look-alikes outside the UTS #39 table and a behaviour change behind an unchanged definition are invisible; a look-alike the table lists, against the approved version, and a word that mixes scripts are reported by code point and refused by `approve` unless `--accept-suspicious` (D21 (c)).
+- L15. Closed (D21 (a)): only agreeing evidence ages; a contradiction denies until a clean page.
+- L16. Closed (D21 (d)): the snapshot the processor serves from and `list` hand out digests anchored to the verified audit chain and read no definition bytes; the bytes behind a digest are hashed against it on every path that reads them (`export`, `emit`, `show`, `diff`, every decision), so a rewrite of stored bytes that leaves the digest column intact is invisible to the snapshot and `list`, cannot change what the gateway serves, and is refused or named at once by those paths and by `audit verify`.
 - L17. agentgateway v1.6.0 forwards an id-less `tools/call` without the hook; the canary's probe reports it on every check (UNHOOKED-CALLS, or KNOWN-LIMIT with `--expect-unhooked`); deploy so that only id-sending clients reach the gateway.
 - L18. The gateway's admin API is unauthenticated on loopback; every local user of the host is inside the boundary.
 - L19. The configuration file's header hash is unkeyed; only the body hash you recorded catches a re-sealed edit.
@@ -468,6 +483,13 @@ Apache-2.0; see [LICENSE](LICENSE). The licence of every third-party module in
 the build is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
 generated from the module cache by `scripts/gen-third-party-notices.sh`. The
 ExtMCP protocol definition under `third_party/agentgateway/` is an unmodified
-copy from agentgateway v1.6.0, Apache-2.0. toolwarrant is not affiliated with
-the agentgateway project or with the Model Context Protocol project; it is a
-tool for MCP, not an MCP product.
+copy from agentgateway v1.6.0, Apache-2.0. The UTS #39 confusables table under
+`third_party/unicode/` (`confusables.txt`, Version 18.0.0 of 2026-08-06, sha256
+6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd57b2e2ce18f5b92) is an
+unmodified copy from unicode.org under the Unicode License v3
+(`third_party/unicode/LICENSE`, sha256
+e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96);
+`internal/textdiff/confusables_table.go` is generated from it by
+`scripts/gen-confusables.sh`, whose `--check` form the `ci` lint job runs.
+toolwarrant is not affiliated with the agentgateway project or with the Model
+Context Protocol project; it is a tool for MCP, not an MCP product.
