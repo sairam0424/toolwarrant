@@ -3,6 +3,8 @@
 # change is a deliberate commit that also regenerates THIRD_PARTY_NOTICES.md.
 #
 #   make test              unit and property tests of every package under -race
+#   make test-timings      the same run under gotestsum, then every test slower than 1s (needs gotestsum on PATH:
+#                          go install gotest.tools/gotestsum@v1.13.0, the version CI pins)
 #   make lint              gofmt, go vet and golangci-lint, including the e2e package
 #   make vuln              govulncheck (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 #   make e2e               the end-to-end test against the real agentgateway v1.6.0 binary
@@ -13,13 +15,26 @@
 
 export GOFLAGS = -mod=readonly
 
-.PHONY: build test lint vuln e2e demo release-check release-snapshot
+# The one go test command of the full suite; test and test-timings share it so
+# that the timing table is measured on exactly what make test runs.
+GO_TEST_ARGS = -race -count=1 -timeout 1500s -cover ./...
+
+.PHONY: build test test-timings lint vuln e2e demo release-check release-snapshot
 
 build:
 	go build ./... && go vet ./...
 
 test:
-	go test -race -count=1 -timeout 1500s -cover ./...
+	go test $(GO_TEST_ARGS)
+
+# The timing table CLAUDE.md's -short policy reads: the ci test jobs write the
+# same table to their step summary. gotestsum is not a module dependency (go.mod
+# stays as it is), so the recipe asks for it on PATH at the version ci pins.
+# The json file is kept and named so that other gotestsum tool queries can run
+# on it; the exit status is the test run's, also when the table printed.
+test-timings:
+	@command -v gotestsum >/dev/null 2>&1 || { echo "gotestsum is not on PATH; install the version ci pins: go install gotest.tools/gotestsum@v1.13.0"; exit 1; }
+	@json="$$(mktemp "$${TMPDIR:-/tmp}/toolwarrant-test-timings.XXXXXX")"; gotestsum --format pkgname --jsonfile "$$json" -- $(GO_TEST_ARGS); status=$$?; echo; echo "tests slower than 1s, slowest first (go test -json stream kept in $$json):"; gotestsum tool slowest --jsonfile "$$json" --threshold 1s; exit $$status
 
 lint:
 	@unformatted="$$(gofmt -l cmd internal e2e)"; if [ -n "$$unformatted" ]; then echo "gofmt: $$unformatted"; exit 1; fi
