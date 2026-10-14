@@ -396,7 +396,7 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 - L4. The crawler is fingerprintable, so an upstream can show it one definition and the gateway another.
 - L5. Definitions with numbers beyond exact double precision (2^53 + 1, 1e-400) are refused: two could share a digest.
 - L6. A tool with more than 20 new digests between decisions is hidden until someone decides; there is no prune.
-- L7. agentgateway is pinned to v1.6.0; every other release must be re-qualified before the pin moves.
+- L7. agentgateway is pinned to v1.6.0; every other release must be re-qualified before the pin moves: the seventeen items and `scripts/requalify-gateway.sh` are in [docs/operations.md](docs/operations.md), Moving the gateway pin (L7).
 - L8. Single tenant: one SQLite file, one processor per upstream, one operator, no high availability.
 - L9. Any `_meta` change is drift, and a `_meta` member the gateway does not preserve hides the tool.
 - L10. The serving port binds to 127.0.0.1 by default; any other bind exposes every route to that network.
@@ -431,7 +431,10 @@ in full), govulncheck, gitleaks, the third-party notices check, the release
 configuration check and the documentation checks (every cited test name and
 every relative link must exist) on every pull request and every push to main;
 the end-to-end job runs on manual dispatch against the linux release binary of
-agentgateway v1.6.0 and passed on 2026-10-12. The security policy, including
+agentgateway v1.6.0 and passed on 2026-10-12, and the `requalify` job runs on a
+dispatch that names a candidate release, checking the seventeen items of
+[docs/operations.md](docs/operations.md), Moving the gateway pin (L7), against
+it. The security policy, including
 how to report a problem and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
 [docs/operations.md](docs/operations.md); the design decisions D1 to D17 are in

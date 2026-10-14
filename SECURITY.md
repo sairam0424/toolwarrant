@@ -345,7 +345,12 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   emitter's binary validation tests and the end-to-end test against the new
   release before the pin changes; scenario L re-derives which keys the gateway
   strips, and the canary probe re-checks whether id-less calls are still
-  forwarded (HTTP 202, the fail-open shape of v1.6.0). The probe attributes
+  forwarded (HTTP 202, the fail-open shape of v1.6.0). The seventeen items of
+  that re-qualification, the script that runs them
+  (`scripts/requalify-gateway.sh vX.Y.Z SHA256 --e2e`, where SHA256 is the
+  published digest of the candidate's linux asset, which the script checks
+  before it runs anything) and the `requalify` job of the `ci` workflow are
+  in [docs/operations.md](docs/operations.md), Moving the gateway pin (L7). The probe attributes
   no other answer to the gateway, so a move of the pin cannot make it claim a
   refusal it did not see: a 400 with an empty or non-JSON body is reported as
   not accepted as a notification, by the gateway or by the upstream; a 2xx

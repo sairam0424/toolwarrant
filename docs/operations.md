@@ -1456,6 +1456,197 @@ only for a public repository on the free plan):
   Releases published before that are governed by the ruleset and the tag
   policy alone.
 
+## Moving the gateway pin (L7)
+
+agentgateway is pinned to one release (v1.6.0) because its configuration
+schema is unversioned, its ExtMCP protocol is young and a release breaks
+something about every five weeks; every other release is unqualified until the
+seventeen items below have been checked against it (known limit L7). The
+check is `scripts/requalify-gateway.sh`: it fetches what the items compare,
+runs the binary-backed tests and the end-to-end test against the candidate
+binary, and prints one line per item, `PASS` when the candidate behaves as
+the documents say of v1.6.0 and `CHANGED` when something must be rewritten
+before the pin moves. `CHANGED` is work to do, not a verdict on the release; a
+candidate that closes a known limit is `CHANGED` too, because the documents
+that describe the limit must change with the pin. Nothing moves the pin but a
+pull request that carries the bump list of item 17.
+
+```sh
+scripts/requalify-gateway.sh v1.7.0 SHA256_OF_agentgateway-linux-amd64 --e2e
+```
+
+The first argument is the release tag; the second is the SHA-256 of that
+release's `agentgateway-linux-amd64` asset, the value `AGENTGATEWAY_SHA256` in
+`.github/workflows/ci.yml` takes when the pin moves. The script refuses a
+digest the release does not publish beside that asset and, on a linux/amd64
+host, hashes the downloaded binary against it, as the `e2e` job does. The
+binary for the host it runs on (linux/amd64, linux/arm64 or darwin/arm64, the
+three the release ships) is downloaded into `.cache/candidate/<version>/`,
+used from there when already present, and checked against its own published
+digest; everything else the run produced is kept beside it: the three
+upstream files at both tags under `upstream/`, every diff under `diffs/`, the
+`go test -v` log in `tests.log`, and with `--e2e` the `make e2e` log in
+`e2e.log`, the scenario notes in `e2e-report.log` and the process logs under
+`e2e-work/logs/`. Without `--e2e` the items that need a running gateway are
+`SKIPPED`; `--reuse` runs nothing and re-reads the artefacts of an earlier
+run. The gateway binary is run only through the binary-backed tests
+(`--validate-only`) and, with `--e2e`, inside `make e2e`. Exit status 0 means
+every item that ran is `PASS` (item 15 is `PENDING` until the processor-TLS
+pull requests land), 1 that an item is `CHANGED` or a test run failed, 2 a
+usage error, 3 that nothing is `CHANGED` but items were `SKIPPED`. Two `RUN`
+lines before the items name every failed test of the two runs, so a failure
+no item reads is never hidden behind a `PASS`.
+
+The same run is the `requalify` job of the `ci` workflow: Actions, `ci`, Run
+workflow, with `gateway_version` and `gateway_sha256` filled in; the job runs
+only on a dispatch that fills them, calls the script with `--e2e` on the
+linux runner, prints the scenario notes and the head of every diff, and the
+process logs on failure. The pinned `e2e` job keeps running against v1.6.0 on
+every dispatch. `TestRequalifyCI_dispatchJobRunsTheScript` in
+`internal/requalifypolicy` fails when the job, its two inputs or the command
+disappear from `ci.yml`.
+
+The seventeen items, with what the script compares and where the documents
+record the pinned behaviour:
+
+1. The unhooked-call probe answers 202 (L17). Scenario O notes whether the
+   id-less `tools/call` reached the hostile upstream; `PASS` means it still
+   does, as README.md (canary step 7), SECURITY.md (hardening checklist),
+   Running the canary above, docs/threat-model.md (L17 and row 25) and the
+   `--no-probe` help in `cmd/toolwarrant/verify.go` say. Needs `--e2e`.
+2. `schema/config.json`, filtered to the definitions the emitted file writes
+   into or the canary reads: the root section list, `RawConfig`,
+   `LocalGateway`, `LocalAttachedRoute`, `RouteMatch`, `FilterOrPolicy`,
+   `McpAuthorization`, `McpGuardrails`, `Processor`, `FailureMode`, `Phase`,
+   `HeaderFilter`, `SimpleLocalBackendPolicies`, `LocalBackendTLS`,
+   `LocalRouteBackend`, `LocalMcpBackend`, `LocalMcpTarget` and their leaf
+   definitions, each extracted from the pretty-printed schema and compared
+   between the tags; a change anywhere else is reported by size only. The
+   line also counts the root sections, the route policies (`FilterOrPolicy`)
+   and the config fields (`RawConfig`), which `cmd/toolwarrant/liveshape.go`
+   and `liveadmin.go` state: at v1.6.0 the schema has 14 sections, 32 route
+   policies and 36 config fields.
+3. `crates/protos/proto/ext_mcp.proto`: identical at both tags and to the
+   vendored copy. When it differs: copy it into `third_party/agentgateway/`,
+   record the tag's commit in `NOTICE`, `go generate ./internal/extmcpv1`,
+   `scripts/gen-proto.sh --check`, and review `McpRequest.headers` and
+   `metadata_context` in `internal/processor`; the line names which of those
+   the diff touches.
+4. The enumerations the emitted processor entry depends on: the processor
+   `kind` constants (`remote` at v1.6.0; agentgateway main has gained a CEL
+   kind), `FailureMode` (`failClosed`, `failOpen`) and the method `Phase`
+   values (`off`, `request`, `response`, `full`).
+5. The versions of the `rmcp` crate in `Cargo.lock`, the typed model whose
+   re-serialisation drops keys (L2): 0.10.0 and 3.4.0 at v1.6.0, both
+   dependencies of the agentgateway crate.
+6. Scenario L against the L2 golden `e2e/testdata/gateway_tool_keys.json`.
+   When it fails, re-record the golden from the lists the test names, then
+   docs/threat-model.md L2 and L9, docs/decisions.md D10 and this document.
+   Needs `--e2e`.
+7. The MCP revision: the probe (`probeProtocolVersion` in
+   `cmd/toolwarrant/probe.go`) and the crawler (`requestedProtocolVersion` in
+   `internal/crawl/crawl.go`) send the same one, and scenario L notes the one
+   the gateway negotiated with its raw client (`L: the gateway negotiated MCP
+   protocol version ...`); the line also prints the revisions the hostile
+   upstream saw in `initialize` requests, read from its request log, which
+   are each client's own: the gateway relays them (2025-06-18 from the
+   crawler, the probe and the raw client, 2025-11-25 from the go-sdk client
+   of the e2e test). Needs `--e2e`.
+8. A raw `$NAME` is refused and the escaped `$` is accepted:
+   `TestGatewaySubstitutesEnvironmentIntoTheRawFile`,
+   `TestGoldenFilesValidateWithRealGateway` (the `dollar_sign` golden),
+   `TestDollarEscapeIsPinned` and `TestDollarSignNeverReachesTheFile`.
+9. The reload log markers `e2e/stack_test.go` waits for (`loaded config from
+   File`, `Failed to reload config`): every scenario that re-emits waits for
+   them, so the line counts the reloads seen and fails on `did not reload`.
+   Needs `--e2e`.
+10. The admin API (L18): the cmd tests against
+    `testdata/admin_config.json`
+    (`TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile`,
+    `TestLiveComparisonCatchesAnAddedOpenGateway`,
+    `TestVerifyGatewayLiveComparisonFailsClosed`) and scenario P's notes:
+    `GET /api/config` renders `config`, `gateways` and `routes`, `POST
+    /api/config` takes JSON (200) and refuses the emitted YAML (415), and
+    `GET /config_dump` answers 200 without authentication. A candidate that
+    authenticates the API is `CHANGED`: L18 in SECURITY.md, docs/threat-model.md
+    row 26 and the admin warning in `internal/emit/listeners.go` would have to
+    be rewritten. Needs `--e2e` for the notes.
+11. An oversized `tools/list` page (the 9437184-byte page of scenario J) is
+    answered 500 by the gateway before the hook and the processor logs
+    nothing, as decision D15 (f) records. Needs `--e2e`.
+12. The request-header filter, the target name and the metadata on both
+    hooks: `TestGatewayParsesTheRequestHeaderFilter` and
+    `TestGatewayAcceptsEachHalfOfTheFilterAlone` against the binary; scenario
+    H's note that `metadata_context` is delivered on both hooks, scenario J
+    (the cross-server denial names the target) and scenario P's note that the
+    live processor entry carries the filter. Needs `--e2e` for the scenarios.
+13. The listener addresses: `TestGatewayReadsListenerPinsExactly` (the exact
+    spelling of `off`), `TestGatewayParsesListenerAddresses`,
+    `TestGatewayParsesBindAddress` and `TestEveryBindAddressClassValidates`.
+    What the gateway binds when the fields are absent (`[::]:15020` and
+    `[::]:15021`, `internal/emit/listeners.go`) is not re-observed, because
+    the emitter always writes all three.
+14. The lenient acceptances `internal/emit/testdata/README.md` explains, which
+    the emitter refuses itself: `TestGatewayAcceptsAProcessorOnItsOwnSocket`,
+    `TestGatewayAcceptsAProcessorNamedForItsOwnSocket`,
+    `TestGatewayAcceptsAmbiguousProcessorSpellings`,
+    `TestEmitterBindRulesAreStricterThanTheGateway`,
+    `TestEmitterNameRuleIsStricterThanTheGateway`,
+    `TestEmitterURLRuleIsStricterThanTheGateway`,
+    `TestGatewayAcceptsTheShadowRouteDocument`,
+    `TestGatewayAcceptsAMixedGatewaysAndBindsDocument` and
+    `TestGatewayAcceptsExtraRoutePoliciesAndBackends`. A candidate that
+    tightens fails them, and the README's list shrinks with it.
+15. The `backendTLS` fields and the scenario Q handshake: `PENDING` until the
+    processor-TLS pull requests land, which will give the item its tests.
+16. The release asset names and checksum: the published digests of
+    `agentgateway-linux-amd64` (the `e2e` job's asset), `agentgateway-darwin-arm64`
+    (the laptops' default in README.md, `e2e/main_test.go`,
+    `internal/emit/binary_test.go` and `cmd/toolwarrant/emit_validate_test.go`)
+    and the host's own asset exist at the tag; the digest given is the linux
+    one and the host's binary hashes to its own.
+17. The bump list: every tracked file that spells the pinned version
+    (`git ls-files | xargs grep -c v1.6.0`; 161 mentions in 51 files on
+    2026-10-14), plus `AGENTGATEWAY_SHA256` in `ci.yml` and the tag's commit in
+    `third_party/agentgateway/NOTICE`. `PASS` only when the candidate is the
+    pin itself; for any other candidate the line lists the files to edit.
+
+The two runs of the binary-backed tests and of `make e2e` are the ones
+CLAUDE.md names; the script runs the whole of `internal/emit` and
+`cmd/toolwarrant` rather than a name pattern, so no binary-backed test is
+left out, and refuses a run in which a gateway test skipped.
+`TestRequalifyScript_citesExistingTestsAndScenarios` and
+`TestRequalifyScript_reportsEveryItemOnce` in `internal/requalifypolicy` fail
+when the script names a test or a scenario that no longer exists or reports
+an item number outside 1 to 17, so a rename cannot turn into a `CHANGED` line
+at the next move of the pin.
+
+Proof on the pinned version, 2026-10-14, darwin/arm64, with the pinned
+binary placed at `.cache/candidate/v1.6.0/agentgateway-darwin-arm64` so
+nothing was downloaded: `scripts/requalify-gateway.sh v1.6.0
+496ed27e6a96b55a9ad7cabe5c2be7172511f44a3cb113e533d22bf93a7f079d` printed
+`PASS` for items 2, 3, 4, 5, 8, 13, 14, 16 and 17, `SKIPPED` for 1, 6, 7, 9,
+10, 11 and 12 and `PENDING` for 15, exit 3 (9 PASS, 0 CHANGED, 7 SKIPPED, 1
+PENDING); the same command with `--e2e` printed `PASS` for every item but 15,
+exit 0 (16 PASS, 0 CHANGED, 0 SKIPPED, 1 PENDING), both `RUN` lines at exit 0,
+`TestEndToEnd` in 31 s. Its notes: `L: the gateway negotiated MCP protocol
+version 2025-06-18 with a raw client that asked for 2025-06-18`; `P: POST
+/api/config with Content-Type application/yaml -> status 415, 54-byte answer`;
+`P: GET /config_dump -> status 200, 13432-byte answer`; `O: the hostile
+upstream's request log gained 1 tools/call request(s) named
+toolwarrant.probe.*`; 26 reloads seen; the schema counts 14, 32 and 36. The
+item lines are quoted in the commit that added the script.
+
+When every item is `PASS`: open a branch, make the item 17 edits (the version
+in CLAUDE.md, ci.yml, `.goreleaser.yaml`, `cmd/toolwarrant/main.go`, the
+`NOTICE`, `internal/emit`, `cmd/toolwarrant`, README.md, SECURITY.md and the
+three documents under docs/; the checksum in `ci.yml`; the asset name in
+`e2e/main_test.go` and the three test files if it changed), re-record what
+items 1, 6, 10 and 11 observed where the documents quote it, dispatch the `ci`
+workflow on the branch with the candidate's inputs and read the `requalify`
+job's lines, then merge. A candidate that stays `CHANGED` on an item is not
+pinned; the documents keep describing v1.6.0 until one is.
+
 ## Exit codes
 
 - `0`: success. For `verify-gateway`, OK or MISSING only. For
