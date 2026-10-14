@@ -123,8 +123,9 @@ func TestApproved_TamperedBytesAreCaughtAtOnce(t *testing.T) {
 	if err := s.Disable(bg, "alpha", "tool-00000", alice); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Disable = %v, want ErrCorrupt: a decision loads its tool afresh", err)
 	}
-	// The other tool is untouched, and the export says so for every row it
-	// reads before the bad one: nothing is exported from a file with one bad row.
+	// The other tool is untouched and Versions of it still answers; the
+	// export, which reads every row, refused the file as a whole above
+	// (wantCorrupt), so nothing is exported from a file with one bad row.
 	if _, err := s.Versions(bg, "alpha", "tool-00001"); err != nil {
 		t.Errorf("Versions of the untouched tool = %v", err)
 	}

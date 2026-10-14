@@ -75,10 +75,13 @@ type chainMemory struct {
 	mu     sync.RWMutex
 	head   chainPin
 	hashes map[int64]entryHash
-	// hashed counts the entries verify has hashed since the Store opened. It
-	// is the only SHA-256 a reload computes since D21 (d), so the reload
-	// benchmarks report it as hashes/op and
-	// TestBenchmarkSnapshotHashesOnlyAuditEntries pins the count.
+	// hashed counts the entries verify has hashed since the Store opened: the
+	// anchor pass of every checked read, which is the only hashing that grows
+	// with the tool count since D21 (d). The pin check and the suffix walk
+	// hash through audit.HashOf and audit.VerifyFrom directly and are not
+	// counted, so the hashes/op of the reload benchmarks and the count
+	// TestBenchmarkSnapshotHashesOnlyAuditEntries pins are the anchor pass
+	// alone.
 	hashed atomic.Int64
 }
 
