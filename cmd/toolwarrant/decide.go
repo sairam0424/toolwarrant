@@ -60,9 +60,11 @@ func (a *app) beginDecision(c *command, fs *flag.FlagSet, args []string) (server
 	return pos[0], pos[1], actor, nil
 }
 
-// runApprove approves the exact digest the operator reviewed. The definition
-// is first scanned for characters a person cannot see or a terminal would
-// obey; a hidden instruction is exactly what the review exists to catch.
+// runApprove approves the exact digest the operator reviewed. How the version
+// differs from the one approved now is printed first (internal/drift; advice
+// only, the approval never depends on it), then the definition is scanned for
+// characters a person cannot see or a terminal would obey; a hidden
+// instruction is exactly what the review exists to catch.
 func runApprove(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	hash := fs.String(hashFlagName, "", hashFlagHelp)
@@ -83,12 +85,15 @@ func runApprove(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	versions, err := store.Versions(a.ctx, server, tool)
+	view, versions, err := loadTool(a.ctx, store, server, tool)
 	if err != nil {
 		return err
 	}
 	v, err := versionByDigest(versions, digest)
 	if err != nil {
+		return err
+	}
+	if err := reportChange(a.stderr, view.Approved, versions, v); err != nil {
 		return err
 	}
 	if err := reviewSuspicious(a.stderr, v.Canonical, *accept); err != nil {

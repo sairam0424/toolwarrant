@@ -1302,6 +1302,88 @@ proposal budget is one of the columns the log describes (D13). Covered by
 `cmd/toolwarrant`, and by the catalog's
 `TestReview_BudgetDeadlockAfterRevertLeavesNoDecisionToResetIt`.
 
+## Reading a drift classification
+
+A version that differs from the approved one is classified by `internal/drift`
+before you read the escaped diff: every top-level member that changed gets a
+kind and a grade, and the grade of the whole change is the largest one. The
+classification is advice for the reader; the gate stays the digest (D1), and
+nothing here approves, hides or serves anything.
+
+- CRITICAL widens what the tool may do or breaks the contract you reviewed:
+  `parameter-removed`, `parameter-type-changed`, `required-parameter-added`,
+  `parameter-made-required`, `annotations-loosened` (readOnlyHint true to
+  false, destructiveHint false to true, openWorldHint false to true,
+  idempotentHint true to false; an absent hint is read at its MCP default and a
+  hint that stood at its safe value and now cannot be read as a boolean counts
+  as loosened), `name-changed`.
+- WARNING changes what the model reads or what the host does without widening
+  the tool: `description-changed` (owner decision O-6: the description-first
+  rug pull of threat-model row 3 is never INFO), `optional-parameter-added`,
+  `input-schema-changed` (an enum, a constraint, a nested schema, a parameter
+  made optional, a `required` list that changed in a way no parameter
+  explains, a parameter `type` that changed between two values outside the
+  JSON Schema vocabulary or whose type array was reordered, an empty
+  `properties` object that appeared or vanished), `output-schema-changed`,
+  `annotations-changed` (a hint tightened included), `meta-changed` (hosts act
+  on `_meta`; agentgateway acts on `_meta.ui`), `other` (a top-level key
+  toolwarrant does not know).
+- INFO is display only: `title-changed`, `icons-changed`.
+
+Two definitions that differ never grade `none`: every member that differs
+yields at least one finding, so `drift: none` never stands above a diff that
+shows a change (`TestCompare_TypeChangesOutsideTheVocabularyAreWarning`,
+`TestCompare_EmptyPropertiesObjectAddedOrRemovedIsWarning`;
+`TestProperty_everyMemberChangedOnItsOwnYieldsAFinding`,
+`TestProperty_compareNeverPanicsOnRandomJSON` and `FuzzCompare` hold the two
+decoded documents equal exactly when the report is empty).
+
+`diff SERVER TOOL` prints the line after the `to:` header, the kinds ordered by
+grade and then by name; the run of `TestDiffPrintsTheDriftClassification`
+printed, for a version that adds a required parameter and changes the
+description:
+
+```
+from: 967d049547f216892f59192e9e8b56bec96f97a559f797eba1302c4c09064728 (version 1, approved, proposed by crawler)
+to:   3b43d1991390acef9dd493d73cf854b1a914eea6932e711143e3f02df0e6eaa2 (version 2, pending, proposed by crawler)
+drift: CRITICAL (required-parameter-added, description-changed)
+```
+
+Against the empty document, before anything is approved, the line reads
+`drift: not classified (nothing approved to compare with)`.
+
+`show SERVER TOOL` carries a CHANGE column with each version's grade against
+the approved version (`-` for the approved version itself and while nothing is
+approved) and, under the table, one line that groups the other versions by what
+they change, the worst group first, so that the versions that differ only in
+description stand apart from the one that also removes a parameter; the run of
+`TestShowGroupsVersionsByChangeKinds` printed:
+
+```
+NO  STATUS      CHANGE    PROPOSERS  FIRST SEEN            PROFILE  DIGEST
+1   approved    -         crawler    2026-10-14T15:06:19Z  full-v1  967d049547f216892f59192e9e8b56bec96f97a559f797eba1302c4c09064728
+2   superseded  WARNING   crawler    2026-10-14T15:06:19Z  full-v1  8321f97333359333bb6e96149d58eafeee4b5a556ebea72d665b0469b5b1c251
+3   superseded  WARNING   crawler    2026-10-14T15:06:19Z  full-v1  06928d4e7a9777d997e09b9a1d3ca370b4ebc08a43ab62b5e8449571a575501b
+4   pending     CRITICAL  crawler    2026-10-14T15:06:19Z  full-v1  3b43d1991390acef9dd493d73cf854b1a914eea6932e711143e3f02df0e6eaa2
+
+change versus the approved version 1: 1 version (4) CRITICAL (parameter-removed, description-changed); 2 versions (2-3) WARNING (description-changed)
+```
+
+`show --json` gives every version `"change": {"severity": "critical", "kinds":
+["parameter-removed", "description-changed"]}`, or `null` where the column
+shows `-`. `approve` prints the same `change versus the approved version N:`
+line on stderr before the suspicious-character review and approves whatever
+grade it printed: the digest you name is what is approved, and a CRITICAL
+grade is the reason to read the diff, not a refusal. Paths in the
+classification are escaped like every other line (`\u{200B}` for a zero-width
+space in a parameter name) and no detail carries upstream text. Covered by
+`TestDiffPrintsTheDriftClassification`, `TestShowGroupsVersionsByChangeKinds`
+and `TestApprovePrintsTheClassificationAndNeverGatesOnIt` in `cmd/toolwarrant`,
+and by the classifier's `TestCompare_DescriptionChangeIsWarningNotInfo`,
+`TestCompare_AnnotationHintLoosenedIsCriticalTightenedIsWarning`,
+`TestCompare_HostileKeysAreEscapedInPaths` and
+`TestCompare_RefusesInvalidDocumentsWithoutEchoingThem` in `internal/drift`.
+
 ## Pausing a server
 
 ```sh

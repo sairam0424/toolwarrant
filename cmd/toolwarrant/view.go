@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
+	"github.com/sairam0424/toolwarrant/internal/drift"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
@@ -40,6 +41,8 @@ type toolJSON struct {
 // versionJSON is one immutable version in machine-readable output. Proposers
 // lists every principal whose crawl proposed it, oldest first; none of them
 // may approve it. DigestProfile names the rule the digest was computed under.
+// Change classifies the version against the approved one; it is null for the
+// approved version and for every version while nothing is approved.
 type versionJSON struct {
 	No            int             `json:"no"`
 	Digest        string          `json:"digest"`
@@ -50,6 +53,7 @@ type versionJSON struct {
 	EverApproved  bool            `json:"ever_approved"`
 	FirstSeen     time.Time       `json:"first_seen"`
 	Canonical     json.RawMessage `json:"canonical"`
+	Change        *driftJSON      `json:"change"`
 }
 
 // showJSON is the output of show --json.
@@ -135,13 +139,15 @@ func toolsJSON(tools []catalog.ToolView) []toolJSON {
 	return out
 }
 
-func versionsJSON(versions []catalog.VersionView) []versionJSON {
+// versionsJSON renders the versions with their classification against the
+// approved one (reports has one entry per version, see classifyVersions).
+func versionsJSON(versions []catalog.VersionView, reports []*drift.Report) []versionJSON {
 	out := make([]versionJSON, 0, len(versions))
-	for _, v := range versions {
+	for i, v := range versions {
 		proposers := append([]string{}, v.Proposers...)
 		out = append(out, versionJSON{No: v.No, Digest: v.Digest, DigestProfile: v.DigestProfile, Status: string(v.Status),
 			ProposedBy: v.ProposedBy, Proposers: proposers, EverApproved: v.EverApproved, FirstSeen: v.FirstSeen.UTC(),
-			Canonical: json.RawMessage(v.Canonical)})
+			Canonical: json.RawMessage(v.Canonical), Change: driftJSONOf(reports[i])})
 	}
 	return out
 }
@@ -160,7 +166,11 @@ func loadTool(ctx context.Context, store *catalog.Store, server, tool string) (c
 }
 
 // runShow prints one tool and every version it ever had, with full digests,
-// every proposer and the digest profile each version was hashed under.
+// every proposer, the digest profile each version was hashed under and, once
+// a version is approved, what each other version changes against it: the
+// CHANGE column carries the grade and the line under the table groups the
+// versions by the kinds of change, so the reader can tell nineteen versions
+// that differ only in description from the one that also removes a parameter.
 func runShow(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	asJSON := fs.Bool("json", false, "print JSON")
@@ -180,17 +190,27 @@ func runShow(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	vc, err := classifyVersions(versions, view.Approved)
+	if err != nil {
+		return err
+	}
 	if *asJSON {
-		return writeJSON(a.stdout, showJSON{toolJSON: toolJSONOf(view), History: versionsJSON(versions)})
+		return writeJSON(a.stdout, showJSON{toolJSON: toolJSONOf(view), History: versionsJSON(versions, vc.reports)})
 	}
 	a.stdout.printf("%s/%s\n  state:          %s\n  approved:       %s\n  pending:        %s\n  live:           %s\n  drifted:        %t\n  unusable:       %t\n  missing crawls: %d\n\n",
 		cell(view.Server), cell(view.Name), view.State, cell(view.Approved), cell(view.Pending), cell(view.LastSeen), view.Drifted, view.Unusable, view.MissingCrawls)
 	t := newTable(a.stdout)
-	t.row("NO", "STATUS", "PROPOSERS", "FIRST SEEN", "PROFILE", "DIGEST")
-	for _, v := range versions {
-		t.row(strconv.Itoa(v.No), string(v.Status), cells(proposersOf(v)), v.FirstSeen.UTC().Format(time.RFC3339), cell(v.DigestProfile), v.Digest)
+	t.row("NO", "STATUS", "CHANGE", "PROPOSERS", "FIRST SEEN", "PROFILE", "DIGEST")
+	for i, v := range versions {
+		t.row(strconv.Itoa(v.No), string(v.Status), changeCell(vc.reports[i]), cells(proposersOf(v)), v.FirstSeen.UTC().Format(time.RFC3339), cell(v.DigestProfile), v.Digest)
 	}
-	return t.flush()
+	if err := t.flush(); err != nil {
+		return err
+	}
+	if summary := changeSummary(versions, vc); summary != "" {
+		a.stdout.printf("\n%s\n", summary)
+	}
+	return a.stdout.broken()
 }
 
 // proposersOf lists a version's proposers, falling back to the first one for
@@ -206,7 +226,9 @@ func proposersOf(v catalog.VersionView) []string {
 }
 
 // runDiff renders what changed between two versions through textdiff.Tool,
-// so every line an approver reads is escaped.
+// so every line an approver reads is escaped, with the drift classification
+// (internal/drift) on the line after the to: header; the classification is
+// advice, the gate stays the digest.
 func runDiff(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	from := fs.String("from", "", "digest or prefix to compare from (default: the approved version)")
@@ -239,7 +261,11 @@ func runDiff(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	a.stdout.printf("%s/%s\nfrom: %s\nto:   %s\n\n", cell(view.Server), cell(view.Name), fromSide.summary, toSide.summary)
+	classified, err := driftLine(fromDigest, fromSide.canonical, toSide.canonical)
+	if err != nil {
+		return err
+	}
+	a.stdout.printf("%s/%s\nfrom: %s\nto:   %s\n%s\n\n", cell(view.Server), cell(view.Name), fromSide.summary, toSide.summary, classified)
 	rendered, err := textdiff.Tool(fromSide.label, toSide.label, fromSide.canonical, toSide.canonical)
 	if err != nil {
 		return fmt.Errorf("render diff: %w", err)
