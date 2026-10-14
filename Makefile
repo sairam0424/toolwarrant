@@ -31,10 +31,12 @@ test:
 # same table to their step summary. gotestsum is not a module dependency (go.mod
 # stays as it is), so the recipe asks for it on PATH at the version ci pins.
 # The json file is kept and named so that other gotestsum tool queries can run
-# on it; the exit status is the test run's, also when the table printed.
+# on it; the exit status is the test run's, or the table's when the run passed,
+# so a table that could not be printed (unreadable json, a gotestsum without
+# the tool) is never a silent success.
 test-timings:
 	@command -v gotestsum >/dev/null 2>&1 || { echo "gotestsum is not on PATH; install the version ci pins: go install gotest.tools/gotestsum@v1.13.0"; exit 1; }
-	@json="$$(mktemp "$${TMPDIR:-/tmp}/toolwarrant-test-timings.XXXXXX")"; gotestsum --format pkgname --jsonfile "$$json" -- $(GO_TEST_ARGS); status=$$?; echo; echo "tests slower than 1s, slowest first (go test -json stream kept in $$json):"; gotestsum tool slowest --jsonfile "$$json" --threshold 1s; exit $$status
+	@json="$$(mktemp "$${TMPDIR:-/tmp}/toolwarrant-test-timings.XXXXXX")"; gotestsum --format pkgname --jsonfile "$$json" -- $(GO_TEST_ARGS); status=$$?; echo; echo "tests slower than 1s, slowest first (go test -json stream kept in $$json):"; gotestsum tool slowest --jsonfile "$$json" --threshold 1s; slow=$$?; [ $$status -ne 0 ] || status=$$slow; exit $$status
 
 lint:
 	@unformatted="$$(gofmt -l cmd internal e2e)"; if [ -n "$$unformatted" ]; then echo "gofmt: $$unformatted"; exit 1; fi
