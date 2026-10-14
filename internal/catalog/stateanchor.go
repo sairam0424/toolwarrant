@@ -60,9 +60,11 @@ func anchorToolState(ctx context.Context, q queryer, chain *chainMemory, subject
 	return anchorStates(ctx, q, chain, []stateRef{{tool: subject, state: state, entry: seq}})
 }
 
-// anchorKnownStates anchors the state of every tool a crawl loaded, so the
-// lifecycle starts from the state the chain recorded, not from the column.
-func anchorKnownStates(ctx context.Context, q queryer, chain *chainMemory, server string, known map[string]*toolRec) error {
+// knownStateRefs names the state of every tool a crawl loaded with the seq of
+// the newest state-bearing entry about it, so that anchorKnownTools can anchor
+// the states in the same pass as the approvals and the lifecycle starts from
+// the state the chain recorded, not from the column.
+func knownStateRefs(ctx context.Context, q queryer, server string, known map[string]*toolRec) ([]stateRef, error) {
 	refs := make([]stateRef, 0, len(known))
 	for name, rec := range known {
 		refs = append(refs, stateRef{tool: server + "/" + name, state: rec.tool.State})
@@ -70,10 +72,10 @@ func anchorKnownStates(ctx context.Context, q queryer, chain *chainMemory, serve
 	slices.SortFunc(refs, func(a, b stateRef) int { return strings.Compare(a.tool, b.tool) })
 	for chunk := range chunks(refs) {
 		if err := findStateEntries(ctx, q, chunk); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return anchorStates(ctx, q, chain, refs)
+	return refs, nil
 }
 
 // findStateEntries fills in the seq of the newest state-bearing entry about
@@ -114,31 +116,15 @@ func findStateEntries(ctx context.Context, q queryer, refs []stateRef) error {
 // anchorStates requires, for every reference, the newest state-bearing entry
 // about the tool to exist, to be about the tool, to have left the state the
 // row holds and to be part of the chain the Store verified. Any failure is
-// ErrCorrupt.
+// ErrCorrupt. The paths that also anchor approvals run both rules in one pass
+// (anchorTools).
 func anchorStates(ctx context.Context, q queryer, chain *chainMemory, refs []stateRef) error {
-	var seqs []int64
-	for _, r := range refs {
-		if !r.entry.Valid {
-			return fmt.Errorf("%w: tool %s has no audit entry about its state; every tool the catalog created has at least a tool.discovered entry", ErrCorrupt, quote(r.tool))
-		}
-		seqs = append(seqs, r.entry.Int64)
-	}
-	entries := make(map[int64]audit.Entry, len(seqs))
-	for chunk := range chunks(seqs) {
-		if err := readEntries(ctx, q, chunk, entries); err != nil {
-			return err
-		}
-	}
-	for _, r := range refs {
-		if err := checkStateAnchor(chain, r, entries); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := anchorTools(ctx, q, chain, nil, refs)
+	return err
 }
 
 // checkStateAnchor applies the state rule to one tool.
-func checkStateAnchor(chain *chainMemory, r stateRef, entries map[int64]audit.Entry) error {
+func checkStateAnchor(check *entryChecker, r stateRef, entries map[int64]audit.Entry) error {
 	e, ok := entries[r.entry.Int64]
 	if !ok {
 		return fmt.Errorf("%w: audit entry %d about %s vanished within one read", ErrCorrupt, r.entry.Int64, quote(r.tool))
@@ -153,5 +139,5 @@ func checkStateAnchor(chain *chainMemory, r stateRef, entries map[int64]audit.En
 	if after != string(r.state) {
 		return fmt.Errorf("%w: state of tool %s is %q but its newest audit entry (seq %d, %s) left it %q; the state column was edited", ErrCorrupt, quote(r.tool), r.state, e.Seq, e.Event, after)
 	}
-	return chain.verify(e)
+	return check.verify(e)
 }

@@ -773,19 +773,27 @@ trigger is corruption and a long-running crawl schedule cannot keep writing
 into a file whose trigger was dropped); no trigger, view or unique index the
 schema did not create may exist (a foreign trigger can undo a decision inside
 the operator's own transaction, and a foreign unique index makes writes fail,
-so both are corruption, decisions D13 and D14); every approved version it hands
-out is re-hashed and must be what the newest decision about the tool says:
+so both are corruption, decisions D13 and D14); every approved digest it hands
+out must be what the newest decision about the tool says:
 among all versions of the tool, the approve or rollback row with the highest
 id in the append-only approvals table must point at the approved version and
 carry `hash_seen` equal to its digest (decision D13; before the fourth round
 any historic approve row about the version counted, so a pointer flipped back
-to a superseded version reached the serving path); and the newest
+to a superseded version reached the serving path); the newest
 `version.approved` or `version.rolled_back` entry about the tool in the audit
 log must carry the same digest and must be part of the chain the catalog
 verified (decision D14 for the entry, D15 for the chain; before the fifth
 round a definition and its `hash_seen` rewritten together under two dropped
 and re-created guard triggers reached the serving path, because the approvals
-table was the only evidence).
+table was the only evidence); and every path that hands out the bytes behind
+a digest (`export`, `show`, `diff`, every decision) hashes them against that
+digest on every call, with no memory between calls, while the serving path
+(the snapshot the processor serves from, and `list`) hands out digests alone,
+each anchored to a verified audit entry, and reads no bytes (decision D21 (d);
+before the v0.3 round every read path re-hashed the bytes behind the digests
+it handed out and remembered each verified row for ten minutes, a window in
+which a rewrite of the bytes went unreported, and a reload of a large server
+cost a full re-read of its definitions whenever that memory lapsed).
 
 What "part of the verified chain" means, since the sixth round: a `Store`
 verifies the whole audit chain once when it opens, from the first entry to the
@@ -867,6 +875,26 @@ and no reader is told that the log was truncated by a commit it could not see
 (decision D17). A file that fails any of these is reported as corrupt and
 nothing is served, listed or shown from it: `list` and `show` apply the same
 evidence as the serving path (decision D14).
+
+What the serving path does not look at, stated plainly (decision D21 (d)): a
+rewrite of an approved version's stored bytes that leaves the digest column
+intact is invisible to the snapshot and to `list`, which hand out the anchored
+digest and read no bytes; it cannot change what the gateway serves, because
+the processor compares the digest of the live definition with the anchored
+digest and never with the stored bytes; and it is refused at once by `export`,
+`show` and `diff`, by every decision, and named by `audit verify`'s integrity
+report, each of which hashes the bytes it reads on every call
+(`TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest`,
+`TestApproved_TamperedBytesAreCaughtAtOnce`,
+`TestVersions_TamperedBytesAreCaughtAtOnce`). A rewritten digest column is
+caught by the snapshot at once, by the newest-decision rule alone or by the
+chain anchor when `hash_seen` was rewritten with it
+(`TestSnapshot_AChangedDigestColumnIsCaughtByTheAnchor`,
+`TestSnapshot_AnchorsTheDigestAndApprovedCatchesTamperedBytes`). A reload of
+the snapshot therefore costs one policy row per tool and one hash of a small
+audit entry per distinct entry it anchors to, one or two per tool, whatever
+the size of the definitions (`TestBenchmarkSnapshotHashesOnlyAuditEntries`;
+the figures before and after are in decision D21 (d)).
 
 ### What the two audit commands read, and what the integrity report compares
 

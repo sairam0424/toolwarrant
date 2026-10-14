@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fingerprint captures everything a rolled-back transaction must not change.
@@ -118,7 +117,6 @@ func TestAtomicity_FailureMidTransactionLeavesNothingBehind(t *testing.T) {
 
 func TestIntegrity_TamperedCanonicalFormIsCaughtBeforeItIsTrusted(t *testing.T) {
 	s, path := seededStore(t)
-	advance := clockAt(s, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	db := rawDB(t, path)
 	if err := s.Approve(bg, "alpha", "sum", digestOf(t, "sum", "v1"), bob); err != nil {
 		t.Fatal(err)
@@ -129,23 +127,24 @@ func TestIntegrity_TamperedCanonicalFormIsCaughtBeforeItIsTrusted(t *testing.T) 
 	mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)
 	mustExec(t, db, `UPDATE tool_versions SET canonical = x'7b226e616d65223a2273756d227d' WHERE digest = ?`, digestOf(t, "sum", "v1"))
 
-	// A decision loads its tool afresh: it fails at once, whatever the Store
-	// remembers.
+	// A decision loads its tool afresh: it fails at once.
 	if err := s.Disable(bg, "alpha", "sum", alice); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Disable = %v, want ErrCorrupt", err)
 	}
-	// The export above verified the row and the Store remembers that for
-	// RecheckTTL (the window RecheckTTL documents; TestRecheck_Tampered...
-	// pins it). Once it has passed, every read path reports the row.
-	advance(RecheckTTL)
+	// The export above hashed the row clean a moment ago and keeps no memory
+	// of it (D21 d): every path that hands out the bytes reports the row at
+	// once.
 	if _, err := s.Versions(bg, "alpha", "sum"); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Versions = %v, want ErrCorrupt", err)
 	}
 	if _, err := s.Approved(bg); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Approved = %v, want ErrCorrupt: a tampered definition must not be exported", err)
 	}
-	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) {
-		t.Errorf("Snapshot = %v, want ErrCorrupt: a tampered definition must not be served", err)
+	// The snapshot reads no bytes and would keep serving the anchored digest
+	// (TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest); here
+	// it refuses the file for the guard the tamper dropped.
+	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "tool_versions_immutable is missing") {
+		t.Errorf("Snapshot = %v, want ErrCorrupt naming the dropped guard", err)
 	}
 }
 

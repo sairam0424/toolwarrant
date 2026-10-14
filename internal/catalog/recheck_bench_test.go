@@ -21,8 +21,8 @@ const (
 	// under MaxCrawlBytes.
 	benchToolBytes = 8 << 10
 	// benchLargeTools is the tool count of the two 10000-tool benchmarks: a
-	// server holding MaxToolsPerCrawl approved tools, the count RecheckTTL's
-	// doc comment and D21 (d) reason about.
+	// server holding MaxToolsPerCrawl approved tools, the count known limit
+	// L16 and D21 (d) reason about.
 	benchLargeTools = MaxToolsPerCrawl
 	// benchLargeEnv names the environment variable that lets the at-cap
 	// benchmark run: its store is about 5 GiB on disk and takes minutes to
@@ -36,29 +36,33 @@ const (
 )
 
 // BenchmarkSnapshot1000Approved measures the processor's reload of a server
-// with 1000 approved tools of about 8 KiB each. "uncached" reads and hashes
-// every row on every reload, as every reload did before the verifier;
-// "cached" is a reload after one warm reload. Both run in the same binary
-// against the same database; hashes/op is the number of SHA-256 computed per
-// reload.
+// with 1000 approved tools of about 8 KiB each. hashes/op is the number of
+// SHA-256 computed per reload: since D21 (d) a reload hashes the audit
+// entries it anchors to and no canonical bytes, one hash per distinct entry,
+// so a store whose approvals are the newest entries about their tools hashes
+// once per tool (TestBenchmarkSnapshotHashesOnlyAuditEntries). Before D21 (d)
+// the same benchmark ran as two sub-benchmarks, "uncached" (every reload read
+// and hashed every approved definition, hashes/op equal to the tool count) and
+// "cached" (a reload within the ten-minute memory, hashes/op zero), and both
+// are recorded in D21 (d) for comparison.
 func BenchmarkSnapshot1000Approved(b *testing.B) {
-	benchReloads(b, benchStore(b), benchTools)
+	benchSnapshot(b, benchStore(b), benchTools)
 }
 
 // BenchmarkSnapshot10000Approved8KiB is the same reload at MaxToolsPerCrawl
 // tools of about 8 KiB, about 80 MiB of canonical bytes: the measurement
-// D21 (d) rests on before PR 5.2 changes the serving path. The store is
-// filled by several complete crawls, since one crawl is capped at
-// MaxCrawlBytes (benchFill says how and what state that leaves).
+// D21 (d) rests on, before and after the serving path stopped reading bytes.
+// The store is filled by several complete crawls, since one crawl is capped
+// at MaxCrawlBytes (benchFill says how and what state that leaves).
 func BenchmarkSnapshot10000Approved8KiB(b *testing.B) {
 	s := benchOpen(b)
 	benchFill(b, s, benchLargeTools, benchToolBytes)
-	benchReloads(b, s, benchLargeTools)
+	benchSnapshot(b, s, benchLargeTools)
 }
 
 // BenchmarkSnapshot10000ApprovedAtCap is the same reload at MaxToolBytes per
 // tool: MaxToolsPerCrawl times MaxToolBytes, about 2.5 GiB of canonical
-// bytes, the upper bound RecheckTTL's doc comment names. The catalog itself
+// bytes, the upper bound known limit L16 named. The catalog itself
 // never reaches it: MaxServerBytes caps one server at 1 GiB of canonical
 // bytes across every version (servercaps.go), so this benchmark lifts the
 // per-server byte cap on its own Store, as the cap tests lower theirs, and
@@ -73,32 +77,17 @@ func BenchmarkSnapshot10000ApprovedAtCap(b *testing.B) {
 	s := benchOpen(b)
 	s.caps = serverCaps{tools: s.caps.tools, bytes: math.MaxInt64}
 	benchFill(b, s, benchLargeTools, benchCapDescBytes())
-	benchReloads(b, s, benchLargeTools)
-}
-
-// benchReloads runs the uncached and the cached reload of a store holding n
-// approved tools of benchServer.
-func benchReloads(b *testing.B, s *Store, n int) {
-	b.Run("uncached", func(b *testing.B) {
-		s.verified = newVerifier(s.clock, 0)
-		benchSnapshot(b, s, n)
-	})
-	b.Run("cached", func(b *testing.B) {
-		s.verified = newVerifier(s.clock, recheckCacheEntries)
-		if _, err := s.Snapshot(bg, benchServer); err != nil {
-			b.Fatal(err)
-		}
-		benchSnapshot(b, s, n)
-	})
+	benchSnapshot(b, s, benchLargeTools)
 }
 
 // benchSnapshot reloads benchServer until the benchmark is satisfied, fails
 // on an error or a snapshot of other than n tools, and reports the SHA-256
-// of canonical bytes computed per reload. It logs the store's size first:
-// a benchmark's log is printed without -v only from a leaf, and this is one.
+// computed per reload, which since D21 (d) are the audit entries the reload
+// anchors to (chainMemory.hashCount). It logs the store's size first: a
+// benchmark's log is printed without -v only from a leaf, and this is one.
 func benchSnapshot(b *testing.B, s *Store, n int) {
 	benchLogFileSize(b, s)
-	start := s.verified.hashCount()
+	start := s.chain.hashCount()
 	b.ReportAllocs()
 	for b.Loop() {
 		snap, err := s.Snapshot(bg, benchServer)
@@ -106,7 +95,45 @@ func benchSnapshot(b *testing.B, s *Store, n int) {
 			b.Fatalf("Snapshot = %d tools, %v", len(snap.Tools), err)
 		}
 	}
-	b.ReportMetric(float64(s.verified.hashCount()-start)/float64(b.N), "hashes/op")
+	b.ReportMetric(float64(s.chain.hashCount()-start)/float64(b.N), "hashes/op")
+}
+
+// TestBenchmarkSnapshotHashesOnlyAuditEntries pins what hashes/op counts since
+// D21 (d): a reload hashes the audit entries it anchors to, each distinct
+// entry once, and no canonical bytes. The two anchors of a tool (its newest
+// approval entry and its newest state-bearing entry) are one entry while the
+// approval is the newest entry about the tool, so a reload of a freshly
+// approved store hashes once per tool; a later lifecycle entry per tool (here
+// the tool.missing entry a complete crawl that lists none of them writes, the
+// state of a tool whose upstream stopped listing it) makes them two entries,
+// so the reload hashes twice the tool count. A rewrite of a definition's bytes
+// changes neither count, because the reload never reads them.
+func TestBenchmarkSnapshotHashesOnlyAuditEntries(t *testing.T) {
+	const n = 8
+	s, path := newStoreAt(t, benchPolicy())
+	approvedServer(t, s, n)
+	reloadHashes := func() int64 {
+		t.Helper()
+		before := s.chain.hashCount()
+		if snap := mustSnapshot(t, s, benchServer); len(snap.Tools) != n {
+			t.Fatalf("Snapshot = %d tools, want %d", len(snap.Tools), n)
+		}
+		return s.chain.hashCount() - before
+	}
+	if got := reloadHashes(); got != n {
+		t.Fatalf("a reload of %d tools whose approval is the newest entry about each hashed %d entries, want %d (one per tool, both anchors naming the same entry)", n, got, n)
+	}
+	if rep := mustCrawl(t, s, benchServer); len(rep.Changes) != n {
+		t.Fatalf("an empty complete crawl reported %d changes, want one tool.missing per tool", len(rep.Changes))
+	}
+	if got := reloadHashes(); got != 2*n {
+		t.Fatalf("a reload of %d tools with a lifecycle entry after each approval hashed %d entries, want %d (twice the tool count: the approval entry and the state entry)", n, got, 2*n)
+	}
+	tamperCanonical(t, path, digestOf(t, benchName(0), "v1"), []byte(`{"name":"tool-00000"}`))
+	res := testing.Benchmark(func(b *testing.B) { benchSnapshot(b, s, n) })
+	if got := res.Extra["hashes/op"]; got != 2*n {
+		t.Errorf("hashes/op = %v, want %d: the benchmark's metric is the count of anchor entries hashed, and a rewrite of the bytes changes nothing the reload reads", got, 2*n)
+	}
 }
 
 // benchLogFileSize logs the size of the store's file and its WAL once filled:
@@ -170,7 +197,8 @@ func benchPolicy() lifecycle.Policy {
 // a later crawl does not list is missing (LastSeen "", MissingCrawls + 1 and
 // a tool.missing entry), the state of a tool whose upstream stopped listing
 // it. Every tool is approved after the last crawl, as the 1000-tool store is,
-// and Snapshot re-hashes every approved version, listed or missing
+// so the approval entry is the newest entry about every tool and the reload
+// anchors every approved version, listed or missing, through one entry each
 // (readPolicyRows keeps every non-deprecated tool with an approved version).
 // A crawl the catalog records as failed is fatal with its class, so the
 // benchmark never reloads fewer tools than it names. The split is logged

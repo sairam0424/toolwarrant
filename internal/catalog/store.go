@@ -82,11 +82,8 @@ type Store struct {
 	now      func() time.Time
 	readOnly bool
 	// forensic is set by OpenOptions.Forensic: the reads skip the guard check
-	// that Open skipped, and the verifiers remember nothing.
+	// that Open skipped.
 	forensic bool
-	// verified remembers, for RecheckTTL, the version rows whose bytes a read
-	// path re-checked; see verifier. Close drops it.
-	verified *verifier
 	// chain is what this Store knows about the audit chain it verified: the
 	// head it pinned and the hash of every decision entry it walked (chain.go,
 	// D15). Every serving-path read and every write transaction extends it to
@@ -178,9 +175,8 @@ func openPools(abs string, opts OpenOptions, timeout time.Duration) (*Store, err
 	return wireStore(wdb, rdb, abs, opts), nil
 }
 
-// Close releases the database and drops the re-check memory and the chain.
+// Close releases the database and drops the memory of the chain.
 func (s *Store) Close() error {
-	s.verified.drop()
 	s.chain.drop()
 	var errs []error
 	if s.rdb != nil {

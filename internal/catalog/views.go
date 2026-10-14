@@ -38,8 +38,8 @@ const (
 )
 
 // scanToolView reads one row of toolViewSelect and checks the approval
-// evidence that needs no bytes; the returned reference (id 0 when the tool has
-// no approval) is what the caller re-checks and anchors afterwards.
+// evidence that needs no log; the returned reference (id 0 when the tool has
+// no approval) is what the caller anchors afterwards.
 func scanToolView(sc rowScanner) (ToolView, approvedRef, stateRef, error) {
 	var (
 		v                           ToolView
@@ -75,8 +75,10 @@ func scanToolView(sc rowScanner) (ToolView, approvedRef, stateRef, error) {
 
 // Tools lists tools ordered by server then name. An empty server means all. A
 // server that does not exist has no tools. Every approved version shown is
-// checked as the serving path checks it (bytes, pointer, profile, newest
-// decision, chain anchor), so a forged approval is ErrCorrupt here too.
+// checked as the serving path checks it (pointer, profile, newest decision,
+// chain anchor), so a forged approval is ErrCorrupt here too. The list hands
+// out digests and reads no bytes, as Snapshot does; the bytes behind a digest
+// are hashed by the paths that hand them out (Versions, Approved).
 func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 	out := []ToolView{}
 	err := s.inRead(ctx, func(q queryer) error {
@@ -87,10 +89,8 @@ func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 		if err != nil {
 			return err
 		}
-		if err := s.checkApprovedRefs(ctx, q, refs); err != nil {
-			return err
-		}
-		return anchorStates(ctx, q, s.chain, states)
+		_, err = anchorTools(ctx, q, s.chain, refs, states)
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -99,7 +99,8 @@ func (s *Store) Tools(ctx context.Context, server string) ([]ToolView, error) {
 }
 
 // readToolViews runs toolViewSelect for one server or all, appends the views
-// to out and returns the approvals to check once the rows are closed.
+// to out and returns the approvals and states to anchor once the rows are
+// closed.
 func (s *Store) readToolViews(ctx context.Context, q queryer, server string, out *[]ToolView) ([]approvedRef, []stateRef, error) {
 	rows, err := q.QueryContext(ctx, toolViewsQuery, server, server)
 	if err != nil {
@@ -127,15 +128,6 @@ func (s *Store) readToolViews(ctx context.Context, q queryer, server string, out
 	return refs, states, nil
 }
 
-// checkApprovedRefs re-hashes the approved versions the verifier does not
-// remember and anchors each to the verified audit chain.
-func (s *Store) checkApprovedRefs(ctx context.Context, q queryer, refs []approvedRef) error {
-	if err := s.recheckApproved(ctx, q, refs); err != nil {
-		return err
-	}
-	return anchorApproved(ctx, q, s.chain, refs)
-}
-
 // Tool returns one tool, or ErrNotFound; its approval is checked as in Tools.
 func (s *Store) Tool(ctx context.Context, server, tool string) (ToolView, error) {
 	var v ToolView
@@ -155,13 +147,12 @@ func (s *Store) Tool(ctx context.Context, server, tool string) (ToolView, error)
 		case err != nil:
 			return fmt.Errorf("catalog: load tool: %w", err)
 		}
-		if err := anchorStates(ctx, q, s.chain, []stateRef{st}); err != nil {
-			return err
+		var refs []approvedRef
+		if ref.id != 0 {
+			refs = []approvedRef{ref}
 		}
-		if ref.id == 0 {
-			return nil
-		}
-		return s.checkApprovedRefs(ctx, q, []approvedRef{ref})
+		_, err = anchorTools(ctx, q, s.chain, refs, []stateRef{st})
+		return err
 	})
 	if err != nil {
 		return ToolView{}, err
@@ -191,10 +182,11 @@ const versionViewQuery = `SELECT v.id, v.version_no, v.digest, v.digest_profile,
 
 // Versions lists a tool's versions oldest first, each with its full proposer
 // history. The file is checked first as on every serving-path read
-// (checkFile). Each canonical form is re-hashed on the way out, unless this
-// Store verified that row within RecheckTTL, its digest profile is checked, a
-// version in status approved or marked ever approved must have an approve or
-// rollback record behind it, the status, the ever-approved flag and the
+// (checkFile). It hands out bytes, so each canonical form is hashed on the way
+// out on every call, with no memory of an earlier call (D21 d), its digest
+// profile is checked, a version in status approved or marked ever approved
+// must have an approve or rollback record behind it, the status, the
+// ever-approved flag and the
 // proposers shown must be what the verified version.* entries about the tool
 // leave behind (verifyVersionHistory, D17 a: an approver decides on this
 // history, and a version shown as approved before is a rollback target), and
@@ -245,7 +237,7 @@ func (s *Store) readVersionViews(ctx context.Context, q queryer, toolID int64, p
 		approved   string
 	)
 	for rows.Next() {
-		v, id, err := scanVersionView(rows, proposers, s.verified)
+		v, id, err := scanVersionView(rows, proposers)
 		if err != nil {
 			return 0, "", err
 		}
@@ -260,8 +252,9 @@ func (s *Store) readVersionViews(ctx context.Context, q queryer, toolID int64, p
 	return approvedID, approved, nil
 }
 
-// scanVersionView reads one version and returns it with its row id.
-func scanVersionView(sc rowScanner, proposers map[int64][]string, ver *verifier) (VersionView, int64, error) {
+// scanVersionView reads one version, hashes its bytes against its digest and
+// returns it with its row id.
+func scanVersionView(sc rowScanner, proposers map[int64][]string) (VersionView, int64, error) {
 	var (
 		v                VersionView
 		id               int64
@@ -283,7 +276,7 @@ func scanVersionView(sc rowScanner, proposers map[int64][]string, ver *verifier)
 		return VersionView{}, 0, fmt.Errorf("%w: version %d was digested under profile %s, this build uses %s",
 			ErrCorrupt, v.No, quote(v.DigestProfile), gate.DigestProfile)
 	}
-	if !ver.verify(id, v.Digest, v.Canonical) {
+	if gate.DigestOfCanonical(v.Canonical) != v.Digest {
 		return VersionView{}, 0, fmt.Errorf("%w: version %d does not hash to its stored digest", ErrCorrupt, v.No)
 	}
 	names := proposers[id]

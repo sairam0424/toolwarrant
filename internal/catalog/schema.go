@@ -167,10 +167,12 @@ const (
 // the triggers that make the database refuse edits to history through ordinary
 // SQL. Triggers do not stop someone who can drop a trigger, which is why Open
 // checks that every guard object still exists (verifyGuards), VerifyAudit
-// checks the hash chain, every read of a definition re-hashes its canonical
-// bytes against the stored digest (loadTool, Versions, Snapshot and Approved,
-// see checkCanonical and scanPolicy) and anchors the approval to the chain
-// (anchorApproved). The servers and tools tables carry the current policy and
+// checks the hash chain, every read that hands out a definition's bytes hashes
+// them against the stored digest on every call (loadTool, Versions and
+// Approved, see checkCanonical, scanVersionView and scanApproved), and every
+// read that hands out a digest anchors it to the chain without reading the
+// bytes (Snapshot, Tools and Tool, see scanPolicy and anchorTools; D21 d). The
+// servers and tools tables carry the current policy and
 // have no update guard: their columns must change. Nothing is ever deleted
 // from them, so a delete is refused like an edit of history (tools_no_delete),
 // and Integrity binds their columns to the append-only history.

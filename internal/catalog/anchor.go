@@ -90,10 +90,12 @@ func anchorKnownTools(ctx context.Context, q queryer, chain *chainMemory, server
 			return err
 		}
 	}
-	if err := anchorApproved(ctx, q, chain, refs); err != nil {
+	states, err := knownStateRefs(ctx, q, server, known)
+	if err != nil {
 		return err
 	}
-	return anchorKnownStates(ctx, q, chain, server, known)
+	_, err = anchorTools(ctx, q, chain, refs, states)
+	return err
 }
 
 // findDecisionEntries fills in the seq of the newest decision entry about each
@@ -136,34 +138,110 @@ func findDecisionEntries(ctx context.Context, q queryer, refs []approvedRef) err
 // as after_hash, and to be part of the chain the Store verified. Any failure
 // is ErrCorrupt.
 func anchorApproved(ctx context.Context, q queryer, chain *chainMemory, refs []approvedRef) error {
-	_, err := verifyAnchors(ctx, q, chain, refs)
+	_, err := anchorTools(ctx, q, chain, refs, nil)
 	return err
 }
 
-// verifyAnchors is anchorApproved returning the verified entries by seq, so
-// that Approved can take the approver and the time of every exported version
-// from the entry the chain vouches for instead of from the approvals row (D17
-// e).
-func verifyAnchors(ctx context.Context, q queryer, chain *chainMemory, refs []approvedRef) (map[int64]audit.Entry, error) {
-	var seqs []int64
+// anchorTools is the one anchor pass of a checked read: the approval of every
+// tool in refs (the rule of anchorApproved) and the state column of every
+// tool in states (the rule of anchorStates) are checked against the entries
+// they name, read in one pass and each verified against the chain memory
+// once. The two anchors of an approved tool are the same entry whenever its
+// approval is the newest lifecycle entry about it, so a reload of n approved
+// tools costs one indexed read and between n and 2n entry hashes, never 2n
+// reads and 2n hashes (D21 d). It returns the verified entries by seq, so that
+// Approved can take the approver and the time of every exported version from
+// the entry the chain vouches for instead of from the approvals row (D17 e).
+// Nothing of the pass outlives the read: the next read hashes every entry it
+// anchors to again (chain.go, the fifth review's lesson).
+func anchorTools(ctx context.Context, q queryer, chain *chainMemory, refs []approvedRef, states []stateRef) (map[int64]audit.Entry, error) {
+	seqs, err := anchorSeqs(refs, states)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := readAllEntries(ctx, q, seqs)
+	if err != nil {
+		return nil, err
+	}
+	check := newEntryChecker(chain)
+	for _, r := range refs {
+		if err := checkAnchor(check, r, entries); err != nil {
+			return nil, err
+		}
+	}
+	for _, r := range states {
+		if err := checkStateAnchor(check, r, entries); err != nil {
+			return nil, err
+		}
+	}
+	return entries, nil
+}
+
+// anchorSeqs collects, once each, the seqs of the entries the references name.
+// A reference the log has no entry for is ErrCorrupt: an approved version
+// without an approval entry, or a tool without any state-bearing entry (every
+// tool the catalog created has at least a tool.discovered entry).
+func anchorSeqs(refs []approvedRef, states []stateRef) ([]int64, error) {
+	seen := make(map[int64]struct{}, len(refs)+len(states))
+	seqs := make([]int64, 0, len(refs)+len(states))
+	add := func(seq int64) {
+		if _, ok := seen[seq]; !ok {
+			seen[seq] = struct{}{}
+			seqs = append(seqs, seq)
+		}
+	}
 	for _, r := range refs {
 		if !r.entry.Valid {
 			return nil, fmt.Errorf("%w: approved version of %s has no version.approved or version.rolled_back audit entry", ErrCorrupt, quote(r.tool))
 		}
-		seqs = append(seqs, r.entry.Int64)
+		add(r.entry.Int64)
 	}
+	for _, r := range states {
+		if !r.entry.Valid {
+			return nil, fmt.Errorf("%w: tool %s has no audit entry about its state; every tool the catalog created has at least a tool.discovered entry", ErrCorrupt, quote(r.tool))
+		}
+		add(r.entry.Int64)
+	}
+	return seqs, nil
+}
+
+// readAllEntries reads the entries with the given seqs, in chunks of inChunk.
+func readAllEntries(ctx context.Context, q queryer, seqs []int64) (map[int64]audit.Entry, error) {
 	entries := make(map[int64]audit.Entry, len(seqs))
 	for chunk := range chunks(seqs) {
 		if err := readEntries(ctx, q, chunk, entries); err != nil {
 			return nil, err
 		}
 	}
-	for _, r := range refs {
-		if err := checkAnchor(chain, r, entries); err != nil {
-			return nil, err
-		}
-	}
 	return entries, nil
+}
+
+// entryChecker verifies the entries one checked read anchors to, each distinct
+// seq once: both anchors of a tool name the same entry whenever its approval
+// is the newest lifecycle entry about it, and the entry read once from one
+// snapshot hashes the same twice. It belongs to one read and is dropped with
+// it; it never keys on the stored hash column or on any other column (the
+// fifth review edited an entry under a memory keyed by that column, chain.go).
+type entryChecker struct {
+	chain *chainMemory
+	seen  map[int64]struct{}
+}
+
+// newEntryChecker starts the checker of one read over the Store's chain memory.
+func newEntryChecker(chain *chainMemory) *entryChecker {
+	return &entryChecker{chain: chain, seen: map[int64]struct{}{}}
+}
+
+// verify is chainMemory.verify run once per seq within this read.
+func (c *entryChecker) verify(e audit.Entry) error {
+	if _, ok := c.seen[e.Seq]; ok {
+		return nil
+	}
+	if err := c.chain.verify(e); err != nil {
+		return err
+	}
+	c.seen[e.Seq] = struct{}{}
+	return nil
 }
 
 // readEntries reads the entries with the given seqs into out.
@@ -190,7 +268,7 @@ func readEntries(ctx context.Context, q queryer, seqs []int64, out map[int64]aud
 // be about the tool, be an approval, name the digest, carry the approver and
 // time the approvals row shows when the caller shows them, and be the entry
 // the verified chain holds at its seq.
-func checkAnchor(chain *chainMemory, r approvedRef, entries map[int64]audit.Entry) error {
+func checkAnchor(check *entryChecker, r approvedRef, entries map[int64]audit.Entry) error {
 	e, ok := entries[r.entry.Int64]
 	if !ok {
 		return fmt.Errorf("%w: audit entry %d about %s vanished within one read", ErrCorrupt, r.entry.Int64, quote(r.tool))
@@ -204,5 +282,5 @@ func checkAnchor(chain *chainMemory, r approvedRef, entries map[int64]audit.Entr
 	if r.showsApprover && (e.Actor != r.approver || e.TS != r.at) {
 		return fmt.Errorf("%w: the approver or time of the newest approvals row of %s is not what its approval entry (seq %d) recorded; the approvals row was rewritten", ErrCorrupt, quote(r.tool), e.Seq)
 	}
-	return chain.verify(e)
+	return check.verify(e)
 }

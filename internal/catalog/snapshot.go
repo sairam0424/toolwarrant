@@ -16,24 +16,32 @@ import (
 // generation N holds exactly the policy of generation N. A paused server has
 // an empty Tools map, so nothing of it is served (fail closed).
 //
-// Every approved digest is re-checked against the stored canonical bytes on
-// the way out, the digest profile against the current one, the approval
-// against the append-only approvals table (the tool's newest approve or
-// rollback row must name the approved version and carry its digest as
-// hash_seen, newestDecisionNames, joined in the same query) and against the
-// audit chain (the newest version.approved or version.rolled_back entry about
-// the tool must have recorded the digest and must be the entry the Store
-// verified in the chain, anchorApproved, D15). This is the processor's read
-// path, so a tampered row must fail it (ErrCorrupt) rather than be served. The
-// file is checked on every load too (checkFile): the identity and the guard
-// objects, so a trigger or table replaced after the file was opened is caught
-// at the next reload, and the pinned audit entry and the chain appended since.
-// The first reload reads and hashes every approved tool; the Store then
-// remembers each verified row for RecheckTTL, and a reload within that time
-// neither reads nor hashes the bytes again, which is what keeps a crawl of a
-// large server from costing a full re-read (RecheckTTL states the window this
-// opens). The approval entries are hashed on every load: one hash of a few
-// hundred bytes per approved tool, with no memory standing in for it.
+// The snapshot hands out digests, never bytes: the processor compares the
+// digest of the live definition with ToolPolicy.Approved. Every approved
+// digest is checked on the way out against the append-only approvals table
+// (the tool's newest approve or rollback row must name the approved version
+// and carry its digest as hash_seen, newestDecisionNames, joined in the same
+// query), its digest profile against the current one, and the digest against
+// the audit chain (the newest version.approved or version.rolled_back entry
+// about the tool must have recorded the digest and must be the entry the Store
+// verified in the chain, anchorApproved, D15); the state column of every tool
+// row is anchored the same way (anchorStates, D17 c). This is the processor's
+// read path, so a tampered digest must fail it (ErrCorrupt) rather than be
+// served. The file is checked on every load too (checkFile): the identity and
+// the guard objects, so a trigger or table replaced after the file was opened
+// is caught at the next reload, and the pinned audit entry and the chain
+// appended since. The canonical bytes are not read: a reload costs one policy
+// row per tool and the entry hashes of anchorTools, with no memory standing in
+// for any of it, and does not grow with the size of the definitions (D21 d;
+// before, every reload re-hashed every approved definition, remembered the
+// result for ten minutes, and the memory was the only thing that kept a crawl
+// of a large server from costing a full re-read). What this means for a
+// bytes-only rewrite of an approved version (the digest column intact): the
+// snapshot does not see it and keeps serving the anchored digest, which the
+// rewrite cannot change, so the gateway still serves only a live definition
+// that hashes to the approved digest; the rewritten bytes are refused at once
+// by every path that hands them out (Approved, Versions, a decision through
+// loadTool) and named by Integrity.
 func (s *Store) Snapshot(ctx context.Context, server string) (Snapshot, error) {
 	var snap Snapshot
 	err := s.inRead(ctx, func(q queryer) error {
@@ -85,9 +93,9 @@ func latestCompleteCrawl(ctx context.Context, q queryer, serverID int64) (time.T
 	return parseTime(started)
 }
 
-// snapshotQuery reads the policy rows without the canonical bytes: those are
-// fetched by recheckApproved, and only for rows the verifier does not
-// remember. The approved version is aliased v so that the shared evidence
+// snapshotQuery reads the policy rows and nothing of the canonical bytes: no
+// column of the statement names them (TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest).
+// The approved version is aliased v so that the shared evidence
 // expression applies; its tool id comes along so that a pointer at another
 // tool's version is caught here, and so do whether the tool's newest decision
 // names it and the seq of the newest approval entry about the tool (looked up
@@ -108,21 +116,16 @@ const snapshotQuery = `SELECT t.id, t.name, t.state, t.approved_version_id, v.id
 	WHERE t.server_id = ?`
 
 // snapshotTools maps every non-deprecated tool of a server to its policy and
-// re-checks the approved versions. A deprecated tool is left out on purpose: a
-// name missing from the snapshot is not served either. Its state column is
-// anchored all the same, before it is left out.
+// anchors the approved versions and the state columns to the verified chain in
+// one pass. A deprecated tool is left out on purpose: a name missing from the
+// snapshot is not served either. Its state column is anchored all the same,
+// before it is left out.
 func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, error) {
 	tools, refs, states, err := readPolicyRows(ctx, q, srv)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recheckApproved(ctx, q, refs); err != nil {
-		return nil, err
-	}
-	if err := anchorApproved(ctx, q, s.chain, refs); err != nil {
-		return nil, err
-	}
-	if err := anchorStates(ctx, q, s.chain, states); err != nil {
+	if _, err := anchorTools(ctx, q, s.chain, refs, states); err != nil {
 		return nil, err
 	}
 	return tools, nil
@@ -130,8 +133,8 @@ func (s *Store) snapshotTools(ctx context.Context, q queryer, srv Server) (map[s
 
 // readPolicyRows reads every tool of the server, anchors nothing itself but
 // collects the state of every row, and keeps the policy and the approved
-// version to re-check of the non-deprecated ones. Its rows are closed before
-// it returns, so the re-check's own queries never interleave with them.
+// version to anchor of the non-deprecated ones. Its rows are closed before it
+// returns, so the anchor's own queries never interleave with them.
 func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]ToolPolicy, []approvedRef, []stateRef, error) {
 	rows, err := q.QueryContext(ctx, snapshotQuery, srv.Name, srv.Name, srv.ID)
 	if err != nil {
@@ -164,7 +167,7 @@ func readPolicyRows(ctx context.Context, q queryer, srv Server) (map[string]Tool
 }
 
 // policyRow is one row of snapshotQuery: a tool's policy and, when it has an
-// approved version, the reference the re-check needs.
+// approved version, the reference the anchor needs.
 type policyRow struct {
 	name     string
 	policy   ToolPolicy
@@ -172,11 +175,10 @@ type policyRow struct {
 	state    stateRef    // the state column against the newest entry about the tool
 }
 
-// scanPolicy reads one tool's policy and checks what needs no bytes: the
+// scanPolicy reads one tool's policy and checks what needs no log: the
 // approved pointer must resolve to a version of this tool, the digest
 // profile must be the current one, and the tool's newest approve or rollback
-// row must name the version. The bytes and the chain are left to
-// recheckApproved and anchorApproved.
+// row must name the version. The chain is left to anchorTools.
 func scanPolicy(sc rowScanner, server string) (policyRow, error) {
 	var (
 		r                           policyRow
@@ -210,8 +212,8 @@ func scanPolicy(sc rowScanner, server string) (policyRow, error) {
 }
 
 // checkPointer requires a tool's approved pointer to resolve, and to a version
-// of that tool: another tool's version hashes to its own digest and would pass
-// the re-check while meaning a different definition.
+// of that tool: another tool's version carries its own digest and would pass
+// every check of the digest while meaning a different definition.
 func checkPointer(name string, toolID int64, joined, joinedTool sql.NullInt64) error {
 	if !joined.Valid {
 		return fmt.Errorf("%w: tool %s points at a version that does not exist", ErrCorrupt, quote(name))

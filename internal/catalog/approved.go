@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
+	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
@@ -23,8 +24,8 @@ import (
 // the current one, whose pointer dangles or names another tool's version, or
 // that the newest decision or the newest approval entry does not name, is
 // reported as ErrCorrupt rather than exported. The export carries the bytes,
-// so they are read on every call; only the hash is skipped, for a row this
-// Store verified within RecheckTTL. Tools of a paused server are included: the
+// so they are read and hashed on every call, with no memory of an earlier call
+// (D21 d). Tools of a paused server are included: the
 // export describes approvals, not serving. The guard objects and the pinned
 // chain are verified first, as on every Snapshot load. The state column of
 // every tool row, exported or not, is anchored to the newest state-bearing
@@ -67,15 +68,11 @@ func (s *Store) ApprovedWithHead(ctx context.Context) ([]ApprovedTool, string, e
 }
 
 // readApprovedAnchored is the body of Approved after the file check: the
-// exported tools, their approval entries verified against the chain, every
-// tool row's state anchored, and the approvers adopted from the verified
-// entries.
+// exported tools, then their approval entries verified against the chain and
+// every tool row's state anchored in one anchor pass (anchorTools), and the
+// approvers adopted from the verified entries.
 func (s *Store) readApprovedAnchored(ctx context.Context, q queryer, out *[]ApprovedTool) error {
 	refs, err := s.readApproved(ctx, q, out)
-	if err != nil {
-		return err
-	}
-	entries, err := verifyAnchors(ctx, q, s.chain, refs)
 	if err != nil {
 		return err
 	}
@@ -83,7 +80,8 @@ func (s *Store) readApprovedAnchored(ctx context.Context, q queryer, out *[]Appr
 	if err != nil {
 		return err
 	}
-	if err := anchorStates(ctx, q, s.chain, states); err != nil {
+	entries, err := anchorTools(ctx, q, s.chain, refs, states)
+	if err != nil {
 		return err
 	}
 	return adoptApprovers(*out, refs, entries)
@@ -114,7 +112,7 @@ func (s *Store) readApproved(ctx context.Context, q queryer, out *[]ApprovedTool
 	defer func() { _ = rows.Close() }()
 	var refs []approvedRef
 	for rows.Next() {
-		a, ref, err := scanApproved(rows, s.verified)
+		a, ref, err := scanApproved(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -175,14 +173,14 @@ const approvedQuery = `SELECT s.name, t.id, t.name, v.id, v.tool_id, COALESCE(v.
 	WHERE t.state IN ('enabled', 'changed_pending_reapproval')
 	ORDER BY s.name, t.name`
 
-// scanApproved reads one approved tool and re-checks what it can without the
+// scanApproved reads one approved tool and checks what it can without the
 // log: the pointer must resolve to the tool's own version, the profile must be
-// the current one, the bytes must hash to the digest unless the verifier
-// remembers the row, and the tool's newest decision must name the version. The
-// returned reference carries what verifyAnchors checks afterwards, the row's
-// approver and time included; the tool's own ApprovedBy and ApprovedAt are
-// filled in from the verified entry (adoptApprovers).
-func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, approvedRef, error) {
+// the current one, the bytes must hash to the digest, and the tool's newest
+// decision must name the version. The returned reference carries what
+// anchorTools checks afterwards, the row's approver and time included; the
+// tool's own ApprovedBy and ApprovedAt are filled in from the verified entry
+// (adoptApprovers).
+func scanApproved(sc rowScanner) (ApprovedTool, approvedRef, error) {
 	var (
 		a                  ApprovedTool
 		toolID             int64
@@ -202,7 +200,7 @@ func scanApproved(sc rowScanner, v *verifier) (ApprovedTool, approvedRef, error)
 	if err := checkApprovedProfile(name, profile); err != nil {
 		return ApprovedTool{}, approvedRef{}, err
 	}
-	if !v.verify(joined.Int64, a.Digest, a.Canonical) {
+	if gate.DigestOfCanonical(a.Canonical) != a.Digest {
 		return ApprovedTool{}, approvedRef{}, fmt.Errorf("%w: approved version of %s does not hash to its digest", ErrCorrupt, quote(name))
 	}
 	if !decided.Valid || !approver.Valid || !at.Valid {

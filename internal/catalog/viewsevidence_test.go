@@ -48,8 +48,12 @@ func TestTools_ForgedApprovedPointerIsCorrupt(t *testing.T) {
 }
 
 // The views refuse the other forgeries the serving path refuses: a dangling
-// pointer, a pointer at another tool's version, a rewritten canonical form, a
-// foreign digest profile and an approved version without an approvals row.
+// pointer, a pointer at another tool's version, a foreign digest profile and
+// an approved version without an approvals row. A rewritten canonical form is
+// not among them since D21 (d): the list hands out the digest, which the
+// anchor binds, and reads no bytes, as the snapshot does; show reads
+// Versions, which hashes every version it hands out
+// (TestVersions_TamperedBytesAreCaughtAtOnce).
 func TestTools_ApplyTheServingPathEvidence(t *testing.T) {
 	cases := map[string]struct {
 		tamper func(t *testing.T, path, d string)
@@ -61,9 +65,6 @@ func TestTools_ApplyTheServingPathEvidence(t *testing.T) {
 		"another tool's version": {func(t *testing.T, path, _ string) {
 			mustExec(t, rawDB(t, path), `UPDATE tools SET approved_version_id = (SELECT id FROM tool_versions WHERE digest = ?) WHERE name = 'echo'`, digestOf(t, "sum", "v1"))
 		}, "not its own"},
-		"rewritten bytes": {func(t *testing.T, path, d string) {
-			tamperCanonical(t, path, d, []byte(`{"name":"echo"}`))
-		}, "does not hash to its digest"},
 		"foreign profile": {func(t *testing.T, path, d string) {
 			db := rawDB(t, path)
 			mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)

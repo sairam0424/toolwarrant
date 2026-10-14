@@ -362,19 +362,20 @@ func TestIntegrity_ReportsWhenTheCheckItselfCannotRun(t *testing.T) {
 	}
 }
 
-// Integrity re-hashes approved definitions without the Store's memory, so a
-// rewritten canonical form is reported at once, and a redefined guard is
-// caught by Snapshot and Approved on the next load, not only by Open.
+// Integrity hashes every approved definition, so a rewritten canonical form
+// that the snapshot cannot see (it reads no bytes, D21 d) is reported, and a
+// redefined guard is caught by Snapshot and Approved on the next load, not only
+// by Open.
 func TestIntegrity_RehashesApprovedBytesAndReadsGuardsOnEveryLoad(t *testing.T) {
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
 	d := digestOf(t, "echo", "v1")
 	mustApprove(t, s, "alpha", "echo", d)
-	mustSnapshot(t, s, "alpha") // the row is remembered for RecheckTTL
+	mustSnapshot(t, s, "alpha")
 	tamperCanonical(t, path, d, []byte(`{"name":"echo"}`))
-	if _, err := s.Snapshot(bg, "alpha"); err != nil {
-		t.Fatalf("Snapshot within RecheckTTL = %v; the documented window", err)
+	if snap, err := s.Snapshot(bg, "alpha"); err != nil || snap.Tools["echo"].Approved != d {
+		t.Fatalf("Snapshot after a bytes-only rewrite = %+v, %v; the snapshot reads no bytes and serves the anchored digest", snap.Tools["echo"], err)
 	}
 	rep := mustIntegrity(t, s)
 	problemMentioning(t, rep, `"alpha/echo"`, "does not hash to its digest")
@@ -400,11 +401,19 @@ func TestIntegrity_RehashesApprovedBytesAndReadsGuardsOnEveryLoad(t *testing.T) 
 		t.Errorf("Tools with a redefined guard = %v, want ErrCorrupt naming it", err)
 	}
 	// A guard re-created from the schema's own statement, however it is laid
-	// out, is the same guard: whitespace is not a redefinition.
+	// out, is the same guard: whitespace is not a redefinition. The bytes are
+	// still rewritten, so the paths that read no bytes are the ones that must
+	// pass again; Approved keeps refusing the rewritten definition.
 	mustExec(t, db, `DROP TRIGGER audit_log_no_update`)
 	mustExec(t, db, "CREATE TRIGGER audit_log_no_update\n\tBEFORE UPDATE ON audit_log\n\tBEGIN  SELECT RAISE(ABORT, 'audit_log is append-only');  END")
-	if _, err := s.Approved(bg); err != nil {
-		t.Errorf("Approved after restoring the guard with other whitespace = %v", err)
+	if _, err := s.Snapshot(bg, "alpha"); err != nil {
+		t.Errorf("Snapshot after restoring the guard with other whitespace = %v", err)
+	}
+	if _, err := s.Tools(bg, ""); err != nil {
+		t.Errorf("Tools after restoring the guard with other whitespace = %v", err)
+	}
+	if _, err := s.Approved(bg); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "does not hash to its digest") {
+		t.Errorf("Approved with the guard restored and the bytes still rewritten = %v, want ErrCorrupt naming the bytes", err)
 	}
 	if rep := mustIntegrity(t, s); len(rep.GuardsMissing)+len(rep.GuardsRedefined) != 0 {
 		t.Errorf("guards after the restore = %v %v", rep.GuardsMissing, rep.GuardsRedefined)

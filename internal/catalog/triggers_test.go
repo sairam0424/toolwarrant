@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -100,22 +101,45 @@ func TestTriggers_DanglingApprovedPointerIsCorrupt(t *testing.T) {
 	}
 }
 
-// Reviewers' "Snapshot has no digest re-check": the processor's read path
-// re-hashes the approved canonical bytes, so a rewritten digest is never served.
-func TestSnapshot_RechecksTheApprovedDigest(t *testing.T) {
+// rewriteDigestAndHashSeen rewrites every version's digest column and every
+// approvals row's hash_seen to digest under dropped and re-created guards, the
+// consistent forgery of the fourth review, and the canonical bytes too when
+// canonical is not nil.
+func rewriteDigestAndHashSeen(t *testing.T, db *sql.DB, digest string, canonical []byte) {
+	t.Helper()
+	mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)
+	if canonical == nil {
+		mustExec(t, db, `UPDATE tool_versions SET digest = ?`, digest)
+	} else {
+		mustExec(t, db, `UPDATE tool_versions SET digest = ?, canonical = ?`, digest, canonical)
+	}
+	restoreGuard(t, db, "tool_versions_immutable")
+	mustExec(t, db, `DROP TRIGGER approvals_no_update`)
+	mustExec(t, db, `UPDATE approvals SET hash_seen = ?`, digest)
+	restoreGuard(t, db, "approvals_no_update")
+}
+
+// Reviewers' "Snapshot has no digest re-check", answered since D21 (d) by the
+// anchor rather than by the bytes: the processor's read path hands out the
+// digest the verified approval entry recorded, so a rewritten digest column,
+// even with hash_seen rewritten to match under re-created guards, is never
+// served; and the paths that hand out bytes hash them on every call, so a
+// rewritten definition behind an intact digest is never exported, while the
+// snapshot keeps serving the anchored digest that the rewrite cannot change.
+func TestSnapshot_AnchorsTheDigestAndApprovedCatchesTamperedBytes(t *testing.T) {
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "good"))
-	mustApprove(t, s, "alpha", "echo", digestOf(t, "echo", "good"))
+	good := digestOf(t, "echo", "good")
+	mustApprove(t, s, "alpha", "echo", good)
 	evil := digestOf(t, "echo", "EVIL")
 	db := rawDB(t, path)
 	if _, err := db.ExecContext(bg, `UPDATE tool_versions SET digest = ?`, evil); err == nil {
 		t.Fatal("the immutability trigger did not block the update")
 	}
-	mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)
-	mustExec(t, db, `UPDATE tool_versions SET digest = ?`, evil)
-	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) {
-		t.Fatalf("Snapshot after the tamper = %v, want ErrCorrupt (it would have served %s)", err, evil[:12])
+	rewriteDigestAndHashSeen(t, db, evil, nil)
+	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "is not the one its newest approval entry") {
+		t.Fatalf("Snapshot after the digest rewrite = %v, want ErrCorrupt naming the anchor (it would have served %s)", err, evil[:12])
 	}
 	if _, err := s.Approved(bg); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Approved = %v, want ErrCorrupt", err)
@@ -123,15 +147,29 @@ func TestSnapshot_RechecksTheApprovedDigest(t *testing.T) {
 	if _, err := s.Versions(bg, "alpha", "echo"); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("Versions = %v, want ErrCorrupt", err)
 	}
-	// With the digest restored the dropped guard is still reported, on every
-	// load and not only at Open (review finding: guards are verified by DDL on
-	// each Snapshot); once it is back the tool is served again.
-	mustExec(t, db, `UPDATE tool_versions SET digest = ?`, digestOf(t, "echo", "good"))
-	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "tool_versions_immutable is missing") {
-		t.Errorf("Snapshot with the guard still dropped = %v, want ErrCorrupt naming it", err)
+	// The digest column and hash_seen put back, the bytes alone rewritten:
+	// the snapshot does not read them and serves the anchored digest; the
+	// export hashes them and refuses.
+	rewriteDigestAndHashSeen(t, db, good, []byte(`{"name":"echo"}`))
+	if snap, err := s.Snapshot(bg, "alpha"); err != nil || snap.Tools["echo"].Approved != good {
+		t.Errorf("Snapshot after a bytes-only rewrite = %+v, %v; want the anchored digest %s served", snap.Tools["echo"], err, good[:12])
 	}
+	if _, err := s.Approved(bg); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "does not hash to its digest") {
+		t.Errorf("Approved after a bytes-only rewrite = %v, want ErrCorrupt naming the bytes", err)
+	}
+	// A dropped guard is reported on every load and not only at Open (review
+	// finding: guards are verified by DDL on each Snapshot); once it and the
+	// bytes are back the tool is served and exported again.
+	mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)
+	if _, err := s.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "tool_versions_immutable is missing") {
+		t.Errorf("Snapshot with the guard dropped = %v, want ErrCorrupt naming it", err)
+	}
+	mustExec(t, db, `UPDATE tool_versions SET canonical = ?`, canonicalFor(t, "echo", "good"))
 	restoreGuard(t, db, "tool_versions_immutable")
 	if _, err := s.Snapshot(bg, "alpha"); err != nil {
-		t.Errorf("Snapshot after restoring the digest and the guard: %v", err)
+		t.Errorf("Snapshot after restoring the bytes and the guard: %v", err)
+	}
+	if _, err := s.Approved(bg); err != nil {
+		t.Errorf("Approved after restoring the bytes and the guard: %v", err)
 	}
 }

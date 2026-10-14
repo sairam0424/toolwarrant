@@ -4,13 +4,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/gate"
 )
+
+// bytesColumn matches a reference to the two byte columns of tool_versions in
+// a statement, as whole words: missing_crawls is not raw.
+var bytesColumn = regexp.MustCompile(`\b(canonical|raw)\b`)
 
 // approvedServer registers alpha with n approved single-version tools.
 func approvedServer(t *testing.T, s *Store, n int) {
@@ -23,19 +26,43 @@ func approvedServer(t *testing.T, s *Store, n int) {
 	}
 }
 
-// readPaths runs the three read paths that re-check approved rows.
-func readPaths(s *Store) map[string]func() error {
+// digestPaths runs the reads that hand out digests and read no canonical
+// bytes: the processor's snapshot and the two list views (D21 d).
+func digestPaths(s *Store) map[string]func() error {
 	return map[string]func() error{
 		"Snapshot": func() error { _, err := s.Snapshot(bg, "alpha"); return err },
+		"Tools":    func() error { _, err := s.Tools(bg, "alpha"); return err },
+		"Tool":     func() error { _, err := s.Tool(bg, "alpha", "tool-00000"); return err },
+	}
+}
+
+// bytePaths runs the reads that hand out canonical bytes and hash them on
+// every call: the export's list and the version history show and diff read.
+func bytePaths(s *Store) map[string]func() error {
+	return map[string]func() error{
 		"Approved": func() error { _, err := s.Approved(bg); return err },
 		"Versions": func() error { _, err := s.Versions(bg, "alpha", "tool-00000"); return err },
 	}
 }
 
-func wantHashes(t *testing.T, s *Store, want int64, why string) {
+// wantCorrupt requires every read in paths to fail with ErrCorrupt whose
+// message mentions fragment.
+func wantCorrupt(t *testing.T, paths map[string]func() error, fragment, why string) {
 	t.Helper()
-	if got := s.verified.hashCount(); got != want {
-		t.Fatalf("hashes = %d, want %d: %s", got, want, why)
+	for name, read := range paths {
+		if err := read(); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), fragment) {
+			t.Errorf("%s = %v, want ErrCorrupt mentioning %q: %s", name, err, fragment, why)
+		}
+	}
+}
+
+// wantClean requires every read in paths to succeed.
+func wantClean(t *testing.T, paths map[string]func() error, why string) {
+	t.Helper()
+	for name, read := range paths {
+		if err := read(); err != nil {
+			t.Errorf("%s = %v, want success: %s", name, err, why)
+		}
 	}
 }
 
@@ -62,102 +89,88 @@ func tamperCanonical(t *testing.T, path, digest string, canonical []byte) {
 	restoreGuard(t, db, "tool_versions_immutable")
 }
 
-func TestRecheck_AVerifiedRowIsNotHashedAgainWithinTheTTL(t *testing.T) {
-	s := newStore(t)
-	advance := clockAt(s, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-	const n = 5
-	approvedServer(t, s, n)
-	wantHashes(t, s, 0, "decisions re-hash on their own and never through the memory")
-
-	if snap := mustSnapshot(t, s, "alpha"); len(snap.Tools) != n {
-		t.Fatalf("snapshot has %d tools", len(snap.Tools))
-	}
-	wantHashes(t, s, n, "the first reload hashes every approved row once")
-
-	// A crawl moves the generation; the reload after it, the export and the
-	// view all find the rows remembered.
-	mustCrawl(t, s, "alpha", bigCrawl(n, "v1")...)
-	for name, read := range readPaths(s) {
-		if err := read(); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-	}
-	wantHashes(t, s, n, "a remembered row is not hashed by any read path")
-
-	advance(RecheckTTL - time.Nanosecond)
-	mustSnapshot(t, s, "alpha")
-	wantHashes(t, s, n, "the memory holds until RecheckTTL")
-	advance(time.Nanosecond)
-	mustSnapshot(t, s, "alpha")
-	wantHashes(t, s, 2*n, "after RecheckTTL every row is hashed once more")
-	mustSnapshot(t, s, "alpha")
-	wantHashes(t, s, 2*n, "and remembered again")
-	if s.verified.size() != n {
-		t.Errorf("remembered rows = %d, want %d", s.verified.size(), n)
-	}
-}
-
-func TestRecheck_TamperedBytesAreCaughtAfterTheTTLAndAtOnceWithoutTheMemory(t *testing.T) {
-	s, path := newStoreAt(t, defaultPolicyForTests())
-	advance := clockAt(s, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-	approvedServer(t, s, 1)
-	digest := digestOf(t, "tool-00000", "v1")
-	mustSnapshot(t, s, "alpha") // the row is now remembered
-	tamperCanonical(t, path, digest, []byte(`{"name":"tool-00000"}`))
-
-	// The window RecheckTTL documents: the Store that verified the row does
-	// not look at its bytes again before the TTL has passed.
-	for name, read := range readPaths(s) {
-		if err := read(); err != nil {
-			t.Fatalf("%s within RecheckTTL = %v; the documented window hides the change until the TTL", name, err)
-		}
-	}
-	// A Store without that memory fails closed at once.
-	fresh := openStore(t, path, defaultPolicyForTests())
-	for name, read := range readPaths(fresh) {
-		if err := read(); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("fresh Store %s = %v, want ErrCorrupt", name, err)
-		}
-	}
-	// So does a decision, which loads its tool afresh.
-	if err := s.Disable(bg, "alpha", "tool-00000", alice); !errors.Is(err, ErrCorrupt) {
-		t.Errorf("Disable = %v, want ErrCorrupt", err)
-	}
-	// And so does the remembering Store once RecheckTTL has passed.
-	advance(RecheckTTL)
-	for name, read := range readPaths(s) {
-		if err := read(); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("%s after RecheckTTL = %v, want ErrCorrupt", name, err)
-		}
-	}
-	// A failed row is never remembered: it is hashed on every read until it
-	// is repaired, then verified once and remembered.
-	before := s.verified.hashCount()
-	_, _ = s.Snapshot(bg, "alpha")
-	_, _ = s.Snapshot(bg, "alpha")
-	wantHashes(t, s, before+2, "a failed row is hashed on every read")
-	canonical, err := gate.CanonicalTool(def("tool-00000", "v1"))
+// canonicalFor is the canonical form the catalog stored for a test definition.
+func canonicalFor(t *testing.T, name, desc string) []byte {
+	t.Helper()
+	canonical, err := gate.CanonicalTool(def(name, desc))
 	if err != nil {
 		t.Fatal(err)
 	}
-	tamperCanonical(t, path, digest, canonical)
-	mustSnapshot(t, s, "alpha")
-	mustSnapshot(t, s, "alpha")
-	wantHashes(t, s, before+3, "the repaired row is verified once and remembered")
+	return canonical
 }
 
-func TestRecheck_AChangedDigestIsCaughtAtOnceEvenWithinTheTTL(t *testing.T) {
+// The paths that hand out bytes hash them on every call and keep nothing
+// between calls (D21 d): a rewrite of an approved definition's bytes is
+// ErrCorrupt on the very next call of the Store that just read them clean, on
+// a fresh Store, on a read-only Store, and for a decision; the repaired row is
+// clean again at once, with no memory to lapse on either side.
+func TestApproved_TamperedBytesAreCaughtAtOnce(t *testing.T) {
 	s, path := newStoreAt(t, defaultPolicyForTests())
-	approvedServer(t, s, 1)
-	mustSnapshot(t, s, "alpha")
-	db := rawDB(t, path)
-	mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)
-	mustExec(t, db, `UPDATE tool_versions SET digest = ?`, strings.Repeat("0", 64))
-	restoreGuard(t, db, "tool_versions_immutable")
-	for name, read := range readPaths(s) {
-		if err := read(); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("%s = %v, want ErrCorrupt: the memory is for one digest only", name, err)
-		}
+	approvedServer(t, s, 2)
+	digest := digestOf(t, "tool-00000", "v1")
+	wantClean(t, bytePaths(s), "the rows are untouched and have just been written")
+	tamperCanonical(t, path, digest, []byte(`{"name":"tool-00000"}`))
+
+	wantCorrupt(t, bytePaths(s), "does not hash to its", "the Store that read the row clean a moment ago has no memory of it")
+	fresh := openStore(t, path, defaultPolicyForTests())
+	wantCorrupt(t, bytePaths(fresh), "does not hash to its", "a fresh Store")
+	reader, err := OpenWith(path, OpenOptions{ReadOnly: true, MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	wantCorrupt(t, bytePaths(reader), "does not hash to its", "a read-only Store")
+	if err := s.Disable(bg, "alpha", "tool-00000", alice); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("Disable = %v, want ErrCorrupt: a decision loads its tool afresh", err)
+	}
+	// The other tool is untouched, and the export says so for every row it
+	// reads before the bad one: nothing is exported from a file with one bad row.
+	if _, err := s.Versions(bg, "alpha", "tool-00001"); err != nil {
+		t.Errorf("Versions of the untouched tool = %v", err)
+	}
+
+	tamperCanonical(t, path, digest, canonicalFor(t, "tool-00000", "v1"))
+	wantClean(t, bytePaths(s), "the repaired row hashes to its digest again")
+	wantClean(t, bytePaths(reader), "the repaired row hashes to its digest again on the read-only Store")
+}
+
+// A changed digest column is caught by the serving path at once and without
+// reading a byte: alone, by the newest-decision rule (the approvals row's
+// hash_seen no longer names it); rewritten together with hash_seen under
+// re-created guards, by the chain anchor (the newest approval entry's
+// after_hash is the digest the approver saw). Every path that hands out the
+// digest or the bytes refuses it.
+func TestSnapshot_AChangedDigestColumnIsCaughtByTheAnchor(t *testing.T) {
+	forged := strings.Repeat("0", 64)
+	cases := map[string]struct {
+		rewriteHashSeen bool
+		fragment        string
+	}{
+		"digest column alone":                  {false, "newest approval decision"},
+		"digest column and hash_seen together": {true, "is not the one its newest approval entry"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, path := newStoreAt(t, defaultPolicyForTests())
+			approvedServer(t, s, 1)
+			digest := digestOf(t, "tool-00000", "v1")
+			mustSnapshot(t, s, "alpha")
+			db := rawDB(t, path)
+			mustExec(t, db, `DROP TRIGGER tool_versions_immutable`)
+			mustExec(t, db, `UPDATE tool_versions SET digest = ? WHERE digest = ?`, forged, digest)
+			restoreGuard(t, db, "tool_versions_immutable")
+			if tc.rewriteHashSeen {
+				mustExec(t, db, `DROP TRIGGER approvals_no_update`)
+				mustExec(t, db, `UPDATE approvals SET hash_seen = ? WHERE hash_seen = ?`, forged, digest)
+				restoreGuard(t, db, "approvals_no_update")
+			}
+			wantCorrupt(t, digestPaths(s), tc.fragment, "the digest handed out must be the one the approver decided on")
+			for p, read := range bytePaths(s) {
+				if err := read(); !errors.Is(err, ErrCorrupt) {
+					t.Errorf("%s = %v, want ErrCorrupt", p, err)
+				}
+			}
+		})
 	}
 }
 
@@ -169,91 +182,101 @@ func TestRecheck_APointerAtAnotherToolsVersionIsCorrupt(t *testing.T) {
 		`UPDATE tools SET approved_version_id = (SELECT id FROM tool_versions WHERE digest = ?) WHERE name = 'tool-00001'`,
 		digestOf(t, "tool-00000", "v1"))
 	for _, name := range []string{"Snapshot", "Approved"} {
-		if err := readPaths(s)[name](); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("%s = %v, want ErrCorrupt: another tool's version hashes to its own digest and must not pass as this one's", name, err)
+		paths := digestPaths(s)
+		if name == "Approved" {
+			paths = bytePaths(s)
+		}
+		if err := paths[name](); !errors.Is(err, ErrCorrupt) {
+			t.Errorf("%s = %v, want ErrCorrupt: another tool's version carries its own digest and must not pass as this one's", name, err)
 		}
 	}
 }
 
-func TestRecheck_ReadOnlyOpenRemembersAndForensicOpenDoesNot(t *testing.T) {
-	s, path := newStoreAt(t, defaultPolicyForTests())
-	approvedServer(t, s, 3)
-	for _, tc := range []struct {
-		name   string
-		opts   OpenOptions
-		hashes int64 // after two reloads
-	}{
-		{"read-only", OpenOptions{ReadOnly: true}, 3},
-		{"forensic", OpenOptions{Forensic: true}, 6},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r, err := OpenWith(path, tc.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = r.Close() })
-			mustSnapshot(t, r, "alpha")
-			mustSnapshot(t, r, "alpha")
-			wantHashes(t, r, tc.hashes, tc.name+" open, two reloads of three approved tools")
-		})
+// The serving path reads no canonical bytes (D21 d): its statements name no
+// canonical column, so a rewrite of the bytes behind an approved digest, with
+// the digest column intact, is invisible to Snapshot, Tools and Tool, which
+// keep handing out the anchored digest, the one the gateway compares the live
+// definition with, so the rewrite cannot change what is served. The paths that
+// hand out bytes, a decision and Integrity all refuse or name it at once.
+func TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest(t *testing.T) {
+	for name, stmt := range map[string]string{"snapshotQuery": snapshotQuery, "toolViewsQuery": toolViewsQuery, "toolViewQuery": toolViewQuery} {
+		if m := bytesColumn.FindString(stmt); m != "" {
+			t.Errorf("%s names the %s column; the serving path must not read bytes:\n%s", name, m, stmt)
+		}
 	}
+	if bytesColumn.FindString(versionViewQuery) == "" || bytesColumn.FindString(approvedQuery) == "" {
+		t.Error("the statements of Versions and Approved must read the canonical bytes they hand out and hash")
+	}
+	s, path := newStoreAt(t, defaultPolicyForTests())
+	approvedServer(t, s, 2)
+	digest := digestOf(t, "tool-00000", "v1")
+	before := mustSnapshot(t, s, "alpha")
+	tamperCanonical(t, path, digest, []byte(`{"name":"tool-00000"}`))
+
+	hashed := s.chain.hashCount()
+	after := mustSnapshot(t, s, "alpha")
+	if after.Tools["tool-00000"].Approved != digest || after.Tools["tool-00000"] != before.Tools["tool-00000"] {
+		t.Errorf("policy of tool-00000 after a bytes-only rewrite = %+v, want the anchored digest %s unchanged", after.Tools["tool-00000"], digest[:12])
+	}
+	if got := s.chain.hashCount() - hashed; got != 2 {
+		t.Errorf("the reload hashed %d entries, want 2: one anchor entry per tool and nothing else", got)
+	}
+	views, err := s.Tools(bg, "alpha")
+	if err != nil || len(views) != 2 || views[0].Approved != digest {
+		t.Errorf("Tools = %+v, %v; want the anchored digest listed", views, err)
+	}
+	if v, err := s.Tool(bg, "alpha", "tool-00000"); err != nil || v.Approved != digest {
+		t.Errorf("Tool = %+v, %v; want the anchored digest", v, err)
+	}
+	fresh := openStore(t, path, defaultPolicyForTests())
+	wantClean(t, digestPaths(fresh), "a fresh Store reads no bytes either")
+
+	wantCorrupt(t, bytePaths(s), "does not hash to its", "every path that hands out bytes hashes them")
+	if err := s.Disable(bg, "alpha", "tool-00000", alice); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("Disable = %v, want ErrCorrupt: a decision loads and hashes its tool", err)
+	}
+	rep := mustIntegrity(t, s)
+	problemMentioning(t, rep, `"alpha/tool-00000"`, "does not hash to its digest")
 }
 
-func TestRecheck_EveryStoreHasItsOwnMemoryAndCloseDropsIt(t *testing.T) {
-	a, path := newStoreAt(t, defaultPolicyForTests())
-	b := openStore(t, path, defaultPolicyForTests())
-	if a.verified == nil || b.verified == nil || a.verified == b.verified {
-		t.Fatal("each Store must have its own verifier")
-	}
-	if a.verified.bound != recheckCacheEntries {
-		t.Errorf("bound = %d, want %d", a.verified.bound, recheckCacheEntries)
-	}
-	approvedServer(t, a, 2)
-	mustSnapshot(t, a, "alpha")
-	if a.verified.size() != 2 || b.verified.size() != 0 {
-		t.Fatalf("remembered: a = %d, b = %d; want 2 and 0", a.verified.size(), b.verified.size())
-	}
-	if err := a.Close(); err != nil {
+// Versions hands out bytes and hashes every version on every call (D21 d): a
+// rewrite of any version's bytes, approved or superseded, is ErrCorrupt on the
+// next call of the Store that just listed them clean and of a read-only Store,
+// while Tool, which show reads first and which hands out the digest alone,
+// still answers; the repaired row is clean again at once.
+func TestVersions_TamperedBytesAreCaughtAtOnce(t *testing.T) {
+	s, path := newStoreAt(t, defaultPolicyForTests())
+	mustAddServer(t, s, "alpha")
+	mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	mustCrawl(t, s, "alpha", tool("echo", "v2"))
+	mustApprove(t, s, "alpha", "echo", digestOf(t, "echo", "v2"))
+	reader, err := OpenWith(path, OpenOptions{ReadOnly: true, MustExist: true})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if a.verified.size() != 0 {
-		t.Errorf("a closed Store still remembers %d rows", a.verified.size())
-	}
-}
-
-func TestRecheck_ConcurrentReadersShareOneMemorySafely(t *testing.T) {
-	s := newStore(t)
-	const n, readers, rounds = 20, 8, 5
-	approvedServer(t, s, n)
-
-	run := func() {
-		var wg sync.WaitGroup
-		for g := 0; g < readers; g++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for r := 0; r < rounds; r++ {
-					for name, read := range readPaths(s) {
-						if err := read(); err != nil {
-							t.Errorf("%s: %v", name, err)
-							return
-						}
-					}
-				}
-			}()
+	t.Cleanup(func() { _ = reader.Close() })
+	for _, st := range []*Store{s, reader} {
+		if vs, err := st.Versions(bg, "alpha", "echo"); err != nil || len(vs) != 2 {
+			t.Fatalf("Versions = %+v, %v", vs, err)
 		}
-		wg.Wait()
 	}
-	// Cold: a reader may hash a row it finds unremembered, never more.
-	run()
-	if got := s.verified.hashCount(); got < n || got > n*readers {
-		t.Fatalf("cold hashes = %d, want between %d and %d", got, n, n*readers)
+	for no, desc := range map[int]string{1: "v1", 2: "v2"} {
+		digest := digestOf(t, "echo", desc)
+		tamperCanonical(t, path, digest, []byte(`{"name":"echo"}`))
+		want := fmt.Sprintf("version %d does not hash to its stored digest", no)
+		for label, st := range map[string]*Store{"writer": s, "reader": reader} {
+			if _, err := st.Versions(bg, "alpha", "echo"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s Versions after rewriting version %d = %v, want ErrCorrupt mentioning %q", label, no, err, want)
+			}
+			if v, err := st.Tool(bg, "alpha", "echo"); err != nil || v.Approved != digestOf(t, "echo", "v2") {
+				t.Errorf("%s Tool after rewriting version %d = %+v, %v; want the anchored digest, since the view reads no bytes", label, no, v, err)
+			}
+		}
+		tamperCanonical(t, path, digest, canonicalFor(t, "echo", desc))
+		for label, st := range map[string]*Store{"writer": s, "reader": reader} {
+			if _, err := st.Versions(bg, "alpha", "echo"); err != nil {
+				t.Errorf("%s Versions after repairing version %d = %v", label, no, err)
+			}
+		}
 	}
-	if s.verified.size() != n {
-		t.Fatalf("remembered = %d, want %d", s.verified.size(), n)
-	}
-	// Warm: nothing is hashed again.
-	warm := s.verified.hashCount()
-	run()
-	wantHashes(t, s, warm, "warm concurrent reads hash nothing")
 }

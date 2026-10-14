@@ -18,7 +18,7 @@ import (
 // entry below the head rewritten in place and re-sealed from its real
 // predecessor passed with the head unchanged; and the memory of re-sealed
 // entries was keyed by the stored hash column, so an after_hash edited with
-// the column kept was served for RecheckTTL. Now a Store verifies the whole
+// the column kept was served for ten minutes. Now a Store verifies the whole
 // chain at open, remembers the hash of every decision entry it walked and
 // trusts an entry only when its fields hash to that value.
 
@@ -180,7 +180,8 @@ func TestSnapshot_InPlaceRewriteOfTheApprovalEntryBelowTheHeadIsCorrupt(t *testi
 
 // The review's core probe: the approval entry's after_hash is edited in place
 // with the hash column kept, under a long-lived read-only Store (the
-// processor's) whose memory is warm. Nothing waits for RecheckTTL: every path
+// processor's) that has just read the entry clean. Nothing waits for a
+// memory to lapse: every path
 // of the reader and of the writer is ErrCorrupt at once, a fresh open refuses
 // at the entry that does not re-seal, and the head the operator recorded is
 // still a hash in the log, so only the chain shows it.
