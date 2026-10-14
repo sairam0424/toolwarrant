@@ -49,14 +49,17 @@ func firstServerEntry(ctx context.Context, q queryer, server, event string) (aud
 	return e, true, nil
 }
 
+// newestServerEntryQuery selects the newest entry with one event about one
+// subject. It is one seek on the audit_log_by_subject index with no sort (an
+// IN list over two events would make SQLite sort every matching entry in a
+// temporary b-tree), so a lookup costs the same whatever the log holds;
+// TestAnchorQueries_StayOnTheAuditLogBySubjectIndex holds it to that plan.
+const newestServerEntryQuery = `SELECT ` + auditCols + ` FROM audit_log WHERE subject = ? AND event = ? ORDER BY seq DESC LIMIT 1`
+
 // newestServerEntry returns the newest entry with this event about a server;
-// found is false when the log has none. The query is one seek on the
-// audit_log_by_subject index with no sort (an IN list over two events would
-// make SQLite sort every matching entry in a temporary b-tree), so a lookup
-// costs the same whatever the log holds.
+// found is false when the log has none.
 func newestServerEntry(ctx context.Context, q queryer, server, event string) (audit.Entry, bool, error) {
-	e, err := scanAudit(q.QueryRowContext(ctx,
-		`SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event = ? ORDER BY seq DESC LIMIT 1`, server, event))
+	e, err := scanAudit(q.QueryRowContext(ctx, newestServerEntryQuery, server, event))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return audit.Entry{}, false, nil

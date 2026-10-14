@@ -87,14 +87,19 @@ func versionDigest(e audit.Entry) (string, bool) {
 const versionEventList = `'` + string(lifecycle.EvProposed) + `', '` + string(lifecycle.EvSuperseded) + `', '` +
 	string(lifecycle.EvRejected) + `', '` + string(lifecycle.EvApproved) + `', '` + string(lifecycle.EvRolledBack) + `'`
 
+// versionEntriesQuery selects every version.* entry about one subject in
+// sequence order. It rests on the audit_log_by_subject index, so it reads only
+// the subject's own entries; TestAnchorQueries_StayOnTheAuditLogBySubjectIndex
+// holds it to that plan.
+const versionEntriesQuery = `SELECT ` + auditCols + ` FROM audit_log WHERE subject = ? AND event IN (` + versionEventList + `) ORDER BY seq`
+
 // versionsFromLog reads every version.* entry about a subject in sequence
 // order, requires each to be part of the verified chain, folds them into one
-// trace per digest and returns the traces. It rests on the audit_log_by_subject
-// index, so it reads only the tool's own entries. An edge the lifecycle never
-// takes is ErrCorrupt: the Store writes every status move as an event, so such
-// a sequence means the row was edited between the two entries.
+// trace per digest and returns the traces. An edge the lifecycle never takes
+// is ErrCorrupt: the Store writes every status move as an event, so such a
+// sequence means the row was edited between the two entries.
 func versionsFromLog(ctx context.Context, q queryer, chain *chainMemory, subject string) (map[string]*versionTrace, error) {
-	rows, err := q.QueryContext(ctx, `SELECT `+auditCols+` FROM audit_log WHERE subject = ? AND event IN (`+versionEventList+`) ORDER BY seq`, subject)
+	rows, err := q.QueryContext(ctx, versionEntriesQuery, subject)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: read version entries: %w", err)
 	}
