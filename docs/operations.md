@@ -503,9 +503,11 @@ Verdicts, one line per tool or per check:
   since D19 and `TestEmittedConfigReadsWhatEmitWrites` reads the real emitted
   block; scenario Q saw `GET /api/config` render the block with exactly the
   four emitted values, paths and hostname, no key material, and the check
-  healthy on a TLS entry, and a posted `insecure: true` was
+  healthy on a TLS entry, and a posted `insecure: true` made the route serve
+  under a root bundle of garbage it had just failed closed with, so the
+  gateway skipped the verification of the processor's certificate, and was
   `LIVE-CONFIG-MISMATCH mock: processor 1: backendTLS field insecure: not in
-  the emitted file` while the route kept serving). Scenario
+  the emitted file`). Scenario
   P posted the emitted document plus a `binds` section with a listener on
   another port, and plus a top-level `mcp` shortcut, through the admin API of
   the running gateway: each was accepted with status 200 and rendered by

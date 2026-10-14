@@ -2296,15 +2296,24 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   answered `upstream call failed: Connect: invalid peer certificate:
   UnknownIssuer` and the processor logged `ServerHandshake(...) failed: remote
   error: tls: unknown certificate authority`, fail closed; a re-emit with the
-  real root served again. (8) `insecure: true` posted into the block through
-  the admin API: status 200; a new session still listed add and echo and
-  `tools/call echo` was allowed, so the gateway kept dialling the processor
-  with its certificate unverified and the route shows nothing; against a
-  byte-identical copy of the emitted file `verify-gateway --admin` printed
+  real root served again. (8) `insecure: true`, posted into the block through
+  the admin API while the block named the garbage root again, so that the
+  flag's effect is observable: with that root the route had just failed
+  closed (gateway `Connect: invalid peer certificate: UnknownIssuer`,
+  processor `remote error: tls: unknown certificate authority`); the post
+  answered status 200; the sessions opened while the gateway was still
+  applying the document were refused the same way (the note quotes six
+  processor lines, every one `ServerHandshake(...) failed: remote error: tls:
+  unknown certificate authority`), then a new session listed add and echo and
+  `tools/call echo` was allowed, so under the flag the gateway dialled the
+  processor without verifying its certificate, and the route shows nothing;
+  against a byte-identical copy of the garbage-root file, which makes the
+  flag the only difference, `verify-gateway --admin` printed
   `LIVE-CONFIG-MISMATCH mock: processor 1: backendTLS field insecure: not in
-  the emitted file`, exit 1, and the original document posted back was
-  healthy again. (9) The restore to a plaintext processor and an entry
-  without the block was healthy by the canary with and without `--admin`;
+  the emitted file`, exit 1; the original document (the real root, no flag)
+  posted back and the real-root file put back on disk were healthy again.
+  (9) The restore to a plaintext processor and an entry without the block
+  was healthy by the canary with and without `--admin`;
   the second TLS processor's stats read `lists served=6 ... calls
   allowed=2`. Every line is in the run's notes (`demo/last-run.log` after
   `demo/run.sh`).

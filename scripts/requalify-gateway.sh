@@ -376,7 +376,7 @@ item_tls() (
 	if [ "$have_e2e" = no ]; then
 		report SKIPPED 15 "backendTLS fields and the scenario Q handshake" "the --validate-only tests against the block passed; the handshake needs --e2e ($scenario_tls)"
 	elif scenario_passed "$scenario_tls" && grep -q '^Q: .*the first handshake between agentgateway' "$e2e_report" && grep -q '^Q: .*so the gateway.s client offered h2' "$e2e_report"; then
-		report PASS 15 "backendTLS fields and the scenario Q handshake" "the binary reads the block and opens its three files as D19 records; scenario Q listed and called through the TLS link with the gateway's client certificate, refused a client certificate from another authority, both downgrades and a garbage root, and found verify-gateway --admin healthy on the TLS entry"
+		report PASS 15 "backendTLS fields and the scenario Q handshake" "the binary reads the block and opens its three files as D19 records; scenario Q listed and called through the TLS link with the gateway's client certificate, refused a client certificate from another authority, both downgrades and a garbage root, found verify-gateway --admin healthy on the TLS entry, and saw a posted insecure: true serve under the garbage root and be LIVE-CONFIG-MISMATCH naming the field"
 	else
 		report CHANGED 15 "backendTLS fields and the scenario Q handshake" "scenario Q differs from $pinned ($(grep '^Q: ' "$e2e_report" | head -1 | cut -c1-160)); re-read D19 and its observations in docs/decisions.md, threat-model.md L11 and docs/operations.md (Running the processor, Re-emitting the gateway configuration)"
 	fi
