@@ -13,9 +13,9 @@ import (
 // Verdict words. LEAK is the one that matters: the gateway serves something
 // the catalog would not serve, which is what a route without its processor
 // looks like (the guard is config-presence-based and fails open; decision
-// D12). CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS and
-// PROBE-INCONCLUSIVE are the other ways a deployment fails the check. MISSING
-// is a report and never fails.
+// D12). CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE
+// and PROBE-CHANGED are the other ways a deployment fails the check. MISSING
+// and KNOWN-LIMIT are reports and never fail.
 const (
 	verdictLeak = "LEAK"
 	// verdictMismatch is a sub-label on a LEAK line, never a verdict of its
@@ -34,6 +34,16 @@ const (
 	// back: the canary cannot tell whether the gateway or the upstream wrote
 	// it, so it fails the check rather than call the gateway healthy (D13 h).
 	verdictInconclusive = "PROBE-INCONCLUSIVE"
+	// verdictKnownLimit is the probe's line when the operator declared with
+	// --expect-unhooked that the gateway forwards the id-less call, as
+	// agentgateway v1.6.0 does (limit L17), and it did: the check passes, the
+	// probe stays on, and the line records the limit on every check (D18).
+	verdictKnownLimit = "KNOWN-LIMIT"
+	// verdictProbeChanged is the probe's failing verdict under
+	// --expect-unhooked when the answer was anything but the declared 202:
+	// the gateway pin moved or the gateway changed under it, and the
+	// deployment must be re-qualified before the flag can be trusted (L7).
+	verdictProbeChanged = "PROBE-CHANGED"
 	verdictOK           = "OK"
 	// noHash is shown for a config whose header is missing or malformed.
 	noHash = "(no header)"
@@ -95,12 +105,39 @@ const (
 	probeInconclusive
 )
 
-// probeReport is what the probe found and the HTTP status the answer carried,
+// probeReport is what the probe found, the HTTP status the answer carried,
 // which the pass sentence names so the operator sees what came back without
-// the canary saying who wrote it.
+// the canary saying who wrote it, and whether the operator declared the
+// forwarding with --expect-unhooked (D18), which turns the 202 into a
+// KNOWN-LIMIT line and every other answer into PROBE-CHANGED.
 type probeReport struct {
-	outcome probeOutcome
-	status  int
+	outcome        probeOutcome
+	status         int
+	expectUnhooked bool
+}
+
+// verdict is the failing verdict word the probe's answer earns, "" when the
+// probe passes or was not sent. Without --expect-unhooked a 202 is
+// UNHOOKED-CALLS and an answer nobody can be credited with is
+// PROBE-INCONCLUSIVE; with it the 202 is the declared limit and passes, and
+// every other answer the probe classified is PROBE-CHANGED, the inconclusive
+// shapes included, because none of them is the 202 the operator declared. An
+// answer the probe could not classify is an error, never a verdict, on both
+// paths.
+func (p probeReport) verdict() string {
+	switch {
+	case p.outcome == probeSkipped:
+		return ""
+	case p.expectUnhooked && p.outcome != probeUnhooked:
+		return verdictProbeChanged
+	case p.expectUnhooked:
+		return ""
+	case p.outcome == probeUnhooked:
+		return verdictUnhooked
+	case p.outcome == probeInconclusive:
+		return verdictInconclusive
+	}
+	return ""
 }
 
 // liveCheck is the outcome of comparing the gateway's live configuration with
@@ -141,10 +178,10 @@ type verdicts struct {
 	probe          probeReport
 }
 
-// failed reports whether the check must fail the command. Exit 0 is OK or
-// MISSING only.
+// failed reports whether the check must fail the command. Exit 0 is OK,
+// MISSING or KNOWN-LIMIT only.
 func (v verdicts) failed() bool {
-	return len(v.leaks) > 0 || v.configEdited || len(v.live.diffs) > 0 || v.probe.outcome == probeUnhooked || v.probe.outcome == probeInconclusive
+	return len(v.leaks) > 0 || v.configEdited || len(v.live.diffs) > 0 || v.probe.verdict() != ""
 }
 
 // subLabelCounts counts the leaks that carry each sub-label.
@@ -200,16 +237,23 @@ func (l liveCheck) summary() string {
 }
 
 // summary is the probe's part of the check's one-line account. The pass
-// sentence names the status and attributes the refusal to nobody (D17 h);
-// docs/operations.md and e2e scenario O quote it.
+// sentences name the status and attribute the refusal to nobody (D17 h), and
+// under --expect-unhooked the forwarded call is named as the declared limit
+// (D18); docs/operations.md and e2e scenario O quote them.
 func (p probeReport) summary() string {
+	switch p.verdict() {
+	case verdictProbeChanged:
+		return fmt.Sprintf("; the id-less tools/call was not forwarded with HTTP 202 as --expect-unhooked declared (HTTP %d, %s)", p.status, verdictProbeChanged)
+	case verdictUnhooked:
+		return fmt.Sprintf("; id-less tools/call forwarded unhooked (%s)", verdictUnhooked)
+	case verdictInconclusive:
+		return fmt.Sprintf("; id-less tools/call answered by someone (%s)", verdictInconclusive)
+	}
 	switch p.outcome {
 	case probeNotAccepted:
 		return fmt.Sprintf("; the id-less tools/call was not accepted as a notification (HTTP %d, by the gateway or by the upstream)", p.status)
 	case probeUnhooked:
-		return fmt.Sprintf("; id-less tools/call forwarded unhooked (%s)", verdictUnhooked)
-	case probeInconclusive:
-		return fmt.Sprintf("; id-less tools/call answered by someone (%s)", verdictInconclusive)
+		return fmt.Sprintf("; id-less tools/call forwarded unhooked as declared with --expect-unhooked (%s L17)", verdictKnownLimit)
 	}
 	return "; unhooked-call probe skipped (--no-probe)"
 }
@@ -291,14 +335,30 @@ func (v *verifier) printChecks(res verdicts) {
 		out.printf("%s %s: %s\n", verdictLiveConfig, cell(v.server), d)
 		v.failingLines++
 	}
-	switch res.probe.outcome {
-	case probeUnhooked:
+	v.printProbe(res.probe)
+}
+
+// printProbe writes the probe's line: a failing verdict, counted, or the
+// KNOWN-LIMIT report that --expect-unhooked turns the declared 202 into,
+// which is not counted because the check passes on it (D18). A probe that
+// passed without the flag, or was not sent, prints nothing here; the
+// one-line account says what it found.
+func (v *verifier) printProbe(p probeReport) {
+	out := v.a.stdout
+	switch p.verdict() {
+	case verdictUnhooked:
 		out.printf("%s %s: the gateway accepted a tools/call without an id (HTTP 202) and forwarded it to the upstream without the processor or the allow rule; every tools/call in that shape bypasses the approval (known limit L17)\n", verdictUnhooked, cell(v.server))
-		v.failingLines++
-	case probeInconclusive:
+	case verdictInconclusive:
 		out.printf("%s %s: the answer to a tools/call without an id was a 2xx status with a body, or HTTP 400 and a JSON body (in the body or across the data lines of one event, after a byte-order mark, or cut at the read cap), not a bare HTTP 400; the gateway or the upstream may have written that answer, so whether such calls reach the upstream unhooked is unknown and the check fails\n", verdictInconclusive, cell(v.server))
-		v.failingLines++
+	case verdictProbeChanged:
+		out.printf("%s %s: the gateway no longer answers the probe with 202 (the id-less tools/call came back HTTP %d); the pin moved or the gateway changed under it; re-qualify (L7) and drop --expect-unhooked once the probe's answer is understood\n", verdictProbeChanged, cell(v.server), p.status)
+	default:
+		if p.expectUnhooked && p.outcome == probeUnhooked {
+			out.printf("%s %s: the gateway forwarded the id-less tools/call (HTTP 202), as agentgateway v1.6.0 does (L17)\n", verdictKnownLimit, cell(v.server))
+		}
+		return
 	}
+	v.failingLines++
 }
 
 // printConfigEdited writes the CONFIG-EDITED line: a file that is not what

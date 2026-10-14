@@ -44,6 +44,10 @@ type verifier struct {
 	// the file, lower-case, "" when none was given.
 	expectBodyHash string
 	probe          bool // send the unhooked-call probe
+	// expectUnhooked declares that the gateway forwards the probe (HTTP 202),
+	// as agentgateway v1.6.0 does (L17): the 202 is then a KNOWN-LIMIT line
+	// and the check passes, and any other answer is PROBE-CHANGED (D18).
+	expectUnhooked bool
 	// failingLines counts the failing verdict lines this verifier printed, so
 	// a scheduled run fails at the end if it ever printed one (D13 f), even
 	// when the check that printed it was cut short by the stop signal.
@@ -53,7 +57,7 @@ type verifier struct {
 // verifyOptions are the flags of verify-gateway.
 type verifyOptions struct {
 	server, url, bearerEnv, config, admin, expectBodyHash string
-	noProbe, keepGoing                                    bool
+	noProbe, expectUnhooked, keepGoing                    bool
 	every                                                 time.Duration
 }
 
@@ -66,7 +70,7 @@ type verifyFailure struct {
 	configReason   string
 	configExpected string
 	liveDiffs      int
-	probe          probeOutcome
+	probe          probeReport
 	server, url    string
 }
 
@@ -86,18 +90,22 @@ func (e *verifyFailure) Error() string {
 	if e.liveDiffs > 0 {
 		parts = append(parts, fmt.Sprintf("the configuration the gateway is running differs from the emitted file in %d place(s), listed above; run emit again, reload the gateway and find out who changed it", e.liveDiffs))
 	}
-	switch e.probe {
-	case probeUnhooked:
+	switch e.probe.verdict() {
+	case verdictUnhooked:
 		parts = append(parts, "the gateway forwards a tools/call without an id to the upstream unhooked ("+verdictUnhooked+", known limit L17); every such call bypasses the approval")
-	case probeInconclusive:
+	case verdictInconclusive:
 		parts = append(parts, "the answer to a tools/call without an id was a 2xx status with a body, or HTTP 400 and a JSON body ("+verdictInconclusive+"); the upstream may have written that answer, so treat the gateway as unhooked until the answer is a bare HTTP 400, which proves nothing about the hook either: only HTTP 202 proves anything, and it proves the call forwarded")
+	case verdictProbeChanged:
+		parts = append(parts, fmt.Sprintf("the gateway no longer answers the tools/call without an id with HTTP 202 as --expect-unhooked declared (%s, HTTP %d); the pin moved or the gateway changed under it, so re-qualify it (L7) and drop the flag once the probe's answer is understood", verdictProbeChanged, e.probe.status))
 	}
 	return strings.Join(parts, "; ")
 }
 
 // bindVerifyFlags registers the flags of verify-gateway. The probe's help text
 // says where the probe goes, because that is why it can be switched off, and
-// what its pass means, because it proves nothing about the hook (D17 h).
+// what its pass means, because it proves nothing about the hook (D17 h);
+// --expect-unhooked is the way to keep it on against the pinned gateway, whose
+// 202 would otherwise fail every check (D18).
 func bindVerifyFlags(fs *flag.FlagSet) *verifyOptions {
 	o := &verifyOptions{}
 	fs.StringVar(&o.server, "server", "", "catalog server the gateway route is for (required)")
@@ -106,7 +114,8 @@ func bindVerifyFlags(fs *flag.FlagSet) *verifyOptions {
 	fs.StringVar(&o.config, "config", "", "gateway configuration file written by emit; "+verdictConfigEdited+" when it is no longer the file emit wrote, cannot be read, or is not a regular file (a symbolic link, directory, device, socket or named pipe is refused before it is opened, so a planted pipe cannot block the check)")
 	fs.StringVar(&o.expectBodyHash, "expect-body-hash", "", "the body sha256 emit printed for --config, recorded outside the gateway host; "+verdictConfigEdited+" when the file's body hashes to anything else, which catches a replacement that recomputed the header hash (known limit L19); needs --config")
 	fs.StringVar(&o.admin, "admin", "", "HOST:PORT or http(s) URL of the gateway's admin API (emit --admin-addr, default "+emit.DefaultAdminAddr+"); the configuration the gateway is running (GET "+adminConfigPath+") is compared with --config as a whole document: no non-empty top-level section other than config, gateways and routes may be present, the config block must declare the same adminAddr, statsAddr and readinessAddr and no other field, every emitted gateway must be present exactly once with the same bind address and port and no other field, every emitted route exactly once with the same gateway, match path, allow rules, backend targets (name and host) and processors (host, kind, failureMode, methods, the requestHeaders allowed and disallowed lists, the backendTLS cert, key, root and hostname under the processor's policies when either side carries the block, and the metadata compared by a hash of its canonical form and never shown), nothing the file does not carry may exist (no other route, gateway or section; inside a route no field other than name, gateways, matches, policies and backends, no policy other than mcpAuthorization and mcpGuardrails, no match that is not a single exact path, no backend other than the one mcp backend with the emitted target, no processor policy other than backendTLS, no backendTLS field other than those four, and no field of a processor, rule or target that emit does not write), no path may be matched by two routes, the path of --url must be the emitted route's match, and the ports of --url and --admin must be the emitted gateway's serving port and the emitted adminAddr's port (their hosts loopback addresses too when the emitted ones are), so the listing and this comparison are known to have gone to the gateway the file describes; any difference is "+verdictLiveConfig+"; needs --config")
-	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), which is the one thing the probe proves; HTTP 400 without JSON passes as \"not accepted as a notification (HTTP 400, by the gateway or by the upstream)\", which proves nothing about the hook, because a forwarding gateway relays an upstream's refusal unchanged; a 400 whose body is JSON (a JSON-RPC answer, single or batched, in the body or across the data lines of one event, after a byte-order mark) or was cut at the "+probeMaxBodyText()+" read cap, and any other 2xx answer with a body, is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; the probe reaches the upstream exactly when the gateway behaves this way, which is why it can be switched off (agentgateway v1.6.0 answers 202, known limit L17)")
+	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), which is the one thing the probe proves; HTTP 400 without JSON passes as \"not accepted as a notification (HTTP 400, by the gateway or by the upstream)\", which proves nothing about the hook, because a forwarding gateway relays an upstream's refusal unchanged; a 400 whose body is JSON (a JSON-RPC answer, single or batched, in the body or across the data lines of one event, after a byte-order mark) or was cut at the "+probeMaxBodyText()+" read cap, and any other 2xx answer with a body, is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; the probe reaches the upstream exactly when the gateway behaves this way, which is why it can be switched off (agentgateway v1.6.0 answers 202, known limit L17); prefer --expect-unhooked, which keeps the probe on and turns that 202 into a "+verdictKnownLimit+" line; the two are exclusive")
+	fs.BoolVar(&o.expectUnhooked, "expect-unhooked", false, "declare that the gateway forwards the id-less probe (HTTP 202), as agentgateway v1.6.0 does (known limit L17): that answer is then printed as "+verdictKnownLimit+" and the check exits 0, so the probe stays on and keeps proving the shape on every check instead of being switched off with --no-probe, while the deployment keeps id-less clients away from the serving port (SECURITY.md, Deployment requirements); any other answer to the probe, a bare HTTP 400 and the "+verdictInconclusive+" shapes alike, is "+verdictProbeChanged+" (exit 1): the pin moved or the gateway changed under it, so re-qualify it (L7) and drop the flag once the probe's answer is understood; exclusive with --no-probe")
 	fs.DurationVar(&o.every, "every", 0, "repeat at this interval (at least 1s) with a fresh MCP session each time, until SIGINT or SIGTERM")
 	fs.BoolVar(&o.keepGoing, "keep-going", false, "with --every, keep checking after a failed check instead of exiting at the first one; without it a check that printed a failing verdict exits 1 at once, even when a later step of that check (the live comparison, the probe) could not run, while a listing failure alone is printed, counted and does not stop the run; the run still exits 1 at the end if any check failed or printed a verdict line, or none completed, and a file --config cannot read, an unknown --server or a catalog error stops it at once")
 	return o
@@ -124,6 +133,9 @@ func (o *verifyOptions) check(c *command) (string, error) {
 	}
 	if err := checkEvery(c, o.every); err != nil {
 		return "", err
+	}
+	if o.expectUnhooked && o.noProbe {
+		return "", &usageError{msg: "--expect-unhooked and --no-probe are exclusive: the first keeps the probe on and declares its HTTP 202 a known limit, the second sends no probe; pass one of them", cmd: c}
 	}
 	if o.admin != "" && o.config == "" {
 		return "", &usageError{msg: "--admin needs --config: the configuration the gateway is running is compared with the file emit wrote", cmd: c}
@@ -206,7 +218,7 @@ func runVerifyGateway(a *app, c *command, args []string) (err error) {
 	}
 	defer closeStore(store, &err)
 	v := &verifier{a: a, store: store, client: client, server: o.server, url: o.url, urlPath: routePathOf(o.url), headers: headers,
-		config: o.config, admin: adminURL, expectBodyHash: o.expectBodyHash, probe: !o.noProbe}
+		config: o.config, admin: adminURL, expectBodyHash: o.expectBodyHash, probe: !o.noProbe, expectUnhooked: o.expectUnhooked}
 	if o.every == 0 {
 		res, err := v.check(a.ctx)
 		if err != nil {
@@ -250,6 +262,7 @@ func (v *verifier) check(ctx context.Context) (verdicts, error) {
 	err = liveErr
 	if err == nil && v.probe {
 		res.probe, err = probeUnhookedCalls(ctx, v.client, v.url, v.headers)
+		res.probe.expectUnhooked = v.expectUnhooked
 	}
 	v.printChecks(res)
 	if err != nil {
@@ -341,11 +354,11 @@ func (v *verifier) compareLive(ctx context.Context, emitted []byte, res *verdict
 }
 
 // conclude turns one check into the command's outcome. Exit 0 is OK or
-// MISSING only (decision D12).
+// MISSING only (decision D12), and KNOWN-LIMIT under --expect-unhooked (D18).
 func (v *verifier) conclude(res verdicts) error {
 	if res.failed() {
 		return &verifyFailure{leaks: len(res.leaks), configEdited: res.configEdited, configReason: res.configReason, configExpected: res.configExpected,
-			liveDiffs: len(res.live.diffs), probe: res.probe.outcome, server: v.server, url: v.url}
+			liveDiffs: len(res.live.diffs), probe: res.probe, server: v.server, url: v.url}
 	}
 	v.a.stdout.printf("%s: %s\n", verdictOK, res.summary())
 	return v.a.stdout.broken()

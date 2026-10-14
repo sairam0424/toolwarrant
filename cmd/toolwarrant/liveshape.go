@@ -11,7 +11,7 @@ import (
 // route that gained an extProc or requestMirror policy, a second backend of
 // another kind, a match on more than its path, or a config field the file
 // never writes compared as a match and the canary printed OK: agentgateway
-// v1.6.0 accepts 32 route policies and 37 config fields, and its admin API
+// v1.6.0 accepts 32 route policies and 36 config fields, and its admin API
 // takes any of them. Every object of the live document is now walked against
 // the keys emit writes, and every key the file cannot carry is one difference
 // line, so the comparison fails closed on what it cannot read instead of
@@ -107,7 +107,7 @@ func (s *shape) foreignItems(raw json.RawMessage, at string) []string {
 }
 
 // configShape is the config block as emit writes it: the three listener
-// addresses and nothing else. agentgateway v1.6.0 accepts 34 more fields
+// addresses and nothing else. agentgateway v1.6.0 accepts 33 more fields
 // there (its session and mcp blocks, xds and local-xds sources, logging,
 // tracing, worker threads and the rest), none of which the file carries.
 func configShape() *shape {

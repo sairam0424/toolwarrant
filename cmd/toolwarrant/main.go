@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -35,8 +36,18 @@ const (
 
 // version is the build's version string. It is a variable rather than a
 // constant only so that -ldflags "-X main.version=..." can set it at link
-// time; nothing assigns to it while the program runs.
-var version = "dev"
+// time; nothing assigns to it while the program runs. When no linker flag set
+// it, runVersion falls back to the module version the Go toolchain embedded
+// (displayVersion), so a go install of a tag reports that tag.
+var version = devVersion
+
+// devVersion is the version the source carries when no linker flag set one.
+const devVersion = "dev"
+
+// unknownModuleVersion is the main module version the Go toolchain records in
+// a binary it could not attribute to a module version: go test, go run, and
+// go build in a checkout without version control information.
+const unknownModuleVersion = "(devel)"
 
 // gatewayVersion names the agentgateway release this build is tested against.
 // The ExtMCP wire format and the config schema are pinned to it.
@@ -126,7 +137,7 @@ func commands() []*command {
 		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]", summary: "write the agentgateway configuration for every server, validated with the gateway binary when one is named", run: runEmit},
 		{name: "export", synopsis: "export --dir DIR [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git", run: runExport},
 		{name: "audit", synopsis: "audit verify|list ...", summary: "verify and read the hash-chained audit log", run: runSub, sub: auditCommands()},
-		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe] [--every DURATION] [--keep-going]", summary: "canary: list through the gateway in a fresh session, compare with the catalog, the emitted file and the live configuration, probe for unhooked calls (LEAK, MISSING, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE)", run: runVerifyGateway},
+		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]", summary: "canary: list through the gateway in a fresh session, compare with the catalog, the emitted file and the live configuration, probe for unhooked calls (LEAK, MISSING, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE, PROBE-CHANGED, KNOWN-LIMIT)", run: runVerifyGateway},
 		{name: "version", synopsis: "version", summary: "print the version and the pinned gateway version", run: runVersion},
 		{name: "help", synopsis: "help [COMMAND ...]", summary: "print usage", run: runHelp},
 	}
@@ -199,9 +210,38 @@ func runHelp(a *app, c *command, args []string) error {
 }
 
 // runVersion prints the build version and the gateway release it is pinned to.
+// The version text is escaped like everything else the source did not write.
 func runVersion(a *app, _ *command, _ []string) error {
-	a.stdout.printf("%s %s\n%s\n", programName, version, gatewayVersion)
+	v := textdiff.Escape(displayVersion(version, embeddedModuleVersion()))
+	a.stdout.printf("%s %s\n%s\n", programName, v, gatewayVersion)
 	return nil
+}
+
+// displayVersion decides which version the version command prints. A version
+// set at link time wins. When linked is still the source default, the module
+// version the Go toolchain embedded stands in for it, so a binary built with
+// go install module@vX.Y.Z reports the tag instead of "dev"; the toolchain has
+// already appended the revision and a +dirty marker when it stamped one, so
+// nothing is added here. An empty module version or the "(devel)" the
+// toolchain records for a go test or go run binary leaves the default alone.
+func displayVersion(linked, moduleVersion string) string {
+	if linked != devVersion {
+		return linked
+	}
+	if moduleVersion == "" || moduleVersion == unknownModuleVersion {
+		return linked
+	}
+	return moduleVersion
+}
+
+// embeddedModuleVersion returns the main module version the Go toolchain
+// recorded in this binary, or "" when the binary carries no build information.
+func embeddedModuleVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info == nil {
+		return ""
+	}
+	return info.Main.Version
 }
 
 // exitCode prints err the way its kind demands and returns the exit code.

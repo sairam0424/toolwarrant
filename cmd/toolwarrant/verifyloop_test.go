@@ -186,7 +186,7 @@ func TestLoopTallyOutcome(t *testing.T) {
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "3 of 4 check(s) in this run failed") {
 		t.Errorf("an interrupted check that found a leak: %v", err)
 	}
-	wantContains(t, "outcome", tally.outcome().Error(), verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive)
+	wantContains(t, "outcome", tally.outcome().Error(), verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive, verdictProbeChanged)
 	printed := loopTally{completed: 1, verdictLines: 1}
 	if err := printed.outcome(); err == nil || !strings.Contains(err.Error(), "0 of 1 check(s) in this run failed") {
 		t.Errorf("a run that printed a verdict line: %v", err)
