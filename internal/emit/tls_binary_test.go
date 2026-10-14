@@ -16,7 +16,8 @@ import (
 // `emit --gateway-binary`; it parses the certificate and the key and refuses
 // files that hold none; it does not parse the root bundle; and it accepts the
 // partial and numeric shapes the emitter refuses, so those rules are the
-// emitter's own. Whether the handshake succeeds is for scenario Q (planned).
+// emitter's own. Whether the handshake succeeds is for end-to-end scenario Q,
+// which drives it and records it in D19.
 
 // tlsFiles are the three real files of one test: a client certificate and
 // key issued by a throwaway authority, and that authority as the root.

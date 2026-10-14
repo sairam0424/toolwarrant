@@ -25,7 +25,7 @@ decisions and record the corrections they forced to the spike's findings. Each
 record gives the context (what a review found), the decision, its consequences
 for operators and for other packages, and where it lives in code with the tests
 that pin it. Where a decision is proven on the real gateway, the end-to-end
-scenario is named: `TestEndToEnd` in `e2e/` runs scenarios A to P against the
+scenario is named: `TestEndToEnd` in `e2e/` runs scenarios A to Q against the
 agentgateway v1.6.0 binary (`make e2e`; `demo/run.sh` keeps the last run in
 `demo/last-run.log`).
 
@@ -2180,15 +2180,14 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   writes nothing. Exit codes: a value that is not the grammar or names an
   unknown server is a usage error (2); a path that is not absolute, a missing
   field or a hostname that is not a DNS name is the emitter's refusal (1),
-  and the file is untouched. Limit L11 narrows to what remains: the handshake
-  against the real gateway and what `GET /api/config` renders for the block
-  are unobserved in this tree until scenario Q, the hook still carries the
-  client's headers after the filter, and a processor on a unix socket stays
-  plaintext. What D19 does not do: no catalog columns for the block, no
-  `alpn` written (grpc-go requires h2; if the gateway's rustls client does not
-  offer it, scenario Q will show it and emit will write `alpn: ["h2"]`), no
-  TLS on unix sockets, no change to the probe or to what the processor
-  enforces.
+  and the file is untouched. Limit L11 narrows to what remains: the hook
+  still carries the client's headers after the filter, and a processor on a
+  unix socket stays plaintext; the handshake against the real gateway and
+  what `GET /api/config` renders for the block are what end-to-end scenario
+  Q observed (the last bullet). What D19 does not do: no catalog columns for
+  the block, no `alpn` written (grpc-go requires h2, and scenario Q showed
+  the gateway's rustls client offers it, so the field is not needed), no TLS
+  on unix sockets, no change to the probe or to what the processor enforces.
 - Where. `cmd/toolwarrant/servetls.go` (the three flags, their rules, the
   files, the listening-line notes), `cmd/toolwarrant/serve.go`
   (`listenPolicy.hasClientCA`), `internal/processor/processor.go`
@@ -2200,11 +2199,14 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   the writer), `internal/emit/route.go`, `internal/emit/validate.go`,
   `internal/emit/warning.go`, `internal/emit/testdata/with_tls.yaml`;
   `cmd/toolwarrant/livetls.go`, `liveconsts.go`, `liveconfig.go`,
-  `liveadmin.go`, `liveshape.go`, `livecompare.go` (the canary); SECURITY.md,
-  README.md, CLAUDE.md, [threat-model.md](threat-model.md) (rows 17 and 22,
-  L11 and their notes), [operations.md](operations.md) ("Running the
-  processor", "Running the canary", "Rotating the shared secret",
-  "Re-emitting the gateway configuration", "Exit codes").
+  `liveadmin.go`, `liveshape.go`, `livecompare.go` (the canary);
+  `e2e/scenario_tls_test.go` and `e2e/tlslab_test.go` (scenario Q, run right
+  after H), `scripts/requalify-gateway.sh` (item 15 reads the TLS tests and
+  scenario Q); SECURITY.md, README.md, CLAUDE.md,
+  [threat-model.md](threat-model.md) (rows 17, 22 and 26, L11, L18 and their
+  notes), [operations.md](operations.md) ("Running the processor", "Running
+  the canary", "Rotating the shared secret", "Re-emitting the gateway
+  configuration", "Moving the gateway pin", "Exit codes").
 - Tests. Processor `TestServe_TLSListenerRefusesPlaintextAndUnknownClients`,
   `TestServe_TLSWithClientCARequiresAClientCertificate`,
   `TestServe_TLSWithoutClientCAAcceptsAnyClient`,
@@ -2241,12 +2243,80 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   reads the real emitted block (decision (e)). The emit tests fail on the
   code before this decision with `unknown field TLS in struct literal`, and
   the cmd tests with `flag provided but not defined: -processor-tls`, exit 2.
-  Observations from end-to-end scenario Q: none yet as of 2026-10-14; pull
-  request 2.4d records here the first handshake between agentgateway v1.6.0
-  and a processor started with the three flags, both sides' logs, what
-  `GET /api/config` renders for the block, the refusal of a client
-  certificate from another authority and of both downgrades, and the
-  LIVE-CONFIG-MISMATCH for a posted `insecure: true`.
+  End-to-end scenario `Q_ProcessorTLS` of `TestEndToEnd` (run right after H,
+  while mock is the only server) drives the whole link against the pinned
+  binary; `TestRequalifyScript_citesExistingTestsAndScenarios` and
+  `TestRequalifyScript_reportsEveryItemOnce` keep item 15 of the
+  re-qualification script reading it.
+- Observations from end-to-end scenario Q, 2026-10-14, agentgateway v1.6.0
+  on darwin/arm64 under `make e2e`, with the processor started as `serve
+  --tls-cert --tls-key --tls-client-ca` (its listening line: `TLS 1.3 with a
+  client certificate required (hooks are authenticated by the client
+  certificate; no --secret-env)`) and `GRPC_GO_LOG_SEVERITY_LEVEL=info` in its
+  environment, since grpc-go reports a refused handshake at its info level
+  and discards it by default; the gateway's log is its request line per MCP
+  call, whose `error=` carries the upstream failure. (1) The first handshake:
+  after `emit --processor-tls mock=cert=PATH,key=PATH,root=PATH,hostname=toolwarrant-processor`
+  and the gateway's `loaded config from File`, a new session listed add and
+  echo 46.3 ms after the reload and `tools/call echo` was allowed; the
+  gateway logged the five request lines at info (server/discover,
+  initialize, notifications/initialized, tools/list, tools/call), the
+  processor's stderr gained only grpc-go's `CPU time info is unavailable on
+  non-linux environments`, and the TLS processor's stats on SIGTERM read
+  `lists served=2 ... calls allowed=1`. (2) ALPN: grpc-go v1.86 refuses a TLS
+  client that selected no application protocol (`credentials: cannot check
+  peer: missing selected ALPN property`, `GRPC_ENFORCE_ALPN_ENABLED` defaults
+  to true); no such line appeared and the listing served, so the gateway's
+  rustls client offers h2 and emit writes no `alpn` field. (3) `GET
+  /api/config` renders `policies.backendTLS` under mock's processor with
+  exactly the keys `cert`, `hostname`, `key` and `root`, each the emitted
+  value (the three paths and the hostname), and the 1133-byte answer holds no
+  PEM private key; `verify-gateway --admin` printed `OK: the gateway serves 2
+  tool(s), 2 approved and current; live configuration matches the emitted
+  file`, so the live shape is the one `liveProcessorDoc` and
+  `cmd/toolwarrant/testdata/admin_config.json` pin (nothing to re-record) and
+  limit L18 does not widen to the key. (4) mTLS: with the processor
+  restarted with `--tls-client-ca` naming an authority that did not sign the
+  gateway's certificate, the processor logged `ServerHandshake("127.0.0.1:PORT")
+  failed: tls: failed to verify certificate: x509: certificate signed by
+  unknown authority`, the gateway answered tools/list with `mcpGuardrails
+  checkResponse failed: upstream call failed: SendRequest: connection error:
+  received fatal alert: UnknownCA` and tools/call with `... stream closed
+  because of a broken pipe`; nothing was served. (5) Downgrade, the plaintext
+  entry scenario H left behind a TLS processor: processor `ServerHandshake(...)
+  failed: tls: first record does not look like a TLS handshake`, gateway
+  `upstream call failed: SendRequest: connection error: connection reset`,
+  tools/list failed and tools/call was denied. (6) Downgrade, the TLS entry
+  behind a plaintext processor: processor `transport: http2Server.HandleStreams
+  received bogus greeting from client: "\x16\x03\x01..."` (a TLS
+  ClientHello), gateway `upstream call failed: Connect: received corrupt
+  message of type InvalidContentType`, fail closed. (7) A root bundle of
+  garbage: `emit --gateway-binary` printed `validated with ...
+  --validate-only` and the gateway reloaded the file, then the gateway
+  answered `upstream call failed: Connect: invalid peer certificate:
+  UnknownIssuer` and the processor logged `ServerHandshake(...) failed: remote
+  error: tls: unknown certificate authority`, fail closed; a re-emit with the
+  real root served again. (8) `insecure: true`, posted into the block through
+  the admin API while the block named the garbage root again, so that the
+  flag's effect is observable: with that root the route had just failed
+  closed (gateway `Connect: invalid peer certificate: UnknownIssuer`,
+  processor `remote error: tls: unknown certificate authority`); the post
+  answered status 200; the sessions opened while the gateway was still
+  applying the document were refused the same way (the note quotes six
+  processor lines, every one `ServerHandshake(...) failed: remote error: tls:
+  unknown certificate authority`), then a new session listed add and echo and
+  `tools/call echo` was allowed, so under the flag the gateway dialled the
+  processor without verifying its certificate, and the route shows nothing;
+  against a byte-identical copy of the garbage-root file, which makes the
+  flag the only difference, `verify-gateway --admin` printed
+  `LIVE-CONFIG-MISMATCH mock: processor 1: backendTLS field insecure: not in
+  the emitted file`, exit 1; the original document (the real root, no flag)
+  posted back and the real-root file put back on disk were healthy again.
+  (9) The restore to a plaintext processor and an entry without the block
+  was healthy by the canary with and without `--admin`;
+  the second TLS processor's stats read `lists served=6 ... calls
+  allowed=2`. Every line is in the run's notes (`demo/last-run.log` after
+  `demo/run.sh`).
 
 ## D20. The v0.2 release round: build provenance, immutable releases, the tag policy, the changelog as the notes, the response time, the reproducible build and the catalog's durability
 

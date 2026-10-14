@@ -15,9 +15,11 @@ import (
 // hostile upstream with one processor each. The order matters because each
 // scenario leaves the stack in the state the next one starts from; running a
 // single subtest with -run is therefore not supported. The names are the ones
-// README.md and docs/ cite. Scenario N runs last, after O and P, because it
-// deletes and re-initialises the catalog and stops every processor, and the
-// two canary scenarios need both as they are.
+// README.md and docs/ cite. Scenario Q runs right after H, while mock is the
+// only server, because it restarts mock's processor with and without TLS and
+// re-emits the file several times. Scenario N runs last, after O and P,
+// because it deletes and re-initialises the catalog and stops every
+// processor, and the two canary scenarios need both as they are.
 func TestEndToEnd(t *testing.T) {
 	if h.skip != "" {
 		t.Skip(h.skip)
@@ -35,6 +37,7 @@ func TestEndToEnd(t *testing.T) {
 		{"F_CanaryDetectsConfigEdits", scenarioF},
 		{"G_FailClosedWhenProcessorDown", scenarioG},
 		{"H_SharedSecret", scenarioH},
+		{"Q_ProcessorTLS", scenarioQ},
 		{"I_LoopbackBind", scenarioI},
 		{"J_CrossServerAndDuplicatePage", scenarioJ},
 		{"K_CELAloneNeverMatchingRule", scenarioK},
@@ -45,6 +48,7 @@ func TestEndToEnd(t *testing.T) {
 		{"N_StatsOnShutdown", scenarioN},
 	}
 	for _, step := range steps {
+		s.scenario = step.name[:1]
 		t.Run(step.name, func(t *testing.T) { step.run(t, s) })
 	}
 	s.writeReport(t)

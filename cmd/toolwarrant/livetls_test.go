@@ -11,14 +11,15 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/emit"
 )
 
-// The backendTLS block of a processor entry, read and compared before any
-// producer exists (limit L11): agentgateway v1.6.0 dials the processor with
-// TLS when the entry carries processors[].policies.backendTLS, and
-// internal/emit does not write the block yet, so these tests hand-build the
-// emitted block and the live JSON in the shape the v1.6.0 schema documents and
-// the gateway's own test deserialises (`policies: backendTLS: {}` under a
-// `host:` processor). What the running gateway renders for the block in
-// GET /api/config is for the end-to-end harness to pin.
+// The backendTLS block of a processor entry, read and compared by the canary
+// (limit L11, D19): agentgateway v1.6.0 dials the processor with TLS when the
+// entry carries processors[].policies.backendTLS. The reader was pinned before
+// internal/emit wrote the block, so these tests still hand-build the emitted
+// block and the live JSON in the shape the v1.6.0 schema documents (`policies:
+// backendTLS: {}` under a `host:` processor), and TestEmittedConfigReadsWhatEmitWrites
+// reads the block emit writes since D19; end-to-end scenario Q compares the
+// real emitted block with what the running gateway renders in GET /api/config
+// and records the rendering in docs/decisions.md D19.
 
 // The four backendTLS values the tests write on both sides: paths on the
 // gateway host and the name the processor's certificate is verified against.

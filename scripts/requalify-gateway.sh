@@ -27,10 +27,9 @@
 # artefacts of an earlier run. The gateway binary is run only through the
 # binary-backed tests (--validate-only) and, with --e2e, inside make e2e.
 #
-# Exit status: 0 when every item that ran is PASS (item 15 is PENDING until
-# the processor-TLS pull requests land), 1 when any item is CHANGED or a test
-# run failed, 2 for a usage error, 3 when nothing is CHANGED but items were
-# SKIPPED (run again with --e2e).
+# Exit status: 0 when every item that ran is PASS, 1 when any item is CHANGED
+# or a test run failed, 2 for a usage error, 3 when nothing is CHANGED but
+# items were SKIPPED (run again with --e2e).
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -52,19 +51,21 @@ items_total=17
 # with its targets; the root section list is compared beside them. A change
 # outside them is reported by size only.
 schema_defs="RawConfig LocalGateway LocalAttachedRoute LocalGatewayRefs RouteMatch PathMatch FilterOrPolicy McpAuthorization RuleSet RuleSerde McpGuardrails Processor FailureMode Phase HeaderFilter HeaderOrPseudo Expression SimpleLocalBackendPolicies LocalBackendTLS LocalRouteBackend LocalMcpBackend LocalMcpTarget NamespacedHostname"
-# The tests behind items 8, 10, 12, 13 and 14, by exact name; the policy test
-# in internal/requalifypolicy fails when one of them no longer exists.
+# The tests behind items 8, 10, 12, 13, 14 and 15, by exact name; the policy
+# test in internal/requalifypolicy fails when one of them no longer exists.
 tests_dollar="TestGatewaySubstitutesEnvironmentIntoTheRawFile TestGoldenFilesValidateWithRealGateway TestDollarEscapeIsPinned TestDollarSignNeverReachesTheFile"
 tests_admin="TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile TestLiveComparisonCatchesAnAddedOpenGateway TestVerifyGatewayLiveComparisonFailsClosed"
 tests_headers="TestGatewayParsesTheRequestHeaderFilter TestGatewayAcceptsEachHalfOfTheFilterAlone"
 tests_listeners="TestGatewayReadsListenerPinsExactly TestGatewayParsesListenerAddresses TestGatewayParsesBindAddress TestEveryBindAddressClassValidates"
 tests_lenient="TestGatewayAcceptsAProcessorOnItsOwnSocket TestGatewayAcceptsAProcessorNamedForItsOwnSocket TestGatewayAcceptsAmbiguousProcessorSpellings TestEmitterBindRulesAreStricterThanTheGateway TestEmitterNameRuleIsStricterThanTheGateway TestEmitterURLRuleIsStricterThanTheGateway TestGatewayAcceptsTheShadowRouteDocument TestGatewayAcceptsAMixedGatewaysAndBindsDocument TestGatewayAcceptsExtraRoutePoliciesAndBackends"
+tests_tls="TestGatewayParsesBackendTLS TestGatewayValidateOnlyOpensBackendTLSFiles TestEmitWithTheGatewayBinaryNeedsTheTLSFilesOnThisHost"
 # The e2e scenario each running-gateway item reads, as go test -v names it.
 scenario_probe="TestEndToEnd/O_UnhookedCallProbe"
 scenario_golden="TestEndToEnd/L_VendorExtensionMismatch"
 scenario_admin="TestEndToEnd/P_LiveConfigComparison"
 scenario_shared="TestEndToEnd/H_SharedSecret"
 scenario_cross="TestEndToEnd/J_CrossServerAndDuplicatePage"
+scenario_tls="TestEndToEnd/Q_ProcessorTLS"
 # oversized_bytes is e2e's oversizedPadBytes (9 << 20), the page the gateway
 # answers 500 before the hook (item 11).
 oversized_bytes=9437184
@@ -363,10 +364,23 @@ item_hooks() (
 	fi
 )
 
-# Item 15 lands with PR 2.4; until then the line says so.
-item_tls() {
-	report PENDING 15 "backendTLS fields and the scenario Q handshake" "lands with the processor-TLS pull requests"
-}
+# Item 15: the backendTLS block (D19, L11): what the binary's --validate-only
+# does with the block's fields and files, and the handshake scenario Q drives
+# between the running gateway and a processor started with the three flags.
+item_tls() (
+	# shellcheck disable=SC2086
+	missing=$(tests_passed "$tests_log" $tests_tls) || {
+		report CHANGED 15 "backendTLS fields and the scenario Q handshake" "did not pass: $missing (${tests_log#"$root"/}); the gateway reads the block or opens its files differently; re-read internal/emit/tls.go, cmd/toolwarrant/emittls.go and D19"
+		return
+	}
+	if [ "$have_e2e" = no ]; then
+		report SKIPPED 15 "backendTLS fields and the scenario Q handshake" "the --validate-only tests against the block passed; the handshake needs --e2e ($scenario_tls)"
+	elif scenario_passed "$scenario_tls" && grep -q '^Q: .*the first handshake between agentgateway' "$e2e_report" && grep -q '^Q: .*so the gateway.s client offered h2' "$e2e_report"; then
+		report PASS 15 "backendTLS fields and the scenario Q handshake" "the binary reads the block and opens its three files as D19 records; scenario Q listed and called through the TLS link with the gateway's client certificate, refused a client certificate from another authority, both downgrades and a garbage root, found verify-gateway --admin healthy on the TLS entry, and saw a posted insecure: true serve under the garbage root and be LIVE-CONFIG-MISMATCH naming the field"
+	else
+		report CHANGED 15 "backendTLS fields and the scenario Q handshake" "scenario Q differs from $pinned ($(grep '^Q: ' "$e2e_report" | head -1 | cut -c1-160)); re-read D19 and its observations in docs/decisions.md, threat-model.md L11 and docs/operations.md (Running the processor, Re-emitting the gateway configuration)"
+	fi
+)
 
 # Item 16: the release asset names toolwarrant's files depend on.
 item_assets() (

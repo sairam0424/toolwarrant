@@ -144,9 +144,8 @@ summarise() {
 	pass=$(grep -c '^PASS$' "$results" || true)
 	changed=$(grep -c '^CHANGED$' "$results" || true)
 	skipped=$(grep -c '^SKIPPED$' "$results" || true)
-	pending=$(grep -c '^PENDING$' "$results" || true)
 	failed=$(grep -c '^RUNFAIL$' "$results" || true)
-	echo "requalify-gateway: $candidate against the pin $pinned: $pass PASS, $changed CHANGED, $skipped SKIPPED, $pending PENDING; the pin may move only when every item is PASS and item 15 has landed; artefacts under ${out#"$root"/}"
+	echo "requalify-gateway: $candidate against the pin $pinned: $pass PASS, $changed CHANGED, $skipped SKIPPED; the pin may move only when every item is PASS; artefacts under ${out#"$root"/}"
 	if [ "$changed" -gt 0 ] || [ "$failed" -gt 0 ]; then
 		exit 1
 	fi

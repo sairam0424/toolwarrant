@@ -37,8 +37,9 @@ var (
 	// scenarioEntry is one row of the scenario table in e2e/e2e_test.go.
 	scenarioEntry = regexp.MustCompile(`\{"([A-Z]_[A-Za-z0-9]+)", scenario`)
 	// itemNumber is the number of an item as the script reports it: a status
-	// and a number, or the number item_tests is given.
-	itemNumber = regexp.MustCompile(`(?m)(?:report (?:PASS|CHANGED|SKIPPED|PENDING)|^item_tests) ([0-9]+) `)
+	// and a number, or the number item_tests is given. PENDING is not a
+	// status any more: item 15 became a real item when scenario Q landed.
+	itemNumber = regexp.MustCompile(`(?m)(?:report (?:PASS|CHANGED|SKIPPED)|^item_tests) ([0-9]+) `)
 	// testFunc is a test function declaration in a _test.go file.
 	testFunc = regexp.MustCompile(`(?m)^func (Test[A-Z][A-Za-z0-9_]*)\(`)
 )
@@ -72,13 +73,17 @@ func TestRequalifyScript_citesExistingTestsAndScenarios(t *testing.T) {
 }
 
 // TestRequalifyScript_reportsEveryItemOnce fails when the script's item
-// numbers are not exactly 1 to 17, each reported by one function, or when
-// items_total says anything else.
+// numbers are not exactly 1 to 17, each reported by one function, when
+// items_total says anything else, or when an item is still reported as
+// PENDING, which item 15 was until end-to-end scenario Q landed.
 func TestRequalifyScript_reportsEveryItemOnce(t *testing.T) {
 	root := moduleRoot(t)
 	script := readFile(t, filepath.Join(root, scriptFile))
 	if want := fmt.Sprintf("\nitems_total=%d\n", itemCount); !strings.Contains(script, want) {
 		t.Errorf("%s does not set items_total=%d", scriptFile, itemCount)
+	}
+	if strings.Contains(script, "report PENDING") {
+		t.Errorf("%s still reports an item as PENDING; every item is PASS, CHANGED or SKIPPED since scenario Q landed", scriptFile)
 	}
 	seen := map[int][]string{}
 	for _, m := range itemNumber.FindAllStringSubmatch(script, -1) {

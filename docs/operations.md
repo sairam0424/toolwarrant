@@ -6,7 +6,7 @@ table in `cmd/toolwarrant/main.go` (`toolwarrant help COMMAND` prints them).
 Every behaviour described here is covered by an in-process test of
 `cmd/toolwarrant` or of the package behind the command, and the chain through
 the real gateway by a scenario of the end-to-end test (`e2e/`, `make e2e`,
-scenarios A to P); see [threat-model.md](threat-model.md) for the test names.
+scenarios A to Q); see [threat-model.md](threat-model.md) for the test names.
 The fourth round (the fixes after the third review, 2026-10-11, decision D13 in
 [decisions.md](decisions.md)) changed the canary, `crawl --every`, `emit`,
 `audit verify` and the recovery procedures. The fifth round (the fixes after
@@ -100,12 +100,18 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   gateway's side of the link is the `backendTLS` block on its processor entry,
   which `emit --processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME`
   writes and the live comparison compares (D19; see "Re-emitting the gateway
-  configuration"). The handshake against the real gateway is observed by the
-  end-to-end scenario Q, which has not landed yet, so until then the
-  processor's TLS is proven against grpc-go clients only. Rotate a certificate
-  as the secret is rotated (see "Rotating the shared secret"): a second
-  processor on a new port with the new files, re-emit with the new block,
-  retire the first. (cmd
+  configuration"). End-to-end scenario Q drives the handshake against the
+  real gateway: with the block in the file a new session listed and called
+  through the link, a plaintext entry or a plaintext processor on the other
+  side failed closed, and a client certificate from another authority was
+  refused (D19 quotes the log lines). A refused handshake leaves no line in
+  the processor's own log: grpc-go reports it (`grpc: Server.Serve failed to
+  create ServerTransport: ... ServerHandshake(...) failed: ...`) at its info
+  level, which it discards unless the processor runs with
+  `GRPC_GO_LOG_SEVERITY_LEVEL=info`; the gateway's request line carries the
+  failure (`upstream call failed: ...`). Rotate a certificate as the secret
+  is rotated (see "Rotating the shared secret"): a second processor on a new
+  port with the new files, re-emit with the new block, retire the first. (cmd
   `TestServeTLSOverGRPCEnforcesApprovals`,
   `TestServeTLSRefusesAClientWithoutACertificate`,
   `TestServeTLSFlagsNeedCertAndKeyTogether`,
@@ -495,8 +501,13 @@ Verdicts, one line per tool or per check:
   `TestEmittedConfigReadsTheProcessorTLS`; the reader was pinned before
   `emit` wrote the block, so those tests hand-build it where `emit` writes it
   since D19 and `TestEmittedConfigReadsWhatEmitWrites` reads the real emitted
-  block; what the running gateway renders for it in `GET /api/config` is not
-  yet observed, scenario Q will record it). Scenario
+  block; scenario Q saw `GET /api/config` render the block with exactly the
+  four emitted values, paths and hostname, no key material, and the check
+  healthy on a TLS entry, and a posted `insecure: true` made the route serve
+  under a root bundle of garbage it had just failed closed with, so the
+  gateway skipped the verification of the processor's certificate, and was
+  `LIVE-CONFIG-MISMATCH mock: processor 1: backendTLS field insecure: not in
+  the emitted file`). Scenario
   P posted the emitted document plus a `binds` section with a listener on
   another port, and plus a top-level `mcp` shortcut, through the admin API of
   the running gateway: each was accepted with status 200 and rendered by
@@ -1367,8 +1378,11 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   `TestEmitWritesBackendTLSForAProcessorOverride`,
   `TestEmitPrintsTheServeCommandWithTLSPlaceholders`; emit
   `TestProcessorTLSIsWrittenUnderPolicies`, `TestNoTLSMeansNoPolicies`,
-  `TestWarningNamesTheLinkProtection`). The handshake against the real
-  gateway is observed by end-to-end scenario Q, which has not landed yet.
+  `TestWarningNamesTheLinkProtection`). End-to-end scenario Q drives the
+  handshake against the real gateway and D19 records it: the gateway's
+  client offers the h2 ALPN grpc-go requires, so no `alpn` field is written,
+  and a root bundle of garbage passes `--gateway-binary` validation and fails
+  at the handshake (`invalid peer certificate: UnknownIssuer`).
 - `--bind-address ADDR` (default `127.0.0.1`) is the address the gateway binds
   the serving port to (`gateways.bindAddress`). A wildcard (`0.0.0.0` or `::`)
   also needs `--allow-all-interfaces`, a permission that changes nothing for
@@ -1731,9 +1745,9 @@ upstream files at both tags under `upstream/`, every diff under `diffs/`, the
 `SKIPPED`; `--reuse` runs nothing and re-reads the artefacts of an earlier
 run. The gateway binary is run only through the binary-backed tests
 (`--validate-only`) and, with `--e2e`, inside `make e2e`. Exit status 0 means
-every item that ran is `PASS` (item 15 is `PENDING` until the processor-TLS
-pull requests land), 1 that an item is `CHANGED` or a test run failed, 2 a
-usage error, 3 that nothing is `CHANGED` but items were `SKIPPED`. Two `RUN`
+every item that ran is `PASS`, 1 that an item is `CHANGED` or a test run
+failed, 2 a usage error, 3 that nothing is `CHANGED` but items were
+`SKIPPED`. Two `RUN`
 lines before the items name every failed test of the two runs, so a failure
 no item reads is never hidden behind a `PASS`.
 
@@ -1837,8 +1851,20 @@ record the pinned behaviour:
     `TestGatewayAcceptsAMixedGatewaysAndBindsDocument` and
     `TestGatewayAcceptsExtraRoutePoliciesAndBackends`. A candidate that
     tightens fails them, and the README's list shrinks with it.
-15. The `backendTLS` fields and the scenario Q handshake: `PENDING` until the
-    processor-TLS pull requests land, which will give the item its tests.
+15. The `backendTLS` fields and the scenario Q handshake (D19, L11):
+    `TestGatewayParsesBackendTLS`,
+    `TestGatewayValidateOnlyOpensBackendTLSFiles` and
+    `TestEmitWithTheGatewayBinaryNeedsTheTLSFilesOnThisHost` against the
+    binary (the block is read, an unknown field is refused, the three files
+    are opened, a garbage root is accepted), and scenario Q's notes: the
+    first handshake served with the gateway's client certificate and no
+    `alpn` field, a client certificate from another authority, both
+    downgrades and the garbage root failed closed, and `verify-gateway
+    --admin` was healthy on the TLS entry. A candidate that offers no h2
+    ALPN, renders the block differently or stops opening the files is
+    `CHANGED`: D19, docs/threat-model.md L11 and the processor and re-emit
+    sections of this document would have to be rewritten. Needs `--e2e` for
+    the handshake.
 16. The release asset names and checksum: the published digests of
     `agentgateway-linux-amd64` (the `e2e` job's asset), `agentgateway-darwin-arm64`
     (the laptops' default in README.md, `e2e/main_test.go`,
@@ -1875,7 +1901,10 @@ version 2025-06-18 with a raw client that asked for 2025-06-18`; `P: POST
 `P: GET /config_dump -> status 200, 13432-byte answer`; `O: the hostile
 upstream's request log gained 1 tools/call request(s) named
 toolwarrant.probe.*`; 26 reloads seen; the schema counts 14, 32 and 36. The
-item lines are quoted in the commit that added the script.
+item lines are quoted in the commit that added the script. Item 15 was
+`PENDING` in that run; end-to-end scenario Q landed later the same day and
+the item now reads the three TLS tests and scenario Q's notes, so no item is
+`PENDING` any more (`TestRequalifyScript_reportsEveryItemOnce` refuses one).
 
 When every item is `PASS`: open a branch, make the item 17 edits (the version
 in CLAUDE.md, ci.yml, `.goreleaser.yaml`, `cmd/toolwarrant/main.go`, the

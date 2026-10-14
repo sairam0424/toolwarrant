@@ -100,7 +100,7 @@ What the tests in this package prove about these files, and what they do not:
   block, presenting the certificate at `cert` and verifying the processor
   under `hostname`, are verified only by the end-to-end test (package `e2e`,
   gateway running as a server against a mock upstream; the handshake by
-  scenario Q, not landed yet), not here. The emitted file is defence in depth
+  scenario Q, which D19 records), not here. The emitted file is defence in depth
   behind the processor; the processor is the guard.
 - `integrity_test.go` checks that every file here verifies with `emit.Verify`,
   so a hand edit of a golden file fails the suite the same way an edited

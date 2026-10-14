@@ -184,10 +184,12 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   not recorded in the catalog; an emit without it writes a plaintext entry,
   which a processor started with `--tls-cert` refuses in the handshake, so
   the route fails closed; the gateway's `--validate-only` opens the three
-  files, so `emit --gateway-binary` needs them on the emitting host). The
-  handshake against the real gateway is observed by end-to-end scenario Q,
-  not landed yet, so until then the processor's TLS is proven against grpc-go
-  clients only: cmd `TestServeTLSOverGRPCEnforcesApprovals`,
+  files, so `emit --gateway-binary` needs them on the emitting host).
+  End-to-end scenario Q drives the handshake against the real gateway (the
+  route serves under TLS with the gateway's client certificate; a plaintext
+  side, a client certificate from another authority and a root bundle of
+  garbage fail closed; D19 quotes the log lines), and the processor's TLS is
+  proven against grpc-go clients by: cmd `TestServeTLSOverGRPCEnforcesApprovals`,
   `TestServeTLSRefusesAClientWithoutACertificate`,
   `TestServeTLSRefusesAGroupReadableKey`,
   `TestEmitWritesBackendTLSForAProcessorOverride`,

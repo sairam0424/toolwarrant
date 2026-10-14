@@ -89,6 +89,10 @@ type stack struct {
 	// bodyHash is the body SHA-256 the latest emit printed, the value an
 	// operator records and hands to verify-gateway --expect-body-hash.
 	bodyHash string
+	// scenario is the letter of the scenario running now, set by TestEndToEnd
+	// before each step, so that a note written by a helper two scenarios
+	// share (the live-comparison steps of P and Q) names the one it ran in.
+	scenario string
 }
 
 // reloadMark is the gateway's reload counters at one moment.
@@ -167,6 +171,13 @@ func (s *stack) note(t *testing.T, format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
 	t.Log(line)
 	s.notes = append(s.notes, line)
+}
+
+// noteHere records a measurement prefixed with the letter of the running
+// scenario, for the helpers more than one scenario calls.
+func (s *stack) noteHere(t *testing.T, format string, args ...any) {
+	t.Helper()
+	s.note(t, s.scenario+": "+format, args...)
 }
 
 // addMock starts a mock upstream on a free port and registers it.
