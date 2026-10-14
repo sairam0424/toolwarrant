@@ -1,18 +1,124 @@
 package export
 
 import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 // fixedTime is a non-UTC instant so tests prove the manifest converts to UTC.
 var fixedTime = time.Date(2026, 10, 7, 14, 30, 5, 0, time.FixedZone("CEST", 2*60*60))
+
+// testHead and testProfile are the catalog fields most tests record; a test
+// about the fields themselves builds its own.
+const (
+	testHead    = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	testProfile = "full-v1"
+)
+
+// testOpts are the options of a Write that records the fixed head and profile
+// and signs nothing.
+var testOpts = Options{AuditHead: testHead, DigestProfile: testProfile}
+
+// signedOpts are testOpts with key as the signing key.
+func signedOpts(key ed25519.PrivateKey) Options {
+	return Options{AuditHead: testHead, DigestProfile: testProfile, SignKey: key}
+}
+
+// headOpts are testOpts with another audit head, for a Write after the log
+// moved.
+func headOpts(head string) Options {
+	return Options{AuditHead: head, DigestProfile: testProfile}
+}
+
+// otherHead is a second well-formed audit head.
+var otherHead = strings.Repeat("0f", 32)
+
+// newSigningKey generates an Ed25519 key for one test; no key material is in
+// the tree.
+func newSigningKey(t testing.TB) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub, priv
+}
+
+// writeKeyFile writes a PEM block to path with mode.
+func writeKeyFile(t testing.TB, path, blockType string, der []byte, mode os.FileMode) string {
+	t.Helper()
+	data := pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der})
+	if err := os.WriteFile(path, data, mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// writeSigningKey writes priv as an owner-only PKCS#8 PEM file in dir and
+// returns its path.
+func writeSigningKey(t testing.TB, dir string, priv ed25519.PrivateKey) string {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeKeyFile(t, filepath.Join(dir, "export.key"), pemPrivateKeyType, der, 0o600)
+}
+
+// newECDSAKeyDER is a PKCS#8 key that is not Ed25519.
+func newECDSAKeyDER(t testing.TB) []byte {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+// mustVerify runs Verify and fails the test on error.
+func mustVerify(t testing.TB, dir string, pub ed25519.PublicKey, expectHead string) VerifyReport {
+	t.Helper()
+	rep, err := Verify(dir, pub, expectHead)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	return rep
+}
+
+// wantVerifyError runs Verify, requires it to fail and requires the message to
+// hold every fragment.
+func wantVerifyError(t testing.TB, dir string, pub ed25519.PublicKey, expectHead string, fragments ...string) {
+	t.Helper()
+	_, err := Verify(dir, pub, expectHead)
+	if err == nil {
+		t.Fatalf("Verify passed, want a refusal naming %q", fragments)
+	}
+	for _, f := range fragments {
+		if !strings.Contains(err.Error(), f) {
+			t.Errorf("Verify error %q lacks %q", err, f)
+		}
+	}
+}
 
 // mkTool builds a Tool whose Canonical bytes and Digest agree. body varies the
 // content so tests can produce "the definition changed" cases.
@@ -105,7 +211,17 @@ func writeFile(t testing.TB, p, content string) {
 // mustWrite runs Write and fails the test on error.
 func mustWrite(t testing.TB, dir string, tools ...Tool) Report {
 	t.Helper()
-	rep, err := Write(dir, tools)
+	rep, err := Write(dir, tools, testOpts)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return rep
+}
+
+// mustWriteWith is mustWrite with explicit options.
+func mustWriteWith(t testing.TB, dir string, opts Options, tools ...Tool) Report {
+	t.Helper()
+	rep, err := Write(dir, tools, opts)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}

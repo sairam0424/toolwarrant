@@ -39,7 +39,7 @@ func TestWrite_CrashBeforeTheFinalManifestIsRecovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending, err := renderManifest(unionEntries(prev.Tools, planned), statusPending)
+	pending, err := renderManifest(unionEntries(prev.Tools, planned), statusPending, testOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestParseManifest_AcceptsItsOwnOutputAndRejectsForgeries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range []string{statusComplete, statusPending} {
-		raw, err := renderManifest(planEntries(planned), status)
+		raw, err := renderManifest(planEntries(planned), status, testOpts)
 		if err != nil {
 			t.Fatal(err)
 		}

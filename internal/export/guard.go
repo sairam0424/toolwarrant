@@ -80,10 +80,12 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 }
 
 // exportFiles returns the files Commit must find in the index after staging:
-// MANIFEST.json and every file it lists that exists. The manifest must be
-// complete, because a pending one means the last Write did not finish and the
-// history would record a half state; it must also be one this package wrote,
-// or there is nothing whose presence in the commit can be verified.
+// MANIFEST.json, its signature and public key when the export was signed
+// (signatureFiles, which refuses a signature that does not sign the current
+// manifest), and every file the manifest lists that exists. The manifest must
+// be complete, because a pending one means the last Write did not finish and
+// the history would record a half state; it must also be one this package
+// wrote, or there is nothing whose presence in the commit can be verified.
 func exportFiles(dir string) ([]string, error) {
 	p := filepath.Join(dir, manifestName)
 	fi, err := os.Lstat(p)
@@ -107,7 +109,16 @@ func exportFiles(dir string) ([]string, error) {
 	if doc.Status != statusComplete {
 		return nil, errors.New("export: MANIFEST.json is pending: the last export did not finish, run it again before committing")
 	}
-	files := []string{manifestName}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("export: open directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	sigFiles, err := signatureFiles(root, raw)
+	if err != nil {
+		return nil, err
+	}
+	files := append([]string{manifestName}, sigFiles...)
 	for _, rel := range doc.files() {
 		if fi, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
 			files = append(files, rel)

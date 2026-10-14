@@ -5,6 +5,7 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/export"
+	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
@@ -44,8 +45,14 @@ func runExport(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	// The head is read after the approvals, so that the head the manifest
+	// records covers every approval the export carries.
+	head, err := store.AuditHead(a.ctx)
+	if err != nil {
+		return err
+	}
 	tools := exportTools(approved)
-	report, err := export.Write(*dir, tools)
+	report, err := export.Write(*dir, tools, export.Options{AuditHead: head, DigestProfile: gate.DigestProfile})
 	if err != nil {
 		return err
 	}
