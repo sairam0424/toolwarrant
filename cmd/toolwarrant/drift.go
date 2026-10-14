@@ -20,7 +20,8 @@ const (
 )
 
 // driftJSON is the classification of a version against the approved one in
-// show --json (crawl --json has its own changeJSON for crawl-level changes): the grade in lower case and the kinds, the most severe first.
+// show --json (crawl --json has its own changeJSON for crawl-level changes):
+// the grade in lower case and the kinds, the most severe first.
 type driftJSON struct {
 	Severity string   `json:"severity"`
 	Kinds    []string `json:"kinds"`

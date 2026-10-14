@@ -1208,7 +1208,8 @@ nothing here approves, hides or serves anything.
   `parameter-made-required`, `annotations-loosened` (readOnlyHint true to
   false, destructiveHint false to true, openWorldHint false to true,
   idempotentHint true to false; an absent hint is read at its MCP default and a
-  hint a host cannot read as a boolean counts as loosened), `name-changed`.
+  hint that stood at its safe value and now cannot be read as a boolean counts
+  as loosened), `name-changed`.
 - WARNING changes what the model reads or what the host does without widening
   the tool: `description-changed` (owner decision O-6: the description-first
   rug pull of threat-model row 3 is never INFO), `optional-parameter-added`,
