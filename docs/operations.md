@@ -1309,9 +1309,9 @@ make test && make e2e && demo/run.sh
 The release commit moves the lines under `## [Unreleased]` in `CHANGELOG.md`
 to a `## [X.Y.Z] - YYYY-MM-DD` heading and leaves an empty `## [Unreleased]`
 above it. `make release-check` runs three guards before `goreleaser check`,
-also in the `ci` release-check job on every pull request: `go.mod` carries no
-`replace` or `exclude` directive, since a release must build from published
-modules only (a `retract`, the remedy for a bad tag, is allowed;
+also in the `ci` release-check job on every pull request: `go.mod` can be read
+and carries no `replace` or `exclude` directive, since a release must build
+from published modules only (a `retract`, the remedy for a bad tag, is allowed;
 `TestReleaseGuards_refuseAReplaceOrExcludeDirectiveInGoMod`); `CHANGELOG.md`
 keeps the Unreleased heading
 (`TestReleaseGuards_refuseAChangelogWithoutAnUnreleasedSection`); and, run as

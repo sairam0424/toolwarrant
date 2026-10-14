@@ -64,9 +64,12 @@ demo:
 # release commit, checked with make release-check VERSION=x.y.z, must carry the
 # heading whose lines the tag publishes. VERSION is read from the environment
 # make exports a command-line variable to, never spliced into the shell text,
-# and must look like a version before it is compared.
+# and must look like a version before it is compared. The go.mod grep is
+# judged by its exit status, not its truth value: 1 is no match, and anything
+# else (2: no go.mod, or one grep cannot read) is a refusal, since a guard
+# that never read the file has checked nothing.
 release-guards:
-	@if grep -qE '^[[:space:]]*(replace|exclude)([[:space:]]|\()' go.mod; then echo "go.mod carries a replace or exclude directive; a release builds from published modules only (a retract is allowed)"; exit 1; fi; echo "go.mod carries no replace or exclude directive"
+	@grep -qE '^[[:space:]]*(replace|exclude)([[:space:]]|\()' go.mod; s=$$?; if [ "$$s" -eq 0 ]; then echo "go.mod carries a replace or exclude directive; a release builds from published modules only (a retract is allowed)"; exit 1; elif [ "$$s" -ne 1 ]; then echo "go.mod could not be read (grep exited $$s); the release guards need the module's go.mod beside the Makefile"; exit 1; fi; echo "go.mod carries no replace or exclude directive"
 	@grep -qxF '## [Unreleased]' CHANGELOG.md || { echo "CHANGELOG.md has no '## [Unreleased]' heading; a change an operator can see adds its line under one (CONTRIBUTING.md)"; exit 1; }; echo "CHANGELOG.md has an Unreleased section"
 	@if [ -z "$$VERSION" ]; then echo "VERSION not set; the release entry is checked by make release-check VERSION=x.y.z"; exit 0; fi; case "$$VERSION" in *[!0-9A-Za-z.+-]*) echo "VERSION must be the version as the changelog heading spells it, such as 0.2.0 or 0.2.0-rc.1, without the v"; exit 1;; esac; grep -E '^## \[[^]]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$$' CHANGELOG.md | grep -qF "## [$$VERSION] - " || { echo "CHANGELOG.md has no '## [$$VERSION] - YYYY-MM-DD' heading; the release commit adds it above the Unreleased lines it moves (pass VERSION without the v)"; exit 1; }; echo "CHANGELOG.md has the entry for $$VERSION"
 

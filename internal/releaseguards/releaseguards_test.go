@@ -30,6 +30,7 @@ const (
 	// The messages the guards print. A refusal is pinned by its message so
 	// that a guard failing for another reason does not pass for the right one.
 	replaceMessage      = "go.mod carries a replace or exclude directive"
+	unreadableMessage   = "go.mod could not be read"
 	unreleasedMessage   = "CHANGELOG.md has no '## [Unreleased]' heading"
 	versionMessage      = "YYYY-MM-DD' heading; the release commit adds it"
 	versionShapeMessage = "VERSION must be the version as the changelog heading spells it"
@@ -93,28 +94,39 @@ func TestReleaseGuards_passOnTheTreeAndOnEveryReleasedVersion(t *testing.T) {
 // directive form the go.mod grammar allows and expects the refusal, leading
 // blanks included since the go.mod parser skips them; a retract directive and
 // a comment that mentions replace pass, because a retract is how a bad tag is
-// withdrawn and a comment builds nothing.
+// withdrawn and a comment builds nothing. A go.mod that is not there is
+// refused as well, under its own message: grep exits 2 for a file it cannot
+// read, and a guard that took that for "no match" would pass a tree it never
+// checked.
 func TestReleaseGuards_refuseAReplaceOrExcludeDirectiveInGoMod(t *testing.T) {
 	cases := map[string]struct {
-		line   string
-		refuse bool
+		line    string
+		missing bool
+		refuse  bool
+		message string
 	}{
-		"replace":          {"replace example.com/m => ../m", true},
-		"replace with tab": {"replace\texample.com/m => ../m", true},
-		"replace block":    {"replace (\n\texample.com/m => ../m\n)", true},
-		"indented replace": {"  replace example.com/m => ../m", true},
-		"exclude":          {"exclude example.com/m v1.0.0", true},
-		"exclude block":    {"exclude (\n\texample.com/m v1.0.0\n)", true},
-		"retract":          {"retract v0.1.0 // a bad tag", false},
-		"retract block":    {"retract (\n\tv0.1.0 // a bad tag\n)", false},
-		"comment":          {"// replace is refused here; see release-guards", false},
+		"replace":          {line: "replace example.com/m => ../m", refuse: true, message: replaceMessage},
+		"replace with tab": {line: "replace\texample.com/m => ../m", refuse: true, message: replaceMessage},
+		"replace block":    {line: "replace (\n\texample.com/m => ../m\n)", refuse: true, message: replaceMessage},
+		"indented replace": {line: "  replace example.com/m => ../m", refuse: true, message: replaceMessage},
+		"exclude":          {line: "exclude example.com/m v1.0.0", refuse: true, message: replaceMessage},
+		"exclude block":    {line: "exclude (\n\texample.com/m v1.0.0\n)", refuse: true, message: replaceMessage},
+		"retract":          {line: "retract v0.1.0 // a bad tag"},
+		"retract block":    {line: "retract (\n\tv0.1.0 // a bad tag\n)"},
+		"comment":          {line: "// replace is refused here; see release-guards"},
+		"go.mod missing":   {missing: true, refuse: true, message: unreadableMessage},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := scratchTree(t)
-			appendFile(t, filepath.Join(dir, goMod), "\n"+tc.line+"\n")
+			path := filepath.Join(dir, goMod)
+			if tc.missing {
+				removeFile(t, path)
+			} else {
+				appendFile(t, path, "\n"+tc.line+"\n")
+			}
 			out, err := runMake(dir, guardsTarget)
-			assertGuard(t, out, err, tc.refuse, replaceMessage)
+			assertGuard(t, out, err, tc.refuse, tc.message)
 		})
 	}
 }
@@ -311,4 +323,13 @@ func writeFile(t *testing.T, path, text string) {
 func appendFile(t *testing.T, path, text string) {
 	t.Helper()
 	writeFile(t, path, readFile(t, path)+text)
+}
+
+// removeFile deletes a scratch copy, for the case where a guard's input is
+// not there at all.
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 }
