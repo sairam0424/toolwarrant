@@ -26,12 +26,16 @@ type listenerConfig struct {
 // a live entry stripped of it differs from the emitted one (fourth review
 // cli-docs-4, processor-emit-7). The metadata is kept only as the SHA-256 of
 // its canonical form, because it carries the processor secret: the two sides
-// are compared for equality and no value is ever shown.
+// are compared for equality and no value is ever shown. The tls map holds
+// the backendTLS block under the entry's policies (cert, key, root, hostname;
+// limit L11) and is nil when the entry carries none, so that a block one side
+// lacks is reported as such rather than as four empty fields.
 type processorConfig struct {
 	host, kind, failureMode string
 	methods                 map[string]string
 	allowed, disallowed     []string
 	metadataHash            string
+	tls                     map[string]string
 }
 
 // routeConfig is one route of the gateway configuration reduced to the fields
@@ -216,7 +220,8 @@ func (p *emittedParser) gatewayLine(indent int, line string) error {
 }
 
 // routeLine reads one line inside the current route: the gateway it attaches
-// to, the exact path, the allow rule, a processor and its fields, or the
+// to, the exact path, the allow rule, a processor and its fields (its
+// backendTLS fields at indent 12, only while that block is open), or the
 // backend target's name and host. The secret, when present, sits under
 // metadata and is read into the hash the comparison keeps, never into a value.
 func (p *emittedParser) routeLine(indent int, line string) error {
@@ -246,6 +251,8 @@ func (p *emittedParser) routeLine(indent int, line string) error {
 		return p.processorBlockLine(line)
 	case indent == indentProcessorKV && strings.HasPrefix(line, hostKeyPrefix):
 		return appendQuoted(&rc.backendHosts, strings.TrimPrefix(line, hostKeyPrefix))
+	case indent == indentProcessorTLS && p.proc != nil && p.procSection == procSectionTLS:
+		return p.tlsLine(line)
 	case indent < indentProcessor:
 		p.closeProcessor()
 	}
@@ -253,7 +260,8 @@ func (p *emittedParser) routeLine(indent int, line string) error {
 }
 
 // processorLine reads one field of the current processor at indent 8: a
-// block opener (methods, requestHeaders, metadata) or a scalar field.
+// block opener (methods, requestHeaders, policies, metadata) or a scalar
+// field.
 func (p *emittedParser) processorLine(line string) error {
 	switch line {
 	case keyMethods:
@@ -262,6 +270,11 @@ func (p *emittedParser) processorLine(line string) error {
 	case keyRequestHeaders:
 		// The two lists open at indent 10; until one does, nothing is read.
 		p.procSection = procSectionHeaders
+		return nil
+	case keyPolicies:
+		// The backendTLS block opens at indent 10; until it does, nothing
+		// is read (livetls.go).
+		p.procSection = procSectionPolicies
 		return nil
 	case keyMetadata:
 		p.procSection = procSectionMeta
@@ -278,10 +291,13 @@ func (p *emittedParser) processorLine(line string) error {
 	return nil
 }
 
-// processorBlockLine reads one indent-10 line of the open block: a method
-// mapping, a header list opener or item, or a metadata entry.
+// processorBlockLine reads one indent-10 line of the open block: a policy of
+// the processor (the backendTLS opener among them), a method mapping, a header
+// list opener or item, or a metadata entry.
 func (p *emittedParser) processorBlockLine(line string) error {
 	switch {
+	case p.procSection == procSectionPolicies || p.procSection == procSectionTLS:
+		return p.policyLine(line)
 	case line == keyAllowed:
 		p.procSection, p.proc.allowed = procSectionAllowed, []string{}
 		return nil

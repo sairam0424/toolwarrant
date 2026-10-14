@@ -65,9 +65,12 @@ type liveConfigDoc struct {
 }
 
 // liveProcessorDoc is one mcpGuardrails processor of a live route. The
-// request-header filter is a pointer so that an entry without one stays nil,
-// and the metadata is kept raw so that its values are hashed, never decoded
-// into a message.
+// request-header filter and the backendTLS block are pointers so that an
+// entry without one stays nil, and the metadata is kept raw so that its
+// values are hashed, never decoded into a message. The policies object and
+// its backendTLS block are the shape the v1.6.0 schema documents for
+// processors[].policies (limit L11); what the running gateway renders there
+// is for the end-to-end harness to pin, as it pinned the rest of this struct.
 type liveProcessorDoc struct {
 	Host           string            `json:"host"`
 	Kind           string            `json:"kind"`
@@ -77,6 +80,14 @@ type liveProcessorDoc struct {
 		Allowed    []string `json:"allowed"`
 		Disallowed []string `json:"disallowed"`
 	} `json:"requestHeaders"`
+	Policies *struct {
+		BackendTLS *struct {
+			Cert     string `json:"cert"`
+			Key      string `json:"key"`
+			Root     string `json:"root"`
+			Hostname string `json:"hostname"`
+		} `json:"backendTLS"`
+	} `json:"policies"`
 	Metadata map[string]json.RawMessage `json:"metadata"`
 }
 
@@ -245,7 +256,9 @@ func (r liveRouteDoc) config() routeConfig {
 }
 
 // config reduces one live processor to the compared fields. The header lists
-// stay nil when the entry carries no filter; a metadata value that is a JSON
+// stay nil when the entry carries no filter, and the tls map stays nil when
+// the entry carries no backendTLS block (an empty block yields a map of four
+// empty values, which differs from no block); a metadata value that is a JSON
 // string is hashed as that string (the emitted file writes each value as a
 // quoted scalar, which the gateway renders back as a string), anything else
 // as its compact JSON text.
@@ -254,6 +267,10 @@ func (p liveProcessorDoc) config() processorConfig {
 	if p.RequestHeaders != nil {
 		pc.allowed = append([]string{}, p.RequestHeaders.Allowed...)
 		pc.disallowed = append([]string{}, p.RequestHeaders.Disallowed...)
+	}
+	if p.Policies != nil && p.Policies.BackendTLS != nil {
+		b := p.Policies.BackendTLS
+		pc.tls = map[string]string{keyTLSCert: b.Cert, keyTLSKey: b.Key, keyTLSRoot: b.Root, keyTLSHostname: b.Hostname}
 	}
 	meta := map[string]string{}
 	for k, raw := range p.Metadata {
