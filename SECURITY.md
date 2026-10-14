@@ -381,9 +381,22 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   (`.sigstore.json`: signature, certificate and transparency-log entry). No build provenance
   attestation is produced yet; the signature over the checksums file is the
   integrity statement.
+- Two public transparency logs anchor a release already. The sigstore bundle
+  carries the entry that Sigstore's public Rekor log recorded for the
+  signature, and `cosign verify-blob --bundle` checks that entry (the v0.1.0
+  bundle carries one). sum.golang.org, the Go checksum database, records the
+  module's `go.sum` lines at a tag the first time that version is fetched
+  through proxy.golang.org, and the go command checks every later download of
+  the version against the record. The Releasing section of
+  docs/operations.md fetches each tag right after publishing, so the record
+  exists before any user's first download; the record for v0.1.0 exists.
 - `toolwarrant version` prints the build version (the tag without its `v`,
   set at link time) and the pinned gateway version, so a deployment can be
-  matched to a release.
+  matched to a release. A binary built with
+  `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` prints
+  `dev` instead, since nothing sets the version at link time;
+  `go version -m toolwarrant` names the module version and its `go.sum` hash
+  for such a binary.
 - The seam and mock binaries are never released.
 
 Verifying a release before running it:

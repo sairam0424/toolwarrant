@@ -1274,6 +1274,23 @@ The first command proves the checksums file was produced by this repository's
 release workflow at that tag; the second proves the downloaded archive is the
 one it lists. The binary prints its version with `toolwarrant version`.
 
+Right after publishing, from a scratch directory outside any module, fetch the
+tag through the module proxy and run the two verification commands above with
+the new version in place of 0.1.0:
+
+```sh
+GOBIN="$PWD/bin" go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z
+go version -m bin/toolwarrant    # the mod line names the module version and its go.sum hash
+```
+
+The `go install` makes proxy.golang.org fetch the tag and sum.golang.org record
+the module's `go.sum` lines for it, so the record exists before any user's
+first download and the go command checks every later download of that version
+against it (SECURITY.md, Release integrity). The binary it installs prints
+`dev` as its version, since nothing sets the version at link time; the `mod`
+line of `go version -m` is what names the tag. The record for v0.1.0 exists
+and lists the same `h1:` hash the `mod` line shows.
+
 A published release is never re-run: the workflow keeps an existing
 release's notes and the existing assets make a second upload fail, so a fix
 is a new tag. The gate accepts only the newest `ci` run that a push to `main`

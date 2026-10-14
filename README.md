@@ -418,21 +418,22 @@ SBOM per archive and a keyless cosign signature over the checksums file
 (verification in [SECURITY.md](SECURITY.md), Release integrity). There is no
 container image; the Go module is the repository itself, so `go install
 github.com/sairam0424/toolwarrant/cmd/toolwarrant@v0.1.0` builds the same
-commit once the repository is public. The unit and property tests of every
-package pass under `-race` (`make test`, which prints per-package coverage), and
-the end-to-end test passes against the real gateway (`make e2e`; `demo/run.sh`
-runs it unattended and writes `demo/last-run.log`). The GitHub Actions workflow
-in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs lint, vet and
-build, the short test suite under `-race`, the six tests that `-short` skips
-(the three Unicode walks of `internal/textdiff`, the two slow catalog tests and
-the processor's gRPC size test, run with their packages in full), govulncheck,
-gitleaks, the third-party notices check, the release configuration check and
-the documentation checks (every cited test name and every relative link must
-exist) on every pull request and every push to main; the end-to-end job runs on
-manual dispatch against the linux release binary of agentgateway v1.6.0 and
-passed on 2026-10-12. The security policy, including how to report a problem
-and the owner's pending report to the agentgateway project, is in
-[SECURITY.md](SECURITY.md). Operational procedures are in
+commit, checked against the sum.golang.org record of the tag (that binary
+prints `dev` as its version; `go version -m` names the tag). The unit and
+property tests of every package pass under `-race` (`make test`, which prints
+per-package coverage), and the end-to-end test passes against the real gateway
+(`make e2e`; `demo/run.sh` runs it unattended and writes `demo/last-run.log`).
+The GitHub Actions workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml)
+runs lint, vet and build, the short test suite under `-race`, the six tests
+that `-short` skips (the three Unicode walks of `internal/textdiff`, the two
+slow catalog tests and the processor's gRPC size test, run with their packages
+in full), govulncheck, gitleaks, the third-party notices check, the release
+configuration check and the documentation checks (every cited test name and
+every relative link must exist) on every pull request and every push to main;
+the end-to-end job runs on manual dispatch against the linux release binary of
+agentgateway v1.6.0 and passed on 2026-10-12. The security policy, including
+how to report a problem and the owner's pending report to the agentgateway
+project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
 [docs/operations.md](docs/operations.md); the design decisions D1 to D17 are in
 [docs/decisions.md](docs/decisions.md). Contributions follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the code of conduct is
