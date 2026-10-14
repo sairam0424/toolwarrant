@@ -1019,8 +1019,13 @@ file with its digest, approver, approval time and version number and, since
 version 3 of the manifest, records `audit_head`, the head of the audit chain the
 catalog had verified when the approvals were read, and `digest_profile`
 (`full-v1`). The command prints both; the head is the one `audit verify` prints
-at that moment, so record it with the export. The head is read after the
-approvals, so it covers every approval the export carries. Every crawl and
+at that moment, so record it with the export. The approvals and the head are
+read in one transaction of the catalog, so the head names exactly the log state
+the files mirror: a crawl or a decision committed while the export runs lands
+in both or in neither (`TestApprovedWithHead_HeadAndToolsComeFromOneSnapshot`
+runs readers against a writer that toggles the only approved tool and finds no
+result pairing the approvals of one commit with the head of another; the
+two-call read it replaced paired 76 of 208 results that way). Every crawl and
 every decision appends to the log, so an export after the log grew rewrites the
 manifest (and the signature) with no tool file touched, and `--commit` records
 that as a commit: that is the binding to the log, not noise.

@@ -27,8 +27,9 @@ const (
 // runExport mirrors the approved definitions into a directory that people can
 // read and diff in git. The export is write-only: nothing reads it back to
 // decide anything. MANIFEST.json records the head of the audit chain the
-// catalog had verified when the approvals were read and the digest profile,
-// so the export names the exact log it mirrors, and with --sign-key PATH the
+// catalog had verified in the same read transaction as the approvals
+// (Store.ApprovedWithHead) and the digest profile, so the export names the
+// exact log it mirrors, and with --sign-key PATH the
 // complete manifest is signed with the Ed25519 key in that file (D21 e); the
 // key is read before the catalog is opened, so a refused key changes nothing,
 // and it is zeroed when the command ends. Tools the exporter had to leave out
@@ -96,15 +97,15 @@ func loadSignKey(path string) (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
-// exportInputs reads the approvals, then the audit head, so that the head the
-// manifest records covers every approval the export carries, and builds the
+// exportInputs reads the approvals and the audit head from one snapshot of the
+// catalog (Store.ApprovedWithHead), so that the head the manifest records is
+// the head of exactly the log state whose approvals the export carries: a
+// crawl or a decision committed while the export runs lands in both or in
+// neither. Read as two calls, a commit between them made the manifest name a
+// head whose approval set differed from the files written. It then builds the
 // options of the Write.
 func exportInputs(a *app, store *catalog.Store, key ed25519.PrivateKey) ([]export.Tool, export.Options, error) {
-	approved, err := store.Approved(a.ctx)
-	if err != nil {
-		return nil, export.Options{}, err
-	}
-	head, err := store.AuditHead(a.ctx)
+	approved, head, err := store.ApprovedWithHead(a.ctx)
 	if err != nil {
 		return nil, export.Options{}, err
 	}

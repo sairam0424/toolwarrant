@@ -57,8 +57,9 @@ type Report struct {
 
 // Options is what one Write records about the catalog beside the tools, and
 // whether it seals the record. AuditHead is the head of the audit chain the
-// catalog had verified when the approvals were read (catalog.Store.AuditHead:
-// 64 lower-case hex digits, the genesis for an empty log) and DigestProfile
+// catalog had verified when the approvals were read, in the same read
+// transaction as them (catalog.Store.ApprovedWithHead: 64 lower-case hex
+// digits, the genesis for an empty log) and DigestProfile
 // the rule every digest was computed under (gate.DigestProfile); both are
 // required and go into MANIFEST.json, so that a reader of the export, and a
 // verifier of its signature, know which log and which digest rule it mirrors.
