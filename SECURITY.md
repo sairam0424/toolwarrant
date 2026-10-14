@@ -387,8 +387,9 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   module's `go.sum` lines at a tag the first time that version is fetched
   through proxy.golang.org, and the go command checks every later download of
   the version against the record. The Releasing section of
-  docs/operations.md fetches each tag right after publishing, so the record
-  exists before any user's first download; the record for v0.1.0 exists.
+  docs/operations.md fetches each tag right after publishing and checks the
+  record, so the record exists before any user's first download; the record
+  for v0.1.0 exists.
 - `toolwarrant version` prints the build version (the tag without its `v`,
   set at link time) and the pinned gateway version, so a deployment can be
   matched to a release. A binary built with

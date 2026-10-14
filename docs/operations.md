@@ -1274,21 +1274,33 @@ release workflow at that tag; the second proves the downloaded archive is the
 one it lists. The binary prints its version with `toolwarrant version`.
 
 Right after publishing, from a scratch directory outside any module, fetch the
-tag through the module proxy and run the two verification commands above with
-the new version in place of 0.1.0:
+tag through the module proxy, check the record the fetch leaves, and run the
+two verification commands above with the new version in place of 0.1.0:
 
 ```sh
-GOBIN="$PWD/bin" go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z
+GOFLAGS= GOPRIVATE= GONOSUMDB= GOSUMDB=sum.golang.org GOPROXY=https://proxy.golang.org,direct \
+  GOBIN="$PWD/bin" go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z
 go version -m bin/toolwarrant    # the mod line names the module version and its go.sum hash
+curl -fsS "https://sum.golang.org/lookup/github.com/sairam0424/toolwarrant@vX.Y.Z"
 ```
 
 The `go install` makes proxy.golang.org fetch the tag and sum.golang.org record
 the module's `go.sum` lines for it, so the record exists before any user's
 first download and the go command checks every later download of that version
-against it (SECURITY.md, Release integrity). The binary it installs prints
-`dev` as its version, since nothing sets the version at link time; the `mod`
-line of `go version -m` is what names the tag. The record for v0.1.0 exists
-and lists the same `h1:` hash the `mod` line shows.
+against it (SECURITY.md, Release integrity). The variables are set on the
+command because a shell that carries `GOPRIVATE` or `GONOSUMDB` for the
+maintainer's own namespace, or `GOSUMDB=off`, makes the go command skip the
+checksum database (and, with `GOPRIVATE`, the proxy as well), and
+`go install` exits 0 either way; `GOFLAGS` is cleared so the build flags this
+repository's shells export play no part. The `curl` is what proves the
+record: the lookup must return a record whose first line carries the same
+`h1:` hash as the `mod` line (the second line is the `go.mod` hash); a 404,
+which `curl -f` turns into a failure, or a different hash means the record is
+missing or wrong: stop and find out why before announcing the release. The
+binary the install leaves prints `dev` as its version, since nothing sets the
+version at link time; the `mod` line of `go version -m` is what names the
+tag. The record for v0.1.0 exists and lists the same `h1:` hash the `mod`
+line shows.
 
 Then rebuild one platform and compare it with the archive. The build is
 reproducible (CGO disabled, `-trimpath`, no date in the link flags, archive
