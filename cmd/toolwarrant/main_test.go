@@ -17,7 +17,7 @@ func TestHelpAndVersion(t *testing.T) {
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
 		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
 		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]",
-		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe] [--every DURATION] [--keep-going]",
+		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]",
 		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
@@ -79,6 +79,7 @@ func TestUsageErrors(t *testing.T) {
 		{"verify admin with a query", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--admin", "127.0.0.1:15000/?x=1"}, "without user info, query or fragment"},
 		{"verify expect-body-hash without config", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--expect-body-hash", strings.Repeat("a", 64)}, "--expect-body-hash needs --config"},
 		{"verify expect-body-hash not hex", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--expect-body-hash", "nothex"}, "64 hex digits of the body sha256"},
+		{"verify expect-unhooked with no-probe", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--expect-unhooked", "--no-probe"}, "--expect-unhooked and --no-probe are exclusive"},
 		{"audit negative limit", []string{"audit", "list", "--limit", "-1"}, "must not be negative"},
 		{"rollback without to", []string{"rollback", "s1", "echo"}, "--to is required"},
 		{"reject without hash", []string{"reject", "s1", "echo"}, "--hash is required"},
@@ -192,6 +193,41 @@ func TestRunUsesASignalContext(t *testing.T) {
 	code := run([]string{"version"}, strings.NewReader(""), &out, &errb, func(string) string { return "" })
 	if code != exitOK || !strings.Contains(out.String(), programName+" dev") {
 		t.Fatalf("run version: exit %d, out %q, err %q", code, out.String(), errb.String())
+	}
+}
+
+// TestVersionFallsBackToTheModuleVersion drives the decision behind the
+// version command over every input it sees: the version the linker set and
+// the main module version the Go toolchain embedded. A linked version wins;
+// the source default yields to an embedded tag or pseudo-version, which
+// already carries any +dirty marker, but not to the "(devel)" of a go test or
+// go run binary nor to a binary without build information. The command then
+// prints that decision for this very binary in its fixed two-line format.
+func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
+	const pseudo = "v0.1.2-0.20261014065709-6ab9e4aad92e"
+	cases := []struct{ name, linked, module, want string }{
+		{"go install of a tag reports the tag", devVersion, "v0.1.1", "v0.1.1"},
+		{"go build in a checkout reports the pseudo-version", devVersion, pseudo, pseudo},
+		{"a dirty checkout keeps the marker the toolchain added", devVersion, "v0.1.1+dirty", "v0.1.1+dirty"},
+		{"go test and go run stay dev", devVersion, unknownModuleVersion, devVersion},
+		{"no build information stays dev", devVersion, "", devVersion},
+		{"a linked release version wins over the tag", "0.1.1", "v0.1.1", "0.1.1"},
+		{"a linked release version wins over (devel)", "0.1.1", unknownModuleVersion, "0.1.1"},
+		{"a linked release version wins without build information", "0.1.1", "", "0.1.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := displayVersion(tc.linked, tc.module); got != tc.want {
+				t.Errorf("displayVersion(%q, %q) = %q, want %q", tc.linked, tc.module, got, tc.want)
+			}
+		})
+	}
+	var out, errb bytes.Buffer
+	none := func(string) string { return "" }
+	code := runCtx(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errb, none)
+	want := programName + " " + displayVersion(version, embeddedModuleVersion()) + "\n" + gatewayVersion + "\n"
+	if code != exitOK || out.String() != want {
+		t.Fatalf("version: exit %d, out %q, want %q, err %q", code, out.String(), want, errb.String())
 	}
 }
 

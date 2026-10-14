@@ -30,7 +30,7 @@ pending, and toolwarrant documents its own controls for both in
 
 ## Scope
 
-The trust boundary, in five lines:
+The trust boundary, in six lines:
 
 - Whoever can write the 0600 catalog file can append a correctly sealed audit
   entry that approves a definition; the recorded audit head, the git export and
@@ -44,6 +44,12 @@ The trust boundary, in five lines:
   are taken as given beyond the OS account that runs the command, so the
   per-person rule and the proposer rule hold against the name given (residual
   risk L13 in the threat model).
+- The gateway's serving port must be reachable only by clients that send a
+  JSON-RPC id on every `tools/call` (the official SDKs do) or through an
+  enforcement point that refuses id-less `tools/call`; toolwarrant provides
+  none (decision D11, known limit L17; written out in
+  [docs/operations.md](docs/operations.md), Deployment requirements, decision
+  D18).
 
 In scope:
 
@@ -60,7 +66,9 @@ In scope:
   backend target, a `--url` or `--admin` port that is not the emitted one)
   that it does not report with `--admin`, a body hash that differs from the
   recorded one that it does not report with `--expect-body-hash`, an id-less
-  `tools/call` answered 202 that the probe does not report as UNHOOKED-CALLS,
+  `tools/call` answered 202 that the probe does not report as UNHOOKED-CALLS
+  (as KNOWN-LIMIT with `--expect-unhooked`), an answer other than 202 under
+  `--expect-unhooked` that it does not report as PROBE-CHANGED (decision D18),
   a probe answer the probe attributes to the gateway (since the seventh round
   it attributes none: it proves the fail-open shape of v1.6.0 and cannot
   prove the hook, decision D17), and a `--config` path that makes the canary
@@ -146,7 +154,7 @@ test or seam result that proves it, is in [docs/threat-model.md](docs/threat-mod
 Its second table lists the residual risks and what an operator can do about
 each. The spike findings F1 to F5 and the design decisions are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md);
-the design decisions run to D17.
+the design decisions run to D18.
 
 ## Operator hardening checklist
 
@@ -238,6 +246,22 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   directly, so the emitted configuration contains only guarded routes. Never add
   an unguarded route or a second bind by hand: any unguarded path is a complete
   bypass (seam test 12, finding F2).
+- Let only id-sending clients reach the gateway's serving port. agentgateway
+  v1.6.0 forwards a `tools/call` sent as a JSON-RPC notification (no `id`, or
+  `id: null`) to the upstream without the ExtMCP hook and without the allow
+  rule (known limit L17, threat model row 25), and toolwarrant has no data
+  plane that could refuse the message (decision D11), so the deployment must:
+  reach the serving port only from clients you control that send an id on
+  every `tools/call` (the official SDKs do), or put an enforcement point in
+  front of it that refuses an id-less `tools/call`, and keep the port off
+  every other network (the emitted file binds it to 127.0.0.1;
+  `emit --bind-address` widens it and warns). The canary's probe is how you see
+  that the gateway still has the shape: run `verify-gateway` with
+  `--expect-unhooked`, which prints the 202 as `KNOWN-LIMIT` with exit 0 and
+  fails as PROBE-CHANGED, exit 1, when the answer changes (decision D18; the
+  requirement is written out in [docs/operations.md](docs/operations.md),
+  Deployment requirements; cmd `TestExpectUnhookedTurnsThe202IntoAKnownLimitLine`,
+  `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`; e2e scenario O).
 - Run `verify-gateway` as a canary, not once at deploy time. It opens a new MCP
   session on every run, which is the only way to see a processor that a reload
   dropped (sessions that already exist keep the old chain; seam test 14 as
@@ -245,18 +269,23 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   `body sha256` line `emit` printed, recorded off the gateway host, the way the
   audit head is), pass `--admin ADDR`, use `--every DURATION`, and treat exit
   code 1 (LEAK, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS,
-  PROBE-INCONCLUSIVE) and every `check failed` line as an incident. On
-  agentgateway v1.6.0 the unhooked-call probe reports UNHOOKED-CALLS on every
-  check (known limit L17): run it once, record the limit, and pass `--no-probe`
-  until the pin moves to a gateway that does not answer the probe with 202,
-  because a canary that fails on every run trains its readers to ignore it;
-  re-run the probe on every move of the pin. The probe proves that fail-open
-  shape and nothing else: a bare 400 is reported as not accepted as a
-  notification, by the gateway or by the upstream, never as the gateway's
-  refusal, because a forwarding gateway relays whatever the upstream wrote
-  (decision D17). Exit 0 is OK or MISSING only; MISMATCH and
-  UNVERIFIED are sub-labels of a LEAK line, never a verdict that passes
-  (decisions D12 and D13).
+  PROBE-INCONCLUSIVE, PROBE-CHANGED) and every `check failed` line as an
+  incident. On agentgateway v1.6.0 the unhooked-call probe is answered with
+  HTTP 202 on every check (known limit L17): run it once without a probe flag
+  and see UNHOOKED-CALLS, exit 1, record the limit, then run the canary with
+  `--expect-unhooked`, which keeps the probe on, prints that 202 as
+  `KNOWN-LIMIT` with exit 0, and fails as PROBE-CHANGED, exit 1, the moment the
+  gateway answers anything else, which is how a moved pin or a gateway changed
+  under it is noticed (decision D18; before it the advice was `--no-probe`,
+  which silenced the one check that would notice; `--no-probe` still exists and
+  is exclusive with `--expect-unhooked`). A canary that fails on every run
+  trains its readers to ignore it, and one that sends no probe proves nothing
+  about the shape. The probe proves that fail-open shape and nothing else: a
+  bare 400 is reported as not accepted as a notification, by the gateway or by
+  the upstream, never as the gateway's refusal, because a forwarding gateway
+  relays whatever the upstream wrote (decision D17). Exit 0 is OK, MISSING or
+  KNOWN-LIMIT only; MISMATCH and UNVERIFIED are sub-labels of a LEAK line,
+  never a verdict that passes (decisions D12, D13 and D18).
 - Record the audit head outside the database after every `audit verify`, and
   verify with `audit verify --expect-head HASH`. The chain proves that nothing
   inside it was altered; only a head recorded elsewhere proves that the whole
@@ -345,7 +374,9 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   emitter's binary validation tests and the end-to-end test against the new
   release before the pin changes; scenario L re-derives which keys the gateway
   strips, and the canary probe re-checks whether id-less calls are still
-  forwarded (HTTP 202, the fail-open shape of v1.6.0). The seventeen items of
+  forwarded (HTTP 202, the fail-open shape of v1.6.0); a canary running with
+  `--expect-unhooked` reports PROBE-CHANGED, exit 1, the moment that answer
+  changes (decision D18). The seventeen items of
   that re-qualification, the script that runs them
   (`scripts/requalify-gateway.sh vX.Y.Z SHA256 --e2e`, where SHA256 is the
   published digest of the candidate's linux asset, which the script checks
@@ -402,10 +433,13 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
 - `toolwarrant version` prints the build version (the tag without its `v`,
   set at link time) and the pinned gateway version, so a deployment can be
   matched to a release. A binary built with
-  `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` prints
-  `dev` instead, since nothing sets the version at link time;
-  `go version -m toolwarrant` names the module version and its `go.sum` hash
-  for such a binary.
+  `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` has
+  no link-time version and falls back to the module version the go command
+  embedded, the tag with its `v` (`toolwarrant vX.Y.Z`;
+  `TestVersionFallsBackToTheModuleVersion`); the binaries installed from
+  v0.1.0 and v0.1.1 predate the fallback and print `dev`. `go version -m
+  toolwarrant` names the module version and its `go.sum` hash for any such
+  binary.
 - The seam and mock binaries are never released.
 
 Verifying a release before running it:

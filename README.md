@@ -222,22 +222,29 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    readiness listeners to 127.0.0.1:15000, 15020 and 15021. Agents on other
 #    hosts need `emit --bind-address ADDR` (a wildcard also needs
 #    --allow-all-interfaces), which prints a warning; firewall such a port.
+#    Only clients that send a JSON-RPC id on every tools/call may reach it
+#    (known limit L17; docs/operations.md, Deployment requirements).
 "$GATEWAY" -f gateway.yaml &
 
 # 7. Canary: open a fresh MCP session through the gateway, list the tools,
 #    compare each one with the catalog, check the file on disk against the
-#    body hash you recorded, and compare the live configuration with the
-#    file. On agentgateway v1.6.0 the unhooked-call probe reports
-#    UNHOOKED-CALLS with exit 1 on every check (known limit L17): run it once
-#    without --no-probe to see the verdict, record the limit, and pass
-#    --no-probe until the gateway pin moves. Expect the line, as printed:
-#    "OK: the gateway serves 2 tool(s), 2 approved and current; live
-#    configuration matches the emitted file; unhooked-call probe skipped
-#    (--no-probe)". Exit code 1 means LEAK, CONFIG-EDITED,
-#    LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS or PROBE-INCONCLUSIVE.
+#    body hash you recorded, compare the live configuration with the file,
+#    and probe for unhooked calls. agentgateway v1.6.0 answers the probe
+#    with HTTP 202 on every check (known limit L17): run it once without
+#    --expect-unhooked to see UNHOOKED-CALLS with exit 1, record the limit,
+#    then pass --expect-unhooked, which keeps the probe on, prints the 202
+#    as KNOWN-LIMIT and fails as PROBE-CHANGED when the answer changes.
+#    Expect the two lines, as printed: "KNOWN-LIMIT mock: the gateway
+#    forwarded the id-less tools/call (HTTP 202), as agentgateway v1.6.0
+#    does (L17)" and "OK: the gateway serves 2 tool(s), 2 approved and
+#    current; live configuration matches the emitted file; id-less
+#    tools/call forwarded unhooked as declared with --expect-unhooked
+#    (KNOWN-LIMIT L17)". Exit code 1 means LEAK, CONFIG-EDITED,
+#    LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE or
+#    PROBE-CHANGED.
 ./bin/toolwarrant verify-gateway --server mock --url http://127.0.0.1:3000/mock/mcp \
   --config gateway.yaml --expect-body-hash BODY_SHA256_PRINTED_BY_EMIT \
-  --admin 127.0.0.1:15000 --no-probe
+  --admin 127.0.0.1:15000 --expect-unhooked
 ```
 
 Now change a definition behind the gateway's back, the way a poisoned upstream
@@ -406,7 +413,7 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 - L14. Homoglyphs pass the diff renderer unflagged; a behaviour change behind an unchanged definition is invisible.
 - L15. `--max-evidence-age` also ages conflict markers, so an old contradiction stops denying until re-listed.
 - L16. A reload of a 10000-tool server costs up to about 2.5 GB of hashing.
-- L17. agentgateway v1.6.0 forwards an id-less `tools/call` without the hook; the canary's probe fails every check.
+- L17. agentgateway v1.6.0 forwards an id-less `tools/call` without the hook; the canary's probe reports it on every check (UNHOOKED-CALLS, or KNOWN-LIMIT with `--expect-unhooked`); deploy so that only id-sending clients reach the gateway.
 - L18. The gateway's admin API is unauthenticated on loopback; every local user of the host is inside the boundary.
 - L19. The configuration file's header hash is unkeyed; only the body hash you recorded catches a re-sealed edit.
 
@@ -418,8 +425,13 @@ SBOM per archive and a keyless cosign signature over the checksums file
 (verification in [SECURITY.md](SECURITY.md), Release integrity). There is no
 container image; the Go module is the repository itself, so `go install
 github.com/sairam0424/toolwarrant/cmd/toolwarrant@v0.1.0` builds the same
-commit, checked against the sum.golang.org record of the tag (that binary
-prints `dev` as its version; `go version -m` names the tag). The unit and
+commit, checked against the sum.golang.org record of the tag. Such a binary
+has no link-time version, so `toolwarrant version` falls back to the module
+version the go command embedded and prints the tag with its `v`
+(`toolwarrant vX.Y.Z`; `TestVersionFallsBackToTheModuleVersion`), while a
+release archive's binary prints `X.Y.Z`; the binaries installed from v0.1.0
+and v0.1.1 predate the fallback and print `dev`, and `go version -m` names
+the tag for all of them. The unit and
 property tests of every package pass under `-race` (`make test`, which prints
 per-package coverage), and the end-to-end test passes against the real gateway
 (`make e2e`; `demo/run.sh` runs it unattended and writes `demo/last-run.log`).
@@ -437,7 +449,7 @@ dispatch that names a candidate release, checking the seventeen items of
 it. The security policy, including
 how to report a problem and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D17 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D18 are in
 [docs/decisions.md](docs/decisions.md). Contributions follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the code of conduct is
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
