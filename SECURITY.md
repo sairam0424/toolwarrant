@@ -21,11 +21,13 @@ is a CVE numbering authority, so a CVE can be requested through the advisory the
 report creates. Please do not open a public issue for a vulnerability; the
 new-issue chooser points here for that reason.
 
-The maintainer acknowledges a report within seven days and aims to ship a fix
-in the next tag. The two behaviours of agentgateway v1.6.0 itself (known limits
-L17 and L18 below) are the maintainer's to report to the agentgateway project,
-by hand; that report is pending, and toolwarrant documents its own controls for
-both in [docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
+The maintainer acknowledges a report within two days and aims to ship a fix in
+the next tag; a confirmed problem not fixed within fourteen days of the report
+gets a dated note in the advisory saying why and when. The two behaviours of
+agentgateway v1.6.0 itself (known limits L17 and L18 below) are the
+maintainer's to report to the agentgateway project, by hand; that report is
+pending, and toolwarrant documents its own controls for both in
+[docs/threat-model.md](docs/threat-model.md) rows 25 and 26.
 
 ## Scope
 
