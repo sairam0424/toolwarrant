@@ -11,7 +11,8 @@ const (
 // the client's MCP call to the processor in McpRequest.headers, after this
 // filter; with no filter it forwards every header and every pseudo-header, so
 // a client's bearer token or cookie would ride each hook across the
-// gateway-to-processor link, which is plaintext gRPC (limit L11). The
+// gateway-to-processor link, which is plaintext gRPC unless the entry carries
+// the backendTLS block (limit L11, D19). The
 // processor reads no header at all, so the allow list names one pseudo-header
 // that carries nothing (an empty allow list means "forward everything", so a
 // non-empty one is the only way to say "nothing"), and the deny list names
@@ -59,11 +60,13 @@ func writeRoute(w *yamlWriter, s Server, allowed []string) {
 }
 
 // writeProcessor appends the one processor entry of a route: the address,
-// failClosed, the request-header filter, the optional secret and the two
-// hooked methods. The secret is a CEL string literal inside a YAML scalar,
-// quoted once per layer, exactly like the tool names inside the allow rule.
-// The filter comes before the metadata so the unconditional fields stay
-// together and the secret line, when present, is still followed by methods.
+// failClosed, the request-header filter, the optional TLS block, the optional
+// secret and the two hooked methods. The secret is a CEL string literal inside
+// a YAML scalar, quoted once per layer, exactly like the tool names inside the
+// allow rule. The filter comes before the optional blocks so the unconditional
+// fields stay together, the TLS block comes before the metadata (the canary
+// reads it there, cmd/toolwarrant livetls.go), and the secret line, when
+// present, is still followed by methods.
 func writeProcessor(w *yamlWriter, s Server) {
 	w.line(6, "- host: "+quote(s.ProcessorAddr))
 	w.line(8, "kind: "+quote("remote"))
@@ -74,6 +77,9 @@ func writeProcessor(w *yamlWriter, s Server) {
 	w.line(10, "disallowed:")
 	for _, name := range deniedHeaders() {
 		w.line(10, "- "+quote(name))
+	}
+	if s.TLS != nil {
+		writeProcessorTLS(w, s.TLS)
 	}
 	if s.Secret != "" {
 		w.line(8, "metadata:")

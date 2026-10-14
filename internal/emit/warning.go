@@ -17,8 +17,17 @@ const (
 // loopbackNames adds the aliases common /etc/hosts files carry beside it.
 const localhostName = "localhost"
 
-// processorRisk is what a processor reachable from other hosts means.
-const processorRisk = " is not on loopback: the hooks that decide what the gateway serves cross the network, and serve refuses such a listener unless it is explicitly allowed and carries a shared secret"
+// processorRisk is what a processor reachable from other hosts means when
+// the gateway dials it in plaintext; processorTLSRisk when its entry carries
+// the backendTLS block (D19): the hooks still cross the network, but under
+// TLS with the gateway's client certificate, which serve --tls-client-ca
+// verifies in place of the shared secret (owner decision O-2). The line
+// states the protection so that the exposure and its guard are read together.
+const (
+	processorRisk    = " is not on loopback: the hooks that decide what the gateway serves cross the network, and serve refuses such a listener unless it is explicitly allowed and carries a shared secret"
+	processorTLSRisk = " is not on loopback: the hooks that decide what the gateway serves cross the network under TLS (backendTLS: the gateway presents its client certificate and verifies the processor's certificate under hostname "
+	processorTLSEnd  = "), and serve must require that certificate with --tls-client-ca, or carry the shared secret, to accept such a listener"
+)
 
 // reach says who can connect to a socket bound to addr, which is known not to
 // be loopback.
@@ -46,10 +55,20 @@ func buildWarning(v validated, port int) string {
 	}
 	for _, s := range v.servers {
 		if !isLoopbackHost(processorHost(s.ProcessorAddr)) {
-			lines = append(lines, "processor for server "+s.Name+" at "+s.ProcessorAddr+processorRisk)
+			lines = append(lines, "processor for server "+s.Name+" at "+s.ProcessorAddr+processorExposure(s.TLS))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// processorExposure is the tail of the warning line for a processor off
+// loopback: the plaintext risk, or the TLS protection with the validated
+// hostname (printable ASCII by validateTLSHostname, so the line stays one).
+func processorExposure(t *ProcessorTLS) string {
+	if t == nil {
+		return processorRisk
+	}
+	return processorTLSRisk + t.Hostname + processorTLSEnd
 }
 
 // processorHost is the host part of a processor address that validation has

@@ -38,6 +38,17 @@
 //     well. Without the filter agentgateway forwards every header of the
 //     client's request, bearer tokens and cookies included, and the processor
 //     reads none of them.
+//   - A processor entry carries the gateway's backendTLS block only when the
+//     input asks for it (Server.TLS, D19), and then with all four fields: the
+//     client certificate and key the gateway presents, the root it verifies
+//     the processor's certificate against and the DNS name it verifies it
+//     under. A block with a root but no client certificate, or without a
+//     hostname, is one the gateway's own validation accepts
+//     (TestGatewayParsesBackendTLS) and the emitter refuses, so that the one
+//     shape the processor's --tls-client-ca authenticates (owner decision
+//     O-2) is the only shape written. Without the block the gateway dials the
+//     processor in plaintext (limit L11), and the entry carries no policies
+//     block at all.
 //   - Every string that comes from the catalog is written as an escaped,
 //     double-quoted scalar, so it cannot add keys, lines or CEL syntax. A
 //     dollar sign is always written as its \u0024 escape, because the gateway
@@ -120,6 +131,12 @@
 //	          - "authorization"
 //	          - "cookie"
 //	          - "proxy-authorization"
+//	        policies:
+//	          backendTLS:
+//	            cert: "<path on the gateway host>"
+//	            key: "<path on the gateway host>"
+//	            root: "<path on the gateway host>"
+//	            hostname: "<DNS name of the processor's certificate>"
 //	        metadata:
 //	          toolwarrant_secret: "\"<secret>\""
 //	        methods:
@@ -133,7 +150,9 @@
 //	          host: "<upstream URL>"
 //
 // The allow rule is the literal "false" when the server has no approved tool;
-// the metadata block is present only when Server.Secret is set; the
+// the policies block with its backendTLS is present only when Server.TLS is
+// set, between the request-header filter and the metadata, and the metadata
+// block is present only when Server.Secret is set; the
 // requestHeaders block is always present and never depends on the input; the
 // bind address and the listener addresses are written in canonical form (an
 // IPv6 listener as "[::1]:15000"); adminAddr is the literal "off" when
@@ -169,11 +188,18 @@
 // addresses are limited to host:port: the schema describes processors[].host
 // as "Hostname or IP address" and documents no unix:// or https:// form
 // (--validate-only accepts both, but it also accepts unknown CEL variables, so
-// that proves nothing); TLS towards a processor is the separate
-// processors[].policies.backendTLS block, which this version does not write.
-// The gateway name is a constant, and editing the file by hand fails Verify. A
-// secret is written into the file in clear, so a file that carries one must be
-// readable by the gateway alone.
+// that proves nothing). TLS towards a processor is the separate
+// processors[].policies.backendTLS block (Server.TLS): --validate-only reads
+// the block's three files and refuses a path it cannot open or a certificate
+// or key file that holds none (TestGatewayValidateOnlyOpensBackendTLSFiles,
+// TestGatewayParsesBackendTLS), so validating with the binary needs the
+// files on the host that emits; whether the handshake against the processor
+// succeeds, which certificate the gateway presents and whether it verifies
+// the hostname are observable only with the gateway running, and are for the
+// end-to-end test (scenario Q, planned), not for this package. The gateway
+// name is a constant, and editing the file by hand fails Verify. A secret is
+// written into the file in clear, so a file that carries one must be readable
+// by the gateway alone.
 package emit
 
 import (
@@ -216,6 +242,14 @@ type Server struct {
 	// do not come from this gateway. It must be MinSecretLen-MaxSecretLen bytes
 	// of printable ASCII. Empty means no secret is sent.
 	Secret string
+	// TLS, when set, makes the gateway dial this processor with TLS and a
+	// client certificate: the processors[].policies.backendTLS block (D19).
+	// Its three paths are files on the gateway host, which the emitter never
+	// opens; its hostname is the DNS name the processor's certificate carries.
+	// Nil means the gateway dials the processor in plaintext, and the entry
+	// carries no policies block at all. The block is not stored anywhere:
+	// the caller passes it on every emit, as it passes Secret.
+	TLS *ProcessorTLS
 	// ApprovedTools are the names whose current definition is approved.
 	// Order and duplicates do not matter.
 	ApprovedTools []string
