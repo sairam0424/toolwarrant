@@ -169,6 +169,10 @@ func TestServe_RefusedPageWithAnUnreadableCatalogIsASourceError(t *testing.T) {
 	if _, err := client.CheckResponse(ctx, listMsg(oversizedPage())); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("err = %v, want ResourceExhausted", err)
 	}
+	// The transport's refusal reaches the client while pageRefused is still
+	// accounting on the server (the source error lands before the denied
+	// list), so wait for both counters as the other refusal tests do.
+	awaitMarking(t, func() bool { st := s.Stats(); return st.SourceErrors == 1 && st.ListsDenied == 1 })
 	if st := s.Stats(); st.SourceErrors != 1 || st.ListsDenied != 1 || s.trackedCount() != 0 {
 		t.Errorf("stats = %+v, tracked %d; want one source error, one denied list, nothing tracked", st, s.trackedCount())
 	}
