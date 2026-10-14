@@ -61,13 +61,15 @@ func (p processorOverrides) Set(v string) error {
 
 // emitPlan is what one server contributes to the gateway config. previous is
 // the processor address the catalog recorded for the server before this emit,
-// "" when it had none (D14 i).
+// "" when it had none (D14 i); tls is the backendTLS block --processor-tls
+// gave for the server, nil for a plaintext link (D19, not recorded anywhere).
 type emitPlan struct {
 	name      string
 	url       string
 	processor string
 	previous  string
 	tools     []string
+	tls       *emit.ProcessorTLS
 }
 
 // emitOptions are the flags of emit. The listener addresses default to ""
@@ -78,6 +80,7 @@ type emitOptions struct {
 	listenPort, basePort                                                            int
 	allowAllInterfaces, disableAdmin                                                bool
 	overrides                                                                       processorOverrides
+	processorTLS                                                                    processorTLSFlags
 }
 
 // emitOutcome is what reportEmit prints: the plans, the emitter's output and
@@ -90,7 +93,7 @@ type emitOutcome struct {
 
 // bindEmitFlags registers the flags of emit.
 func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
-	o := &emitOptions{overrides: processorOverrides{}}
+	o := &emitOptions{overrides: processorOverrides{}, processorTLS: processorTLSFlags{}}
 	fs.StringVar(&o.out, "out", "", "file to write the gateway configuration to (required); it must be absent or a regular file emit wrote before (a symbolic link, directory, device, socket or named pipe is refused before anything is opened, so are the catalog database, its -wal and -shm siblings and the gateway binary, and so is an existing file whose first lines are not emit's header; a file the gateway rewrote keeps the header and is replaced) and is never read for addresses, since processor addresses come from the catalog; always written with mode 0600, so chown it to the gateway's user")
 	fs.IntVar(&o.listenPort, "listen-port", defaultListenPort, "port the gateway binds")
 	fs.StringVar(&o.bindAddress, "bind-address", emit.DefaultBindAddress, "IPv4 or IPv6 literal the gateway binds --listen-port on; an address other hosts can reach exposes every route to the network with the processor as its only guard, and a wildcard (0.0.0.0 or ::) also needs --allow-all-interfaces")
@@ -101,6 +104,7 @@ func bindEmitFlags(fs *flag.FlagSet, getenv func(string) string) *emitOptions {
 	fs.StringVar(&o.readinessAddr, "readiness-addr", "", "host:port of the gateway's readiness probe, config.readinessAddr (default "+emit.DefaultReadinessAddr+")")
 	fs.IntVar(&o.basePort, "processor-base-port", defaultProcessorBasePort, "on a first emit the i-th server in name order gets processor "+processorHost+":(base+i); every address is recorded in the catalog once the file is written (server list shows it, audit entry server.processor_set) and every later emit keeps it, giving a new server the next free port above the recorded ones, so adding a server moves nobody; the file at --out is never read for addresses")
 	fs.Var(o.overrides, "processor", "NAME=HOST:PORT processor address for one server (repeatable); it replaces the address the catalog records for that server and is kept by later emits; a host other than loopback is warned about, and the printed serve command then carries "+allowNonLoopbackFlag+", which serve accepts only together with --secret-env or the explicit --insecure-no-secret")
+	fs.Var(o.processorTLS, "processor-tls", processorTLSGrammar+" puts the gateway's backendTLS block on one server's processor entry (repeatable): the gateway then dials that processor with TLS, presents the client certificate at cert and key, verifies the processor's certificate against the root bundle and under hostname (the DNS name of the certificate serve --tls-cert presents; an IP literal is refused); the three paths are files on the gateway host, absolute, and are never opened by emit, except that --gateway-binary makes the gateway read them, so they must then exist on this host; nothing of the block is recorded in the catalog, so give the flag on every emit, as --secret-env, or the next file dials the processor in plaintext, which a processor started with --tls-cert refuses; the printed serve command then carries placeholders for --tls-cert, --tls-key and --tls-client-ca, and with --tls-client-ca the processor accepts a non-loopback listener without --secret-env (owner decision O-2)")
 	fs.StringVar(&o.secretEnv, "secret-env", "", "environment variable holding a shared secret (16 to 256 printable ASCII characters) written into every processor entry")
 	fs.StringVar(&o.gatewayBinary, "gateway-binary", getenv(envGatewayBinary), "agentgateway binary (env "+envGatewayBinary+"); when set, the file is staged under a temporary name, checked with <binary> -f FILE "+validateOnlyFlag+" and renamed into place only if the gateway accepts it; a refusal exits 1, prints the gateway's message, leaves no file and records no processor address")
 	return o
@@ -185,6 +189,10 @@ func runEmit(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	plans, err = attachProcessorTLS(c, plans, o.processorTLS)
+	if err != nil {
+		return err
+	}
 	result, err := emit.AgentGateway(o.input(plans, secret))
 	if err != nil {
 		return err
@@ -214,11 +222,11 @@ func checkBindAddress(c *command, addr string, allowAllInterfaces bool) error {
 }
 
 // emitServers is the emitter's view of the plans: one Server per route, every
-// one carrying the same secret.
+// one carrying the same secret and its own TLS block, if any.
 func emitServers(plans []emitPlan, secret string) []emit.Server {
 	servers := make([]emit.Server, 0, len(plans))
 	for _, p := range plans {
-		servers = append(servers, emit.Server{Name: p.name, URL: p.url, ProcessorAddr: p.processor, Secret: secret, ApprovedTools: p.tools})
+		servers = append(servers, emit.Server{Name: p.name, URL: p.url, ProcessorAddr: p.processor, Secret: secret, TLS: p.tls, ApprovedTools: p.tools})
 	}
 	return servers
 }
@@ -310,7 +318,10 @@ func (a *app) printEmitWarnings(o *emitOptions, out emitOutcome) {
 // target is the server name because that is the backend name the emitted
 // config gives the route; the secret is referenced by variable, never by
 // value. A processor address other hosts can reach gets the flag serve needs
-// to accept it; serve still refuses it without a secret, by design.
+// to accept it; serve still refuses it without a secret or a client
+// certificate authority, by design. A server whose entry carries the
+// backendTLS block gets the three TLS flags with placeholders, since the
+// processor's files live on its own host (D19).
 func (a *app) serveCommand(p emitPlan, secretEnv string) string {
 	db := a.dbPath()
 	if abs, err := filepath.Abs(db); err == nil {
@@ -322,6 +333,9 @@ func (a *app) serveCommand(p emitPlan, secretEnv string) string {
 	}
 	if secretEnv != "" {
 		cmd += " --secret-env " + shellWord(secretEnv)
+	}
+	if p.tls != nil {
+		cmd += tlsServePlaceholders
 	}
 	return cmd
 }
