@@ -18,7 +18,8 @@ make lint                                             # gofmt, go vet (also -tag
 make vuln                                             # govulncheck ./... (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 make e2e                                              # go test -tags e2e -count=1 -timeout 900s -v ./e2e against the real gateway
 make demo                                             # demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
-make release-check                                    # goreleaser check; the release notes name the schema version the code writes; the notices script's platform list equals goreleaser's goos x goarch; the checksums are signed as a bundle
+make release-guards                                   # go.mod has no replace or exclude; CHANGELOG.md has an Unreleased section and, with VERSION=x.y.z, the entry for that version
+make release-check                                    # release-guards, then goreleaser check; the release notes name the schema version the code writes; the notices script's platform list equals goreleaser's goos x goarch; the checksums are signed as a bundle
 make release-snapshot                                 # goreleaser snapshot into dist/ (gitignored): four archives, SBOMs, checksums; unsigned
 go build -o bin/ ./cmd/...                            # binaries; bin/ is gitignored
 go test -short -race -count=1 -timeout 900s ./...     # skips six tests, named below
@@ -55,10 +56,10 @@ would otherwise hide the skip).
 
 The seam scripts and the end-to-end test need the v1.6.0 release binary at `.cache/agentgateway-darwin-arm64` (gitignored; `TOOLWARRANT_GATEWAY_BIN` overrides the path) and the seam scripts need the four seam binaries in `bin/`. Outside the seam scripts and `make e2e` (which starts the gateway on loopback ports it picks itself and stops it) the gateway binary may only be run with `--validate-only`. The e2e scenarios share one stack and depend on each other's end state, so run the whole `TestEndToEnd`, not one subtest. Anything over two minutes runs in the background with output to a file.
 
-The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint (gofmt, go vet, golangci-lint, and actionlint on both workflow files), vet and build, the short test suite under `-race`, the three packages whose tests `-short` skips (`internal/textdiff`, `internal/catalog`, `internal/processor`) in full (both test jobs run `go test` through gotestsum v1.13.0, one line per package and the failed tests' output at the end, and write the tests slower than one second to the step summary), govulncheck, gitleaks, the notices check, the release configuration check (`make release-check`), and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only, against the linux release binary checked against the recorded checksum; it passed on 2026-10-12. Run the documentation checks by hand with:
+The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint (gofmt, go vet, golangci-lint, and actionlint on both workflow files), vet and build, the short test suite under `-race`, the three packages whose tests `-short` skips (`internal/textdiff`, `internal/catalog`, `internal/processor`) in full (both test jobs run `go test` through gotestsum v1.13.0, one line per package and the failed tests' output at the end, and write the tests slower than one second to the step summary), govulncheck, gitleaks, the notices check, the release configuration check (`make release-check`), and the documentation checks (every test name cited in README.md, SECURITY.md, CONTRIBUTING.md, CLAUDE.md, CHANGELOG.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only, against the linux release binary checked against the recorded checksum; it passed on 2026-10-12. Run the documentation checks by hand with:
 
 ```sh
-for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sort -u); do grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.cache --exclude-dir=.git . || echo "missing test: $n"; done
+for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CONTRIBUTING.md CLAUDE.md CHANGELOG.md docs/*.md seam/RESULTS.md | sort -u); do grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.cache --exclude-dir=.git . || echo "missing test: $n"; done
 ```
 
 ## Repository layout
@@ -79,11 +80,13 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - `internal/strictjson`: rejects JSON objects that two parsers could read differently.
 - `internal/mcpwire`: pure helpers over raw MCP JSON-RPC payloads; the entry count of a `tools/list` page is taken by a streaming decoder that stops at the cap before the array is materialised.
 - `internal/shortpolicy`: no code, only the test that enforces the `-short` policy above against every Go file of the module, CLAUDE.md and the `test-full` command of ci.yml.
+- `internal/releaseguards`: no code, only the tests of the three guards `make release-check` runs first (`make release-guards`), run against scratch copies of the Makefile, go.mod and CHANGELOG.md.
 - `internal/extmcpv1`: generated ExtMCP stubs (package `api`) from `third_party/agentgateway/ext_mcp.proto`.
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack; `e2e/testdata/gateway_tool_keys.json` is the L2 golden of the key paths the gateway drops, keeps and adds, which scenario L compares exactly); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
 - `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D17), `docs/operations.md`.
+- `CHANGELOG.md`: one prose line per change an operator can see, under `## [Unreleased]` until the release commit moves the lines under `## [x.y.z] - YYYY-MM-DD` (keep a changelog; `make release-check` refuses a tree without the Unreleased heading and, with `VERSION=x.y.z`, without that version's heading).
 - `.github/workflows/ci.yml`: the CI workflow; `.github/workflows/release.yml`: the release workflow on `v*` tags, gated on a successful `ci` run of the tagged commit; `.goreleaser.yaml`: what a tag builds, signs and publishes as a draft (D16).
 
 ## Rules
@@ -95,6 +98,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
 - Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D17 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`, `cmd/toolwarrant/livetls.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
+- A change an operator can see adds one prose line under `## [Unreleased]` in `CHANGELOG.md`, naming the test that proves it; the release commit moves those lines under the version's heading and leaves an empty `## [Unreleased]` above them.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.
 - Test files must not contain literal invisible or format characters: build them at run time or use `\u` escapes, then check with `grep -P`.
 - Never edit `go.mod`, `go.sum`, `.gitignore`, `.cache/`, `seam/` or `third_party/` as part of an unrelated change; `seam/RESULTS.md` is only appended to or corrected, measured results are never removed.

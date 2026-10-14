@@ -9,7 +9,9 @@
 #   make vuln              govulncheck (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 #   make e2e               the end-to-end test against the real agentgateway v1.6.0 binary
 #   make demo              demo/run.sh: builds, runs the e2e test, keeps demo/last-run.log
-#   make release-check     goreleaser check, and the release notes name the schema version the code writes
+#   make release-guards    go.mod has no replace or exclude directive, CHANGELOG.md has an Unreleased section and,
+#                          with VERSION=x.y.z, the entry for that version exists (release-check runs these first)
+#   make release-check     release-guards, goreleaser check, and the release notes name the schema version the code writes
 #   make release-snapshot  goreleaser release --snapshot: the four archives, SBOMs and checksums
 #                          into dist/ without signing or publishing (dist/ is gitignored)
 
@@ -19,7 +21,7 @@ export GOFLAGS = -mod=readonly
 # that the timing table is measured on exactly what make test runs.
 GO_TEST_ARGS = -race -count=1 -timeout 1500s -cover ./...
 
-.PHONY: build test test-timings lint vuln e2e demo release-check release-snapshot
+.PHONY: build test test-timings lint vuln e2e demo release-guards release-check release-snapshot
 
 build:
 	go build ./... && go vet ./...
@@ -52,7 +54,26 @@ e2e:
 demo:
 	demo/run.sh
 
-release-check:
+# The guards release-check runs before goreleaser check, in their own target
+# so that internal/releaseguards can run them against scratch copies of the
+# Makefile, go.mod and CHANGELOG.md without goreleaser on PATH. A replace or
+# exclude directive would build the release from a module nobody else can
+# fetch (a retract is allowed: it is how a bad tag is withdrawn, CONTRIBUTING.md),
+# and leading blanks count, since the go.mod parser skips them; a changelog
+# without an Unreleased heading has nowhere for the next change to go; and the
+# release commit, checked with make release-check VERSION=x.y.z, must carry the
+# heading whose lines the tag publishes. VERSION is read from the environment
+# make exports a command-line variable to, never spliced into the shell text,
+# and must look like a version before it is compared. The go.mod grep is
+# judged by its exit status, not its truth value: 1 is no match, and anything
+# else (2: no go.mod, or one grep cannot read) is a refusal, since a guard
+# that never read the file has checked nothing.
+release-guards:
+	@grep -qE '^[[:space:]]*(replace|exclude)([[:space:]]|\()' go.mod; s=$$?; if [ "$$s" -eq 0 ]; then echo "go.mod carries a replace or exclude directive; a release builds from published modules only (a retract is allowed)"; exit 1; elif [ "$$s" -ne 1 ]; then echo "go.mod could not be read (grep exited $$s); the release guards need the module's go.mod beside the Makefile"; exit 1; fi; echo "go.mod carries no replace or exclude directive"
+	@grep -qxF '## [Unreleased]' CHANGELOG.md || { echo "CHANGELOG.md has no '## [Unreleased]' heading; a change an operator can see adds its line under one (CONTRIBUTING.md)"; exit 1; }; echo "CHANGELOG.md has an Unreleased section"
+	@if [ -z "$$VERSION" ]; then echo "VERSION not set; the release entry is checked by make release-check VERSION=x.y.z"; exit 0; fi; case "$$VERSION" in *[!0-9A-Za-z.+-]*) echo "VERSION must be the version as the changelog heading spells it, such as 0.2.0 or 0.2.0-rc.1, without the v"; exit 1;; esac; grep -E '^## \[[^]]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$$' CHANGELOG.md | grep -qF "## [$$VERSION] - " || { echo "CHANGELOG.md has no '## [$$VERSION] - YYYY-MM-DD' heading; the release commit adds it above the Unreleased lines it moves (pass VERSION without the v)"; exit 1; }; echo "CHANGELOG.md has the entry for $$VERSION"
+
+release-check: release-guards
 	goreleaser check
 	@want="$$(sed -n 's/^const schemaVersion = \([0-9]*\).*/\1/p' internal/catalog/schema.go)"; got="$$(sed -n 's/^ *v\([0-9]*\); a catalog from an earlier build.*/\1/p' .goreleaser.yaml)"; if [ -z "$$want" ] || [ "$$want" != "$$got" ]; then echo "release notes name schema v$$got but internal/catalog/schema.go writes v$$want"; exit 1; fi; echo "release notes name schema v$$got, as the code writes"
 	@os="$$(awk '/^builds:/{b=1} /^archives:/{b=0} b && /^ *goos:/{m="os"; next} b && /^ *goarch:/{m="arch"; next} b && m != "" && /^ *- [a-z0-9]+ *$$/{print m, $$2; next} b && /^ *[a-z_]+:/{m=""}' .goreleaser.yaml)"; want="$$(for o in $$(echo "$$os" | awk '$$1=="os"{print $$2}'); do for a in $$(echo "$$os" | awk '$$1=="arch"{print $$2}'); do echo "$$o/$$a"; done; done | sort | tr '\n' ' ')"; got="$$(sed -n 's/^release_platforms="\(.*\)"/\1/p' scripts/gen-third-party-notices.sh | tr ' ' '\n' | sort | tr '\n' ' ')"; if [ -z "$$want" ] || [ "$$want" != "$$got" ]; then echo "goreleaser builds [$$want] but scripts/gen-third-party-notices.sh lists [$$got]; release_platforms must equal the goos x goarch of .goreleaser.yaml or the notices miss a platform's modules"; exit 1; fi; echo "release platforms agree: $$want"
