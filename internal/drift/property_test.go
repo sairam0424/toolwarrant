@@ -220,6 +220,7 @@ func TestProperty_compareSwapsAddedAndRemovedKinds(t *testing.T) {
 		if (len(forward.Findings) == 0) != (len(back.Findings) == 0) {
 			t.Fatal("one direction has findings and the other none")
 		}
+		checkDifferImpliesFinding(t, from, to, forward)
 	})
 }
 
@@ -311,6 +312,7 @@ func TestProperty_compareNeverPanicsOnRandomJSON(t *testing.T) {
 			return
 		}
 		checkReport(t, r)
+		checkDifferImpliesFinding(t, from, to, r)
 		if same, err := Compare(from, from); err != nil || len(same.Findings) != 0 {
 			t.Fatalf("Compare(x, x) = %+v, %v", same.Findings, err)
 		}

@@ -52,14 +52,16 @@ func (c *classifier) compareInputSchema(path string, f, t value) {
 // required-parameter-added or optional-parameter-added by whether the new
 // required list names it; one present on both is handed to compareParameter.
 // A properties member that is present but not an object is one
-// input-schema-changed finding and reads as empty. The required list is then
-// checked for differences the parameters did not explain.
+// input-schema-changed finding and reads as empty, and so is an empty object
+// that appeared or vanished, since no parameter would explain it. The required
+// list is then checked for differences the parameters did not explain.
 func (c *classifier) compareParameters(path string, fs, ts map[string]any) {
 	fp, tp := memberOf(fs, keyProperties), memberOf(ts, keyProperties)
 	fProps, fok := fp.object()
 	tProps, tok := tp.object()
 	propsPath := path + segment(keyProperties)
-	if (fp.present && !fok) || (tp.present && !tok) {
+	malformed := (fp.present && !fok) || (tp.present && !tok)
+	if malformed || (differ(fp, tp) && len(fProps)+len(tProps) == 0) {
 		c.add(InputSchemaChanged, propsPath, presence(fp, tp))
 	}
 	fReq, tReq := requiredSet(fs), requiredSet(ts)
@@ -84,14 +86,20 @@ func (c *classifier) compareParameters(path string, fs, ts map[string]any) {
 }
 
 // compareParameter grades one parameter present on both sides: a different
-// type is parameter-type-changed, newly required is parameter-made-required,
-// made optional is input-schema-changed, and any other difference (an enum, a
-// constraint, a nested schema) is input-schema-changed. It reports whether
-// the required list changed for this parameter.
+// type is parameter-type-changed, a type member that changed under one
+// rendering (two values outside the vocabulary, a type array reordered) is
+// input-schema-changed at the type member, newly required is
+// parameter-made-required, made optional is input-schema-changed, and any
+// other difference (an enum, a constraint, a nested schema) is
+// input-schema-changed. It reports whether the required list changed for this
+// parameter.
 func (c *classifier) compareParameter(p string, fv, tv value, fReq, tReq bool) bool {
 	ft, tt := typeOf(fv), typeOf(tv)
-	if ft != tt {
+	switch {
+	case ft != tt:
 		c.add(ParameterTypeChanged, p+segment(keyType), ft+" -> "+tt)
+	case typeMemberDiffers(fv, tv):
+		c.add(InputSchemaChanged, p+segment(keyType), "changed")
 	}
 	switch {
 	case !fReq && tReq:
@@ -103,6 +111,17 @@ func (c *classifier) compareParameter(p string, fv, tv value, fReq, tReq bool) b
 		c.add(InputSchemaChanged, p, "changed")
 	}
 	return fReq != tReq
+}
+
+// typeMemberDiffers reports whether two parameter objects carry type members
+// that differ although typeOf renders them alike: two values outside the JSON
+// Schema vocabulary, or a type array reordered. sameExceptType sets the type
+// member aside, so without this a change of that shape would grade none while
+// the documents differ.
+func typeMemberDiffers(fv, tv value) bool {
+	fo, fok := fv.object()
+	to, tok := tv.object()
+	return fok && tok && differ(memberOf(fo, keyType), memberOf(to, keyType))
 }
 
 // sameExceptType reports whether two parameter schemas are equal once their

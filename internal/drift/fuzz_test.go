@@ -1,6 +1,7 @@
 package drift
 
 import (
+	"reflect"
 	"testing"
 	"unicode/utf8"
 
@@ -43,6 +44,25 @@ func checkReport(t failer, r Report) {
 	}
 }
 
+// checkDifferImpliesFinding pins the promise that two documents the classifier
+// reads as different never grade none and two it reads as equal never carry a
+// finding: the decoded values (numbers as their text, as Compare reads them)
+// are equal exactly when the report is empty.
+func checkDifferImpliesFinding(t failer, from, to []byte, r Report) {
+	t.Helper()
+	fromDoc, err := decodeObject(from)
+	if err != nil {
+		t.Fatalf("from document: %v", err)
+	}
+	toDoc, err := decodeObject(to)
+	if err != nil {
+		t.Fatalf("to document: %v", err)
+	}
+	if equal := reflect.DeepEqual(fromDoc, toDoc); equal != (len(r.Findings) == 0) {
+		t.Fatalf("documents equal: %v, findings: %+v", equal, r.Findings)
+	}
+}
+
 func FuzzCompare(f *testing.F) {
 	f.Add([]byte(baseTool), []byte(baseTool))
 	f.Add([]byte(baseTool), []byte(`{"name":"move","inputSchema":{"properties":{"path":{"type":"integer"}},"required":["path","x"]}}`))
@@ -63,6 +83,7 @@ func FuzzCompare(f *testing.F) {
 			return
 		}
 		checkReport(t, r)
+		checkDifferImpliesFinding(t, from, to, r)
 		same, err := Compare(from, from)
 		if err != nil || len(same.Findings) != 0 {
 			t.Fatalf("Compare(x, x) = %+v, %v", same.Findings, err)

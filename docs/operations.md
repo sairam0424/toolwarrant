@@ -1214,10 +1214,21 @@ nothing here approves, hides or serves anything.
   rug pull of threat-model row 3 is never INFO), `optional-parameter-added`,
   `input-schema-changed` (an enum, a constraint, a nested schema, a parameter
   made optional, a `required` list that changed in a way no parameter
-  explains), `output-schema-changed`, `annotations-changed` (a hint tightened
-  included), `meta-changed` (hosts act on `_meta`; agentgateway acts on
-  `_meta.ui`), `other` (a top-level key toolwarrant does not know).
+  explains, a parameter `type` that changed between two values outside the
+  JSON Schema vocabulary or whose type array was reordered, an empty
+  `properties` object that appeared or vanished), `output-schema-changed`,
+  `annotations-changed` (a hint tightened included), `meta-changed` (hosts act
+  on `_meta`; agentgateway acts on `_meta.ui`), `other` (a top-level key
+  toolwarrant does not know).
 - INFO is display only: `title-changed`, `icons-changed`.
+
+Two definitions that differ never grade `none`: every member that differs
+yields at least one finding, so `drift: none` never stands above a diff that
+shows a change (`TestCompare_TypeChangesOutsideTheVocabularyAreWarning`,
+`TestCompare_EmptyPropertiesObjectAddedOrRemovedIsWarning`;
+`TestProperty_everyMemberChangedOnItsOwnYieldsAFinding`,
+`TestProperty_compareNeverPanicsOnRandomJSON` and `FuzzCompare` hold the two
+decoded documents equal exactly when the report is empty).
 
 `diff SERVER TOOL` prints the line after the `to:` header, the kinds ordered by
 grade and then by name; the run of `TestDiffPrintsTheDriftClassification`
