@@ -7,7 +7,9 @@ and the versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 A pull request adds its line under Unreleased; the release commit moves those
 lines under a `## [x.y.z] - YYYY-MM-DD` heading and leaves an empty
 `## [Unreleased]` above them (CONTRIBUTING.md, Before you open a pull request;
-docs/operations.md, Releasing).
+docs/operations.md, Releasing). `make release-check` refuses a tree without
+the Unreleased heading and, run as `make release-check VERSION=x.y.z`, one
+whose changelog has no heading for that version.
 
 ## [Unreleased]
 
@@ -19,6 +21,7 @@ docs/operations.md, Releasing).
 
 ### Changed
 
+- `make release-check`, and with it the `ci` release-check job on every pull request, refuses a `go.mod` that carries a `replace` or `exclude` directive (a `retract` is allowed), a `CHANGELOG.md` without its `## [Unreleased]` heading and, run as `make release-check VERSION=x.y.z`, a changelog without the `## [x.y.z] - YYYY-MM-DD` heading for the version being released (`TestReleaseGuards_refuseAReplaceOrExcludeDirectiveInGoMod`, `TestReleaseGuards_refuseAChangelogWithoutAnUnreleasedSection`, `TestReleaseGuards_refuseAVersionWithoutADatedChangelogEntry`).
 - SECURITY.md promises an acknowledgement of a vulnerability report within two days, and a confirmed problem still open fourteen days after the report gets a dated note in the advisory saying why and when (owner decision O-4; the policy said seven days before).
 - A tag is never moved or deleted; a bad release is a new tag plus a `retract vX.Y.Z // reason` directive in `go.mod` (SECURITY.md Release integrity, CONTRIBUTING.md Branches and commits, docs/operations.md Releasing). Release candidates and their releases are kept rather than deleted before the final tag.
 - SECURITY.md names the two public logs that anchor a release, the Rekor entry inside the signature bundle and sum.golang.org's record of the module at each tag, and gives the procedure that rebuilds a release byte for byte from a clean clone at the tag; docs/operations.md Releasing fetches each new tag through the module proxy right after publishing, checks that the record exists, and records the repository settings as they stand (rulesets, secret scanning, immutable releases still to be enabled).
