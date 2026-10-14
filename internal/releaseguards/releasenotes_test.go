@@ -212,7 +212,7 @@ func TestReleaseNotes_everyReleasedVersionInTheTreeHasNotes(t *testing.T) {
 // the wiring the notes depend on. release.yml runs the script into the
 // runner's temp directory and passes that file as --release-notes; it
 // attests the checksums file with attestations: write. .goreleaser.yaml has
-// no changelog.disable line: goreleaser v2.18.2 reads --release-notes inside
+// no changelog block at all: goreleaser v2.18.2 reads --release-notes inside
 // the changelog pipe, and a disabled pipe would publish the header and the
 // footer with nothing between them.
 func TestReleaseNotes_theWorkflowHandsTheFileToGoreleaserAndKeepsThePipe(t *testing.T) {
@@ -232,8 +232,8 @@ func TestReleaseNotes_theWorkflowHandsTheFileToGoreleaserAndKeepsThePipe(t *test
 		}
 	}
 	config := readFile(t, filepath.Join(root, goreleaserConfig))
-	if regexp.MustCompile(`(?m)^\s*disable:`).MatchString(config) {
-		t.Errorf("%s disables a pipe; changelog.disable skips the pipe that reads --release-notes", goreleaserConfig)
+	if regexp.MustCompile(`(?m)^changelog:`).MatchString(config) {
+		t.Errorf("%s has a changelog block; the notes come from --release-notes and changelog.disable would skip the pipe that reads it", goreleaserConfig)
 	}
 	if strings.Contains(config, "use: git") {
 		t.Errorf("%s still lists the commits by type (use: git); the notes come from CHANGELOG.md", goreleaserConfig)

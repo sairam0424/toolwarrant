@@ -22,6 +22,6 @@
 // The script runs against scratch changelogs written by the tests and once
 // against the tree's own CHANGELOG.md for every released version; one more
 // test reads release.yml and .goreleaser.yaml to pin that the workflow hands
-// the file to goreleaser and that no changelog.disable line skips the pipe
-// that reads it.
+// the file to goreleaser and that .goreleaser.yaml has no changelog block,
+// since that block's disable setting would skip the pipe that reads the file.
 package releaseguards
