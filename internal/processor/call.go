@@ -182,7 +182,9 @@ func (s *Server) listingEvidence(name, approved string, now time.Time) (string, 
 
 // crawlFresh reports whether the latest complete crawl of the snapshot is
 // recent enough for its word to carry a call on its own: always while
-// MaxCrawlAge is zero, otherwise when it completed within that age. A
+// MaxCrawlAge is zero, otherwise when it started within that age (CrawledAt
+// is the latest complete crawl's start, so a long crawl looks older than
+// its completion). A
 // snapshot with no complete crawl (zero CrawledAt) is never fresh.
 func (s *Server) crawlFresh(snap catalog.Snapshot, now time.Time) bool {
 	if s.maxCrawlAge == 0 {
