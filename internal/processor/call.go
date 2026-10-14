@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	api "github.com/sairam0424/toolwarrant/internal/extmcpv1"
@@ -66,9 +67,14 @@ func (s *Server) refuseCall(ctx context.Context, hooked bool, d *denial) *api.Mc
 
 // denyCall counts and logs a refused tools/call and builds its result. name is
 // "" when the request was refused before its tool name could be read; the
-// reason then carries only the cause class.
+// reason then carries only the cause class. A denial for a crawl older than
+// MaxCrawlAge is counted a second time in Stats.CallsStale, so the stats line
+// tells a stopped crawler from drift.
 func (s *Server) denyCall(ctx context.Context, code api.AuthorizationError_Code, name string, c cause, err error) *api.McpRequestResult {
 	s.stats.callsDenied.Add(1)
+	if c == causeStale {
+		s.stats.callsStale.Add(1)
+	}
 	attrs := []any{"server", s.server, "cause", string(c)}
 	if name != "" {
 		attrs = append(attrs, "tool", quoteName(name))
@@ -101,21 +107,25 @@ func callName(params []byte) (string, error) {
 
 // judgeCall applies the call rule to one tool name and returns the cause class
 // when the call must be denied. The evidence is what the gateway last listed
-// for the tool (observed) and what the latest crawl saw (LastSeen):
+// for the tool (observed, aged by listingEvidence) and what the latest crawl
+// saw (LastSeen, aged by crawlFresh):
 //
 //   - not in the catalog, or in a state that can never serve: not approved;
 //   - any present evidence other than the approved digest (including the
-//     conflict marker a bad page leaves behind): changed since approval;
+//     conflict marker a bad page leaves behind): changed since approval,
+//     however old that evidence is;
 //   - no listing evidence after the observed table has had to drop some
 //     (Stats.EvidenceDropped): not yet verified, because the missing entry may
 //     be the contradiction that was lost, until a listing records the tool;
 //   - a LastSeen that is not a digest, such as the catalog's "unusable"
 //     marker: the crawl could not verify the live definition;
+//   - a LastSeen equal to the approval from a crawl older than MaxCrawlAge,
+//     with no fresh agreeing listing: crawl evidence too old;
 //   - no evidence at all: not yet verified.
 //
 // A LastSeen of "" (absent at the last crawl) is not a contradiction once the
 // gateway itself has listed the approved definition, so observed alone allows
-// the call then.
+// the call then. The clock is read once per call.
 func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	policy, inCatalog := snap.Tools[name]
 	// snap.Serves is the single definition of "may be served": asking it with
@@ -125,7 +135,8 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	if !inCatalog || !snap.Serves(name, policy.Approved) {
 		return causeNotApproved, false
 	}
-	observed, listed := s.observedDigest(name)
+	now := s.now()
+	observed, listed := s.listingEvidence(name, policy.Approved, now)
 	switch {
 	case listed && observed != policy.Approved:
 		return causeChanged, false
@@ -134,7 +145,10 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	}
 	switch {
 	case policy.LastSeen == policy.Approved:
-		return "", true
+		if listed || s.crawlFresh(snap, now) {
+			return "", true
+		}
+		return causeStale, false
 	case policy.LastSeen == "":
 		if listed {
 			return "", true
@@ -145,4 +159,36 @@ func (s *Server) judgeCall(snap catalog.Snapshot, name string) (cause, bool) {
 	default:
 		return causeChanged, false
 	}
+}
+
+// listingEvidence returns what the gateway last listed for name and whether
+// it still counts. Only evidence that agrees with approved ages
+// (MaxEvidenceAge): a digest the gateway listed long ago says nothing about
+// what the upstream serves now, so it must not carry a call on its own. A
+// contradiction, another digest or the conflict marker, is returned whatever
+// its age, because the change it recorded does not go away with time; only a
+// clean page replaces it (D21, closing limit L15). Ageing therefore only ever
+// removes evidence that would allow.
+func (s *Server) listingEvidence(name, approved string, now time.Time) (string, bool) {
+	observed, seenAt, listed := s.observedDigest(name)
+	if !listed {
+		return "", false
+	}
+	if observed == approved && s.maxAge > 0 && now.Sub(seenAt) > s.maxAge {
+		return "", false
+	}
+	return observed, true
+}
+
+// crawlFresh reports whether the latest complete crawl of the snapshot is
+// recent enough for its word to carry a call on its own: always while
+// MaxCrawlAge is zero, otherwise when it started within that age (CrawledAt
+// is the latest complete crawl's start, so a long crawl looks older than
+// its completion). A
+// snapshot with no complete crawl (zero CrawledAt) is never fresh.
+func (s *Server) crawlFresh(snap catalog.Snapshot, now time.Time) bool {
+	if s.maxCrawlAge == 0 {
+		return true
+	}
+	return !snap.CrawledAt.IsZero() && now.Sub(snap.CrawledAt) <= s.maxCrawlAge
 }

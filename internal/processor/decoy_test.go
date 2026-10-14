@@ -94,7 +94,7 @@ func TestCheckResponse_DeniedPageMarksEveryCatalogToolOnIt(t *testing.T) {
 			requireListDenied(t, list(t, s, page), api.AuthorizationError_INVALID)
 			requireCallDenied(t, call(t, s, callReq("add")), "add", causeChanged)
 			for _, catalogTool := range []string{"echo", "add"} {
-				if seen, ok := s.observedDigest(catalogTool); !ok || seen != observedConflict {
+				if seen, _, ok := s.observedDigest(catalogTool); !ok || seen != observedConflict {
 					t.Errorf("evidence for %s after the denied page = %q, %v; want the conflict marker", catalogTool, seen, ok)
 				}
 			}
@@ -159,13 +159,13 @@ func TestCheckResponse_UnreadablePageMarksEveryServableToolOfTheSnapshot(t *test
 
 			requireListDenied(t, list(t, s, page), api.AuthorizationError_INVALID)
 			for _, servable := range []string{"echo", "add"} {
-				if seen, ok := s.observedDigest(servable); !ok || seen != observedConflict {
+				if seen, _, ok := s.observedDigest(servable); !ok || seen != observedConflict {
 					t.Errorf("evidence for %s = %q, %v; want the conflict marker although the page did not name it", servable, seen, ok)
 				}
 				requireCallDenied(t, call(t, s, callReq(servable)), servable, causeChanged)
 			}
 			for _, never := range []string{"pend", "off"} {
-				if seen, ok := s.observedDigest(never); !ok || seen != observedConflict {
+				if seen, _, ok := s.observedDigest(never); !ok || seen != observedConflict {
 					t.Errorf("evidence for %s = %q, %v; want the conflict marker on every catalog tool (D15)", never, seen, ok)
 				}
 				requireCallDenied(t, call(t, s, callReq(never)), never, causeNotApproved)

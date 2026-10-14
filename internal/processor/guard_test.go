@@ -73,7 +73,7 @@ func TestAdmit_HooksAboutAnotherBackendAreDenied(t *testing.T) {
 			if g, sn := src.calls(); g != 0 || sn != 0 {
 				t.Errorf("a hook about another backend read the catalog (%d generation, %d snapshot calls)", g, sn)
 			}
-			if _, ok := s.observedDigest("echo"); ok {
+			if _, _, ok := s.observedDigest("echo"); ok {
 				t.Error("a list for another backend left evidence behind")
 			}
 		})
@@ -245,7 +245,7 @@ func TestAdmit_SharedSecretIsRequiredOnEveryHook(t *testing.T) {
 			if g, sn := src.calls(); g != 0 || sn != 0 {
 				t.Errorf("an unauthenticated hook read the catalog (%d generation, %d snapshot calls)", g, sn)
 			}
-			if _, ok := s.observedDigest("echo"); ok {
+			if _, _, ok := s.observedDigest("echo"); ok {
 				t.Error("an unauthenticated list left evidence behind")
 			}
 		})

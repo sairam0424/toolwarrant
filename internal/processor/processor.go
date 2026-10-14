@@ -115,10 +115,26 @@ type Config struct {
 	// did.
 	TLS *tls.Config
 	// MaxEvidenceAge bounds how long a digest seen in a tools/list response
-	// counts as evidence for a tools/call. Zero means it never expires. The
-	// crawl side of the evidence (LastSeen) carries no timestamp yet and is
-	// not aged here.
+	// carries a tools/call on its own. Zero means it never expires. Only
+	// evidence that agrees with the approval ages: a digest the gateway listed
+	// long ago says nothing about what the upstream serves now, so it must not
+	// allow a call by itself. A contradiction (another digest, or the conflict
+	// marker a bad page leaves) never ages and keeps denying until a clean
+	// page replaces it, because its age does not undo the change it recorded
+	// (owner decision O-7, D21; this closes limit L15). The crawl side of the
+	// evidence is aged by MaxCrawlAge, not here.
 	MaxEvidenceAge time.Duration
+	// MaxCrawlAge bounds how long the latest complete crawl's word (LastSeen
+	// equal to the approved digest, Snapshot.CrawledAt) carries a tools/call
+	// on its own. Zero, the default, means it always does, as every version
+	// before: the gap of limit L1 is then bounded by the crawl cadence alone.
+	// With a positive value a call whose only allowing evidence is a crawl
+	// older than this is denied as "crawl evidence too old" (Stats.CallsStale)
+	// until a fresh listing records the approved digest or a crawl completes;
+	// a server with no complete crawl has no fresh crawl. It bounds L1 when
+	// crawls stop; it does not shorten the gap below the cadence. A listing
+	// contradiction still denies as changed whatever the crawl's age.
+	MaxCrawlAge time.Duration
 }
 
 // Stats are monotonically increasing counters, read with Server.Stats.
@@ -155,6 +171,11 @@ type Stats struct {
 	CallsAllowed uint64
 	// CallsDenied counts tools/call requests refused for any reason.
 	CallsDenied uint64
+	// CallsStale counts the CallsDenied refused because the only evidence
+	// that would have allowed the call was a crawl older than
+	// Config.MaxCrawlAge (the "crawl evidence too old" cause). Zero while
+	// MaxCrawlAge is zero.
+	CallsStale uint64
 	// WrongBackend counts hooks denied because service_names did not name
 	// exactly the configured Target.
 	WrongBackend uint64
@@ -185,6 +206,7 @@ type counters struct {
 	toolsUnverified atomic.Uint64
 	callsAllowed    atomic.Uint64
 	callsDenied     atomic.Uint64
+	callsStale      atomic.Uint64
 	wrongBackend    atomic.Uint64
 	unauthenticated atomic.Uint64
 	throttled       atomic.Uint64
@@ -207,7 +229,10 @@ type Server struct {
 	tlsConf    *tls.Config
 	log        *slog.Logger
 	maxTracked int
-	maxAge     time.Duration
+	// maxAge is Config.MaxEvidenceAge and maxCrawlAge is Config.MaxCrawlAge;
+	// judgeCall reads the clock once per call for both.
+	maxAge      time.Duration
+	maxCrawlAge time.Duration
 	// now is the clock behind evidence ages; tests replace it.
 	now func() time.Time
 
@@ -276,6 +301,7 @@ func New(src Source, cfg Config) *Server {
 		log:         logger,
 		maxTracked:  maxTracked,
 		maxAge:      cfg.MaxEvidenceAge,
+		maxCrawlAge: cfg.MaxCrawlAge,
 		now:         time.Now,
 		observed:    make(map[string]observation),
 		digests:     newDigestCache(digestCacheEntries),
@@ -296,6 +322,7 @@ func (s *Server) Stats() Stats {
 		ToolsUnverified: s.stats.toolsUnverified.Load(),
 		CallsAllowed:    s.stats.callsAllowed.Load(),
 		CallsDenied:     s.stats.callsDenied.Load(),
+		CallsStale:      s.stats.callsStale.Load(),
 		WrongBackend:    s.stats.wrongBackend.Load(),
 		Unauthenticated: s.stats.unauthenticated.Load(),
 		Throttled:       s.stats.throttled.Load(),
