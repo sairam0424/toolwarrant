@@ -13,6 +13,8 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
 ### Added
 
 - `toolwarrant version` prints the module version Go embeds when the binary was built with `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z`, instead of `dev`; release archives are unchanged (`TestVersionFallsBackToTheModuleVersion`).
@@ -55,6 +57,7 @@ whose changelog has no heading for that version.
 
 First release. toolwarrant for MCP is a control plane in front of agentgateway v1.6.0: it crawls upstream MCP servers, stores every tool definition as an immutable version identified by the SHA-256 of its RFC 8785 canonical JSON, lets a named person approve one exact digest, emits the gateway configuration and enforces the approval at the gateway as an ExtMCP processor in strict mode, so that a tool is served only while its live definition hashes to the approved digest. Nothing is served until approved and a crawl never approves anything. The catalog is an SQLite file at schema v6 with a hash-chained audit log. The release carries the `toolwarrant` binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64, built from the tagged commit with CGO disabled and `-trimpath`, one SPDX SBOM beside each archive, and a checksums file signed keyless with cosign by the release workflow (docs/decisions.md D16; verification in SECURITY.md, Release integrity).
 
-[Unreleased]: https://github.com/sairam0424/toolwarrant/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/sairam0424/toolwarrant/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/sairam0424/toolwarrant/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/sairam0424/toolwarrant/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sairam0424/toolwarrant/releases/tag/v0.1.0
