@@ -33,11 +33,21 @@ make e2e      # needs the agentgateway v1.6.0 binary at .cache/ (README, Quickst
 
 - Every behaviour change has a test, `go test -race` passes on the packages you
   touched, and a bug fix carries a regression test that fails on the old code.
+- A change an operator can see adds one line of prose under `## [Unreleased]`
+  in [CHANGELOG.md](CHANGELOG.md), naming the test that proves it (a change to
+  a document alone names the document). The release commit moves those lines
+  under `## [x.y.z] - YYYY-MM-DD` and leaves an empty `## [Unreleased]` above
+  them; `make release-check` fails without that heading and, run as
+  `make release-check VERSION=x.y.z`, without the heading for the version
+  (`TestReleaseGuards_refuseAChangelogWithoutAnUnreleasedSection`,
+  `TestReleaseGuards_refuseAVersionWithoutADatedChangelogEntry`).
 - A change to `go.mod` regenerates `THIRD_PARTY_NOTICES.md` with
   `scripts/gen-third-party-notices.sh` in the same commit; the `notices` job
   fails otherwise.
 - A renamed test updates every document that cites it; the `docs` job checks
-  that every cited test name exists and every relative link resolves.
+  that every cited test name exists and every relative link resolves, in
+  README.md, SECURITY.md, CONTRIBUTING.md (this file), CLAUDE.md,
+  CHANGELOG.md, `docs/` and `seam/RESULTS.md`.
 - Test files carry no literal invisible or format characters; build such
   strings at run time or use `\u` escapes.
 - A test may consult `testing.Short()` only when its full run exceeds thirty
