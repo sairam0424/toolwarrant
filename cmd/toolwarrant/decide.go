@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"sort"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
@@ -62,13 +59,16 @@ func (a *app) beginDecision(c *command, fs *flag.FlagSet, args []string) (server
 
 // runApprove approves the exact digest the operator reviewed. How the version
 // differs from the one approved now is printed first (internal/drift; advice
-// only, the approval never depends on it), then the definition is scanned for
-// characters a person cannot see or a terminal would obey; a hidden
-// instruction is exactly what the review exists to catch.
+// only, the approval never depends on it), then the definition is reviewed
+// for text an approver cannot see for what it is: characters a person cannot
+// see or a terminal would obey, words that mix scripts, and values or keys
+// that read the same as the approved version's but are spelt with other code
+// points; a hidden instruction and a swapped parameter name are exactly what
+// the review exists to catch.
 func runApprove(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	hash := fs.String(hashFlagName, "", hashFlagHelp)
-	accept := fs.Bool("accept-suspicious", false, "approve even though the definition holds invisible or terminal-controlling characters")
+	accept := fs.Bool("accept-suspicious", false, "approve even though the definition holds invisible or terminal-controlling characters, mixed-script words or look-alike changes against the approved version")
 	server, tool, actor, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
@@ -96,7 +96,11 @@ func runApprove(a *app, c *command, args []string) (err error) {
 	if err := reportChange(a.stderr, view.Approved, versions, v); err != nil {
 		return err
 	}
-	if err := reviewSuspicious(a.stderr, v.Canonical, *accept); err != nil {
+	approved, err := approvedVersion(view.Approved, versions, v)
+	if err != nil {
+		return err
+	}
+	if err := reviewSuspicious(a.stderr, approved, v, *accept); err != nil {
 		return err
 	}
 	if err := store.Approve(a.ctx, server, tool, digest, actor); err != nil {
@@ -107,23 +111,24 @@ func runApprove(a *app, c *command, args []string) (err error) {
 }
 
 // reviewSuspicious lists every suspicious character in the decoded strings of
-// the definition and refuses unless the operator accepted them explicitly.
-func reviewSuspicious(stderr *stream, canonical []byte, accept bool) error {
-	found, err := scanStrings(canonical)
+// the definition, every word that mixes scripts outside the UTS #39 Highly
+// Restrictive profile and, when another version is approved, every value or
+// key that reads the same as the approved version's but is spelt with other
+// code points (textdiff.LookAlikeChanges), and refuses unless the operator
+// accepted them explicitly with --accept-suspicious.
+func reviewSuspicious(stderr *stream, approved *catalog.VersionView, v catalog.VersionView, accept bool) error {
+	found, err := gatherSuspicion(approved, v)
 	if err != nil {
 		return err
 	}
-	if len(found) == 0 {
+	if found.total() == 0 {
 		return nil
 	}
-	stderr.printf("suspicious characters in this definition:\n")
-	for _, f := range found {
-		stderr.printf("  %s byte %d: U+%04X %s (%s)\n", cell(f.path), f.Offset, f.Rune, f.Name, f.Category)
-	}
+	found.print(stderr)
 	if !accept {
-		return fmt.Errorf("refusing to approve: the definition holds %d suspicious character(s), listed above; review them and pass --accept-suspicious to approve anyway", len(found))
+		return fmt.Errorf("refusing to approve: the definition holds %s, listed above; review them and pass --accept-suspicious to approve anyway", found.describe())
 	}
-	stderr.printf("warning: approving despite %d suspicious character(s)\n", len(found))
+	stderr.printf("warning: approving despite %s\n", found.describe())
 	return nil
 }
 
@@ -132,40 +137,21 @@ func reviewSuspicious(stderr *stream, canonical []byte, accept bool) error {
 // JSON escape (backslash, u, 2, 0, 0, b for the zero-width space) hides the
 // character in the raw bytes.
 func scanStrings(canonical []byte) ([]located, error) {
-	dec := json.NewDecoder(bytes.NewReader(canonical))
-	dec.UseNumber()
-	var doc any
-	if err := dec.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("decode definition: %w", err)
+	doc, err := decodeDefinition(canonical)
+	if err != nil {
+		return nil, err
 	}
 	return walkStrings(rootPath, doc), nil
 }
 
+// walkStrings lists the suspicious characters of every string value and key
+// under v with their paths, in the order eachString visits them.
 func walkStrings(path string, v any) []located {
-	switch x := v.(type) {
-	case string:
-		return locate(path, x)
-	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var out []located
-		for _, k := range keys {
-			child := path + "." + k
-			out = append(out, locate(child+keySuffix, k)...)
-			out = append(out, walkStrings(child, x[k])...)
-		}
-		return out
-	case []any:
-		var out []located
-		for i, e := range x {
-			out = append(out, walkStrings(fmt.Sprintf("%s[%d]", path, i), e)...)
-		}
-		return out
-	}
-	return nil
+	var out []located
+	eachString(path, v, func(p, s string) {
+		out = append(out, locate(p, s)...)
+	})
+	return out
 }
 
 func locate(path, s string) []located {
