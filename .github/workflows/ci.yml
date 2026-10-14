@@ -17,6 +17,7 @@
 # Both test jobs run go test through gotestsum v1.13.0 (installed with go
 # install at that version, like govulncheck) and end with a step that writes
 # every test slower than one second to the step summary, also after a failure.
+# CLAUDE.md's -short policy reads its thirty-second line off that table.
 #
 # The e2e job runs only on workflow_dispatch. It downloads the agentgateway
 # v1.6.0 release asset for linux and checks it against the SHA-256 recorded in
@@ -140,7 +141,10 @@ jobs:
       # gotestsum as in the test job: the same pin, the same reasons.
       - run: go install gotest.tools/gotestsum@v1.13.0
       # The three packages with a testing.Short() skip, run in full. CLAUDE.md
-      # names the six tests this covers.
+      # names the six tests this covers, and internal/shortpolicy's
+      # TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull fails when a
+      # test consults testing.Short() without being named there or without its
+      # package on this line.
       - run: gotestsum --format pkgname --jsonfile "$RUNNER_TEMP/gotestsum.json" -- -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/ ./internal/processor/
       # The timing table, as in the test job.
       - name: tests slower than 1s
