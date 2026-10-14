@@ -17,7 +17,7 @@ func TestHelpAndVersion(t *testing.T) {
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
 		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
 		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--secret-env VAR] [--gateway-binary PATH]",
-		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe] [--every DURATION] [--keep-going]",
+		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]",
 		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
@@ -79,6 +79,7 @@ func TestUsageErrors(t *testing.T) {
 		{"verify admin with a query", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--admin", "127.0.0.1:15000/?x=1"}, "without user info, query or fragment"},
 		{"verify expect-body-hash without config", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--expect-body-hash", strings.Repeat("a", 64)}, "--expect-body-hash needs --config"},
 		{"verify expect-body-hash not hex", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--config", "g.yaml", "--expect-body-hash", "nothex"}, "64 hex digits of the body sha256"},
+		{"verify expect-unhooked with no-probe", []string{"verify-gateway", "--server", "s1", "--url", "http://127.0.0.1:1/mcp", "--expect-unhooked", "--no-probe"}, "--expect-unhooked and --no-probe are exclusive"},
 		{"audit negative limit", []string{"audit", "list", "--limit", "-1"}, "must not be negative"},
 		{"rollback without to", []string{"rollback", "s1", "echo"}, "--to is required"},
 		{"reject without hash", []string{"reject", "s1", "echo"}, "--hash is required"},

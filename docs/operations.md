@@ -25,8 +25,10 @@ chain, never a column on its own), what `audit verify` and `audit list` show
 about rows below the first, what the probe claims (nothing it cannot
 attribute), what the live comparison compares (the backend target name and the
 canary's own ports too), what `emit` refuses to write over, and the words in
-which the limit of the chain pin is stated; the sections below describe the
-behaviour since then.
+which the limit of the chain pin is stated. Decision D18 (2026-10-14, after the
+post-v0.1 research) added the "Deployment requirements" section and the
+canary's `--expect-unhooked` flag; the sections below describe the behaviour
+since then.
 
 Global flags come before the command: `--db PATH` (or `TOOLWARRANT_DB`, default
 `./toolwarrant.db`), `--as NAME` (or `TOOLWARRANT_ACTOR`; the name `crawler` is
@@ -199,6 +201,37 @@ Start the processors before the gateway, or accept that the gateway denies
 every hooked request until they are up (`failureMode: failClosed`; scenario G
 saw the route serve again within about 60 ms of a processor restart).
 
+## Deployment requirements
+
+toolwarrant keeps no data plane of its own (decision D11): the gateway is the
+data plane, and a behaviour of agentgateway v1.6.0 that toolwarrant can only
+make visible, not refuse, is met by the deployment.
+
+Only clients that send a JSON-RPC `id` on every `tools/call` may reach the
+gateway's serving port, or an enforcement point that refuses an id-less
+`tools/call` must stand in front of it. agentgateway v1.6.0 forwards a
+`tools/call` sent as a notification (no `id`, or `id: null`) to the upstream
+without the ExtMCP hook and without the allow rule (limit L17, threat model row
+25), so a client that drops the id executes any tool the upstream has, approved
+or not. The official SDKs always send an id; a hand-written client, or a proxy
+that rewrites messages, may not. toolwarrant provides no such enforcement point
+and will not (D11, D18): it would have to terminate HTTP, parse batched JSON-RPC
+and server-sent events, carry client credentials, teach the canary a second
+listener, and reverse the README's non-goal of no data plane. Keep the serving
+port on 127.0.0.1 (the emitted default) or on a network only those clients
+reach; `emit --bind-address` widens it and prints a warning. The canary's probe
+shows that the gateway still has the shape: run `verify-gateway` with
+`--expect-unhooked` (next section), which prints the 202 as `KNOWN-LIMIT` on
+every check and fails as PROBE-CHANGED the moment the gateway answers anything
+else (D18; cmd `TestExpectUnhookedTurnsThe202IntoAKnownLimitLine`,
+`TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`; e2e scenario O). The
+report of the behaviour to the agentgateway project is the owner's action
+([../SECURITY.md](../SECURITY.md)). The other host-level requirements, the
+processors on loopback or a unix socket with the shared secret, the admin
+listener treated as part of the trusted computing base, the owner-only database
+and configuration file, are the items of the hardening checklist in
+[../SECURITY.md](../SECURITY.md).
+
 ## Running the canary
 
 `verify-gateway` is the deploy-time self-test and the canary. It opens a new
@@ -210,7 +243,8 @@ compares each served definition with the catalog's serving policy. With
 `--config`) it fetches the live configuration from the gateway's admin API and
 compares the live document with that file; and unless `--no-probe` is given it
 sends one `tools/call` without a JSON-RPC id to see whether the gateway forwards
-unhooked calls (decisions D12, D13 and D14). The file named by `--config` must
+unhooked calls (decisions D12, D13 and D14), which with `--expect-unhooked` is
+the declared answer (D18). The file named by `--config` must
 be a regular file: a symbolic link, directory, device, socket or named pipe at
 that path is refused before it is opened, because a read of a named pipe
 blocks until a writer appears and a canary that blocks prints no verdict and
@@ -224,24 +258,36 @@ toolwarrant verify-gateway --server github \
   --config /etc/agentgateway/gateway.yaml \
   --expect-body-hash BODY_SHA256_PRINTED_BY_EMIT \
   --admin 127.0.0.1:15000 \
-  --no-probe \
+  --expect-unhooked \
   --every 1m --keep-going
 ```
 
-The example passes `--no-probe` because agentgateway v1.6.0 forwards the id-less
-probe on every check (limit L17), so with the probe on every check of this
-gateway prints UNHOOKED-CALLS and exits 1. Run the canary once without
-`--no-probe` to see that verdict for yourself, record the limit in your runbook,
-and drop `--no-probe` when the gateway pin moves to a release that does not
-answer the probe with 202; a canary that fails on every run trains its readers
-to ignore it. The probe proves the fail-open shape of v1.6.0 and nothing else:
-it cannot prove that the hook ran, because an answer other than 202 may have
-been written by the gateway or by the upstream behind a forwarding gateway,
+The example passes `--expect-unhooked` because agentgateway v1.6.0 forwards the
+id-less probe on every check (limit L17): without a probe flag every check of
+this gateway prints UNHOOKED-CALLS and exits 1. Run the canary once that way to
+see the verdict for yourself and record the limit in your runbook, then run it
+with `--expect-unhooked`: the probe stays on, the 202 is printed as
+`KNOWN-LIMIT`, the OK line names it, and the check exits 0; the moment the
+gateway answers the probe with anything else it can classify, a bare 400 or one
+of the PROBE-INCONCLUSIVE shapes, the check fails as PROBE-CHANGED, exit 1,
+because the pin moved or the gateway changed under it and the deployment must
+be re-qualified (limit L7) before the flag describes it again (D18; cmd
+`TestExpectUnhookedTurnsThe202IntoAKnownLimitLine`,
+`TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`,
+`TestExpectUnhookedAndNoProbeAreExclusive`). Before D18 the advice was
+`--no-probe`, which switches the probe off; it is still accepted and is
+exclusive with `--expect-unhooked`, but prefer the flag: a canary that sends no
+probe cannot notice the gateway changing, and a canary that fails on every run
+trains its readers to ignore it. The probe proves the fail-open shape of v1.6.0
+and nothing else: it cannot prove that the hook ran, because an answer other
+than 202 may have been written by the gateway or by the upstream behind a
+forwarding gateway,
 and since the seventh round it says so instead of attributing the answer (D17;
 before, a 400 with an empty or non-JSON body was reported as `rejected by the
 gateway`, which a go-sdk upstream behind a forwarding gateway writes itself).
-On a gateway that does not answer 202, leave the probe on and read its line as
-what it is: the one shape known to bypass the hook did not occur.
+On a gateway that does not answer 202, leave the probe on without either flag
+and read its line as what it is: the one shape known to bypass the hook did
+not occur.
 
 Verdicts, one line per tool or per check:
 
@@ -434,10 +480,11 @@ Verdicts, one line per tool or per check:
   v1.6.0: it forwards such a call without the hook and without the allow rule
   (limit L17). Exit code 1. The probe
   reaches the upstream exactly when the gateway is unhooked, which is why
-  `--no-probe` exists. Scenario O printed this verdict against the pinned
-  binary, the hostile upstream's request log showed the probe arriving, and
-  with `--no-probe` the OK line said `unhooked-call probe skipped
-  (--no-probe)`.
+  `--no-probe` exists; with `--expect-unhooked` the same answer is the
+  `KNOWN-LIMIT` line below instead (D18). Scenario O printed this verdict
+  against the pinned binary, the hostile upstream's request log showed the
+  probe arriving, and with `--no-probe` the OK line said `unhooked-call probe
+  skipped (--no-probe)`.
 - `PROBE-INCONCLUSIVE`: the gateway answered the probe with a 2xx status other
   than 202 and a body, or with a 400 whose body is JSON (an object, an array
   or a scalar), an SSE event whose joined `data:` lines are JSON, a body with
@@ -470,16 +517,44 @@ Verdicts, one line per tool or per check:
   `TestProbeErrorSaysWhetherTheAnswerHadABody`,
   `TestProbeDoesNotAttributeARelayedPlainTextRefusalToTheGateway`,
   `TestProbeReadsTheJSONShapesAnUpstreamCanRelayOnA400`).
+- `KNOWN-LIMIT name: the gateway forwarded the id-less tools/call (HTTP 202),
+  as agentgateway v1.6.0 does (L17)`: the probe's line under
+  `--expect-unhooked` when the gateway answered 202, the shape the flag
+  declares. A report, not a failure: exit code 0, not counted as a failing
+  verdict line, and the OK line's third clause reads `id-less tools/call
+  forwarded unhooked as declared with --expect-unhooked (KNOWN-LIMIT L17)`.
+  The probe still reached the upstream; the line is there so that every check
+  records the limit instead of silencing the probe (D18). Scenario O printed
+  it against the pinned binary with exit 0, and the hostile upstream's request
+  log gained the probe (run of 2026-10-14; cmd
+  `TestExpectUnhookedTurnsThe202IntoAKnownLimitLine`).
+- `PROBE-CHANGED name: the gateway no longer answers the probe with 202 (the
+  id-less tools/call came back HTTP N); the pin moved or the gateway changed
+  under it; re-qualify (L7) and drop --expect-unhooked once the probe's answer
+  is understood`: under `--expect-unhooked`, any answer the probe can classify
+  other than 202, a bare 400 and the PROBE-INCONCLUSIVE shapes alike. Exit
+  code 1, and the one-line account reads `the id-less tools/call was not
+  forwarded with HTTP 202 as --expect-unhooked declared (HTTP N,
+  PROBE-CHANGED)`. The declaration no longer describes the gateway, so the
+  deployment is re-qualified against the release that answered (limit L7)
+  before the flag is passed again, or the flag is dropped and the probe's line
+  read as it is (D18). An answer the probe cannot classify (a 2xx without a
+  body, any other status) stays a `check failed` line on both paths. Not
+  reachable on the pinned gateway, which answers 202 (cmd
+  `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`: the go-sdk
+  upstream's bare 400 and the four inconclusive shapes each printed it).
 - `OK: the gateway serves N tool(s), N approved and current; live configuration
-  matches the emitted file; unhooked-call probe skipped (--no-probe)` is the
-  healthy line as printed with the flags of the example above; the first clause
-  gains counts such as `, 1 approved but not listed (MISSING)` when there are
-  any, the second reads `live configuration not compared (no --admin)` without
-  `--admin`, and the third reads `the id-less tools/call was not accepted as a
-  notification (HTTP 400, by the gateway or by the upstream)` when the probe
-  ran and the gateway answered 400 with an empty or non-JSON body (D17; the
-  clause never says `rejected by the gateway`, because the probe cannot know
-  that). Exit code 0 is OK or MISSING only.
+  matches the emitted file; id-less tools/call forwarded unhooked as declared
+  with --expect-unhooked (KNOWN-LIMIT L17)` is the healthy line as printed with
+  the flags of the example above, after the `KNOWN-LIMIT` line; the first
+  clause gains counts such as `, 1 approved but not listed (MISSING)` when
+  there are any, the second reads `live configuration not compared (no
+  --admin)` without `--admin`, and the third reads `unhooked-call probe skipped
+  (--no-probe)` with `--no-probe`, or `the id-less tools/call was not accepted
+  as a notification (HTTP 400, by the gateway or by the upstream)` when the
+  probe ran without either flag and the gateway answered 400 with an empty or
+  non-JSON body (D17; the clause never says `rejected by the gateway`, because
+  the probe cannot know that). Exit code 0 is OK, MISSING or KNOWN-LIMIT only.
 
 Why a canary and not a one-off check: the gateway binds the processor chain per
 MCP session. A reload that drops the processor leaves existing sessions guarded
@@ -1481,14 +1556,14 @@ only for a public repository on the free plan):
 
 ## Exit codes
 
-- `0`: success. For `verify-gateway`, OK or MISSING only. For
+- `0`: success. For `verify-gateway`, OK, MISSING or KNOWN-LIMIT only. For
   `crawl --every`, a run that was stopped after at least one complete crawl
   and in which the catalog refused none.
 - `1`: the operation failed: a lifecycle refusal (self-approval, stale digest,
   invalid transition), a crawl failure, a corrupt or wrong-schema database, a
   processor that stopped with an error, `verify-gateway` with a LEAK,
   CONFIG-EDITED (a body hash other than `--expect-body-hash` included),
-  LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS or PROBE-INCONCLUSIVE, a
+  LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE or PROBE-CHANGED, a
   `verify-gateway --every` run that was stopped after any check failed, any
   failing verdict line was printed or no check completed, or that ended at a
   check with a failing verdict without `--keep-going`, a `crawl --every`
@@ -1508,7 +1583,8 @@ only for a public repository on the free plan):
   not an exit code of this program.
 - `2`: the command line was wrong: unknown command or flag, missing argument,
   `--every` under 1 s, `verify-gateway --admin` or `--expect-body-hash` without
-  `--config`, and the policy refusals whose fix is a flag: the system actor
+  `--config`, `verify-gateway --expect-unhooked` with `--no-probe` (D18), and
+  the policy refusals whose fix is a flag: the system actor
   trying to decide (pass `--as` with your own name), `serve` on a non-loopback
   address without `--allow-non-loopback`, `serve` with `--allow-non-loopback`
   but without `--secret-env` or `--insecure-no-secret`, `emit` with a

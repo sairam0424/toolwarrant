@@ -85,7 +85,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CO
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack; `e2e/testdata/gateway_tool_keys.json` is the L2 golden of the key paths the gateway drops, keeps and adds, which scenario L compares exactly); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
-- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D17), `docs/operations.md`.
+- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D18), `docs/operations.md`.
 - `CHANGELOG.md`: one prose line per change an operator can see, under `## [Unreleased]` until the release commit moves the lines under `## [x.y.z] - YYYY-MM-DD` (keep a changelog; `make release-check` refuses a tree without the Unreleased heading and, with `VERSION=x.y.z`, without that version's heading).
 - `.github/workflows/ci.yml`: the CI workflow; `.github/workflows/release.yml`: the release workflow on `v*` tags, gated on a successful `ci` run of the tagged commit; `.goreleaser.yaml`: what a tag builds, signs and publishes as a draft (D16).
 
@@ -96,7 +96,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CO
 - Nothing is pushed, tagged, published or registered without the owner.
 - Keep "MCP" out of the product name; "toolwarrant for MCP" is the permitted form.
 - Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
-- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D17 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`, `cmd/toolwarrant/livetls.go`.
+- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D18 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`, `cmd/toolwarrant/livetls.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
 - A change an operator can see adds one prose line under `## [Unreleased]` in `CHANGELOG.md`, naming the test that proves it; the release commit moves those lines under the version's heading and leaves an empty `## [Unreleased]` above them.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.

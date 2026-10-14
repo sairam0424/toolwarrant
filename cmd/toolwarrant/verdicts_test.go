@@ -91,6 +91,8 @@ func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
 		"live config differs":   {live: liveCheck{compared: true, diffs: []string{"x"}}},
 		"unhooked calls":        {probe: probeReport{outcome: probeUnhooked}},
 		"inconclusive probe":    {probe: probeReport{outcome: probeInconclusive}},
+		"probe changed":         {probe: probeReport{outcome: probeNotAccepted, status: 400, expectUnhooked: true}},
+		"probe changed, body":   {probe: probeReport{outcome: probeInconclusive, status: 200, expectUnhooked: true}},
 		"one leak":              {leaks: []leak{{liveTool: liveTool{name: "x"}}}},
 		"unreadable file":       {configEdited: true, configReason: "open: no such file"},
 		"edited and unhooked":   {configEdited: true, probe: probeReport{outcome: probeUnhooked}},
@@ -106,6 +108,7 @@ func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
 		"healthy":         {served: 2, live: liveCheck{compared: true}, probe: probeReport{outcome: probeNotAccepted, status: 400}},
 		"missing only":    {missing: []string{"m"}, probe: probeReport{outcome: probeNotAccepted, status: 400}},
 		"live skipped":    {live: liveCheck{skipped: "why"}},
+		"known limit":     {served: 2, probe: probeReport{outcome: probeUnhooked, status: 202, expectUnhooked: true}},
 	} {
 		if v.failed() {
 			t.Errorf("%s must not fail the check", name)
@@ -122,15 +125,23 @@ func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
 		"differs":      {verdicts{live: liveCheck{compared: true, diffs: []string{"x"}}}, []string{"; live configuration differs from the emitted file (" + verdictLiveConfig + ")"}},
 		"unhooked":     {verdicts{probe: probeReport{outcome: probeUnhooked}}, []string{"; id-less tools/call forwarded unhooked (" + verdictUnhooked + ")"}},
 		"inconclusive": {verdicts{probe: probeReport{outcome: probeInconclusive}}, []string{"; id-less tools/call answered by someone (" + verdictInconclusive + ")"}},
+		"known limit":  {verdicts{probe: probeReport{outcome: probeUnhooked, status: 202, expectUnhooked: true}}, []string{"; id-less tools/call forwarded unhooked as declared with --expect-unhooked (" + verdictKnownLimit + " L17)"}},
+		"changed":      {verdicts{probe: probeReport{outcome: probeNotAccepted, status: 400, expectUnhooked: true}}, []string{"; the id-less tools/call was not forwarded with HTTP 202 as --expect-unhooked declared (HTTP 400, " + verdictProbeChanged + ")"}},
+		"changed body": {verdicts{probe: probeReport{outcome: probeInconclusive, status: 200, expectUnhooked: true}}, []string{"(HTTP 200, " + verdictProbeChanged + ")"}},
 	}
 	for name, tc := range cases {
 		wantContains(t, name+" summary", tc.v.summary(), tc.want...)
 	}
 	// The failure sentence names every verdict the check found.
-	f := &verifyFailure{leaks: 1, configEdited: true, configExpected: strings.Repeat("0", 64), liveDiffs: 2, probe: probeInconclusive, server: "s1", url: "http://127.0.0.1:1/s1/mcp?q=" + plant("query")}
+	f := &verifyFailure{leaks: 1, configEdited: true, configExpected: strings.Repeat("0", 64), liveDiffs: 2, probe: probeReport{outcome: probeInconclusive}, server: "s1", url: "http://127.0.0.1:1/s1/mcp?q=" + plant("query")}
 	wantContains(t, "failure", f.Error(), "1 tool(s) leak", "recorded with --expect-body-hash", "2 place(s)", verdictInconclusive, "treat the gateway as unhooked")
 	wantNotContains(t, "failure", f.Error(), canary, "q=")
-	wantContains(t, "unhooked failure", (&verifyFailure{probe: probeUnhooked}).Error(), verdictUnhooked, "L17")
+	wantContains(t, "unhooked failure", (&verifyFailure{probe: probeReport{outcome: probeUnhooked}}).Error(), verdictUnhooked, "L17")
+	wantContains(t, "changed failure", (&verifyFailure{probe: probeReport{outcome: probeNotAccepted, status: 400, expectUnhooked: true}}).Error(), verdictProbeChanged, "HTTP 400", "re-qualify it (L7)")
+	wantNotContains(t, "changed failure", (&verifyFailure{probe: probeReport{outcome: probeInconclusive, status: 200, expectUnhooked: true}}).Error(), verdictInconclusive, verdictUnhooked)
+	if (&verifyFailure{probe: probeReport{outcome: probeUnhooked, expectUnhooked: true}}).Error() != "" {
+		t.Error("a declared 202 is not a failure and must add nothing to the failure sentence")
+	}
 	wantContains(t, "unreadable failure", (&verifyFailure{configEdited: true, configReason: "x"}).Error(), "could not be read")
 	wantContains(t, "edited failure", (&verifyFailure{configEdited: true}).Error(), "edited after emit wrote it")
 }
