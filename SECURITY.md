@@ -161,10 +161,22 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   without DNS, such as `localhost.localdomain` and `ip6-loopback`, count as
   loopback since the sixth round, decision D15) unless
   `--allow-non-loopback` is given, and with that flag refuses to listen without
-  `--secret-env` unless `--insecure-no-secret` is passed as well; the pairing
-  is enforced, not advised. Use it only on a network nobody but the gateway can
-  reach. The ExtMCP protocol has no authentication of its own, and the link is
-  plaintext gRPC; every processor entry `emit` writes carries the gateway's
+  `--secret-env` or `--tls-client-ca` unless `--insecure-no-secret` is passed
+  as well; the pairing is enforced, not advised. Use it only on a network
+  nobody but the gateway can reach. The ExtMCP protocol has no authentication
+  of its own, and the link is plaintext gRPC unless `serve` is given
+  `--tls-cert` and `--tls-key` (TLS 1.3 only; with `--tls-client-ca` every
+  connection must present a client certificate that authority signed, which
+  authenticates the hooks as the secret does, owner decision O-2, D19 planned;
+  the key file must be owner-only, as the database is; the gateway's
+  `backendTLS` block is written by a later `emit`, so until then the
+  processor's TLS is proven against grpc-go clients only: cmd
+  `TestServeTLSOverGRPCEnforcesApprovals`,
+  `TestServeTLSRefusesAClientWithoutACertificate`,
+  `TestServeTLSRefusesAGroupReadableKey`; processor
+  `TestServe_TLSListenerRefusesPlaintextAndUnknownClients`,
+  `TestServe_TLSWithClientCARequiresAClientCertificate`); every processor
+  entry `emit` writes carries the gateway's
   `requestHeaders` filter (only the `:method` pseudo-header allowed;
   `authorization`, `cookie` and `proxy-authorization` denied by name as well),
   so a client's credentials do not ride each hook to the processor, which reads
