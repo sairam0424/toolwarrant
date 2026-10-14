@@ -16,6 +16,7 @@ whose changelog has no heading for that version.
 ### Added
 
 - The canary (`toolwarrant verify-gateway --admin HOST:PORT`) reads a processor's `policies.backendTLS` block (cert, key, root, hostname) from the emitted file and from the running gateway's `GET /api/config` and compares the two by presence and then field by field, so a processor link that carries TLS on one side only, or another root or hostname, is a `LIVE-CONFIG-MISMATCH` that names the field instead of one "field policies: not in the emitted file" line; a file without the block compares exactly as before (`TestEmittedConfigReadsTheProcessorTLS`, `TestLiveComparisonComparesTheProcessorTLS`, `TestLiveComparisonReportsAnInsecureTLSFlag`, `TestCompareProcessorsSeesAMissingBackendTLS`).
+- `scripts/requalify-gateway.sh vX.Y.Z SHA256 [--e2e]` runs the checklist for moving the agentgateway pin (known limit L7) and the `ci` workflow gains a dispatch-only `requalify` job that runs it against a candidate release; docs/operations.md describes the procedure (`TestRequalifyScript_citesExistingTestsAndScenarios`, `TestRequalifyScript_reportsEveryItemOnce`, `TestRequalifyCI_dispatchJobRunsTheScript`).
 - End-to-end scenario L compares the key paths agentgateway v1.6.0 drops, keeps and adds before the ExtMCP hook with the lists recorded in `e2e/testdata/gateway_tool_keys.json`, and every run writes the lists it saw to `logs/gateway_tool_keys.observed.json` in its work directory so that a moved pin is re-recorded by copying that file; the threat model (L2, L9), docs/decisions.md D10 and docs/operations.md state the recorded lists (`TestToolKeysGoldenRefusesWhatItCannotCompare`).
 - Both `ci` test jobs run `go test` through gotestsum v1.13.0 and write every test slower than one second to the step summary; `make test-timings` prints the same table locally. A test may consult `testing.Short()` only when its full run exceeds thirty seconds on the runner per that table, and `TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull` fails when such a test is not named in CLAUDE.md or its package is not run in full by the `test-full` job.
 
@@ -30,6 +31,7 @@ whose changelog has no heading for that version.
 ### Fixed
 
 - The catalog pins `synchronous(FULL)` in the connection string of every pooled connection of every open mode, so an approval, a rollback or a crawl is on the disk before its command returns, across a power loss and not only across a crash of the process; the driver's compile-time default was relied on before (`TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL`).
+- The canary's quoted count of the configuration fields agentgateway v1.6.0 declares is 36, not 37.
 
 ## [0.1.1] - 2026-10-14
 
