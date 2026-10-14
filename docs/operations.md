@@ -1355,6 +1355,7 @@ two verification commands above with the new version in place of 0.1.0:
 GOFLAGS= GOPRIVATE= GONOSUMDB= GOSUMDB=sum.golang.org GOPROXY=https://proxy.golang.org,direct \
   GOBIN="$PWD/bin" go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z
 go version -m bin/toolwarrant    # the mod line names the module version and its go.sum hash
+bin/toolwarrant version          # toolwarrant vX.Y.Z, then the pinned gateway line
 curl -fsS "https://sum.golang.org/lookup/github.com/sairam0424/toolwarrant@vX.Y.Z"
 ```
 
@@ -1371,10 +1372,15 @@ record: the lookup must return a record whose first line carries the same
 `h1:` hash as the `mod` line (the second line is the `go.mod` hash); a 404,
 which `curl -f` turns into a failure, or a different hash means the record is
 missing or wrong: stop and find out why before announcing the release. The
-binary the install leaves prints `dev` as its version, since nothing sets the
-version at link time; the `mod` line of `go version -m` is what names the
-tag. The record for v0.1.0 exists and lists the same `h1:` hash the `mod`
-line shows.
+binary the install leaves has no link-time version, so its `version` falls
+back to the module version the go command embedded and prints
+`toolwarrant vX.Y.Z`, the tag with its `v` (a release archive's binary prints
+`X.Y.Z`, set at link time; cmd `TestVersionFallsBackToTheModuleVersion` holds
+the decision). A `dev` from a tag after v0.1.1 means the fallback broke: stop
+and find out why. The binaries installed from v0.1.0 and v0.1.1 predate the
+fallback and print `dev`; for those the `mod` line of `go version -m` is what
+names the tag. The record for v0.1.0 exists and lists the same `h1:` hash the
+`mod` line shows.
 
 Then, with the verified archive in the directory you clone into, rebuild one
 platform and compare it with the archive. The build is reproducible (CGO
