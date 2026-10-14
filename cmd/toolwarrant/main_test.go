@@ -15,7 +15,7 @@ func TestHelpAndVersion(t *testing.T) {
 	out := c.ok("help")
 	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "server pause NAME", "server resume NAME",
 		"crawl SERVER [--every DURATION] [--bearer-env VAR] [--strict] [--json]",
-		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]",
+		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION] [--max-crawl-age DURATION]",
 		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME ...] [--secret-env VAR] [--gateway-binary PATH]",
 		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]",
 		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
@@ -28,7 +28,7 @@ func TestHelpAndVersion(t *testing.T) {
 	wantContains(t, "-h", r.stdout, "global flags")
 	out = c.ok("approve", "-h")
 	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious")
-	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
+	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-max-crawl-age", "crawl evidence too old", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
 	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going", "-admin", "-no-probe", "GET "+adminConfigPath, verdictLiveConfig,
 		probeToolPrefix, "HTTP 202", verdictUnhooked, "the probe reaches the upstream exactly when the gateway behaves this way", "L17",
 		"-expect-body-hash", "L19", verdictInconclusive, "not accepted as a notification (HTTP 400, by the gateway or by the upstream)", "proves nothing about the hook", "a JSON-RPC answer, single or batched", "as a whole document", "the path of --url must be the emitted route's match", "the ports of --url and --admin must be the emitted gateway's serving port and the emitted adminAddr's port", "backend targets (name and host)", "printed a verdict line",
@@ -91,6 +91,7 @@ func TestUsageErrors(t *testing.T) {
 		{"serve without flags", []string{"serve"}, "--server is required"},
 		{"serve without listen", []string{"serve", "--server", "s1"}, "--listen is required"},
 		{"serve negative evidence age", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--max-evidence-age", "-1s"}, "must not be negative"},
+		{"serve negative crawl age", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--max-crawl-age", "-1s"}, "--max-crawl-age must not be negative"},
 		{"serve secret unset", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--secret-env", "UNSET_SECRET"}, "UNSET_SECRET is unset"},
 		{"serve non-loopback without a secret", []string{"serve", "--server", "s1", "--listen", "0.0.0.0:0", "--allow-non-loopback"}, "without a shared secret"},
 		{"emit without out", []string{"emit"}, "--out is required"},

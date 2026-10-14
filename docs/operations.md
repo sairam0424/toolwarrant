@@ -122,9 +122,34 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   `TestServe_TLSWithoutClientCAAcceptsAnyClient`,
   `TestServe_ClientCertificateSilencesTheNoSecretWarning`,
   `TestServe_RefusesAnUnusableTLSConfig`.)
-- `--max-evidence-age DURATION` expires the digests the processor remembers
-  from gateway listings; 0 (the default) keeps them until the next listing or a
-  catalog change. It ages conflict markers too (limit L15).
+- `--max-evidence-age DURATION` bounds how long a digest the processor
+  remembers from a gateway listing carries a `tools/call` on its own; 0 (the
+  default) keeps it until the next listing or a catalog change. Only evidence
+  that agrees with the approval ages: a contradiction (another digest, or the
+  conflict marker a bad page leaves) denies for as long as it stands, whatever
+  the age, and only a clean listing that shows the approved bytes releases the
+  call, so ageing only ever removes evidence that would allow (D21, owner
+  decision O-7; this closed limit L15, which said the opposite; processor
+  `TestEvidence_ObservedDigestsExpire`,
+  `TestEvidence_ContradictionsNeverExpire`).
+- `--max-crawl-age DURATION` bounds how long the latest complete crawl's word
+  carries a `tools/call` on its own; 0 (the default) means always, as every
+  version before. With it set, a call whose only allowing evidence is a crawl
+  older than the age is denied `crawl evidence too old` until a listing shows
+  the approved definition or a crawl completes; a server with no complete crawl
+  has no fresh crawl. It bounds limit L1 when the crawler stops (set it to a few
+  crawl periods); it does not shorten the gap below the crawl cadence, and a
+  listing that contradicts the approval denies as `changed since approval`
+  whatever the crawl's age. The denials are counted in the `stale` field of the
+  stats line below (D21; processor
+  `TestJudgeCall_StaleCrawlDeniesUnlessFreshlyListed`,
+  `TestCheckRequest_MaxCrawlAgeZeroKeepsTheOldRule`,
+  `TestCheckRequest_StaleCrawlCountsInStats`; cmd
+  `TestServeRejectsANegativeMaxCrawlAge`; end-to-end scenario R restarted
+  mock's processor with both ages at 2s: the session that had listed was
+  allowed, denied `crawl evidence too old` three seconds later, a new session
+  that listed was allowed, and after another wait a crawl alone allowed the
+  call; its stats line counted `calls allowed=3 denied=2 (stale=2)`).
 - The processor opens the catalog read-only and can never change it (cmd
   `TestServeOpensTheCatalogReadOnly`, catalog `TestOpenWith_ReadOnly`). Run it
   as the catalog's owner: the catalog refuses a database file that its group
@@ -229,11 +254,15 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
 - On SIGINT or SIGTERM the processor stops gracefully, prints its counters and
   exits 0; an error that stops it exits 1. The stats line is:
   `stats: lists served=N denied=N, tools hidden=N (mismatched=N unapproved=N
-  oversized=N unverified=N), calls allowed=N denied=N, wrong backend=N,
-  unauthenticated=N, throttled=N, source errors=N, evidence dropped=N`
-  (scenario N; pinned by `TestWriteStatsPinsTheLine`). `evidence dropped` is
-  `Stats.EvidenceDropped`; a non-zero value is a standing condition, described
-  under the evidence table above. Tools the catalog has never heard
+  oversized=N unverified=N), calls allowed=N denied=N (stale=N), wrong
+  backend=N, unauthenticated=N, throttled=N, source errors=N, evidence
+  dropped=N` (scenario N; pinned by `TestWriteStatsPinsTheLine`). `stale` is
+  `Stats.CallsStale`, the part of `denied` refused because the only evidence
+  that would have allowed the call was a crawl older than `--max-crawl-age`;
+  it stays 0 without the flag, and a value that grows while `denied` grows
+  with it means the crawler has stopped, not that a definition changed
+  (scenario R). `evidence dropped` is `Stats.EvidenceDropped`; a non-zero
+  value is a standing condition, described under the evidence table above. Tools the catalog has never heard
   of are `hidden` minus the named categories. Since the third round the
   processor also counts tools hidden because the latest crawl left the
   unusable marker in the catalog while the gateway showed the approved bytes

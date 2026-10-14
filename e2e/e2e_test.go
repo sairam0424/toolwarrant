@@ -17,9 +17,13 @@ import (
 // single subtest with -run is therefore not supported. The names are the ones
 // README.md and docs/ cite. Scenario Q runs right after H, while mock is the
 // only server, because it restarts mock's processor with and without TLS and
-// re-emits the file several times. Scenario N runs last, after O and P,
-// because it deletes and re-initialises the catalog and stops every
-// processor, and the two canary scenarios need both as they are.
+// re-emits the file several times. Scenario R runs right after I, also while
+// mock is the only server, because it restarts mock's processor with the two
+// serve ages and waits them out, and a restart after J would reset the
+// wrong-backend count that N reads from that processor at shutdown. Scenario
+// N runs last, after O and P, because it deletes and re-initialises the
+// catalog and stops every processor, and the two canary scenarios need both as
+// they are.
 func TestEndToEnd(t *testing.T) {
 	if h.skip != "" {
 		t.Skip(h.skip)
@@ -39,6 +43,7 @@ func TestEndToEnd(t *testing.T) {
 		{"H_SharedSecret", scenarioH},
 		{"Q_ProcessorTLS", scenarioQ},
 		{"I_LoopbackBind", scenarioI},
+		{"R_StaleCrawlDeniesCalls", scenarioR},
 		{"J_CrossServerAndDuplicatePage", scenarioJ},
 		{"K_CELAloneNeverMatchingRule", scenarioK},
 		{"L_VendorExtensionMismatch", scenarioL},

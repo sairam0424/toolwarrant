@@ -68,7 +68,7 @@ func TestServe_RefusesAPageOverTheRecvLimit(t *testing.T) {
 	if st := s.Stats(); st.ListsServed != 0 || st.ListsDenied != 1 || st.SourceErrors != 0 {
 		t.Errorf("stats = %+v, want the refused page counted as one denied list", st)
 	}
-	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 		t.Errorf("evidence for echo after the refused page = %q, %v; want the conflict marker", seen, ok)
 	}
 	if !strings.Contains(logs.String(), "tools/list denied") || !strings.Contains(logs.String(), "ResourceExhausted") {
@@ -123,7 +123,7 @@ func TestServe_OversizedPageOverTheWireMarksEveryCatalogTool(t *testing.T) {
 			t.Fatalf("a payload of %d bytes: err = %v, want ResourceExhausted from the transport", len(page), err)
 		}
 		awaitMarking(t, func() bool { return s.Stats().ListsDenied == denied })
-		if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+		if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 			t.Fatalf("evidence for echo after the refused page = %q, %v; want the conflict marker", seen, ok)
 		}
 		res, err := client.CheckRequest(ctx, callReq("echo"))
@@ -147,7 +147,7 @@ func TestServe_OversizedPageOverTheWireMarksEveryCatalogTool(t *testing.T) {
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("9 MiB tools/call: err = %v, want ResourceExhausted", err)
 	}
-	if seen, ok := s.observedDigest("echo"); !ok || seen != d1 {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != d1 {
 		t.Errorf("a refused tools/call marked echo: %q, %v", seen, ok)
 	}
 	if st := s.Stats(); st.ListsDenied != 2 {

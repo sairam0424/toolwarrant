@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -24,6 +25,7 @@ type fakeSource struct {
 	mu        sync.Mutex
 	gen       int64
 	snap      catalog.Snapshot
+	crawledAt time.Time // the latest complete crawl every snapshot reports; zero means none
 	genErr    error
 	snapErr   error
 	genCalls  int
@@ -53,7 +55,17 @@ func (f *fakeSource) Snapshot(_ context.Context, server string) (catalog.Snapsho
 	}
 	s := f.snap
 	s.Server = server
+	s.CrawledAt = f.crawledAt
 	return s, nil
+}
+
+// crawled records when the latest complete crawl of the server ran and bumps
+// the generation, as a crawl's committed write does; the contents are kept.
+func (f *fakeSource) crawled(at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gen++
+	f.crawledAt = at
 }
 
 // publish replaces the catalog contents and bumps the generation, like a

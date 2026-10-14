@@ -191,7 +191,7 @@ func TestCache_ObservedEvidenceIsPrunedWhenAToolLeavesTheCatalog(t *testing.T) {
 		servedNames(t, list(t, s, listBody("", echoV1, other))) // both agree with their approvals
 		src.publish(onlyOther)
 		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeNotApproved)
-		if _, ok := s.observedDigest("echo"); ok || s.trackedCount() != 1 {
+		if _, _, ok := s.observedDigest("echo"); ok || s.trackedCount() != 1 {
 			t.Fatalf("agreeing evidence for a tool that left the catalog was kept (%d tracked)", s.trackedCount())
 		}
 		src.publish(withBoth) // re-created under the same name: no stale evidence
@@ -204,7 +204,7 @@ func TestCache_ObservedEvidenceIsPrunedWhenAToolLeavesTheCatalog(t *testing.T) {
 		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
 		src.publish(onlyOther)
 		requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeNotApproved)
-		if seen, ok := s.observedDigest("echo"); !ok || seen != mustDigest(t, echoV2) {
+		if seen, _, ok := s.observedDigest("echo"); !ok || seen != mustDigest(t, echoV2) {
 			t.Fatalf("the contradiction for echo was pruned: %q, %v", seen, ok)
 		}
 		src.publish(withBoth) // re-created: still denied until a listing shows the approved bytes
@@ -229,17 +229,17 @@ func TestCache_LateObservationForADroppedToolIsNotRecorded(t *testing.T) {
 
 	src.publish(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}) // zzz leaves the catalog
 	requireAllowed(t, call(t, s, callReq("echo")))                       // reload and prune
-	if _, ok := s.observedDigest("zzz"); ok {
+	if _, _, ok := s.observedDigest("zzz"); ok {
 		t.Fatal("the prune left zzz tracked")
 	}
 
 	// The late writer computed against the old snapshot, in which zzz existed.
 	s.observe("zzz", dz)
-	if _, ok := s.observedDigest("zzz"); ok {
+	if _, _, ok := s.observedDigest("zzz"); ok {
 		t.Fatal("a late observation resurrected a tool the catalog dropped")
 	}
 	s.observe("echo", d2)
-	if seen, ok := s.observedDigest("echo"); !ok || seen != d2 {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != d2 {
 		t.Fatalf("a late observation for a tool still in the catalog was dropped: %q, %v", seen, ok)
 	}
 	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
@@ -287,7 +287,7 @@ func TestCache_ObservationsNeverOutliveThePruneUnderConcurrentReloads(t *testing
 		gen.Add(1)
 		_, _ = s.CheckRequest(context.Background(), callReq("echo")) // forces the reload and the prune
 		wg.Wait()
-		if _, ok := s.observedDigest("zzz"); ok {
+		if _, _, ok := s.observedDigest("zzz"); ok {
 			t.Fatalf("round %d: an observation for zzz survived the reload that dropped it", round)
 		}
 	}

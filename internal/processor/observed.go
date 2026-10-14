@@ -172,20 +172,18 @@ func (s *Server) markTracked() {
 }
 
 // observedDigest returns what the most recent tools/list that included the
-// named tool showed for it: a digest or observedConflict. Evidence older than
-// MaxEvidenceAge is not returned, because a digest the gateway listed long ago
-// says nothing about what the upstream serves now.
-func (s *Server) observedDigest(name string) (string, bool) {
+// named tool showed for it, a digest or observedConflict, and when that page
+// was seen. It does not age the entry: judgeCall decides what the age means,
+// because only evidence that agrees with the approval expires (D21), and the
+// table cannot know the approval the caller judges against.
+func (s *Server) observedDigest(name string) (digest string, seenAt time.Time, ok bool) {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
 	o, ok := s.observed[name]
 	if !ok {
-		return "", false
+		return "", time.Time{}, false
 	}
-	if s.maxAge > 0 && s.now().Sub(o.seenAt) > s.maxAge {
-		return "", false
-	}
-	return o.digest, true
+	return o.digest, o.seenAt, true
 }
 
 // install publishes a loaded snapshot and fits the observed table to it in one
