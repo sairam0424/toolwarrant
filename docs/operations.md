@@ -1348,10 +1348,27 @@ A release is one tag (decision D16). Before the tag, on the maintainer's
 machine:
 
 ```sh
-make release-check       # the release configuration parses and is consistent
-make release-snapshot    # four archives, four SBOMs and the checksums into dist/, unsigned
+make release-check                # the release configuration parses and is consistent; go.mod has no replace or exclude; CHANGELOG.md has an Unreleased section
+make release-check VERSION=X.Y.Z  # and CHANGELOG.md has the `## [X.Y.Z] - YYYY-MM-DD` heading the release commit added
+make release-snapshot             # four archives, four SBOMs and the checksums into dist/, unsigned
 make test && make e2e && demo/run.sh
 ```
+
+The release commit moves the lines under `## [Unreleased]` in `CHANGELOG.md`
+to a `## [X.Y.Z] - YYYY-MM-DD` heading and leaves an empty `## [Unreleased]`
+above it. `make release-check` runs three guards before `goreleaser check`,
+also in the `ci` release-check job on every pull request: `go.mod` can be read
+and carries no `replace` or `exclude` directive, since a release must build
+from published modules only (a `retract`, the remedy for a bad tag, is allowed;
+`TestReleaseGuards_refuseAReplaceOrExcludeDirectiveInGoMod`); `CHANGELOG.md`
+keeps the Unreleased heading
+(`TestReleaseGuards_refuseAChangelogWithoutAnUnreleasedSection`); and, run as
+`make release-check VERSION=X.Y.Z` with the version as the heading spells it,
+without the `v`, the heading for that version exists
+(`TestReleaseGuards_refuseAVersionWithoutADatedChangelogEntry`). The guards
+are `make release-guards` on their own, and
+`TestReleaseGuards_runFirstInReleaseCheck` pins that `release-check` runs them
+first.
 
 Then push `main`, let the `ci` workflow pass, tag `vX.Y.Z` on that commit and
 push the tag. The `release` workflow refuses a tag whose commit has no
