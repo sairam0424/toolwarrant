@@ -9,6 +9,7 @@ its evidence trustworthy and its history readable.
 export GOFLAGS=-mod=readonly  # the Makefile sets it; nothing may edit go.mod by accident
 make build    # go build ./... && go vet ./...
 make test     # go test -race -count=1 -timeout 1500s -cover ./...
+make test-timings  # the same run under gotestsum v1.13.0, then every test slower than 1s (go install gotest.tools/gotestsum@v1.13.0 first)
 make lint     # gofmt, go vet (also -tags e2e), golangci-lint v2.14.0
 make e2e      # needs the agentgateway v1.6.0 binary at .cache/ (README, Quickstart); CI runs it on dispatch only
 ```
@@ -39,6 +40,11 @@ make e2e      # needs the agentgateway v1.6.0 binary at .cache/ (README, Quickst
   that every cited test name exists and every relative link resolves.
 - Test files carry no literal invisible or format characters; build such
   strings at run time or use `\u` escapes.
+- A test may consult `testing.Short()` only when its full run exceeds thirty
+  seconds on the runner per the timing table; every such test is named in
+  CLAUDE.md and runs in full in `test-full`. The timing table is the "tests
+  slower than 1s" step summary of the `test` and `test-full` jobs, or
+  `make test-timings` locally.
 - Documents: plain prose, no em dashes, state what the logs show, cite tests by
   their exact names.
 

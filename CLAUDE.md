@@ -13,6 +13,7 @@ Always `export GOFLAGS=-mod=readonly`. Never `go get` or `go mod tidy` without r
 ```sh
 make build                                            # go build ./... && go vet ./...
 make test                                             # go test -race -count=1 -timeout 1500s -cover ./... (prints per-package coverage)
+make test-timings                                     # the same run under gotestsum --format pkgname, then every test slower than 1s (needs gotestsum on PATH: go install gotest.tools/gotestsum@v1.13.0)
 make lint                                             # gofmt, go vet (also -tags e2e), golangci-lint (also --build-tags e2e)
 make vuln                                             # govulncheck ./... (install: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0, the version CI pins)
 make e2e                                              # go test -tags e2e -count=1 -timeout 900s -v ./e2e against the real gateway
@@ -37,9 +38,24 @@ seam/run.sh guarded; seam/day5.sh; seam/day34-paging-latency.sh; seam/day34-sess
 test (`TestServe_AcceptsAPageOverGRPCsDefaultLimit`); the CI `test-full` job
 runs those three packages without `-short`.
 
+The `-short` policy: a test may consult `testing.Short()` only when its full run
+exceeds thirty seconds on the runner per the timing table; every such test is
+named in CLAUDE.md and runs in full in `test-full`. The timing table is the
+"tests slower than 1s" step of the `test` and `test-full` jobs (gotestsum
+v1.13.0 runs `go test` with `--jsonfile`, then `gotestsum tool slowest
+--threshold 1s` writes every test over one second, slowest first, to the step
+summary, also after a failure); `make test-timings` prints the same table
+locally. `TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull` in
+`internal/shortpolicy` parses every Go file of the module, not only the test
+files, and fails when a test or fuzz target consults `testing.Short()` without
+being named in this file or without its package on the `test-full` command line,
+and when anything else consults it: a helper, a method, `TestMain`, a benchmark,
+or any function in a file without the `_test.go` suffix (a shared helper there
+would otherwise hide the skip).
+
 The seam scripts and the end-to-end test need the v1.6.0 release binary at `.cache/agentgateway-darwin-arm64` (gitignored; `TOOLWARRANT_GATEWAY_BIN` overrides the path) and the seam scripts need the four seam binaries in `bin/`. Outside the seam scripts and `make e2e` (which starts the gateway on loopback ports it picks itself and stops it) the gateway binary may only be run with `--validate-only`. The e2e scenarios share one stack and depend on each other's end state, so run the whole `TestEndToEnd`, not one subtest. Anything over two minutes runs in the background with output to a file.
 
-The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint (gofmt, go vet, golangci-lint, and actionlint on both workflow files), vet and build, the short test suite under `-race`, the three packages whose tests `-short` skips (`internal/textdiff`, `internal/catalog`, `internal/processor`) in full, govulncheck, gitleaks, the notices check, the release configuration check (`make release-check`), and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only, against the linux release binary checked against the recorded checksum; it passed on 2026-10-12. Run the documentation checks by hand with:
+The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint (gofmt, go vet, golangci-lint, and actionlint on both workflow files), vet and build, the short test suite under `-race`, the three packages whose tests `-short` skips (`internal/textdiff`, `internal/catalog`, `internal/processor`) in full (both test jobs run `go test` through gotestsum v1.13.0, one line per package and the failed tests' output at the end, and write the tests slower than one second to the step summary), govulncheck, gitleaks, the notices check, the release configuration check (`make release-check`), and the documentation checks (every test name cited in README.md, SECURITY.md, CLAUDE.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only, against the linux release binary checked against the recorded checksum; it passed on 2026-10-12. Run the documentation checks by hand with:
 
 ```sh
 for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sort -u); do grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.cache --exclude-dir=.git . || echo "missing test: $n"; done
@@ -62,6 +78,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - `internal/toolname`: the one tool-name rule shared by crawler, catalog, processor and emitter.
 - `internal/strictjson`: rejects JSON objects that two parsers could read differently.
 - `internal/mcpwire`: pure helpers over raw MCP JSON-RPC payloads; the entry count of a `tools/list` page is taken by a streaming decoder that stops at the cap before the array is materialised.
+- `internal/shortpolicy`: no code, only the test that enforces the `-short` policy above against every Go file of the module, CLAUDE.md and the `test-full` command of ci.yml.
 - `internal/extmcpv1`: generated ExtMCP stubs (package `api`) from `third_party/agentgateway/ext_mcp.proto`.
 - `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.

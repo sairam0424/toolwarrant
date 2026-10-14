@@ -14,6 +14,11 @@
 # when it moves the SHA (its first bump left a comment with extra words
 # behind). A tag can be moved, a commit cannot.
 #
+# Both test jobs run go test through gotestsum v1.13.0 (installed with go
+# install at that version, like govulncheck) and end with a step that writes
+# every test slower than one second to the step summary, also after a failure.
+# CLAUDE.md's -short policy reads its thirty-second line off that table.
+#
 # The e2e job runs only on workflow_dispatch. It downloads the agentgateway
 # v1.6.0 release asset for linux and checks it against the SHA-256 recorded in
 # AGENTGATEWAY_SHA256 below (recorded on 2026-10-12; the job passed the same
@@ -95,6 +100,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # gotestsum wraps the go test command below without changing what runs:
+      # --format pkgname prints one line per package with its time and
+      # coverage and the failed tests' output at the end, --jsonfile keeps the
+      # -json stream for the timing table. Pinned like govulncheck; the go.sum
+      # line of the module at v1.13.0 is
+      # h1:+Lh454O9mu9AMG1APV4o0y7oDYKyik/3kBOiCqiEpRo= (go mod download -json
+      # on 2026-10-14), which go install checks against sum.golang.org.
+      - run: go install gotest.tools/gotestsum@v1.13.0
       # -short skips six tests: the three Unicode walks of internal/textdiff
       # (TestEscape_everyRune, TestEscape_coversEveryRuneTheToolNameRuleForbids,
       # TestNames_noSuspiciousRuneHasAnEmptyName), two slow catalog tests
@@ -102,7 +115,17 @@ jobs:
       # TestRecordCrawl_LargeCrawlDoesNotBlockADecision) and the processor's
       # gRPC size test (TestServe_AcceptsAPageOverGRPCsDefaultLimit); the
       # test-full job runs those three packages without -short.
-      - run: go test -race -short -count=1 -timeout 900s -cover ./...
+      - run: gotestsum --format pkgname --jsonfile "$RUNNER_TEMP/gotestsum.json" -- -race -short -count=1 -timeout 900s -cover ./...
+      # The timing table: every test over one second, slowest first, in the
+      # step summary and the log, also when a test failed, so that a red run
+      # still shows where the time went. make test-timings prints the same
+      # table locally.
+      - name: tests slower than 1s
+        if: always()
+        run: |
+          set -euo pipefail
+          table="$(gotestsum tool slowest --jsonfile "$RUNNER_TEMP/gotestsum.json" --threshold 1s)"
+          printf '## Tests slower than 1s\n\n~~~\n%s\n~~~\n' "${table:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   test-full:
     name: full textdiff Unicode walk, slow catalog tests and the processor gRPC size test
@@ -115,9 +138,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # gotestsum as in the test job: the same pin, the same reasons.
+      - run: go install gotest.tools/gotestsum@v1.13.0
       # The three packages with a testing.Short() skip, run in full. CLAUDE.md
-      # names the six tests this covers.
-      - run: go test -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/ ./internal/processor/
+      # names the six tests this covers, and internal/shortpolicy's
+      # TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull fails when a
+      # test consults testing.Short() without being named there or without its
+      # package on this line.
+      - run: gotestsum --format pkgname --jsonfile "$RUNNER_TEMP/gotestsum.json" -- -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/ ./internal/processor/
+      # The timing table, as in the test job.
+      - name: tests slower than 1s
+        if: always()
+        run: |
+          set -euo pipefail
+          table="$(gotestsum tool slowest --jsonfile "$RUNNER_TEMP/gotestsum.json" --threshold 1s)"
+          printf '## Tests slower than 1s\n\n~~~\n%s\n~~~\n' "${table:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   govulncheck:
     name: govulncheck
