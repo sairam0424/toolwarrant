@@ -294,10 +294,16 @@ func (u *upstream) url() string { return u.http.URL }
 
 // set adds a tool or replaces the one with that name.
 func (u *upstream) set(name, desc string) {
-	u.server.AddTool(&mcp.Tool{Name: name, Description: desc, InputSchema: json.RawMessage(`{"type":"object"}`)},
-		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
-		})
+	u.setTool(&mcp.Tool{Name: name, Description: desc, InputSchema: json.RawMessage(`{"type":"object"}`)})
+}
+
+// setTool adds a tool or replaces the one with its name, with the whole
+// definition the test gives (schema, annotations, title), where set gives
+// only a description.
+func (u *upstream) setTool(tool *mcp.Tool) {
+	u.server.AddTool(tool, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+	})
 }
 
 func (u *upstream) remove(name string) { u.server.RemoveTools(name) }
