@@ -299,10 +299,15 @@ pinned gateway version.
   `TestDiffPrintsTheDriftClassification`,
   `TestShowGroupsVersionsByChangeKinds`).
 - Re-approve or reject. `approve` with the new digest makes the new definition
-  the served one. `reject SERVER TOOL --hash DIGEST` records that the new
-  digest must not be served; the tool stays hidden until the upstream goes back
-  to the approved digest (the crawl then records `reverted`) or serves yet
-  another digest, which becomes a new proposal.
+  the served one. Before it decides, `approve` prints the same `change versus
+  the approved version N: GRADE (kinds)` line on stderr, ahead of the
+  suspicious-text review, so stdout keeps the one `approved SERVER/TOOL at
+  DIGEST` line scripts parse; the line never gates (D21 (b);
+  `TestApprovePrintsTheClassificationAndNeverGatesOnIt`). `reject SERVER TOOL
+  --hash DIGEST` records that the new digest must not be served; the tool stays
+  hidden until the upstream goes back to the approved digest (the crawl then
+  records `reverted`) or serves yet another digest, which becomes a new
+  proposal.
 - Rollback. `rollback SERVER TOOL --to DIGEST` re-approves a version that was
   approved before, which the catalog accepts only when a verified
   `version.approved` or `version.rolled_back` audit entry names that digest.
