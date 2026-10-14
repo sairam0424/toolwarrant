@@ -76,6 +76,12 @@ jobs:
           version: v2.14.0
           install-only: true
       - run: make lint
+      # The committed UTS #39 confusables table (internal/textdiff/
+      # confusables_table.go) must be what the generator writes from the
+      # vendored data file, as the ExtMCP stubs must match the proto: a hand
+      # edit of the table would change what reads as a look-alike without a
+      # change to the data or its pinned version.
+      - run: scripts/gen-confusables.sh --check
       # actionlint checks both workflow files for expression and schema errors
       # on every pull request; before it, such an error surfaced only when a
       # tag ran release.yml (the v0.1.0 candidates). The release tarball is

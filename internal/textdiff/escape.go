@@ -31,8 +31,10 @@ const (
 // of an escape, so the original can always be recovered. Applying Escape to its
 // own output therefore changes nothing except doubling the backslashes.
 //
-// Escape does not try to spot homoglyphs; look-alike printable characters pass
-// through unchanged.
+// Escape does not try to spot look-alikes; a printable character that draws
+// the same glyph as another passes through unchanged, since an escape would
+// have nothing to make visible. LookAlikeChanges and MixedScriptWords report
+// them by code point instead.
 func Escape(s string) string {
 	return escapeString(s, true)
 }

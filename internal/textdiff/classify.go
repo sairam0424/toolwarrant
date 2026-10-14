@@ -9,9 +9,16 @@
 // person cannot see, or that a terminal would act on, is never written out
 // raw. It is replaced by a visible escape such as \u{200B}.
 //
-// The package does not detect homoglyphs (a Cyrillic "a" that looks like a
-// Latin one). Those are ordinary printable characters and pass through
-// unchanged; a reader is not warned about them.
+// Look-alikes (a Cyrillic "а" where a Latin "a" stood) are ordinary printable
+// characters and pass through Escape unchanged: there is nothing to escape,
+// the two characters draw the same glyph. They are found instead: Skeleton
+// (UTS #39, the vendored confusables table) makes two strings that read the
+// same compare equal, LookAlikeChanges lists every value and key of the new
+// document that changed to a look-alike of the old one, and MixedScriptWords
+// lists every word that mixes scripts outside the UTS #39 Highly Restrictive
+// profile. Both are reported by code point and script, never by the character,
+// and Tool prints them in its "Look-alike changes" section. A look-alike
+// outside the table is still invisible (known limit L14).
 //
 // Known limit: Tool decodes its two documents with encoding/json, which turns
 // a lone surrogate escape such as \udc00 into U+FFFD without saying so, and a
@@ -56,6 +63,10 @@ const (
 	catObject            = "object-replacement"
 	catInvalidRune       = "invalid-rune"
 	catInvalidUTF8       = "invalid-utf8"
+	// The two categories of the "Look-alike changes" section: a value or key
+	// replaced by a look-alike of itself, and a word mixing scripts.
+	catLookAlike   = "look-alike"
+	catMixedScript = "mixed-script"
 )
 
 // Code point boundaries used by the classifier.
