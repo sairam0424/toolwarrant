@@ -1,4 +1,4 @@
-# Design decisions D1 to D17
+# Design decisions D1 to D18
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
@@ -13,7 +13,8 @@ which state D14, the commits of the sixth round (2026-10-12, the fixes
 after the fifth review), which state D15, the release design of 2026-10-12,
 which is D16, and the commits of the seventh round (2026-10-12, the fixes
 after the seventh review, scoped to the catalog chain and the canary), which
-state D17. The
+state D17, and the L17 decision of 2026-10-14 (owner decision O-1 of the
+post-v0.1 plan, taken after the research of that day), which is D18. The
 post-review sections of [../seam/RESULTS.md](../seam/RESULTS.md) quote the same
 decisions and record the corrections they forced to the spike's findings. Each
 record gives the context (what a review found), the decision, its consequences
@@ -1966,3 +1967,94 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestCompareCanaryAddresses` (i), and
   `TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite` (j).
 
+## D18. L17 is a deployment requirement; the probe's expectation flag
+
+- Context. agentgateway v1.6.0 forwards a `tools/call` sent as a JSON-RPC
+  notification (no `id`, or `id: null`) to the upstream without the ExtMCP
+  hook and without the allow rule (limit L17, [threat-model.md](threat-model.md)
+  row 25); e2e scenario O records the HTTP 202 and the probe in the hostile
+  upstream's request log on every run. Since D12 the canary's probe reports
+  that shape as UNHOOKED-CALLS, exit 1, and since D13 the documents told the
+  operator to run the probe once, record the limit and pass `--no-probe` until
+  the pin moves, because a canary that fails on every run trains its readers
+  to ignore it. That advice silenced the one check that would notice the
+  gateway changing: a canary running with `--no-probe` cannot tell a pin that
+  moved to a release with another answer from the pinned one, and the healthy
+  line it printed said only that the probe was skipped. The post-v0.1
+  research (2026-10-14) asked whether toolwarrant should close L17 itself with
+  a pre-filter in front of the gateway's serving port that refuses id-less
+  `tools/call`. The owner decided on 2026-10-14 (decision O-1 of the plan,
+  option (b)): no pre-filter, D11 stands, and L17 becomes a stated deployment
+  requirement with a probe flag that keeps the probe on.
+- Decision (a): no pre-filter. A pre-filter would terminate HTTP, parse
+  batched JSON-RPC and server-sent events, carry client bearer tokens, need
+  the canary to learn a second listener and reverse the README non-goal of no
+  data plane (D11): two to four weeks of work and a permanent attack surface,
+  for a behaviour the probe already makes visible. D11's own condition for
+  revisiting it, a gateway behaviour that no control on our side can make
+  visible, is not met.
+- Decision (b): L17 is a deployment requirement. The gateway's serving port
+  must be reachable only by clients that send a JSON-RPC id on every
+  `tools/call` (the official SDKs do) or through an enforcement point that
+  refuses id-less `tools/call`; toolwarrant provides none. SECURITY.md states
+  it as the sixth line of the trust boundary and as a hardening-checklist
+  item, README L17 and the threat model's L17 and row 25 carry it, and
+  [operations.md](operations.md) gains a "Deployment requirements" section
+  before "Running the canary".
+- Decision (c): `verify-gateway --expect-unhooked`. The flag declares that the
+  gateway forwards the probe. Under it a 202 prints `KNOWN-LIMIT <server>: the
+  gateway forwarded the id-less tools/call (HTTP 202), as agentgateway v1.6.0
+  does (L17)`, the one-line account ends `id-less tools/call forwarded
+  unhooked as declared with --expect-unhooked (KNOWN-LIMIT L17)`, and the check
+  exits 0; the line is a report like MISSING, not counted as a failing verdict
+  line, so a scheduled run that printed it on every check exits 0 when it is
+  stopped. Any other answer the probe classifies, a bare 400 and each of the
+  PROBE-INCONCLUSIVE shapes alike, is the failing verdict `PROBE-CHANGED
+  <server>: the gateway no longer answers the probe with 202 (the id-less
+  tools/call came back HTTP N); the pin moved or the gateway changed under it;
+  re-qualify (L7) and drop --expect-unhooked once the probe's answer is
+  understood`, exit 1, and it stops an un-flagged scheduled run like every
+  other failing verdict; the loop's closing sentence names it. An answer the
+  probe cannot classify (a 2xx without a body, any other status) stays a
+  `check failed` line on both paths. `classifyProbe` is untouched: the flag
+  changes what an outcome means, not what the probe sees, so the shapes D13 to
+  D17 pinned are the same shapes. `--expect-unhooked` and `--no-probe` are
+  exclusive, a usage error (exit 2) decided before anything is fetched;
+  `--no-probe` remains for a canary that must not send the probe at all.
+- Consequence. Operators on the pinned gateway run the canary with
+  `--expect-unhooked` instead of `--no-probe` and read KNOWN-LIMIT on every
+  check; the first check after a move of the pin to a release that answers the
+  probe otherwise fails as PROBE-CHANGED, which is the re-qualification
+  reminder (L7). Exit 0 is OK, MISSING or KNOWN-LIMIT only. The documents that
+  promised an OK line ending `(--no-probe)` now show the KNOWN-LIMIT line and
+  the OK line as printed with the flag (README step 7, the SECURITY.md canary
+  item, the operations guide's example and verdict list). The upstream report
+  of the behaviour stays the owner's hand-written action (SECURITY.md). What
+  D18 does not do: no proxy, no change to the probe's classification, no
+  change to the processor or the emitter, no new e2e scenario (scenario O
+  gains a third run).
+- Where. `cmd/toolwarrant/verify.go` (the flag, the exclusivity check, the
+  failure sentence), `cmd/toolwarrant/verdicts.go` (`probeReport.verdict`,
+  the KNOWN-LIMIT and PROBE-CHANGED lines and summary parts),
+  `cmd/toolwarrant/verifyloop.go` (the tally sentence),
+  `cmd/toolwarrant/main.go` (the synopsis); SECURITY.md, README.md, CLAUDE.md,
+  CONTRIBUTING.md, [threat-model.md](threat-model.md) (row 25, L17 and their
+  notes), [operations.md](operations.md) ("Deployment requirements", "Running
+  the canary", "Exit codes").
+- Tests. cmd `TestExpectUnhookedTurnsThe202IntoAKnownLimitLine` (the 202 as
+  KNOWN-LIMIT with exit 0, the probe still reaching the upstream, a scheduled
+  run that printed the line twice and exited 0 when stopped),
+  `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding` (the go-sdk
+  upstream's bare 400 and the four inconclusive shapes each PROBE-CHANGED with
+  exit 1 naming the status, the scheduled run stopping after one listing and
+  one probe session, and the same answers keeping their verdicts without the
+  flag), `TestExpectUnhookedAndNoProbeAreExclusive` (exit 2 with no session
+  opened against the gateway), `TestVerdictsFailAndSummarizeEachCheck` and
+  `TestLoopTallyOutcome` (extended); e2e scenario O, third run with the flag
+  on 2026-10-14: the pinned binary answered 202, `verify-gateway` printed
+  `KNOWN-LIMIT hostile: the gateway forwarded the id-less tools/call (HTTP
+  202), as agentgateway v1.6.0 does (L17)` and an OK line ending `id-less
+  tools/call forwarded unhooked as declared with --expect-unhooked
+  (KNOWN-LIMIT L17)`, exited 0, and the hostile upstream's request log gained
+  one probe request. Each of the three new tests fails on the code before this
+  decision with `flag provided but not defined: -expect-unhooked`, exit 2.
