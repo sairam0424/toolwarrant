@@ -193,8 +193,9 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 # 4. Review and approve exact digests. The first diff of a tool is against an
 #    empty document, so every line is an addition. --hash takes the full
 #    digest or a unique prefix of at least 8 hex characters. approve refuses a
-#    definition that holds invisible or terminal-controlling characters unless
-#    you pass --accept-suspicious after reading the list it prints.
+#    definition that holds invisible or terminal-controlling characters, words
+#    that mix scripts, or look-alike changes against the approved version
+#    unless you pass --accept-suspicious after reading the list it prints.
 ./bin/toolwarrant diff mock echo
 ./bin/toolwarrant --as alice approve mock echo --hash DIGEST_OF_ECHO
 ./bin/toolwarrant --as alice approve mock add --hash DIGEST_OF_ADD
