@@ -36,7 +36,7 @@
 // digest column intact is therefore invisible to the snapshot and the list,
 // cannot change what the gateway serves (the processor compares the live
 // definition's digest with the anchored one) and is refused at once by the
-// export, show, diff and every decision, and named by Integrity. Decisions
+// export, emit, show, diff and every decision, and named by Integrity. Decisions
 // always load their tool afresh and require every version's status,
 // ever-approved flag and proposer list to be what the verified version.*
 // entries about the tool leave behind (D17 a). A Store also remembers the

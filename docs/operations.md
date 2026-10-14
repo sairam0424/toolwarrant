@@ -786,8 +786,8 @@ verified (decision D14 for the entry, D15 for the chain; before the fifth
 round a definition and its `hash_seen` rewritten together under two dropped
 and re-created guard triggers reached the serving path, because the approvals
 table was the only evidence); and every path that hands out the bytes behind
-a digest (`export`, `show`, `diff`, every decision) hashes them against that
-digest on every call, with no memory between calls, while the serving path
+a digest (`export`, `emit`, `show`, `diff`, every decision) hashes them against
+that digest on every call, with no memory between calls, while the serving path
 (the snapshot the processor serves from, and `list`) hands out digests alone,
 each anchored to a verified audit entry, and reads no bytes (decision D21 (d);
 before the v0.3 round every read path re-hashed the bytes behind the digests
@@ -882,8 +882,8 @@ intact is invisible to the snapshot and to `list`, which hand out the anchored
 digest and read no bytes; it cannot change what the gateway serves, because
 the processor compares the digest of the live definition with the anchored
 digest and never with the stored bytes; and it is refused at once by `export`,
-`show` and `diff`, by every decision, and named by `audit verify`'s integrity
-report, each of which hashes the bytes it reads on every call
+`emit`, `show` and `diff`, by every decision, and named by `audit verify`'s
+integrity report, each of which hashes the bytes it reads on every call
 (`TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest`,
 `TestApproved_TamperedBytesAreCaughtAtOnce`,
 `TestVersions_TamperedBytesAreCaughtAtOnce`). A rewritten digest column is
