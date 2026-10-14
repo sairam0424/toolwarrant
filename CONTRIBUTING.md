@@ -46,8 +46,8 @@ make e2e      # needs the agentgateway v1.6.0 binary at .cache/ (README, Quickst
   fails otherwise.
 - A renamed test updates every document that cites it; the `docs` job checks
   that every cited test name exists and every relative link resolves, in
-  README.md, SECURITY.md, CLAUDE.md, CHANGELOG.md, `docs/` and
-  `seam/RESULTS.md`.
+  README.md, SECURITY.md, CONTRIBUTING.md (this file), CLAUDE.md,
+  CHANGELOG.md, `docs/` and `seam/RESULTS.md`.
 - Test files carry no literal invisible or format characters; build such
   strings at run time or use `\u` escapes.
 - A test may consult `testing.Short()` only when its full run exceeds thirty
