@@ -23,16 +23,33 @@
 # v1.6.0 release asset for linux and checks it against the SHA-256 recorded in
 # AGENTGATEWAY_SHA256 below (recorded on 2026-10-12; the job passed the same
 # day on the linux runner).
+#
+# The requalify job runs only on a workflow_dispatch that names a candidate
+# release in its inputs: scripts/requalify-gateway.sh checks the seventeen
+# items of docs/operations.md "Moving the gateway pin (L7)" against that
+# release, the end-to-end test included, while the e2e job keeps running
+# against the pinned version. The inputs reach the script through environment
+# variables, never through the run line, so a crafted input cannot become
+# shell.
 name: ci
 
 # Triggers: every pull request, every push to main and a manual dispatch; the
-# e2e job runs on dispatch only. README.md and SECURITY.md state the triggers
-# in these words.
+# e2e job runs on dispatch only, the requalify job on a dispatch with the two
+# inputs. README.md and SECURITY.md state the triggers in these words.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      gateway_version:
+        description: "agentgateway release to re-qualify (vX.Y.Z); empty runs the pinned e2e job only"
+        required: false
+        default: ""
+      gateway_sha256:
+        description: "SHA-256 of that release's agentgateway-linux-amd64 asset, as published beside it"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -310,3 +327,48 @@ jobs:
         if: failure()
         run: |
           find "${{ runner.temp }}/toolwarrant-e2e" -type f -path '*/logs/*' -print -exec cat {} \; 2>/dev/null || true
+
+  requalify:
+    name: re-qualify a candidate agentgateway release (dispatch with inputs only, L7)
+    if: github.event_name == 'workflow_dispatch' && inputs.gateway_version != ''
+    runs-on: ubuntu-latest
+    env:
+      GATEWAY_VERSION: ${{ inputs.gateway_version }}
+      GATEWAY_SHA256: ${{ inputs.gateway_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # the token stays out of .git/config, where the checked-out code could read it
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The script validates both inputs before it uses them in a URL or a
+      # path, downloads the candidate's linux asset, checks it against the
+      # digest given and the one the release publishes, runs the binary-backed
+      # tests and make e2e against it, and prints one PASS or CHANGED line per
+      # item; exit 1 means at least one CHANGED or a failed test run.
+      - name: scripts/requalify-gateway.sh --e2e
+        run: scripts/requalify-gateway.sh "$GATEWAY_VERSION" "$GATEWAY_SHA256" --e2e
+      # What the items read, for the operator: the scenario notes of the e2e
+      # run and the head of every diff the script wrote. The e2e process logs
+      # are printed only on failure, as the e2e job does.
+      - name: notes and diffs
+        if: always()
+        run: |
+          set -eu
+          dir=".cache/candidate/$GATEWAY_VERSION"
+          if [ -f "$dir/e2e-report.log" ]; then
+            echo "## e2e notes"
+            cat "$dir/e2e-report.log"
+          fi
+          for f in "$dir"/diffs/*.diff; do
+            if [ -f "$f" ]; then
+              echo "## $f (first 400 lines)"
+              head -n 400 "$f"
+            fi
+          done
+      - name: process logs on failure
+        if: failure()
+        run: |
+          find ".cache/candidate/$GATEWAY_VERSION/e2e-work" -type f -path '*/logs/*' -print -exec cat {} \; 2>/dev/null || true
