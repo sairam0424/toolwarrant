@@ -1291,6 +1291,28 @@ against it (SECURITY.md, Release integrity). The binary it installs prints
 line of `go version -m` is what names the tag. The record for v0.1.0 exists
 and lists the same `h1:` hash the `mod` line shows.
 
+Then rebuild one platform and compare it with the archive. The build is
+reproducible (CGO disabled, `-trimpath`, no date in the link flags, archive
+timestamps taken from the commit), so a clean clone at the tag built with the
+toolchain `go.mod` names gives the archive's binary byte for byte; the checkout
+must be clean, since the version control state is a build input:
+
+```sh
+git clone --branch vX.Y.Z https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
+git status --short   # prints nothing
+CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -ldflags "-s -w -X main.version=X.Y.Z" -o rebuilt ./cmd/toolwarrant
+tar -xzf toolwarrant_X.Y.Z_linux_amd64.tar.gz toolwarrant
+cmp rebuilt toolwarrant
+```
+
+`cmp` prints nothing when the two files are equal; a difference is an incident,
+not a note. v0.1.0 rebuilt this way on 2026-10-14 gave the released binaries
+byte for byte for linux/amd64 and darwin/arm64 (SECURITY.md, Release integrity,
+records the hashes). `GOTOOLCHAIN` names the toolchain `go.mod` pins; a later
+`go.mod` that moves it changes this command and SECURITY.md's in the same
+commit.
+
 A published release is never re-run: the workflow keeps an existing
 release's notes and the existing assets make a second upload fail, so a fix
 is a new tag. The gate accepts only the newest `ci` run that a push to `main`

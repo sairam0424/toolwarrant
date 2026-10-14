@@ -412,3 +412,28 @@ shasum -a 256 -c --ignore-missing toolwarrant_0.1.0_checksums.txt
 The first command proves the checksums file was produced by this repository's
 release workflow at that tag; the second proves the downloaded archive is the
 one it lists.
+
+Rebuilding a release to check it: the build is reproducible (CGO disabled,
+`-trimpath`, no date in the link flags, archive timestamps taken from the
+commit), so a clean clone at the tag, built with the toolchain `go.mod` names,
+gives the archive's binary byte for byte. The checkout must be clean: the
+version control state is a build input, so a tree with local changes, or an
+archive without `.git`, gives another binary.
+
+```sh
+git clone --branch v0.1.0 https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
+git status --short   # prints nothing
+CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o rebuilt ./cmd/toolwarrant
+tar -xzf toolwarrant_0.1.0_linux_amd64.tar.gz toolwarrant
+cmp rebuilt toolwarrant
+```
+
+`GOTOOLCHAIN` names the toolchain `go.mod` pins (`toolchain go1.27.2`), which
+the go command downloads when the host has another; `GOOS` and `GOARCH` select
+the archive being checked. `cmp` prints nothing when the two files are equal.
+v0.1.0 was rebuilt this way on 2026-10-14, on a host other than the release
+runner, for linux/amd64 (SHA-256 of the binary
+`34e1fd446d9f89606e282aeb38e34484f79ab269b59bcac3d96fd42023d2934e`) and for
+darwin/arm64 (`aa60e92b74c8c360d186ea340284c08f70bd913b54c8e7663e9b7cfbabefc0f4`),
+and `cmp` printed nothing for either.
