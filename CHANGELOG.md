@@ -13,6 +13,8 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-15
+
 ### Added
 
 - `toolwarrant diff` prints `drift: GRADE (kinds)` after the `to:` header: the change from the from version to the to version classified by the new `internal/drift` package (CRITICAL for a parameter removed, retyped or newly required, an annotation hint loosened or the name changed; WARNING for a description, optional parameter, schema, annotations or `_meta` change, the description grade being owner decision O-6; INFO for the title and icons), or `drift: not classified (nothing approved to compare with)` against the empty document; the classification is advice, the gate stays the digest (`TestDiffPrintsTheDriftClassification`, `TestCompare_DescriptionChangeIsWarningNotInfo`, `TestCompare_HostileKeysAreEscapedInPaths`).
@@ -75,7 +77,8 @@ whose changelog has no heading for that version.
 
 First release. toolwarrant for MCP is a control plane in front of agentgateway v1.6.0: it crawls upstream MCP servers, stores every tool definition as an immutable version identified by the SHA-256 of its RFC 8785 canonical JSON, lets a named person approve one exact digest, emits the gateway configuration and enforces the approval at the gateway as an ExtMCP processor in strict mode, so that a tool is served only while its live definition hashes to the approved digest. Nothing is served until approved and a crawl never approves anything. The catalog is an SQLite file at schema v6 with a hash-chained audit log. The release carries the `toolwarrant` binary for darwin/arm64, darwin/amd64, linux/amd64 and linux/arm64, built from the tagged commit with CGO disabled and `-trimpath`, one SPDX SBOM beside each archive, and a checksums file signed keyless with cosign by the release workflow (docs/decisions.md D16; verification in SECURITY.md, Release integrity).
 
-[Unreleased]: https://github.com/sairam0424/toolwarrant/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sairam0424/toolwarrant/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sairam0424/toolwarrant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sairam0424/toolwarrant/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/sairam0424/toolwarrant/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sairam0424/toolwarrant/releases/tag/v0.1.0
