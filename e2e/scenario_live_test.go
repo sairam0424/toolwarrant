@@ -100,7 +100,8 @@ func scenarioP(t *testing.T, s *stack) {
 // noteLiveShape records what GET /api/config renders in the healthy state:
 // the top-level sections and whether the request-header filter of mock's
 // processor is among the fields, since cmd/toolwarrant/testdata/admin_config.json
-// was recorded before the emitter wrote the filter.
+// was recorded before the emitter wrote the filter. The note carries the
+// letter of the scenario that called it (P, and Q on the TLS entry).
 func (s *stack) noteLiveShape(t *testing.T, doc []byte) {
 	t.Helper()
 	sections, err := liveSections(doc)
@@ -111,7 +112,7 @@ func (s *stack) noteLiveShape(t *testing.T, doc []byte) {
 	if err != nil {
 		t.Fatalf("read mock's processor in the live configuration: %v", err)
 	}
-	s.note(t, "P: GET %s renders the top-level sections %v; mock's processor entry carries the %s filter: %v", adminConfigPath, sections, headerFilterField, has)
+	s.noteHere(t, "GET %s renders the top-level sections %v; mock's processor entry carries the %s filter: %v", adminConfigPath, sections, headerFilterField, has)
 }
 
 // noteAdminAPIShape records the two facts about the admin API that item 10 of
@@ -200,7 +201,7 @@ func (s *stack) expectLiveHealthy(t *testing.T, when string) {
 		t.Fatalf("verify-gateway --admin %s: exit %d\nstdout: %s\nstderr: %s", when, r.code, r.stdout, r.stderr)
 	}
 	mustContain(t, "verify-gateway --admin "+when, r.stdout, "OK:", liveMatchesLine)
-	s.note(t, "P: %s, verify-gateway --admin printed: %s", when, strings.TrimSpace(r.stdout))
+	s.noteHere(t, "%s, verify-gateway --admin printed: %s", when, strings.TrimSpace(r.stdout))
 }
 
 // expectLiveMismatch runs verify-gateway --admin against the byte-identical
@@ -217,7 +218,7 @@ func (s *stack) expectLiveMismatch(t *testing.T, emittedCopy, when string, namin
 	mustContain(t, "verify-gateway --admin "+when, r.stdout, append([]string{liveMismatchLine}, naming...)...)
 	mustNotContain(t, "verify-gateway --admin "+when, r.stdout, "CONFIG-EDITED", "LEAK")
 	mustContain(t, "verify-gateway stderr "+when, r.stderr, "differs from the emitted file")
-	s.note(t, "P: %s, with --config naming a byte-identical copy of the file emit wrote, verify-gateway --admin printed: %s", when, strings.TrimSpace(r.stdout))
+	s.noteHere(t, "%s, with --config naming a byte-identical copy of the file emit wrote, verify-gateway --admin printed: %s", when, strings.TrimSpace(r.stdout))
 }
 
 // restoreLive posts the original document back, waits until the gateway
@@ -254,7 +255,7 @@ func (s *stack) awaitRouteListing(t *testing.T, server, config string) {
 		r := s.tw(t, nil, s.canaryArgs(server, false, config)...)
 		if r.code == exitOK {
 			if attempt > 1 {
-				s.note(t, "P: the route served the canary's listing again on attempt %d", attempt)
+				s.noteHere(t, "the route served the canary's listing again on attempt %d", attempt)
 			}
 			return
 		}
@@ -281,7 +282,7 @@ func (s *stack) replaceLive(t *testing.T, doc []byte) {
 func (s *stack) tryReplaceLive(t *testing.T, doc []byte) bool {
 	t.Helper()
 	status, body := s.postLiveConfig(t, doc)
-	s.note(t, "P: POST %s with %d bytes of JSON -> status %d, %d-byte answer", adminConfigPath, len(doc), status, len(body))
+	s.noteHere(t, "POST %s with %d bytes of JSON -> status %d, %d-byte answer", adminConfigPath, len(doc), status, len(body))
 	return status/100 == 2
 }
 
