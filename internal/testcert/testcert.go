@@ -4,7 +4,7 @@
 // moment they are made. Nothing here is checked into the tree: every key and
 // certificate is made when a test asks, so the repository holds no key
 // material, and the package is imported by test files only (the processor's
-// TLS tests, the serve command's, and end-to-end scenario Q once it lands).
+// TLS tests, the serve command's, and end-to-end scenario Q).
 // The TLS link it serves is recorded as D19.
 package testcert
 

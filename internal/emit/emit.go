@@ -196,7 +196,7 @@
 // files on the host that emits; whether the handshake against the processor
 // succeeds, which certificate the gateway presents and whether it verifies
 // the hostname are observable only with the gateway running, and are for the
-// end-to-end test (scenario Q, planned), not for this package. The gateway
+// end-to-end test (scenario Q), not for this package. The gateway
 // name is a constant, and editing the file by hand fails Verify. A secret is
 // written into the file in clear, so a file that carries one must be readable
 // by the gateway alone.
