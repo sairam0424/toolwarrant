@@ -413,19 +413,20 @@ The first command proves the checksums file was produced by this repository's
 release workflow at that tag; the second proves the downloaded archive is the
 one it lists.
 
-Rebuilding a release to check it: the build is reproducible (CGO disabled,
-`-trimpath`, no date in the link flags, archive timestamps taken from the
-commit), so a clean clone at the tag, built with the toolchain `go.mod` names,
-gives the archive's binary byte for byte. The checkout must be clean: the
-version control state is a build input, so a tree with local changes, or an
-archive without `.git`, gives another binary.
+Rebuilding a release to check it, with the verified archive in the directory
+you clone into: the build is reproducible (CGO disabled, `-trimpath`, no date
+in the link flags, archive timestamps taken from the commit), so a clean clone
+at the tag, built with the toolchain `go.mod` names, gives the archive's
+binary byte for byte. The checkout must be clean: the version control state
+is a build input, so a tree with local changes, or an archive without `.git`,
+gives another binary.
 
 ```sh
 git clone --branch v0.1.0 https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
 git status --short   # prints nothing
 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o rebuilt ./cmd/toolwarrant
-tar -xzf toolwarrant_0.1.0_linux_amd64.tar.gz toolwarrant
+tar -xzf ../toolwarrant_0.1.0_linux_amd64.tar.gz toolwarrant
 cmp rebuilt toolwarrant
 ```
 

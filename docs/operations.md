@@ -1302,18 +1302,19 @@ version at link time; the `mod` line of `go version -m` is what names the
 tag. The record for v0.1.0 exists and lists the same `h1:` hash the `mod`
 line shows.
 
-Then rebuild one platform and compare it with the archive. The build is
-reproducible (CGO disabled, `-trimpath`, no date in the link flags, archive
-timestamps taken from the commit), so a clean clone at the tag built with the
-toolchain `go.mod` names gives the archive's binary byte for byte; the checkout
-must be clean, since the version control state is a build input:
+Then, with the verified archive in the directory you clone into, rebuild one
+platform and compare it with the archive. The build is reproducible (CGO
+disabled, `-trimpath`, no date in the link flags, archive timestamps taken
+from the commit), so a clean clone at the tag built with the toolchain
+`go.mod` names gives the archive's binary byte for byte; the checkout must be
+clean, since the version control state is a build input:
 
 ```sh
 git clone --branch vX.Y.Z https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
 git status --short   # prints nothing
 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags "-s -w -X main.version=X.Y.Z" -o rebuilt ./cmd/toolwarrant
-tar -xzf toolwarrant_X.Y.Z_linux_amd64.tar.gz toolwarrant
+tar -xzf ../toolwarrant_X.Y.Z_linux_amd64.tar.gz toolwarrant
 cmp rebuilt toolwarrant
 ```
 
