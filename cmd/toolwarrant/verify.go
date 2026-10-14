@@ -301,7 +301,7 @@ func (v *verifier) readConfig(res *verdicts) []byte {
 	if v.config == "" {
 		return nil
 	}
-	data, err := readRegularFile(v.config, "--config", maxEmittedFileBytes)
+	data, err := readRegularFile(v.config, "--config", emittedFileNoun, maxEmittedFileBytes)
 	if err != nil {
 		res.configEdited, res.configReason = true, textdiff.Escape(err.Error())
 		return nil

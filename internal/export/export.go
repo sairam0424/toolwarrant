@@ -19,11 +19,25 @@
 // orphaned on disk and later committed as if it were still approved. A Write
 // that changes nothing touches nothing.
 //
+// MANIFEST.json (version 3) also records the head of the audit chain the
+// catalog had verified when the approvals were read and the digest profile
+// every digest was computed under, and a Write given a signing key seals the
+// complete manifest with an Ed25519 signature in MANIFEST.json.sig and leaves
+// the public key beside it in MANIFEST.json.pub (D21 e). Verify checks a
+// directory against a public key the operator holds: the signature, every
+// listed file's bytes against its digest, and that the files on disk are
+// exactly the files listed. A Write without a key never touches the two
+// signature files, so a signature from an earlier run stays beside a newer
+// manifest until the next signed Write; Verify and Commit both refuse that
+// pair rather than pass it.
+//
 // Two Writes must not run on one directory at the same time; the catalog
 // serialises them.
 package export
 
 import (
+	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"os"
 )
@@ -41,19 +55,57 @@ type Report struct {
 	Skipped []Skipped
 }
 
+// Options is what one Write records about the catalog beside the tools, and
+// whether it seals the record. AuditHead is the head of the audit chain the
+// catalog had verified when the approvals were read, in the same read
+// transaction as them (catalog.Store.ApprovedWithHead: 64 lower-case hex
+// digits, the genesis for an empty log) and DigestProfile
+// the rule every digest was computed under (gate.DigestProfile); both are
+// required and go into MANIFEST.json, so that a reader of the export, and a
+// verifier of its signature, know which log and which digest rule it mirrors.
+// SignKey, when set, is the Ed25519 private key that signs the exact bytes of
+// the complete manifest into MANIFEST.json.sig, with its public key written to
+// MANIFEST.json.pub; the key is used for the signature and nothing else, and
+// the caller owns and zeroes it.
+type Options struct {
+	AuditHead     string
+	DigestProfile string
+	SignKey       ed25519.PrivateKey
+}
+
+// validate refuses options the manifest could not carry or the signer could
+// not use, before anything is planned or written.
+func (o Options) validate() error {
+	if !isHexDigest(o.AuditHead) {
+		return errors.New("export: audit head is not a lower-case hex sha256")
+	}
+	if !isProfileName(o.DigestProfile) {
+		return errors.New("export: digest profile is not a profile name")
+	}
+	if o.SignKey != nil && len(o.SignKey) != ed25519.PrivateKeySize {
+		return errors.New("export: signing key is not an Ed25519 private key")
+	}
+	return nil
+}
+
 // Write lays the tools out as <dir>/<server>/<tool>.json plus
-// <dir>/MANIFEST.json and removes files a previous Write created that are no
-// longer wanted.
+// <dir>/MANIFEST.json carrying the catalog fields of opts, removes files a
+// previous Write created that are no longer wanted, and, when opts carries a
+// signing key, signs the complete manifest (signManifest).
 //
 // It validates the whole batch (digests, JSON, names, collisions) before it
 // touches the disk, so a bad input changes nothing. Running it twice with the
-// same tools leaves the directory byte-identical and untouched.
-func Write(dir string, tools []Tool) (Report, error) {
+// same tools and options leaves the directory byte-identical and untouched;
+// a moved audit head rewrites the manifest and its signature alone.
+func Write(dir string, tools []Tool, opts Options) (Report, error) {
+	if err := opts.validate(); err != nil {
+		return Report{}, err
+	}
 	planned, skipped, err := planAll(tools)
 	if err != nil {
 		return Report{}, err
 	}
-	final, err := renderManifest(planEntries(planned), statusComplete)
+	final, err := renderManifest(planEntries(planned), statusComplete, opts)
 	if err != nil {
 		return Report{}, err
 	}
@@ -76,13 +128,19 @@ func Write(dir string, tools []Tool) (Report, error) {
 		// Only the manifest may differ (metadata, or a pending one whose work
 		// is already done); replacing it is one atomic step.
 		rep.Unchanged = len(planned)
-		return rep, writeIfChanged(root, manifestName, final)
+		if err := writeIfChanged(root, manifestName, final); err != nil {
+			return rep, err
+		}
+		return rep, signManifest(root, final, opts.SignKey)
 	}
-	pending, err := renderManifest(unionEntries(prev.Tools, planned), statusPending)
+	pending, err := renderManifest(unionEntries(prev.Tools, planned), statusPending, opts)
 	if err != nil {
 		return rep, err
 	}
-	return rep, apply(root, planned, act, pending, final, &rep)
+	if err := apply(root, planned, act, pending, final, &rep); err != nil {
+		return rep, err
+	}
+	return rep, signManifest(root, final, opts.SignKey)
 }
 
 // apply performs the actions in the order that keeps MANIFEST.json a complete

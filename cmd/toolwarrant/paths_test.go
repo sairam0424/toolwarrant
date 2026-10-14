@@ -143,16 +143,19 @@ func TestReadRegularFile(t *testing.T) {
 	if err := os.WriteFile(plain, []byte("abc"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := readRegularFile(plain, "--config", 3); err != nil || string(data) != "abc" {
+	if data, err := readRegularFile(plain, "--config", emittedFileNoun, 3); err != nil || string(data) != "abc" {
 		t.Errorf("plain: %q %v", data, err)
 	}
-	if _, err := readRegularFile(plain, "--config", 2); err == nil || !strings.Contains(err.Error(), "larger than 2 bytes") {
+	if _, err := readRegularFile(plain, "--config", emittedFileNoun, 2); err == nil || !strings.Contains(err.Error(), "larger than 2 bytes, which no emitted file is") {
 		t.Errorf("over the cap: %v", err)
 	}
-	if _, err := readRegularFile(filepath.Join(dir, "absent"), "--config", 10); !errors.Is(err, os.ErrNotExist) {
+	if _, err := readRegularFile(plain, "--pub-key", pemPublicKeyNoun, 2); err == nil || !strings.Contains(err.Error(), "which no PEM public key file is") {
+		t.Errorf("over the cap, named as a key file: %v", err)
+	}
+	if _, err := readRegularFile(filepath.Join(dir, "absent"), "--config", emittedFileNoun, 10); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("absent: %v", err)
 	}
-	if _, err := readRegularFile(dir, "--config", 10); !errors.Is(err, errNotRegular) || !strings.Contains(err.Error(), "is a directory") {
+	if _, err := readRegularFile(dir, "--config", emittedFileNoun, 10); !errors.Is(err, errNotRegular) || !strings.Contains(err.Error(), "is a directory") {
 		t.Errorf("directory: %v", err)
 	}
 	if err := refuseIrregularFile(filepath.Join(dir, "absent"), "--out"); err != nil {
