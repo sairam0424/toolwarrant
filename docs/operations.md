@@ -265,9 +265,17 @@ Verdicts, one line per tool or per check:
   rule in the gateway file is stale (run `emit` again) or the gateway
   re-serialises the definition before the hook (limit L2); the processor's
   `digest mismatch` log line and `mismatched` counter tell the two apart.
-  Scenario L printed `MISSING vendor_tool` for the re-serialised tool. A tool
-  whose latest crawl left the unusable marker is not MISSING when the gateway
-  does not list it: a working processor hides it.
+  Scenario L printed `MISSING vendor_tool` for the re-serialised tool. Which
+  key paths the pinned gateway drops, keeps and adds is the golden
+  `e2e/testdata/gateway_tool_keys.json` (dropped: unknown top-level keys,
+  unknown `annotations` members, `execution` and the `_meta` member `ui`;
+  kept: `title`, `outputSchema`, `icons`, members inside `inputSchema` and the
+  other `_meta` members); scenario L fails when a run differs, naming the list
+  and the entries, and writes what it saw to
+  `logs/gateway_tool_keys.observed.json` in its work directory, the file to
+  copy over the golden when the gateway pin moves (L7). A tool whose latest
+  crawl left the unusable marker is not MISSING when the gateway does not list
+  it: a working processor hides it.
 - `CONFIG-EDITED`: the file named by `--config` fails `emit.Verify` (its body
   no longer matches the hash in its header, or the header is missing), cannot
   be read at all or is not a regular file, because a canary that cannot read

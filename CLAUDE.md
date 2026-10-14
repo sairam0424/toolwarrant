@@ -63,7 +63,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - `internal/strictjson`: rejects JSON objects that two parsers could read differently.
 - `internal/mcpwire`: pure helpers over raw MCP JSON-RPC payloads; the entry count of a `tools/list` page is taken by a streaming decoder that stops at the cap before the array is materialised.
 - `internal/extmcpv1`: generated ExtMCP stubs (package `api`) from `third_party/agentgateway/ext_mcp.proto`.
-- `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
+- `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to P on one shared stack; `e2e/testdata/gateway_tool_keys.json` is the L2 golden of the key paths the gateway drops, keeps and adds, which scenario L compares exactly); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-third-party-notices.sh`.
 - `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D17), `docs/operations.md`.
