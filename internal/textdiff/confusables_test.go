@@ -3,6 +3,7 @@ package textdiff
 import (
 	"bufio"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,9 +14,16 @@ import (
 const (
 	confusablesDataPath = "../../third_party/unicode/confusables.txt"
 	confusablesGoPath   = "confusables_table.go"
+	ciWorkflowPath      = "../../.github/workflows/ci.yml"
 	dataVersionPrefix   = "# Version: "
 	versionParts        = 3
+	lintJob             = "lint"
+	makeLintStep        = "- run: make lint\n"
+	confusablesStep     = "- run: scripts/gen-confusables.sh --check\n"
 )
+
+// jobHeading matches the line that opens a job of the workflow.
+var jobHeading = regexp.MustCompile(`(?m)^  [a-z][a-z0-9-]*:$`)
 
 // readConfusables parses the vendored file the way the generator does, with
 // an independent reading of the format: source ; target ; MA # comment.
@@ -146,4 +154,42 @@ func parseVersion(t *testing.T, v string) [versionParts]int {
 		out[i] = n
 	}
 	return out
+}
+
+// The lint job of ci.yml runs scripts/gen-confusables.sh --check after make
+// lint, so a committed table that differs from the vendored data file fails
+// every pull request. CHANGELOG.md and CLAUDE.md state that step; this is what
+// keeps the statement true.
+func TestConfusablesCI_lintJobRunsTheCheck(t *testing.T) {
+	workflow, err := os.ReadFile(ciWorkflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := jobBody(t, string(workflow), lintJob)
+	lint, check := strings.Index(job, makeLintStep), strings.Index(job, confusablesStep)
+	if lint < 0 {
+		t.Fatalf("the %s job lacks the step %q", lintJob, strings.TrimSpace(makeLintStep))
+	}
+	if check < 0 {
+		t.Fatalf("the %s job lacks the step %q", lintJob, strings.TrimSpace(confusablesStep))
+	}
+	if check < lint {
+		t.Fatalf("the %s job runs %q before %q", lintJob, strings.TrimSpace(confusablesStep), strings.TrimSpace(makeLintStep))
+	}
+}
+
+// jobBody returns the text of the named job of a workflow, from its heading to
+// the next job heading or the end of the file; it fails when the job is absent.
+func jobBody(t *testing.T, workflow, name string) string {
+	t.Helper()
+	heading := "\n  " + name + ":\n"
+	start := strings.Index(workflow, heading)
+	if start < 0 {
+		t.Fatalf("%s has no job %q", ciWorkflowPath, name)
+	}
+	body := workflow[start+len(heading):]
+	if next := jobHeading.FindStringIndex(body); next != nil {
+		body = body[:next[0]]
+	}
+	return body
 }

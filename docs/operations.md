@@ -1471,9 +1471,9 @@ there is nothing to list (`TestTool_lookAlikeSwapIsListedWithCodePoints`,
 What the review cannot see. The table is the UTS #39 confusables file for
 Unicode 18.0.0, vendored with its licence under `third_party/unicode/` and
 generated into `internal/textdiff/confusables_table.go` by
-`scripts/gen-confusables.sh`, whose `--check` form the `ci` lint job runs;
-the generator refuses a data file of any other version
-(`TestConfusables_tableIsGeneratedFromTheVendoredFile`,
+`scripts/gen-confusables.sh`, whose `--check` form the `ci` lint job runs
+(`TestConfusablesCI_lintJobRunsTheCheck`); the generator refuses a data file of
+any other version (`TestConfusables_tableIsGeneratedFromTheVendoredFile`,
 `TestConfusables_versionIsTheVendoredHeaderAndNotOlderThanTheToolchains`). A
 look-alike the table does not list, and a mixed-script word whose scripts the
 profile allows, are not reported (known limit L14). The scripts are those of
