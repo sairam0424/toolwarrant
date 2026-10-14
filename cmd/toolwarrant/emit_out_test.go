@@ -155,7 +155,10 @@ func TestEmitRefusesACatalogWhoseProcessorAddressIsNotTheOneTheChainRecords(t *t
 	if got := readFile(t, out); got != written {
 		t.Errorf("the refused emit replaced the file:\n%s", got)
 	}
-	wantNotContains(t, "file", readFile(t, out), "9999")
+	// The forged address, not a bare "9999": the file carries a sha256 header
+	// whose hex digits can spell any four-digit run (one in about a thousand
+	// emits did, in a CI run on 2026-10-14).
+	wantNotContains(t, "file", readFile(t, out), "127.0.0.1:9999")
 	fresh := filepath.Join(t.TempDir(), "fresh.yaml")
 	c.fail(exitFailure, "emit", "--out", fresh)
 	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
