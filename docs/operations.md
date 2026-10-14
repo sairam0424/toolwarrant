@@ -52,12 +52,15 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   (a loopback literal, `localhost` or one of the loopback aliases common
   resolvers map without DNS, such as `localhost.localdomain` and
   `ip6-loopback`; D15) unless `--allow-non-loopback` is given, and with that
-  flag `serve` still
-  refuses to listen without `--secret-env` unless `--insecure-no-secret` is
-  passed as well, because anyone who reaches an unauthenticated processor
-  decides what the gateway serves; a `--secret-env` always wins over
-  `--insecure-no-secret`. Use the pairing only on a network nobody but the
-  gateway can reach. A unix socket is created 0600, with a warning when its
+  flag `serve` still refuses to listen without `--secret-env` or
+  `--tls-client-ca` unless `--insecure-no-secret` is passed as well, because
+  anyone who reaches an unauthenticated processor decides what the gateway
+  serves; a `--secret-env` or `--tls-client-ca` always wins over
+  `--insecure-no-secret` (owner decision O-2, D19 planned: a verified client
+  certificate authenticates the hooks as the secret does; cmd
+  `TestServeTLSClientCASatisfiesTheNonLoopbackRule`,
+  `TestCheckListenAddrPolicy`). Use the pairing only on a network nobody but
+  the gateway can reach. A unix socket is created 0600, with a warning when its
   directory is not 0700. Both refusals are usage errors (exit code 2) because
   the fix is a flag.
 - `--target NAME` is the backend name the gateway reports in `service_names`;
@@ -72,6 +75,45 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   environment so that it never appears in a process listing, and it is checked
   up front against the emitter's rule (16 to 256 printable ASCII characters).
   The gateway delivers it in `metadata_context` on both hooks (scenario H).
+- `--tls-cert PATH` and `--tls-key PATH` (both or neither) make the processor
+  terminate TLS on its TCP listener, TLS 1.3 only (a client that offers at most
+  1.2 is refused in the handshake), with the PEM certificate chain and private
+  key in the two files. `--tls-client-ca PATH` names a PEM certificate
+  authority and makes every connection present a client certificate that
+  authority signed; a connection without one, with one from another authority,
+  or in plaintext is refused in the handshake and never reaches a hook, so the
+  stats line counts nothing for it. With `--tls-client-ca` the hooks are
+  authenticated by the certificate, so `--allow-non-loopback` no longer needs
+  `--secret-env` (owner decision O-2); a `--secret-env` given as well is
+  checked on every hook as before. Without `--tls-client-ca` TLS protects the
+  bytes on the wire and any TLS 1.3 client is served, so the non-loopback rule
+  is unchanged. The three files must be regular files (a symbolic link,
+  directory, named pipe, device or socket is refused before it is opened, as
+  every file the CLI opens by path) and the key must be readable by its owner
+  only, as the database is (`chmod 600`). One of `--tls-cert` and `--tls-key`
+  without the other, a `--tls-client-ca` without both, and any TLS flag with
+  `--listen unix:` (the socket is guarded by its file permissions and the
+  gateway dials it in plaintext) are usage errors (exit code 2); a file that is
+  missing or not PEM, or a key that group or others can read, is exit code 1.
+  The listening line names the mode after the target: `TLS 1.3 with a client
+  certificate required` or `TLS 1.3 with a server certificate only`. The
+  gateway's side of the link is the `backendTLS` block on its processor entry,
+  which the live comparison already compares and which a later `emit` writes
+  (D19, planned, together with the end-to-end scenario Q that observes the
+  handshake against the real gateway; until then the processor's TLS is proven
+  against grpc-go clients only). Rotate a certificate as the secret is rotated
+  (see "Rotating the shared secret"): a second processor on a new port with the
+  new files, re-emit, retire the first. (cmd
+  `TestServeTLSOverGRPCEnforcesApprovals`,
+  `TestServeTLSRefusesAClientWithoutACertificate`,
+  `TestServeTLSFlagsNeedCertAndKeyTogether`,
+  `TestServeTLSRefusesAUnixSocketListener`,
+  `TestServeTLSRefusesAGroupReadableKey`; processor
+  `TestServe_TLSListenerRefusesPlaintextAndUnknownClients`,
+  `TestServe_TLSWithClientCARequiresAClientCertificate`,
+  `TestServe_TLSWithoutClientCAAcceptsAnyClient`,
+  `TestServe_ClientCertificateSilencesTheNoSecretWarning`,
+  `TestServe_RefusesAnUnusableTLSConfig`.)
 - `--max-evidence-age DURATION` expires the digests the processor remembers
   from gateway listings; 0 (the default) keeps them until the next listing or a
   catalog change. It ages conflict markers too (limit L15).
@@ -624,6 +666,12 @@ Never rotate by editing the file: the header hash fails `Verify` and the canary
 reports CONFIG-EDITED. Rotate as well whenever another user could have reached
 the gateway host's loopback interface while the admin API was on: the admin API
 hands the loaded configuration, secret included, to any local user (limit L18).
+
+A processor certificate (`serve --tls-cert`, `--tls-key`) and the client
+authority it requires (`--tls-client-ca`) are rotated the same way: a second
+processor on a new port with the new files, a re-emit that points the server at
+it (with the gateway's `backendTLS` block, once `emit` writes it; D19 planned),
+and the old processor stopped after the longest session lifetime you tolerate.
 
 ## Reading the audit log and recording its head
 
@@ -1266,8 +1314,8 @@ toolwarrant emit --out /etc/agentgateway/gateway.yaml \
   `localhost6.localdomain6`, `ip6-localhost`, `ip6-loopback`; D15) makes that
   processor reachable from the network: `emit` prints a warning for it and the
   printed `serve` command carries `--allow-non-loopback`, which `serve`
-  accepts only together with `--secret-env` or the explicit
-  `--insecure-no-secret` (limit L11).
+  accepts only together with `--secret-env` or `--tls-client-ca`, or the
+  explicit `--insecure-no-secret` (limit L11).
 - `--bind-address ADDR` (default `127.0.0.1`) is the address the gateway binds
   the serving port to (`gateways.bindAddress`). A wildcard (`0.0.0.0` or `::`)
   also needs `--allow-all-interfaces`, a permission that changes nothing for
@@ -1778,7 +1826,9 @@ pinned; the documents keep describing v1.6.0 until one is.
   the policy refusals whose fix is a flag: the system actor
   trying to decide (pass `--as` with your own name), `serve` on a non-loopback
   address without `--allow-non-loopback`, `serve` with `--allow-non-loopback`
-  but without `--secret-env` or `--insecure-no-secret`, `emit` with a
+  but without `--secret-env`, `--tls-client-ca` or `--insecure-no-secret`,
+  `serve` with one of `--tls-cert` and `--tls-key` without the other, with
+  `--tls-client-ca` alone or with a TLS flag on a unix socket, `emit` with a
   wildcard `--bind-address` without `--allow-all-interfaces`, and `emit` with
   an `--out` that is the catalog database, its `-wal` or `-shm` sibling, the
   `--gateway-binary` path or an existing regular file whose header lines are

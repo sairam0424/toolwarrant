@@ -1,12 +1,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/emit"
 	"github.com/sairam0424/toolwarrant/internal/processor"
@@ -26,57 +28,98 @@ const (
 	privateDirMask os.FileMode = 0o077
 )
 
+// serveOptions are the serve flags as the operator gave them.
+type serveOptions struct {
+	server           string
+	listen           string
+	target           string
+	allowNonLoopback bool
+	insecureNoSecret bool
+	secretEnv        string
+	maxEvidenceAge   time.Duration
+	tls              *tlsFlags
+}
+
+// bindServeFlags registers the serve flags on fs.
+func bindServeFlags(fs *flag.FlagSet) *serveOptions {
+	o := &serveOptions{tls: bindTLSFlags(fs)}
+	fs.StringVar(&o.server, "server", "", "catalog server this processor guards (required)")
+	fs.StringVar(&o.listen, "listen", "", "host:port or unix:/path to listen on (required; a TCP address must be loopback unless --allow-non-loopback)")
+	fs.StringVar(&o.target, "target", "", "backend name the gateway reports in service_names for this route (default: the server name, which is what emit writes)")
+	fs.BoolVar(&o.allowNonLoopback, "allow-non-loopback", false, "listen on a TCP address other hosts can reach; refused without --secret-env or --tls-client-ca unless --insecure-no-secret is passed as well, and only for a network nobody but the gateway can reach")
+	fs.BoolVar(&o.insecureNoSecret, "insecure-no-secret", false, "with --allow-non-loopback, listen on a TCP address other hosts can reach without a shared secret or a client certificate authority: anyone who reaches the port then decides what the gateway serves; a --secret-env or --tls-client-ca always wins over this flag")
+	fs.StringVar(&o.secretEnv, "secret-env", "", "environment variable holding the shared secret the gateway sends with every hook (the one given to emit --secret-env); never a flag value")
+	fs.DurationVar(&o.maxEvidenceAge, "max-evidence-age", 0, "how long a digest seen in a tools/list counts as evidence for a tools/call (0 means it never expires)")
+	return o
+}
+
+// check applies the usage rules: the required flags, the evidence age, the TLS
+// flag grammar and the listen policy, in that order, so a wrong TLS flag set is
+// named before the address it would have authenticated.
+func (o *serveOptions) check(c *command, pos []string) error {
+	if err := wantArgs(c, pos); err != nil {
+		return err
+	}
+	if err := requireFlag(c, o.server, "server", "name the catalog server to guard"); err != nil {
+		return err
+	}
+	if err := requireFlag(c, o.listen, "listen", "give host:port or unix:/path"); err != nil {
+		return err
+	}
+	if o.maxEvidenceAge < 0 {
+		return &usageError{msg: "--max-evidence-age must not be negative", cmd: c}
+	}
+	if err := o.tls.check(c, o.listen); err != nil {
+		return err
+	}
+	policy := listenPolicy{allowNonLoopback: o.allowNonLoopback, hasSecret: o.secretEnv != "", hasClientCA: o.tls.requiresClient(), insecureNoSecret: o.insecureNoSecret}
+	return checkListenAddr(c, o.listen, policy)
+}
+
+// targetName is the backend name the processor guards: --target, else the
+// server name, which is what emit writes.
+func (o *serveOptions) targetName() string {
+	if o.target != "" {
+		return o.target
+	}
+	return o.server
+}
+
 // runServe runs the ExtMCP processor for one server until SIGINT or SIGTERM.
 // The catalog is opened read-only: the processor reads policy and must never
 // be able to change it. Only loopback and unix-socket listeners are accepted
 // by default, for the same reason the socket is owner-only; a TCP listener
-// other hosts can reach needs --allow-non-loopback and either the shared
-// secret or the operator's explicit --insecure-no-secret.
+// other hosts can reach needs --allow-non-loopback and the shared secret, a
+// client certificate authority (--tls-client-ca, O-2) or the operator's
+// explicit --insecure-no-secret.
 func runServe(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
-	server := fs.String("server", "", "catalog server this processor guards (required)")
-	listen := fs.String("listen", "", "host:port or unix:/path to listen on (required; a TCP address must be loopback unless --allow-non-loopback)")
-	target := fs.String("target", "", "backend name the gateway reports in service_names for this route (default: the server name, which is what emit writes)")
-	allowNonLoopback := fs.Bool("allow-non-loopback", false, "listen on a TCP address other hosts can reach; refused without --secret-env unless --insecure-no-secret is passed as well, and only for a network nobody but the gateway can reach")
-	insecureNoSecret := fs.Bool("insecure-no-secret", false, "with --allow-non-loopback, listen on a TCP address other hosts can reach without a shared secret: anyone who reaches the port then decides what the gateway serves; a --secret-env always wins over this flag")
-	secretEnv := fs.String("secret-env", "", "environment variable holding the shared secret the gateway sends with every hook (the one given to emit --secret-env); never a flag value")
-	maxEvidenceAge := fs.Duration("max-evidence-age", 0, "how long a digest seen in a tools/list counts as evidence for a tools/call (0 means it never expires)")
+	o := bindServeFlags(fs)
 	pos, err := a.parseArgs(c, fs, args)
 	if err != nil {
 		return err
 	}
-	if err := wantArgs(c, pos); err != nil {
+	if err := o.check(c, pos); err != nil {
 		return err
 	}
-	if err := requireFlag(c, *server, "server", "name the catalog server to guard"); err != nil {
-		return err
-	}
-	if err := requireFlag(c, *listen, "listen", "give host:port or unix:/path"); err != nil {
-		return err
-	}
-	if *maxEvidenceAge < 0 {
-		return &usageError{msg: "--max-evidence-age must not be negative", cmd: c}
-	}
-	policy := listenPolicy{allowNonLoopback: *allowNonLoopback, hasSecret: *secretEnv != "", insecureNoSecret: *insecureNoSecret}
-	if err := checkListenAddr(c, *listen, policy); err != nil {
-		return err
-	}
-	secret, err := readSecret(c, a.getenv, *secretEnv)
+	secret, err := readSecret(c, a.getenv, o.secretEnv)
 	if err != nil {
 		return err
 	}
-	if *target == "" {
-		*target = *server
+	tlsConf, err := o.tls.load()
+	if err != nil {
+		return err
 	}
+	target := o.targetName()
 	store, err := a.openStore(openReadOnly)
 	if err != nil {
 		return err
 	}
 	defer closeStore(store, &err)
-	if _, err := store.Server(a.ctx, *server); err != nil {
+	if _, err := store.Server(a.ctx, o.server); err != nil {
 		return err
 	}
-	lis, err := listenOn(*listen, a.stderr)
+	lis, err := listenOn(o.listen, a.stderr)
 	if err != nil {
 		return err
 	}
@@ -84,15 +127,16 @@ func runServe(a *app, c *command, args []string) (err error) {
 	// paths, where a second Close only reports that it is already closed.
 	defer func() { _ = lis.Close() }()
 	cfg := processor.Config{
-		Server:              *server,
-		Target:              *target,
+		Server:              o.server,
+		Target:              target,
 		Logger:              slog.New(slog.NewJSONHandler(a.stderr, nil)),
 		Secret:              secret,
-		AllowRemoteListener: *allowNonLoopback,
-		MaxEvidenceAge:      *maxEvidenceAge,
+		AllowRemoteListener: o.allowNonLoopback,
+		TLS:                 tlsConf,
+		MaxEvidenceAge:      o.maxEvidenceAge,
 	}
 	proc := processor.New(store, cfg)
-	a.stdout.printf("listening on %s, guarding server %s, target %s%s\n", textdiff.Escape(lis.Addr().String()), cell(*server), cell(*target), secretNote(secret))
+	a.stdout.printf("listening on %s, guarding server %s, target %s%s%s\n", textdiff.Escape(lis.Addr().String()), cell(o.server), cell(target), tlsNote(tlsConf), authNote(secret, tlsConf))
 	serveErr := proc.Serve(a.ctx, lis)
 	writeStats(a.stdout, proc.Stats())
 	if serveErr != nil {
@@ -101,30 +145,24 @@ func runServe(a *app, c *command, args []string) (err error) {
 	return a.stdout.broken()
 }
 
-// secretNote says on the listening line whether hooks are authenticated, so an
-// operator can see at a glance which mode the processor runs in.
-func secretNote(secret string) string {
-	if secret == "" {
-		return " (hooks are not authenticated: no --secret-env)"
-	}
-	return " (hooks must carry the shared secret)"
-}
-
 // listenPolicy is what the operator said about a TCP listener that other
 // hosts can reach: whether it is allowed at all, whether the hooks on it will
-// carry the shared secret, and whether running it without one was asked for
-// in so many words.
+// be authenticated (by the shared secret, or by a client certificate the
+// listener requires and verifies, O-2) and whether running it unauthenticated
+// was asked for in so many words.
 type listenPolicy struct {
 	allowNonLoopback bool
 	hasSecret        bool
+	hasClientCA      bool
 	insecureNoSecret bool
 }
 
 // checkListenAddr refuses a TCP address that is not loopback unless the
 // operator said so explicitly, and refuses it even then unless the hooks will
-// be authenticated or --insecure-no-secret records that the operator accepts
-// a processor that anyone who reaches it can steer. A unix socket or a
-// loopback address passes whatever the policy says: the flags are
+// be authenticated (a shared secret or a verified client certificate; either
+// one is enough, D19 planned) or --insecure-no-secret records that the
+// operator accepts a processor that anyone who reaches it can steer. A unix
+// socket or a loopback address passes whatever the policy says: the flags are
 // permissions, not requests, and change nothing where nothing is exposed.
 func checkListenAddr(c *command, addr string, p listenPolicy) error {
 	if path, ok := strings.CutPrefix(addr, unixPrefix); ok {
@@ -141,9 +179,9 @@ func checkListenAddr(c *command, addr string, p listenPolicy) error {
 	case isLoopbackHost(host):
 		return nil
 	case !p.allowNonLoopback:
-		return &usageError{msg: fmt.Sprintf("refusing to listen on %s: it is not a loopback address and the ExtMCP protocol has no authentication; pass --allow-non-loopback together with --secret-env, only on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
-	case !p.hasSecret && !p.insecureNoSecret:
-		return &usageError{msg: fmt.Sprintf("refusing to listen on %s without a shared secret: anyone who reaches the processor would decide what the gateway serves; pass --secret-env, or --insecure-no-secret to run unauthenticated anyway on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
+		return &usageError{msg: fmt.Sprintf("refusing to listen on %s: it is not a loopback address and the ExtMCP protocol has no authentication; pass --allow-non-loopback together with --secret-env or --tls-client-ca, only on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
+	case !p.hasSecret && !p.hasClientCA && !p.insecureNoSecret:
+		return &usageError{msg: fmt.Sprintf("refusing to listen on %s without a shared secret or a client certificate authority: anyone who reaches the processor would decide what the gateway serves; pass --secret-env or --tls-client-ca, or --insecure-no-secret to run unauthenticated anyway on a network that nobody but the gateway can reach", textdiff.Escape(addr)), cmd: c}
 	}
 	return nil
 }

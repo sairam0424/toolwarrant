@@ -156,6 +156,9 @@ func TestCheckListenAddrPolicy(t *testing.T) {
 	withSecret := listenPolicy{allowNonLoopback: true, hasSecret: true}
 	insecure := listenPolicy{allowNonLoopback: true, insecureNoSecret: true}
 	noPermission := listenPolicy{hasSecret: true, insecureNoSecret: true}
+	// O-2: a client certificate authority authenticates the hooks as the
+	// secret does, so it satisfies the rule in its place; it is no permission.
+	withClientCA := listenPolicy{allowNonLoopback: true, hasClientCA: true}
 	cases := []struct {
 		addr   string
 		policy listenPolicy
@@ -163,16 +166,22 @@ func TestCheckListenAddrPolicy(t *testing.T) {
 	}{
 		{"unix:/tmp/p.sock", listenPolicy{}, ""},
 		{"unix:/tmp/p.sock", insecure, ""},
+		{"unix:/tmp/p.sock", withClientCA, ""},
 		{"unix:", withSecret, "needs a socket path"},
 		{"127.0.0.1:9001", listenPolicy{}, ""},
 		{"[::1]:9001", insecure, ""},
 		{"localhost:9001", withSecret, ""},
 		{"10.0.0.7:9001", listenPolicy{}, "not a loopback address"},
+		{"10.0.0.7:9001", listenPolicy{}, "--tls-client-ca"},
 		{"10.0.0.7:9001", noPermission, "not a loopback address"},
+		{"10.0.0.7:9001", listenPolicy{hasClientCA: true}, "not a loopback address"},
 		{"10.0.0.7:9001", allow, "without a shared secret"},
+		{"10.0.0.7:9001", allow, "--tls-client-ca"},
 		{"[2001:db8::7]:9001", allow, "without a shared secret"},
 		{"0.0.0.0:9001", allow, "without a shared secret"},
 		{"10.0.0.7:9001", withSecret, ""},
+		{"10.0.0.7:9001", withClientCA, ""},
+		{"0.0.0.0:9001", withClientCA, ""},
 		{"10.0.0.7:9001", insecure, ""},
 		{":9001", withSecret, ""},
 		{"nonsense", insecure, "neither host:port nor unix:/path"},
