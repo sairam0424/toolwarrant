@@ -8,18 +8,26 @@ type changedValue struct {
 	to   string
 }
 
-// compareDocs walks the two decoded documents together and lists every string
+// compareAll walks the two decoded documents together and lists every string
 // value that differs, in document order (keys sorted, arrays by index). Object
-// keys are not values and are not compared here; the diff shows them. Walking
-// both trees at once needs no map keyed by path text, so the paths of the
-// values that are equal, which is nearly all of them, are never rendered.
-func compareDocs(from, to any) []changedValue {
+// keys are not values and are not compared as such; the diff shows them. The
+// second list holds the key swaps: for every object, each key present only in
+// the new document that reads the same (equal skeletons) as a key present only
+// in the old one, recorded with the new key's path, the old key as from and
+// the new key as to; the diff shows both keys but cannot show that they look
+// alike. Walking both trees at once needs no map keyed by path text, so the
+// paths of the values that are equal, which is nearly all of them, are never
+// rendered.
+func compareAll(from, to any) (values, keySwaps []changedValue) {
 	c := &comparer{}
 	c.compare(from, to, rootNode())
-	return c.out
+	return c.out, c.keySwaps
 }
 
-type comparer struct{ out []changedValue }
+type comparer struct {
+	out      []changedValue
+	keySwaps []changedValue
+}
 
 func (c *comparer) compare(from, to any, node *pathNode) {
 	switch f := from.(type) {
@@ -45,6 +53,7 @@ func (c *comparer) compare(from, to any, node *pathNode) {
 }
 
 func (c *comparer) compareObjects(from, to map[string]any, node *pathNode) {
+	var removed, added []string
 	for _, k := range mergedKeys(from, to) {
 		fv, inFrom := from[k]
 		tv, inTo := to[k]
@@ -53,9 +62,31 @@ func (c *comparer) compareObjects(from, to map[string]any, node *pathNode) {
 		case inFrom && inTo:
 			c.compare(fv, tv, child)
 		case inFrom:
+			removed = append(removed, k)
 			c.oneSided(fv, child, true)
 		default:
+			added = append(added, k)
 			c.oneSided(tv, child, false)
+		}
+	}
+	c.pairKeys(node, removed, added)
+}
+
+// pairKeys records every added key whose skeleton equals a removed key's. The
+// removed keys' skeletons are computed once into a map, so two thousand
+// renamed properties cost two thousand skeletons, not four million.
+func (c *comparer) pairKeys(node *pathNode, removed, added []string) {
+	if len(removed) == 0 || len(added) == 0 {
+		return
+	}
+	bySkeleton := map[string][]string{}
+	for _, k := range removed {
+		sk := Skeleton(k)
+		bySkeleton[sk] = append(bySkeleton[sk], k)
+	}
+	for _, k := range added {
+		for _, old := range bySkeleton[Skeleton(k)] {
+			c.keySwaps = append(c.keySwaps, changedValue{path: node.child(k), from: old, to: k})
 		}
 	}
 }

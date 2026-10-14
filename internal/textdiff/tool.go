@@ -37,6 +37,12 @@ const (
 //     were removed and added, both escaped, in document order. A change inside
 //     a long run of text without spaces is narrowed to the bytes that differ,
 //     with a line saying where they sit.
+//   - "Look-alike changes" lists what the diff cannot show: every value or
+//     key of the new document that reads the same as the old one but is spelt
+//     with other code points (LookAlikeChanges, UTS #39 skeletons), and every
+//     word of the new document that mixes scripts outside the UTS #39 Highly
+//     Restrictive profile (MixedScriptWords). Both are given as code points
+//     and scripts, never as the characters themselves.
 //
 // The whole report is capped at maxReportBytes; past that it ends with one
 // line that gives the full size and says the definition should be refused.
@@ -66,8 +72,11 @@ func Tool(fromLabel, toLabel string, fromCanonical, toCanonical []byte) (string,
 	r.writeString("\n" + sectionSuspicious + "\n")
 	writeDocFindings(r, "from", fromDoc)
 	writeDocFindings(r, "to", toDoc)
+	values, keySwaps := compareAll(fromDoc, toDoc)
 	r.writeString("\n" + sectionChanged + "\n")
-	writeChangedText(r, compareDocs(fromDoc, toDoc))
+	writeChangedText(r, values)
+	r.writeString("\n" + sectionLookAlike + "\n")
+	writeLookAlikes(r, lookAlikesOf(values, keySwaps), toDoc)
 	return r.String(), nil
 }
 

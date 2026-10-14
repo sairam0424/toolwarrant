@@ -110,8 +110,10 @@ func TestTool_changedValuesAreCappedWithACount(t *testing.T) {
 	fromDoc, _ := json.Marshal(map[string]any{"items": from})
 	toDoc, _ := json.Marshal(map[string]any{"items": to})
 	out := mustTool(t, string(fromDoc), string(toDoc))
-	want := "    ... 50 more changed values not listed (" + strconv.Itoa(n) + " in total)\n"
-	if !strings.HasSuffix(out, want) {
+	// The count line closes the Changed text section; the Look-alike changes
+	// section follows it.
+	want := "    ... 50 more changed values not listed (" + strconv.Itoa(n) + " in total)\n\n" + sectionLookAlike + "\n"
+	if !strings.Contains(out, want) {
 		t.Fatalf("count line missing, output ends with %q", out[len(out)-200:])
 	}
 	if got := strings.Count(out, "\n  $.items["); got != maxChangedValues {
