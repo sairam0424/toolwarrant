@@ -192,7 +192,11 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   with no processor), a `config` field other than the three listener
   addresses, a changed listener address, an added route or gateway, a route
   moved to another path, a removed processor, a changed allow rule, a changed
-  or removed `requestHeaders` filter, changed processor metadata (compared as
+  or removed `requestHeaders` filter, a `backendTLS` block under the
+  processor's `policies` that only one side carries or whose `cert`, `key`,
+  `root` or `hostname` differs (limit L11; a `backendTLS` field or processor
+  policy the file does not carry, `insecure` among them, is reported by
+  name), changed processor metadata (compared as
   a hash, never printed), and in every live route any key other than `name`,
   `gateways`, `matches`, `policies` and `backends`, any policy other than
   `mcpAuthorization` and `mcpGuardrails`, a match that is not a single exact

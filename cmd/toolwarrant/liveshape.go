@@ -19,12 +19,13 @@ import (
 
 // Phrases of a line about something the emitted file cannot carry.
 const (
-	foreignSuffix     = ": not in the emitted file"
-	foreignPolicyNote = "; the gateway applies it to this route"
-	notAnObject       = "not an object as in the emitted file"
-	notAList          = ": not a list as in the emitted file"
-	labelField        = "field"
-	labelPolicy       = "policy"
+	foreignSuffix         = ": not in the emitted file"
+	foreignPolicyNote     = "; the gateway applies it to this route"
+	foreignLinkPolicyNote = "; the gateway applies it to the link to this processor"
+	notAnObject           = "not an object as in the emitted file"
+	notAList              = ": not a list as in the emitted file"
+	labelField            = "field"
+	labelPolicy           = "policy"
 )
 
 // shape is what the emitted file can carry at one place of the live document:
@@ -152,11 +153,21 @@ func routeShape() *shape {
 
 // processorShape is one mcpGuardrails processor as emit writes it. The
 // methods and metadata maps carry keys the operator chooses and are compared
-// by value, so they are not walked.
+// by value, so they are not walked. Under policies the file carries one
+// backendTLS block with cert, key, root and hostname (limit L11): the v1.6.0
+// schema accepts insecure, insecureHost, alpn, subjectAltNames,
+// keyExchangeGroups and spiffe inside the block, which turn verification off
+// or move the trust elsewhere, and requestHeaderModifier, transformations and
+// backendAuth beside it, which rewrite the hook or send a credential to the
+// processor; each is one line, since the comparison cannot read what any of
+// them does to the link.
 func processorShape() *shape {
 	return &shape{label: labelField, keys: map[string]*shape{
 		"host": nil, "kind": nil, "failureMode": nil, "methods": nil, "metadata": nil,
 		"requestHeaders": {prefix: "requestHeaders ", label: labelField, keys: map[string]*shape{"allowed": nil, "disallowed": nil}},
+		policiesBlock: {label: labelPolicy, note: foreignLinkPolicyNote, keys: map[string]*shape{
+			tlsBlockName: {prefix: tlsBlockName + " ", label: labelField, keys: map[string]*shape{keyTLSCert: nil, keyTLSKey: nil, keyTLSRoot: nil, keyTLSHostname: nil}},
+		}},
 	}}
 }
 

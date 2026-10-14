@@ -39,6 +39,13 @@ func TestEmittedConfigReadsWhatEmitWrites(t *testing.T) {
 		describeMethods(rc.processors[0].methods) != "tools/call=request,tools/list=response" {
 		t.Errorf("processor: %+v", rc.processors)
 	}
+	// emit writes no backendTLS block today, so the reader must give such a
+	// file no block either: a file without policies compares as it did before
+	// the block was read (TestEmittedConfigReadsTheProcessorTLS pins the
+	// block itself).
+	if len(rc.processors) == 1 && rc.processors[0].tls != nil {
+		t.Errorf("a file emit writes today carries a backendTLS block: %q", rc.processors[0].tls)
+	}
 	if len(rc.backendHosts) != 1 || rc.backendHosts[0] != "http://127.0.0.1:3001/mcp" || len(rc.backendTargets) != 1 || rc.backendTargets[0] != "alpha" {
 		t.Errorf("backends: %q %q", rc.backendTargets, rc.backendHosts)
 	}

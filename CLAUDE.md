@@ -93,7 +93,7 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CL
 - Nothing is pushed, tagged, published or registered without the owner.
 - Keep "MCP" out of the product name; "toolwarrant for MCP" is the permitted form.
 - Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
-- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D17 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`.
+- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D17 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`, `cmd/toolwarrant/livetls.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.
 - Test files must not contain literal invisible or format characters: build them at run time or use `\u` escapes, then check with `grep -P`.

@@ -252,7 +252,9 @@ func compareRules(emitted, live []string) []string {
 // is compared list by list (fourth review cli-docs-4, processor-emit-7): an
 // entry stripped of it forwards every client header, bearer tokens and
 // cookies included, to the processor again (limit L11). The metadata is
-// compared by the hash of its canonical form and never shown.
+// compared by the hash of its canonical form and never shown. The backendTLS
+// block under the entry's policies is compared by presence and then field by
+// field (livetls.go): an entry stripped of it is dialled in plaintext again.
 func compareProcessors(emitted, live []processorConfig) []string {
 	switch {
 	case len(live) == 0 && len(emitted) > 0:
@@ -268,6 +270,7 @@ func compareProcessors(emitted, live []processorConfig) []string {
 		diffs = appendDiff(diffs, "processor methods", describeMethods(emitted[i].methods), describeMethods(live[i].methods))
 		diffs = appendDiff(diffs, "processor requestHeaders allowed", describeList(emitted[i].allowed), describeList(live[i].allowed))
 		diffs = appendDiff(diffs, "processor requestHeaders disallowed", describeList(emitted[i].disallowed), describeList(live[i].disallowed))
+		diffs = append(diffs, compareProcessorTLS(emitted[i].tls, live[i].tls)...)
 		diffs = append(diffs, compareMetadata(emitted[i].metadataHash, live[i].metadataHash)...)
 	}
 	return diffs
