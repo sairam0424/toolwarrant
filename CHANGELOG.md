@@ -13,6 +13,14 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Added
+
+- `toolwarrant serve --max-crawl-age DURATION` bounds how long the latest complete crawl's word carries a `tools/call` on its own: with it set, a call whose only allowing evidence is a crawl older than the age is denied `crawl evidence too old` until a listing shows the approved definition or a crawl completes, so known limit L1 is bounded when the crawler stops; 0, the default, keeps the rule of every version before; the stats line gains the `stale` counter of those denials, `calls allowed=N denied=N (stale=N)`, and a negative value is a usage error (owner decision O-7, D21; `TestJudgeCall_StaleCrawlDeniesUnlessFreshlyListed`, `TestCheckRequest_MaxCrawlAgeZeroKeepsTheOldRule`, `TestCheckRequest_StaleCrawlCountsInStats`, `TestServeRejectsANegativeMaxCrawlAge`, `TestWriteStatsPinsTheLine`; end-to-end scenario R, `R_StaleCrawlDeniesCalls` of `TestEndToEnd`, right after I).
+
+### Changed
+
+- `toolwarrant serve --max-evidence-age` ages only listing evidence that agrees with the approval: a contradiction (another digest, or the conflict marker a bad page leaves) denies for as long as it stands and is released only by a clean listing, where before it stopped denying once older than the age (known limit L15, now closed; owner decision O-7, D21; `TestEvidence_ContradictionsNeverExpire`, `TestEvidence_ObservedDigestsExpire`, `TestJudgeCall_RuleTable`).
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
