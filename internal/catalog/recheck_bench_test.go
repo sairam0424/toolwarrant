@@ -173,11 +173,16 @@ func benchPolicy() lifecycle.Policy {
 // and Snapshot re-hashes every approved version, listed or missing
 // (readPolicyRows keeps every non-deprecated tool with an approved version).
 // A crawl the catalog records as failed is fatal with its class, so the
-// benchmark never reloads fewer tools than it names.
+// benchmark never reloads fewer tools than it names. The split is logged
+// (visible with -v, since this runs in the parent benchmark) so that a record
+// of a run quotes the run rather than a derivation of the constants.
 func benchFill(b *testing.B, s *Store, n, descBytes int) {
 	b.Helper()
 	desc := strings.Repeat("x", descBytes)
-	perCrawl := min(n, MaxCrawlBytes/len(def(benchName(0), desc)))
+	rawBytes := len(def(benchName(0), desc))
+	perCrawl := min(n, MaxCrawlBytes/rawBytes)
+	crawls := (n + perCrawl - 1) / perCrawl
+	b.Logf("filling %d tools of %d raw bytes each in %d complete crawls of at most %d tools (MaxCrawlBytes %d)", n, rawBytes, crawls, perCrawl, MaxCrawlBytes)
 	digests := make([]string, 0, n)
 	for from := 0; from < n; from += perCrawl {
 		digests = append(digests, benchCrawl(b, s, from, min(from+perCrawl, n), desc)...)
