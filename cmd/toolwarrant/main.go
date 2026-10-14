@@ -94,13 +94,17 @@ type app struct {
 }
 
 // command is one entry of the command table. A command with sub-entries
-// (server, audit, budget) dispatches to them instead of running itself.
+// (server, audit, budget) dispatches to them instead of running itself, unless
+// self is set (export): then it runs itself and hands a first argument that
+// names a sub-entry to that entry, and the help lists its own row and flags
+// beside its subcommands.
 type command struct {
 	name     string
 	synopsis string // what follows "toolwarrant [global flags]"
 	summary  string // one line for the command list
 	run      func(a *app, c *command, args []string) error
 	sub      []*command
+	self     bool
 }
 
 // usageError means the command line was wrong. Its message must already be
@@ -133,9 +137,9 @@ func commands() []*command {
 		{name: "enable", synopsis: "enable SERVER TOOL", summary: "bring a disabled tool back for review", run: runEnable},
 		{name: "rollback", synopsis: "rollback SERVER TOOL --to HASH", summary: "re-approve a version that was approved before", run: runRollback},
 		{name: "budget", synopsis: "budget reset ...", summary: "reset the proposal budget of a tool that no other decision can unblock", run: runSub, sub: budgetCommands()},
-		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION]", summary: "run the ExtMCP processor that enforces approvals at the gateway", run: runServe},
+		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION] [--max-crawl-age DURATION]", summary: "run the ExtMCP processor that enforces approvals at the gateway", run: runServe},
 		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME ...] [--secret-env VAR] [--gateway-binary PATH]", summary: "write the agentgateway configuration for every server, validated with the gateway binary when one is named", run: runEmit},
-		{name: "export", synopsis: "export --dir DIR [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git", run: runExport},
+		{name: "export", synopsis: "export --dir DIR [--sign-key PATH] [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git, with the audit head in MANIFEST.json and, with a key, its signature", run: runExport, sub: exportCommands(), self: true},
 		{name: "audit", synopsis: "audit verify|list ...", summary: "verify and read the hash-chained audit log", run: runSub, sub: auditCommands()},
 		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]", summary: "canary: list through the gateway in a fresh session, compare with the catalog, the emitted file and the live configuration, probe for unhooked calls (LEAK, MISSING, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE, PROBE-CHANGED, KNOWN-LIMIT)", run: runVerifyGateway},
 		{name: "version", synopsis: "version", summary: "print the version and the pinned gateway version", run: runVersion},
@@ -203,7 +207,7 @@ func runHelp(a *app, c *command, args []string) error {
 		}
 		target, list = next, next.sub
 	}
-	if len(target.sub) > 0 {
+	if len(target.sub) > 0 && !target.self {
 		return &helpError{text: subUsage(target)}
 	}
 	return target.run(a, target, []string{helpFlag})
@@ -294,9 +298,8 @@ func fullUsage() string {
 	sb.WriteString("\ncommands:\n")
 	var rows []*command
 	for _, c := range commands() {
-		if len(c.sub) == 0 {
+		if len(c.sub) == 0 || c.self {
 			rows = append(rows, c)
-			continue
 		}
 		rows = append(rows, c.sub...)
 	}
@@ -327,7 +330,8 @@ func commandRows(sb *strings.Builder, cmds []*command) {
 	}
 }
 
-// usage renders the help of one command, including the flags it defined.
+// usage renders the help of one command, including the flags it defined and,
+// for a command that also has subcommands (export), their rows.
 func (c *command) usage(fs *flag.FlagSet) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "usage: %s [global flags] %s\n\n%s\n", programName, c.synopsis, c.summary)
@@ -337,6 +341,10 @@ func (c *command) usage(fs *flag.FlagSet) string {
 		sb.WriteString("\nflags:\n")
 		fs.SetOutput(&sb)
 		fs.PrintDefaults()
+	}
+	if len(c.sub) > 0 {
+		sb.WriteString("\nsubcommands:\n")
+		commandRows(&sb, c.sub)
 	}
 	return sb.String()
 }

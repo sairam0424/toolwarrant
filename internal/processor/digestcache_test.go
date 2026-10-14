@@ -228,7 +228,7 @@ func TestCheckResponse_UnchangedDefinitionsAreNotReCanonicalised(t *testing.T) {
 		t.Fatalf("listing the same definitions again canonicalised %d more tools, want none", c-n)
 	}
 	for name, p := range policies {
-		if seen, ok := s.observedDigest(name); !ok || seen != p.Approved {
+		if seen, _, ok := s.observedDigest(name); !ok || seen != p.Approved {
 			t.Errorf("evidence for %s = %q, %v; want the approved digest", name, seen, ok)
 		}
 	}
@@ -241,7 +241,7 @@ func TestCheckResponse_UnchangedDefinitionsAreNotReCanonicalised(t *testing.T) {
 	if len(got) != n-1 || calls.Load() != n+1 {
 		t.Fatalf("changed page served %v with %d canonicalisations, want %d tools and %d", got, calls.Load(), n-1, n+1)
 	}
-	if seen, ok := s.observedDigest("t1"); !ok || seen != mustDigest(t, changed) {
+	if seen, _, ok := s.observedDigest("t1"); !ok || seen != mustDigest(t, changed) {
 		t.Errorf("evidence for the changed tool = %q, %v", seen, ok)
 	}
 	if st := s.Stats(); st.ListsServed != 3 || st.ToolsMismatched != 1 || st.ToolsHidden != 2 {

@@ -122,9 +122,34 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   `TestServe_TLSWithoutClientCAAcceptsAnyClient`,
   `TestServe_ClientCertificateSilencesTheNoSecretWarning`,
   `TestServe_RefusesAnUnusableTLSConfig`.)
-- `--max-evidence-age DURATION` expires the digests the processor remembers
-  from gateway listings; 0 (the default) keeps them until the next listing or a
-  catalog change. It ages conflict markers too (limit L15).
+- `--max-evidence-age DURATION` bounds how long a digest the processor
+  remembers from a gateway listing carries a `tools/call` on its own; 0 (the
+  default) keeps it until the next listing or a catalog change. Only evidence
+  that agrees with the approval ages: a contradiction (another digest, or the
+  conflict marker a bad page leaves) denies for as long as it stands, whatever
+  the age, and only a clean listing that shows the approved bytes releases the
+  call, so ageing only ever removes evidence that would allow (D21, owner
+  decision O-7; this closed limit L15, which said the opposite; processor
+  `TestEvidence_ObservedDigestsExpire`,
+  `TestEvidence_ContradictionsNeverExpire`).
+- `--max-crawl-age DURATION` bounds how long the latest complete crawl's word
+  carries a `tools/call` on its own; 0 (the default) means always, as every
+  version before. With it set, a call whose only allowing evidence is a crawl
+  older than the age is denied `crawl evidence too old` until a listing shows
+  the approved definition or a crawl completes; a server with no complete crawl
+  has no fresh crawl. It bounds limit L1 when the crawler stops (set it to a few
+  crawl periods); it does not shorten the gap below the crawl cadence, and a
+  listing that contradicts the approval denies as `changed since approval`
+  whatever the crawl's age. The denials are counted in the `stale` field of the
+  stats line below (D21; processor
+  `TestJudgeCall_StaleCrawlDeniesUnlessFreshlyListed`,
+  `TestCheckRequest_MaxCrawlAgeZeroKeepsTheOldRule`,
+  `TestCheckRequest_StaleCrawlCountsInStats`; cmd
+  `TestServeRejectsANegativeMaxCrawlAge`; end-to-end scenario R restarted
+  mock's processor with both ages at 2s: the session that had listed was
+  allowed, denied `crawl evidence too old` three seconds later, a new session
+  that listed was allowed, and after another wait a crawl alone allowed the
+  call; its stats line counted `calls allowed=3 denied=2 (stale=2)`).
 - The processor opens the catalog read-only and can never change it (cmd
   `TestServeOpensTheCatalogReadOnly`, catalog `TestOpenWith_ReadOnly`). Run it
   as the catalog's owner: the catalog refuses a database file that its group
@@ -229,11 +254,15 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
 - On SIGINT or SIGTERM the processor stops gracefully, prints its counters and
   exits 0; an error that stops it exits 1. The stats line is:
   `stats: lists served=N denied=N, tools hidden=N (mismatched=N unapproved=N
-  oversized=N unverified=N), calls allowed=N denied=N, wrong backend=N,
-  unauthenticated=N, throttled=N, source errors=N, evidence dropped=N`
-  (scenario N; pinned by `TestWriteStatsPinsTheLine`). `evidence dropped` is
-  `Stats.EvidenceDropped`; a non-zero value is a standing condition, described
-  under the evidence table above. Tools the catalog has never heard
+  oversized=N unverified=N), calls allowed=N denied=N (stale=N), wrong
+  backend=N, unauthenticated=N, throttled=N, source errors=N, evidence
+  dropped=N` (scenario N; pinned by `TestWriteStatsPinsTheLine`). `stale` is
+  `Stats.CallsStale`, the part of `denied` refused because the only evidence
+  that would have allowed the call was a crawl older than `--max-crawl-age`;
+  it stays 0 without the flag, and a value that grows while `denied` grows
+  with it means the crawler has stopped, not that a definition changed
+  (scenario R). `evidence dropped` is `Stats.EvidenceDropped`; a non-zero
+  value is a standing condition, described under the evidence table above. Tools the catalog has never heard
   of are `hidden` minus the named categories. Since the third round the
   processor also counts tools hidden because the latest crawl left the
   unusable marker in the catalog while the gateway showed the approved bytes
@@ -1004,6 +1033,84 @@ over each of those reads and fails when any one reaches the log without that
 index, because without it every probe walks the log in sequence order instead
 of seeking the subject's own entries (the research pass of 2026-10-14 measured
 ten thousand such probes at 0.07 s with the index and 58.9 s without it).
+
+### Exporting the approved definitions and verifying an export
+
+```sh
+toolwarrant export --dir /srv/toolwarrant/approved
+toolwarrant export --dir /srv/toolwarrant/approved --sign-key /etc/toolwarrant/export.key --commit
+toolwarrant export verify --dir /srv/toolwarrant/approved --pub-key /etc/toolwarrant/export.pub --expect-head HEAD_YOU_RECORDED
+```
+
+`export --dir DIR` writes every approved definition as `DIR/<server>/<tool>.json`
+(the canonical bytes and a newline) and `DIR/MANIFEST.json`, which lists each
+file with its digest, approver, approval time and version number and, since
+version 3 of the manifest, records `audit_head`, the head of the audit chain the
+catalog had verified when the approvals were read, and `digest_profile`
+(`full-v1`). The command prints both; the head is the one `audit verify` prints
+at that moment, so record it with the export. The approvals and the head are
+read in one transaction of the catalog, so the head names exactly the log state
+the files mirror: a crawl or a decision committed while the export runs lands
+in both or in neither (`TestApprovedWithHead_HeadAndToolsComeFromOneSnapshot`
+runs readers against a writer that toggles the only approved tool and finds no
+result pairing the approvals of one commit with the head of another; the
+two-call read it replaced paired 76 of 208 results that way). Every crawl and
+every decision appends to the log, so an export after the log grew rewrites the
+manifest (and the signature) with no tool file touched, and `--commit` records
+that as a commit: that is the binding to the log, not noise.
+
+`--sign-key PATH` signs the complete manifest (decision D21 (e)). The key is an
+Ed25519 private key in a PKCS#8 PEM file, made with
+`openssl genpkey -algorithm ed25519 -out export.key && chmod 600 export.key`;
+its public key with `openssl pkey -in export.key -pubout -out export.pub`. The
+key is read from that path only: a file that group or others can read, a
+symbolic link, a directory, a missing file, a file that is not one
+`PRIVATE KEY` block, or a key of another algorithm is refused with exit 1
+before the catalog is opened and before anything is written. The key is never
+read from the environment or a flag value, never printed, and zeroed when the
+command ends. The export writes `MANIFEST.json.sig` (the base64 Ed25519
+signature over the exact bytes of `MANIFEST.json`, whose digests cover every
+tool file) and `MANIFEST.json.pub` (the public key as PKIX PEM) beside the
+manifest; `--commit` stages both. Keep the public key outside the export too:
+the copy inside the directory tells a reader which key signed and proves
+nothing by itself. An export without `--sign-key` leaves the two files of an
+earlier signed run alone; `export verify` and `--commit` then refuse the pair
+(`MANIFEST.json.sig does not sign the current MANIFEST.json`) until the next
+signed export, or until both files are removed.
+
+`export verify --dir DIR --pub-key FILE [--expect-head HEX]` opens no database.
+It exits 1 unless `MANIFEST.json.pub` records exactly the key in FILE,
+`MANIFEST.json.sig` is that key's signature over the bytes of `MANIFEST.json`,
+every listed file's bytes hash to its digest, and the entries on disk are
+exactly the listed files, their server directories, the manifest and its two
+signature files; the `.git` directory `--commit` keeps is skipped, and an
+extra, missing, renamed or nested entry, a symlink, a pending manifest or a
+manifest this version does not read each fail with a message that names what
+was found. With `--expect-head` the manifest must record that head, which
+closes the loop with the head you recorded: an export that verifies under your
+key and names the head you recorded mirrors the log as it was when you
+recorded it, so a rewrite of the log made while no store held a pin (the pin
+limit, D17) has to pass two anchors that now name each other, the recorded
+head and the signed export, instead of two that did not. The signature
+authenticates the export against whoever can write the export directory or its
+repository; it does not authenticate the person who approved (L13), and the
+entries inside the catalog are not signed.
+
+What the tests show: `TestExportSignsTheManifestAndVerifyRoundTrips` exports
+and signs, reads the same head from `audit verify`, verifies with and without
+`--expect-head`, then gets exit 1 from `export verify` for a changed byte in
+`s1/echo.json` (`does not hash to its digest`), for the file removed (`listed
+in MANIFEST.json but missing`), for an extra `stray.txt` (`not listed in
+MANIFEST.json`), for another public key (`records another public key`) and for
+the head recorded before a crawl (`audit head mismatch`); after the crawl the
+export printed `0 written, 0 removed, 1 unchanged` and a new head, `--commit`
+tracked `MANIFEST.json.sig` and `MANIFEST.json.pub`, and an unsigned export
+after it was refused by `--commit` with `does not sign the current
+MANIFEST.json`. `TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything`
+shows the refusals for a 0644 key, a symbolic link, a directory, a missing
+file, a `PUBLIC KEY` block, an ECDSA key and a garbage block, each with exit 1
+and the export directory not created. `TestVerify_FailsClosedOnEveryTamper`
+covers the remaining shapes in the export package.
 
 ## Recovering from ErrCorrupt and ErrSchema
 

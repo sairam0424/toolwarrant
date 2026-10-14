@@ -37,6 +37,7 @@ type serveOptions struct {
 	insecureNoSecret bool
 	secretEnv        string
 	maxEvidenceAge   time.Duration
+	maxCrawlAge      time.Duration
 	tls              *tlsFlags
 }
 
@@ -49,11 +50,12 @@ func bindServeFlags(fs *flag.FlagSet) *serveOptions {
 	fs.BoolVar(&o.allowNonLoopback, "allow-non-loopback", false, "listen on a TCP address other hosts can reach; refused without --secret-env or --tls-client-ca unless --insecure-no-secret is passed as well, and only for a network nobody but the gateway can reach")
 	fs.BoolVar(&o.insecureNoSecret, "insecure-no-secret", false, "with --allow-non-loopback, listen on a TCP address other hosts can reach without a shared secret or a client certificate authority: anyone who reaches the port then decides what the gateway serves; a --secret-env or --tls-client-ca always wins over this flag")
 	fs.StringVar(&o.secretEnv, "secret-env", "", "environment variable holding the shared secret the gateway sends with every hook (the one given to emit --secret-env); never a flag value")
-	fs.DurationVar(&o.maxEvidenceAge, "max-evidence-age", 0, "how long a digest seen in a tools/list counts as evidence for a tools/call (0 means it never expires)")
+	fs.DurationVar(&o.maxEvidenceAge, "max-evidence-age", 0, "how long a digest seen in a tools/list that agrees with the approval carries a tools/call on its own (0 means it never expires); a contradiction never expires")
+	fs.DurationVar(&o.maxCrawlAge, "max-crawl-age", 0, "how long the latest complete crawl's word carries a tools/call on its own; older, the call is denied as crawl evidence too old until a listing shows the approved definition or a crawl completes (0, the default, means always)")
 	return o
 }
 
-// check applies the usage rules: the required flags, the evidence age, the TLS
+// check applies the usage rules: the required flags, the two ages, the TLS
 // flag grammar and the listen policy, in that order, so a wrong TLS flag set is
 // named before the address it would have authenticated.
 func (o *serveOptions) check(c *command, pos []string) error {
@@ -68,6 +70,9 @@ func (o *serveOptions) check(c *command, pos []string) error {
 	}
 	if o.maxEvidenceAge < 0 {
 		return &usageError{msg: "--max-evidence-age must not be negative", cmd: c}
+	}
+	if o.maxCrawlAge < 0 {
+		return &usageError{msg: "--max-crawl-age must not be negative", cmd: c}
 	}
 	if err := o.tls.check(c, o.listen); err != nil {
 		return err
@@ -134,6 +139,7 @@ func runServe(a *app, c *command, args []string) (err error) {
 		AllowRemoteListener: o.allowNonLoopback,
 		TLS:                 tlsConf,
 		MaxEvidenceAge:      o.maxEvidenceAge,
+		MaxCrawlAge:         o.maxCrawlAge,
 	}
 	proc := processor.New(store, cfg)
 	a.stdout.printf("listening on %s, guarding server %s, target %s%s%s\n", textdiff.Escape(lis.Addr().String()), cell(o.server), cell(target), tlsNote(tlsConf), authNote(secret, tlsConf))
@@ -248,10 +254,12 @@ func warnLooseSocketDir(path string, warn *stream) {
 // see at a glance whether the gateway ever asked, what was hidden and why.
 // The four bracketed counters break ToolsHidden down (unverified: the live
 // bytes matched the approval while the latest crawl left the unusable marker
-// in the catalog); the remainder is tools the catalog has never heard of.
+// in the catalog); the remainder is tools the catalog has never heard of. The
+// bracketed stale counter is the part of the denied calls refused for a crawl
+// older than --max-crawl-age, so a stopped crawler can be told from drift.
 // docs/operations.md quotes this line, so the two must change together.
 func writeStats(w *stream, st processor.Stats) {
-	w.printf("stats: lists served=%d denied=%d, tools hidden=%d (mismatched=%d unapproved=%d oversized=%d unverified=%d), calls allowed=%d denied=%d, wrong backend=%d, unauthenticated=%d, throttled=%d, source errors=%d, evidence dropped=%d\n",
+	w.printf("stats: lists served=%d denied=%d, tools hidden=%d (mismatched=%d unapproved=%d oversized=%d unverified=%d), calls allowed=%d denied=%d (stale=%d), wrong backend=%d, unauthenticated=%d, throttled=%d, source errors=%d, evidence dropped=%d\n",
 		st.ListsServed, st.ListsDenied, st.ToolsHidden, st.ToolsMismatched, st.ToolsUnapproved, st.ToolsOversized, st.ToolsUnverified,
-		st.CallsAllowed, st.CallsDenied, st.WrongBackend, st.Unauthenticated, st.Throttled, st.SourceErrors, st.EvidenceDropped)
+		st.CallsAllowed, st.CallsDenied, st.CallsStale, st.WrongBackend, st.Unauthenticated, st.Throttled, st.SourceErrors, st.EvidenceDropped)
 }

@@ -171,7 +171,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 		if err := os.Symlink(outside, link); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Write(link, []Tool{tool}); err == nil {
+		if _, err := Write(link, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 		if _, err := os.Stat(filepath.Join(outside, "MANIFEST.json")); !os.IsNotExist(err) {
@@ -181,7 +181,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 	t.Run("export dir is a file", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "file")
 		writeFile(t, f, "")
-		if _, err := Write(f, []Tool{tool}); err == nil {
+		if _, err := Write(f, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 	})
@@ -190,7 +190,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(dir, "s")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Write(dir, []Tool{tool}); err == nil {
+		if _, err := Write(dir, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 		if _, err := os.Stat(filepath.Join(outside, "t.json")); !os.IsNotExist(err) {
@@ -203,7 +203,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 	t.Run("server path is a file", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "s"), "")
-		if _, err := Write(dir, []Tool{tool}); err == nil {
+		if _, err := Write(dir, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 	})
@@ -215,7 +215,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 		if err := os.Symlink(victim, filepath.Join(dir, "s", "t.json")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Write(dir, []Tool{tool}); err == nil {
+		if _, err := Write(dir, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 		if readFile(t, victim) != "victim" {
@@ -227,7 +227,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "s", "t.json"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Write(dir, []Tool{tool}); err == nil {
+		if _, err := Write(dir, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 	})
@@ -236,7 +236,7 @@ func TestWrite_SymlinkRefusals(t *testing.T) {
 		if err := os.Symlink(victim, filepath.Join(dir, manifestName)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Write(dir, []Tool{tool}); err == nil {
+		if _, err := Write(dir, []Tool{tool}, testOpts); err == nil {
 			t.Fatal("want refusal")
 		}
 		if readFile(t, victim) != "victim" {
@@ -257,7 +257,7 @@ func TestWrite_FailureLeavesNoPartialFileAndAPendingManifest(t *testing.T) {
 	lockDir(t, filepath.Join(dir, "s"))
 
 	v2 := mkTool(t, "s", "t", "version two, longer")
-	if _, err := Write(dir, []Tool{v2}); err == nil {
+	if _, err := Write(dir, []Tool{v2}, testOpts); err == nil {
 		t.Fatal("want an error from the read-only directory")
 	}
 	if err := os.Chmod(filepath.Join(dir, "s"), 0o755); err != nil {
@@ -286,7 +286,7 @@ func TestWrite_FailureCreatingServerDirectoryLeavesNothing(t *testing.T) {
 	skipIfRoot(t)
 	dir := t.TempDir()
 	lockDir(t, dir)
-	if _, err := Write(dir, []Tool{mkTool(t, "s", "t", "1")}); err == nil {
+	if _, err := Write(dir, []Tool{mkTool(t, "s", "t", "1")}, testOpts); err == nil {
 		t.Fatal("want an error from the read-only export directory")
 	}
 	if got := snapshot(t, dir); len(got) != 1 {
@@ -302,7 +302,7 @@ func TestWrite_RemovalFailureKeepsThePendingManifest(t *testing.T) {
 	mustWrite(t, dir, mkTool(t, "s", "gone", "1"), mkTool(t, "k", "keep", "1"))
 	lockDir(t, filepath.Join(dir, "s"))
 
-	if _, err := Write(dir, []Tool{mkTool(t, "k", "keep", "1")}); err == nil {
+	if _, err := Write(dir, []Tool{mkTool(t, "k", "keep", "1")}, testOpts); err == nil {
 		t.Fatal("want an error when a stale file cannot be removed")
 	}
 	if doc := readManifest(t, dir); doc.Status != statusPending || !slices.Contains(doc.files(), "s/gone.json") {

@@ -182,7 +182,7 @@ func TestCheckResponse_DigestMatchesGateDigestByteForByte(t *testing.T) {
 		t.Fatalf("served %v, want every tool %v (a digest mismatch hides a tool)", got, names)
 	}
 	for _, name := range names {
-		seen, ok := s.observedDigest(name)
+		seen, _, ok := s.observedDigest(name)
 		if !ok || seen != tools[name].Approved {
 			t.Errorf("observed digest of %s = %q, want %q", name, seen, tools[name].Approved)
 		}
@@ -245,7 +245,7 @@ func TestCheckResponse_ObservedTracksOnlyCatalogToolsAndIsBounded(t *testing.T) 
 	}
 	// D13: at the bound the newest evidence is kept by evicting an entry that
 	// agrees with its approval, so c is tracked and one of a, b is not.
-	if _, ok := s.observedDigest("c"); !ok {
+	if _, _, ok := s.observedDigest("c"); !ok {
 		t.Error("the newest evidence (c) should have been kept by evicting an agreeing entry")
 	}
 	if !strings.Contains(logs.String(), "observed-digest table is full") {
@@ -260,7 +260,7 @@ func TestCheckResponse_ObservedTracksOnlyCatalogToolsAndIsBounded(t *testing.T) 
 	// the table does not grow.
 	a2 := tool("a", "A, changed")
 	servedNames(t, list(t, s, listBody("", a2)))
-	if d, _ := s.observedDigest("a"); d != mustDigest(t, a2) {
+	if d, _, _ := s.observedDigest("a"); d != mustDigest(t, a2) {
 		t.Errorf("observed digest of a = %s, want the newest %s", d, mustDigest(t, a2))
 	}
 	if n := s.trackedCount(); n != 2 {
@@ -284,7 +284,7 @@ func TestCheckResponse_UnknownToolsAreHiddenWithoutBeingHashed(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"echo"}) {
 		t.Fatalf("served %v, want [echo]", got)
 	}
-	if _, ok := s.observedDigest("zzz"); ok {
+	if _, _, ok := s.observedDigest("zzz"); ok {
 		t.Error("a name outside the catalog was recorded")
 	}
 }

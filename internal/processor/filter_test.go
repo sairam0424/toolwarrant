@@ -39,7 +39,7 @@ func TestCheckResponse_RepeatedNameDeniesThePageAndTheCallsUntilACleanPage(t *te
 			if e.GetReason() != reasonListUnverifiable {
 				t.Errorf("reason = %q", e.GetReason())
 			}
-			if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+			if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 				t.Fatalf("evidence after the denied page = %q, %v; want the conflict marker", seen, ok)
 			}
 			requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
@@ -74,10 +74,10 @@ func TestCheckResponse_RepeatedUnknownNameRecordsNothingForItselfButMarksTheCata
 	if n := s.trackedCount(); n != 1 {
 		t.Fatalf("%d observations recorded from the denied page, want one (the catalog tool)", n)
 	}
-	if _, ok := s.observedDigest("zzz"); ok {
+	if _, _, ok := s.observedDigest("zzz"); ok {
 		t.Fatal("a name outside the catalog was recorded")
 	}
-	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 		t.Fatalf("evidence for echo after the denied page = %q, %v; want the conflict marker", seen, ok)
 	}
 	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)
@@ -107,7 +107,7 @@ func TestCheckResponse_PagesOverTheToolCapAreDenied(t *testing.T) {
 	if e.GetReason() != reasonListUnverifiable {
 		t.Errorf("reason = %q", e.GetReason())
 	}
-	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 		t.Errorf("evidence for the tool past the cap = %q, %v; want the conflict marker", seen, ok)
 	}
 	if n := s.digests.size(); n != 0 {
@@ -148,7 +148,7 @@ func TestCheckResponse_OversizedToolIsHiddenUnhashedAndDeniesCalls(t *testing.T)
 	if st.ToolsHidden != 2 || st.ToolsOversized != 1 || st.ToolsMismatched != 0 || st.ToolsUnapproved != 0 {
 		t.Errorf("stats = %+v", st)
 	}
-	if seen, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
+	if seen, _, ok := s.observedDigest("echo"); !ok || seen != observedConflict {
 		t.Fatalf("evidence for the oversized tool = %q, %v; want the conflict marker", seen, ok)
 	}
 	requireCallDenied(t, call(t, s, callReq("echo")), "echo", causeChanged)

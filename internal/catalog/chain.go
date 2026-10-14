@@ -245,23 +245,38 @@ func (s *Store) loadPin() chainPin { return s.chain.pin() }
 // the seventh review measured one in five Snapshot calls under six readers
 // and one writer failing that way on an untouched file).
 func (s *Store) checkFile(ctx context.Context, q queryer) error {
+	_, err := s.checkFilePinned(ctx, q)
+	return err
+}
+
+// checkFilePinned is checkFile returning the head of the verified chain as
+// this read verified it: the pin after the walk, read under the same hold of
+// walkMu as the walk, so it is the head of this transaction's snapshot, never
+// one that another handle of this Store advanced after the lock was released
+// (a pin read after checkFile returned could be newer than the rows this read
+// goes on to return). Callers that record the head beside what they read in
+// the same transaction (ApprovedWithHead, AuditHead) use it.
+func (s *Store) checkFilePinned(ctx context.Context, q queryer) (chainPin, error) {
 	if err := s.checkFileIdentity(); err != nil {
-		return err
+		return chainPin{}, err
 	}
 	s.chain.walkMu.Lock()
 	defer s.chain.walkMu.Unlock()
 	if err := s.checkStoredIdentity(ctx, q); err != nil {
-		return err
+		return chainPin{}, err
 	}
 	if !s.forensic {
 		if err := checkGhostRows(ctx, q); err != nil {
-			return err
+			return chainPin{}, err
 		}
 		if err := verifyGuards(ctx, q); err != nil {
-			return err
+			return chainPin{}, err
 		}
 	}
-	return s.verifyChainLocked(ctx, q)
+	if err := s.verifyChainLocked(ctx, q); err != nil {
+		return chainPin{}, err
+	}
+	return s.chain.pin(), nil
 }
 
 // verifyChain brings the Store's memory of the chain up to the log as this

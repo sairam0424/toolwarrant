@@ -205,7 +205,7 @@ func TestWrite_CollisionsAreRefusedBeforeAnythingIsWritten(t *testing.T) {
 	}
 	for label, tools := range cases {
 		dir := filepath.Join(t.TempDir(), "out")
-		_, err := Write(dir, tools)
+		_, err := Write(dir, tools, testOpts)
 		if label == "case plus escapes" {
 			if err != nil {
 				t.Errorf("%s: distinct names must not collide: %v", label, err)
@@ -230,7 +230,7 @@ func TestWrite_CaseCollidingToolsAreSkippedNotFatal(t *testing.T) {
 	lower := mkTool(t, "s", "fetch", "2")
 	other := mkTool(t, "s", "other", "3")
 	elsewhere := mkTool(t, "t", "fetch", "4")
-	rep, err := Write(dir, []Tool{lower, other, upper, elsewhere})
+	rep, err := Write(dir, []Tool{lower, other, upper, elsewhere}, testOpts)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -255,11 +255,11 @@ func TestWrite_CaseCollidingToolsAreSkippedNotFatal(t *testing.T) {
 	if files := readManifest(t, dir).files(); !reflect.DeepEqual(files, []string{"s/other.json", "t/fetch.json"}) {
 		t.Fatalf("manifest files = %v", files)
 	}
-	again, err := Write(dir, []Tool{lower, other, upper, elsewhere})
+	again, err := Write(dir, []Tool{lower, other, upper, elsewhere}, testOpts)
 	if err != nil || again.Unchanged != 2 || !reflect.DeepEqual(again.Skipped, wantSkipped) {
 		t.Fatalf("second Write = %+v, %v", again, err)
 	}
-	three, err := Write(filepath.Join(t.TempDir(), "three"), []Tool{upper, lower, mkTool(t, "s", "FETCH", "5")})
+	three, err := Write(filepath.Join(t.TempDir(), "three"), []Tool{upper, lower, mkTool(t, "s", "FETCH", "5")}, testOpts)
 	if err != nil || three.Written != 0 || len(three.Skipped) != 3 {
 		t.Fatalf("three-way collision: %+v, %v", three, err)
 	}
@@ -295,7 +295,7 @@ func TestWrite_InputValidationRefusesAndTouchesNothing(t *testing.T) {
 	}
 	for label, bad := range cases {
 		dir := filepath.Join(t.TempDir(), "out")
-		if _, err := Write(dir, []Tool{good, bad}); err == nil {
+		if _, err := Write(dir, []Tool{good, bad}, testOpts); err == nil {
 			t.Errorf("%s: want an error", label)
 		}
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -307,14 +307,14 @@ func TestWrite_InputValidationRefusesAndTouchesNothing(t *testing.T) {
 func TestWrite_DigestErrorNamesTheExpectedDigestOnly(t *testing.T) {
 	bad := mkTool(t, "s", "x", "super secret description")
 	bad.Digest = strings.Repeat("a", 64)
-	_, err := Write(filepath.Join(t.TempDir(), "o"), []Tool{bad})
+	_, err := Write(filepath.Join(t.TempDir(), "o"), []Tool{bad}, testOpts)
 	if err == nil || strings.Contains(err.Error(), "super secret") {
 		t.Fatalf("error must not leak the definition: %v", err)
 	}
 }
 
 func TestWrite_EmptyDirArgumentIsRefused(t *testing.T) {
-	if _, err := Write("", nil); err == nil {
+	if _, err := Write("", nil, testOpts); err == nil {
 		t.Fatal("empty dir must be refused")
 	}
 }

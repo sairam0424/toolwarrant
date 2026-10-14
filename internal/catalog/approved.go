@@ -34,32 +34,59 @@ import (
 // allow list from a catalog that list and audit verify refused (found by the
 // v0.1.0 verification). Such a row is ErrCorrupt here as everywhere else.
 func (s *Store) Approved(ctx context.Context) ([]ApprovedTool, error) {
+	tools, _, err := s.ApprovedWithHead(ctx)
+	return tools, err
+}
+
+// ApprovedWithHead is Approved together with the head of the audit chain as
+// this read verified it (AuditHead), both from one read transaction: the
+// file check fixes the snapshot and walks the chain to the head under the
+// walk lock, the pin is taken under that same hold, and the approvals and
+// every anchor are read from the same snapshot. A commit by another process
+// or handle while the export runs (the scheduled crawl appends every minute
+// and can deprecate a tool, another operator can approve or revoke) therefore
+// lands in both the head and the list or in neither; read as two calls, a
+// commit between them made MANIFEST.json name a head whose approval set was
+// not the one the files mirrored (D21 e). The head is audit.Genesis for an
+// empty log.
+func (s *Store) ApprovedWithHead(ctx context.Context) ([]ApprovedTool, string, error) {
 	out := []ApprovedTool{}
+	head := audit.Genesis
 	err := s.inRead(ctx, func(q queryer) error {
-		if err := s.checkFile(ctx, q); err != nil {
-			return err
-		}
-		refs, err := s.readApproved(ctx, q, &out)
+		pin, err := s.checkFilePinned(ctx, q)
 		if err != nil {
 			return err
 		}
-		entries, err := verifyAnchors(ctx, q, s.chain, refs)
-		if err != nil {
-			return err
-		}
-		states, err := readToolStates(ctx, q)
-		if err != nil {
-			return err
-		}
-		if err := anchorStates(ctx, q, s.chain, states); err != nil {
-			return err
-		}
-		return adoptApprovers(out, refs, entries)
+		head = headOf(pin)
+		return s.readApprovedAnchored(ctx, q, &out)
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return out, nil
+	return out, head, nil
+}
+
+// readApprovedAnchored is the body of Approved after the file check: the
+// exported tools, their approval entries verified against the chain, every
+// tool row's state anchored, and the approvers adopted from the verified
+// entries.
+func (s *Store) readApprovedAnchored(ctx context.Context, q queryer, out *[]ApprovedTool) error {
+	refs, err := s.readApproved(ctx, q, out)
+	if err != nil {
+		return err
+	}
+	entries, err := verifyAnchors(ctx, q, s.chain, refs)
+	if err != nil {
+		return err
+	}
+	states, err := readToolStates(ctx, q)
+	if err != nil {
+		return err
+	}
+	if err := anchorStates(ctx, q, s.chain, states); err != nil {
+		return err
+	}
+	return adoptApprovers(*out, refs, entries)
 }
 
 // adoptApprovers fills in the approver and time of every exported tool from

@@ -46,7 +46,7 @@ func TestWrite_LongToolNameIsSkippedNotFatal(t *testing.T) {
 		long := mkTool(t, "alpha", name, "v1")
 		ok := mkTool(t, "alpha", "ok", "v1")
 		fine := mkTool(t, "beta", "fine", "v1")
-		rep, err := Write(dir, []Tool{long, ok, fine})
+		rep, err := Write(dir, []Tool{long, ok, fine}, testOpts)
 		if err != nil {
 			t.Fatalf("%s: Write: %v", label, err)
 		}
@@ -69,7 +69,7 @@ func TestWrite_LongToolNameIsSkippedNotFatal(t *testing.T) {
 		if regular != 3 {
 			t.Fatalf("%s: regular files = %d, want the two tools and the manifest", label, regular)
 		}
-		again, err := Write(dir, []Tool{fine, ok, long})
+		again, err := Write(dir, []Tool{fine, ok, long}, testOpts)
 		if err != nil || again.Written != 0 || again.Unchanged != 2 || !reflect.DeepEqual(again.Skipped, wantSkipped) {
 			t.Fatalf("%s: second Write = %+v, %v", label, again, err)
 		}
@@ -98,7 +98,7 @@ func TestWrite_MaxLengthAndBoundaryNamesNeverFail(t *testing.T) {
 			t.Fatalf("%s: test setup: %d bytes, want %d", label, len(c.name), toolname.MaxBytes)
 		}
 		dir := filepath.Join(t.TempDir(), "out")
-		rep, err := Write(dir, []Tool{mkTool(t, "s", c.name, "v"), mkTool(t, "s", "short", "v")})
+		rep, err := Write(dir, []Tool{mkTool(t, "s", c.name, "v"), mkTool(t, "s", "short", "v")}, testOpts)
 		if err != nil {
 			t.Fatalf("%s (%d bytes): Write failed on a name the catalog approves: %v", label, len(c.name), err)
 		}
@@ -164,7 +164,7 @@ func TestWrite_LongNamedToolStillFailsOnCallerErrors(t *testing.T) {
 	}
 	for label, tools := range cases {
 		dir := filepath.Join(t.TempDir(), "out")
-		_, err := Write(dir, tools)
+		_, err := Write(dir, tools, testOpts)
 		if err == nil {
 			t.Errorf("%s: want an error", label)
 		}
@@ -185,7 +185,7 @@ func TestWrite_LongNamedToolStillFailsOnCallerErrors(t *testing.T) {
 func TestWrite_SkippedIsSortedAcrossReasons(t *testing.T) {
 	long := strings.Repeat("z", maxEncodedNameBytes+1)
 	dir := filepath.Join(t.TempDir(), "out")
-	rep, err := Write(dir, []Tool{mkTool(t, "t", long, "1"), mkTool(t, "s", "Fetch", "1"), mkTool(t, "s", long, "1"), mkTool(t, "s", "fetch", "2")})
+	rep, err := Write(dir, []Tool{mkTool(t, "t", long, "1"), mkTool(t, "s", "Fetch", "1"), mkTool(t, "s", long, "1"), mkTool(t, "s", "fetch", "2")}, testOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
