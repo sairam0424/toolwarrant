@@ -1005,6 +1005,79 @@ index, because without it every probe walks the log in sequence order instead
 of seeking the subject's own entries (the research pass of 2026-10-14 measured
 ten thousand such probes at 0.07 s with the index and 58.9 s without it).
 
+### Exporting the approved definitions and verifying an export
+
+```sh
+toolwarrant export --dir /srv/toolwarrant/approved
+toolwarrant export --dir /srv/toolwarrant/approved --sign-key /etc/toolwarrant/export.key --commit
+toolwarrant export verify --dir /srv/toolwarrant/approved --pub-key /etc/toolwarrant/export.pub --expect-head HEAD_YOU_RECORDED
+```
+
+`export --dir DIR` writes every approved definition as `DIR/<server>/<tool>.json`
+(the canonical bytes and a newline) and `DIR/MANIFEST.json`, which lists each
+file with its digest, approver, approval time and version number and, since
+version 3 of the manifest, records `audit_head`, the head of the audit chain the
+catalog had verified when the approvals were read, and `digest_profile`
+(`full-v1`). The command prints both; the head is the one `audit verify` prints
+at that moment, so record it with the export. The head is read after the
+approvals, so it covers every approval the export carries. Every crawl and
+every decision appends to the log, so an export after the log grew rewrites the
+manifest (and the signature) with no tool file touched, and `--commit` records
+that as a commit: that is the binding to the log, not noise.
+
+`--sign-key PATH` signs the complete manifest (decision D21 (e)). The key is an
+Ed25519 private key in a PKCS#8 PEM file, made with
+`openssl genpkey -algorithm ed25519 -out export.key && chmod 600 export.key`;
+its public key with `openssl pkey -in export.key -pubout -out export.pub`. The
+key is read from that path only: a file that group or others can read, a
+symbolic link, a directory, a missing file, a file that is not one
+`PRIVATE KEY` block, or a key of another algorithm is refused with exit 1
+before the catalog is opened and before anything is written. The key is never
+read from the environment or a flag value, never printed, and zeroed when the
+command ends. The export writes `MANIFEST.json.sig` (the base64 Ed25519
+signature over the exact bytes of `MANIFEST.json`, whose digests cover every
+tool file) and `MANIFEST.json.pub` (the public key as PKIX PEM) beside the
+manifest; `--commit` stages both. Keep the public key outside the export too:
+the copy inside the directory tells a reader which key signed and proves
+nothing by itself. An export without `--sign-key` leaves the two files of an
+earlier signed run alone; `export verify` and `--commit` then refuse the pair
+(`MANIFEST.json.sig does not sign the current MANIFEST.json`) until the next
+signed export, or until both files are removed.
+
+`export verify --dir DIR --pub-key FILE [--expect-head HEX]` opens no database.
+It exits 1 unless `MANIFEST.json.pub` records exactly the key in FILE,
+`MANIFEST.json.sig` is that key's signature over the bytes of `MANIFEST.json`,
+every listed file's bytes hash to its digest, and the entries on disk are
+exactly the listed files, their server directories, the manifest and its two
+signature files; the `.git` directory `--commit` keeps is skipped, and an
+extra, missing, renamed or nested entry, a symlink, a pending manifest or a
+manifest this version does not read each fail with a message that names what
+was found. With `--expect-head` the manifest must record that head, which
+closes the loop with the head you recorded: an export that verifies under your
+key and names the head you recorded mirrors the log as it was when you
+recorded it, so a rewrite of the log made while no store held a pin (the pin
+limit, D17) has to pass two anchors that now name each other, the recorded
+head and the signed export, instead of two that did not. The signature
+authenticates the export against whoever can write the export directory or its
+repository; it does not authenticate the person who approved (L13), and the
+entries inside the catalog are not signed.
+
+What the tests show: `TestExportSignsTheManifestAndVerifyRoundTrips` exports
+and signs, reads the same head from `audit verify`, verifies with and without
+`--expect-head`, then gets exit 1 from `export verify` for a changed byte in
+`s1/echo.json` (`does not hash to its digest`), for the file removed (`listed
+in MANIFEST.json but missing`), for an extra `stray.txt` (`not listed in
+MANIFEST.json`), for another public key (`records another public key`) and for
+the head recorded before a crawl (`audit head mismatch`); after the crawl the
+export printed `0 written, 0 removed, 1 unchanged` and a new head, `--commit`
+tracked `MANIFEST.json.sig` and `MANIFEST.json.pub`, and an unsigned export
+after it was refused by `--commit` with `does not sign the current
+MANIFEST.json`. `TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything`
+shows the refusals for a 0644 key, a symbolic link, a directory, a missing
+file, a `PUBLIC KEY` block, an ECDSA key and a garbage block, each with exit 1
+and the export directory not created. `TestVerify_FailsClosedOnEveryTamper`
+covers the remaining shapes in the export package.
+
 ## Recovering from ErrCorrupt and ErrSchema
 
 `catalog: database integrity check failed` (`ErrCorrupt`) means the file

@@ -13,6 +13,15 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Added
+
+- `toolwarrant export --sign-key PATH` signs the complete `MANIFEST.json` with the Ed25519 private key in that file (a PKCS#8 PEM; a regular file with mode 0600 or stricter, never a symbolic link; read from that path only, never from the environment or a flag value, and never printed) into `MANIFEST.json.sig` (the base64 signature over the exact bytes of the manifest) and writes the public key beside it as `MANIFEST.json.pub` (PKIX PEM); a key other users can read, a symbolic link, a directory, a file that is not one PKCS#8 `PRIVATE KEY` block or a key of another algorithm is refused with exit 1 before the catalog is opened, and `--commit` stages the two files and refuses a signature that does not sign the current manifest (decision D21 (e); `TestExportSignsTheManifestAndVerifyRoundTrips`, `TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything`, `TestReadSigningKey_RefusesEveryUnsafeShape`, `TestWrite_SignsTheManifestAndASecondWriteTouchesNothing`, `TestWrite_WithoutAKeyLeavesTheSignatureFilesAloneAndVerifyRefusesThem`, `TestCommit_StagesTheSignatureFilesAndRefusesAStalePair`).
+- `toolwarrant export verify --dir DIR --pub-key FILE [--expect-head HEX]` checks a signed export with the public key the operator holds and opens no database: `MANIFEST.json.pub` must record that key, `MANIFEST.json.sig` must be its signature over the exact bytes of `MANIFEST.json`, every listed file's bytes must hash to its digest, the entries on disk must be exactly the listed files, their server directories, the manifest and its two signature files (an extra, missing, renamed or nested entry, a symlink and a pending manifest each fail; the `.git` directory `--commit` keeps is skipped), and with `--expect-head` the manifest must record that audit head; exit 1 names what was found (`TestExportSignsTheManifestAndVerifyRoundTrips`, `TestExportVerifyUsageHelpAndRefusals`, `TestVerify_RoundTripsASignedExport`, `TestVerify_FailsClosedOnEveryTamper`, `TestVerify_ReadsAVersionTwoManifestWithoutAHead`).
+
+### Changed
+
+- `MANIFEST.json` is version 3: between the status and the tool list it records `audit_head`, the head of the audit chain the catalog had verified when the approvals were read (the new `Store.AuditHead`, the genesis for an empty log), and `digest_profile` (`full-v1`), and `export` prints both; an export after the log grew therefore rewrites the manifest (and its signature) with no tool file touched, and a version 2 manifest from an earlier release is still read as the record of the files to clean up (`TestWrite_ManifestRecordsTheAuditHeadAndProfile`, `TestParseManifest_ReadsVersionTwoAndThreeInTheirOwnShapes`, `TestWrite_CleansUpAfterAVersionTwoManifest`, `TestAuditHead_IsTheVerifiedHeadAndMovesWithTheLog`).
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
