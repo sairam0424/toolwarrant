@@ -397,10 +397,13 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
 - `toolwarrant version` prints the build version (the tag without its `v`,
   set at link time) and the pinned gateway version, so a deployment can be
   matched to a release. A binary built with
-  `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` prints
-  `dev` instead, since nothing sets the version at link time;
-  `go version -m toolwarrant` names the module version and its `go.sum` hash
-  for such a binary.
+  `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` has
+  no link-time version and falls back to the module version the go command
+  embedded, the tag with its `v` (`toolwarrant vX.Y.Z`;
+  `TestVersionFallsBackToTheModuleVersion`); the binaries installed from
+  v0.1.0 and v0.1.1 predate the fallback and print `dev`. `go version -m
+  toolwarrant` names the module version and its `go.sum` hash for any such
+  binary.
 - The seam and mock binaries are never released.
 
 Verifying a release before running it:

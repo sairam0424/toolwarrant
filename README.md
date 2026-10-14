@@ -418,8 +418,13 @@ SBOM per archive and a keyless cosign signature over the checksums file
 (verification in [SECURITY.md](SECURITY.md), Release integrity). There is no
 container image; the Go module is the repository itself, so `go install
 github.com/sairam0424/toolwarrant/cmd/toolwarrant@v0.1.0` builds the same
-commit, checked against the sum.golang.org record of the tag (that binary
-prints `dev` as its version; `go version -m` names the tag). The unit and
+commit, checked against the sum.golang.org record of the tag. Such a binary
+has no link-time version, so `toolwarrant version` falls back to the module
+version the go command embedded and prints the tag with its `v`
+(`toolwarrant vX.Y.Z`; `TestVersionFallsBackToTheModuleVersion`), while a
+release archive's binary prints `X.Y.Z`; the binaries installed from v0.1.0
+and v0.1.1 predate the fallback and print `dev`, and `go version -m` names
+the tag for all of them. The unit and
 property tests of every package pass under `-race` (`make test`, which prints
 per-package coverage), and the end-to-end test passes against the real gateway
 (`make e2e`; `demo/run.sh` runs it unattended and writes `demo/last-run.log`).

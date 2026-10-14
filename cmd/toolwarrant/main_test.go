@@ -195,6 +195,41 @@ func TestRunUsesASignalContext(t *testing.T) {
 	}
 }
 
+// TestVersionFallsBackToTheModuleVersion drives the decision behind the
+// version command over every input it sees: the version the linker set and
+// the main module version the Go toolchain embedded. A linked version wins;
+// the source default yields to an embedded tag or pseudo-version, which
+// already carries any +dirty marker, but not to the "(devel)" of a go test or
+// go run binary nor to a binary without build information. The command then
+// prints that decision for this very binary in its fixed two-line format.
+func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
+	const pseudo = "v0.1.2-0.20261014065709-6ab9e4aad92e"
+	cases := []struct{ name, linked, module, want string }{
+		{"go install of a tag reports the tag", devVersion, "v0.1.1", "v0.1.1"},
+		{"go build in a checkout reports the pseudo-version", devVersion, pseudo, pseudo},
+		{"a dirty checkout keeps the marker the toolchain added", devVersion, "v0.1.1+dirty", "v0.1.1+dirty"},
+		{"go test and go run stay dev", devVersion, unknownModuleVersion, devVersion},
+		{"no build information stays dev", devVersion, "", devVersion},
+		{"a linked release version wins over the tag", "0.1.1", "v0.1.1", "0.1.1"},
+		{"a linked release version wins over (devel)", "0.1.1", unknownModuleVersion, "0.1.1"},
+		{"a linked release version wins without build information", "0.1.1", "", "0.1.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := displayVersion(tc.linked, tc.module); got != tc.want {
+				t.Errorf("displayVersion(%q, %q) = %q, want %q", tc.linked, tc.module, got, tc.want)
+			}
+		})
+	}
+	var out, errb bytes.Buffer
+	none := func(string) string { return "" }
+	code := runCtx(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errb, none)
+	want := programName + " " + displayVersion(version, embeddedModuleVersion()) + "\n" + gatewayVersion + "\n"
+	if code != exitOK || out.String() != want {
+		t.Fatalf("version: exit %d, out %q, want %q, err %q", code, out.String(), want, errb.String())
+	}
+}
+
 func TestBrokenStreamsExitOne(t *testing.T) {
 	ctx := context.Background()
 	none := func(string) string { return "" }
