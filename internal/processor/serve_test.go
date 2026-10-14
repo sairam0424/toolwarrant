@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -27,9 +28,17 @@ func startServer(t *testing.T, s *Server) (api.ExtMcpClient, func() error) {
 	return serveAndDial(t, s, lis, lis)
 }
 
-// serveAndDial runs s.Serve on lis and dials it through buf. The two differ
-// only when a test wraps the in-memory listener to report another address.
+// serveAndDial runs s.Serve on lis and dials it through buf in plaintext. The
+// two differ only when a test wraps the in-memory listener to report another
+// address.
 func serveAndDial(t *testing.T, s *Server, lis net.Listener, buf *bufconn.Listener) (api.ExtMcpClient, func() error) {
+	t.Helper()
+	return serveAndDialWith(t, s, lis, buf, insecure.NewCredentials())
+}
+
+// serveAndDialWith is serveAndDial with the client's transport credentials
+// chosen by the test, so a TLS test can present, or withhold, a certificate.
+func serveAndDialWith(t *testing.T, s *Server, lis net.Listener, buf *bufconn.Listener, creds credentials.TransportCredentials) (api.ExtMcpClient, func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -37,7 +46,7 @@ func serveAndDial(t *testing.T, s *Server, lis net.Listener, buf *bufconn.Listen
 
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return buf.DialContext(ctx) }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+		grpc.WithTransportCredentials(creds))
 	if err != nil {
 		cancel()
 		t.Fatal(err)

@@ -26,6 +26,7 @@ package processor
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -97,8 +98,22 @@ type Config struct {
 	Secret string
 	// AllowRemoteListener lets Serve accept a TCP listener on a non-loopback
 	// address. Without it Serve refuses such a listener, because without a
-	// Secret whoever reaches the port decides what the gateway serves.
+	// Secret or a verified client certificate whoever reaches the port decides
+	// what the gateway serves.
 	AllowRemoteListener bool
+	// TLS, when set, makes Serve terminate TLS on the listener with this
+	// configuration (grpc credentials.NewTLS). Serve works on a copy whose
+	// MinVersion is TLS 1.3 whatever the caller set below it; the caller's
+	// value is never written to. With ClientAuth tls.RequireAndVerifyClientCert
+	// (and a ClientCAs pool, which is required then) every connection must
+	// present a certificate that pool signed, which authenticates the hooks as
+	// the shared secret does and so silences the no-secret warning of a
+	// non-loopback listener (owner decision O-2, D19 planned); any other
+	// ClientAuth value protects the bytes on the wire only. A connection the
+	// handshake refuses never reaches a hook, so Stats does not count it; the
+	// transport's log line does. Nil serves plaintext, as every version before
+	// did.
+	TLS *tls.Config
 	// MaxEvidenceAge bounds how long a digest seen in a tools/list response
 	// counts as evidence for a tools/call. Zero means it never expires. The
 	// crawl side of the evidence (LastSeen) carries no timestamp yet and is
@@ -187,9 +202,12 @@ type Server struct {
 	target      string
 	secret      string
 	allowRemote bool
-	log         *slog.Logger
-	maxTracked  int
-	maxAge      time.Duration
+	// tlsConf is Config.TLS hardened to TLS 1.3 (hardenTLS); nil serves
+	// plaintext.
+	tlsConf    *tls.Config
+	log        *slog.Logger
+	maxTracked int
+	maxAge     time.Duration
 	// now is the clock behind evidence ages; tests replace it.
 	now func() time.Time
 
@@ -254,6 +272,7 @@ func New(src Source, cfg Config) *Server {
 		target:      target,
 		secret:      cfg.Secret,
 		allowRemote: cfg.AllowRemoteListener,
+		tlsConf:     hardenTLS(cfg.TLS),
 		log:         logger,
 		maxTracked:  maxTracked,
 		maxAge:      cfg.MaxEvidenceAge,

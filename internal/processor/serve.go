@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
@@ -66,7 +67,10 @@ var (
 // decides what the gateway serves, so lis must be a loopback or unix-socket
 // listener that only the gateway can reach. A TCP listener on any other
 // address is refused unless Config.AllowRemoteListener is set, and then only
-// Config.Secret stands between the port and the gateway's tool list.
+// Config.Secret, or a client certificate Config.TLS requires and verifies,
+// stands between the port and the gateway's tool list. With Config.TLS set
+// the transport terminates TLS 1.3 on lis (hardenTLS, checkTLS); a connection
+// the handshake refuses never reaches a hook.
 //
 // A tools/list page over the payload cap never reaches CheckResponse: gRPC
 // refuses the message with ResourceExhausted from its length prefix, the
@@ -87,15 +91,14 @@ func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
 	if err := s.checkListener(lis.Addr()); err != nil {
 		return err
 	}
+	if err := checkTLS(s.tlsConf); err != nil {
+		return err
+	}
 	desc, err := s.serviceDesc()
 	if err != nil {
 		return err
 	}
-	gs := grpc.NewServer(
-		grpc.MaxRecvMsgSize(maxRecvMsgSize),
-		grpc.MaxConcurrentStreams(maxConcurrentHooks),
-		grpc.KeepaliveEnforcementPolicy(enforcementPolicy()),
-	)
+	gs := grpc.NewServer(s.serverOptions()...)
 	gs.RegisterService(desc, s)
 
 	done := make(chan error, 1)
@@ -109,6 +112,22 @@ func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
 		stopWithin(gs, shutdownGrace)
 		return serveResult(ctx, <-done)
 	}
+}
+
+// serverOptions are the transport settings of the gRPC server: the message
+// size and stream caps, the keepalive policy, and TLS when configured. The
+// credentials are built from the hardened copy, so the floor of TLS 1.3 holds
+// whatever the caller passed in Config.TLS.
+func (s *Server) serverOptions() []grpc.ServerOption {
+	opts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(maxRecvMsgSize),
+		grpc.MaxConcurrentStreams(maxConcurrentHooks),
+		grpc.KeepaliveEnforcementPolicy(enforcementPolicy()),
+	}
+	if s.tlsConf != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(s.tlsConf)))
+	}
+	return opts
 }
 
 // serviceDesc is a copy of the generated ServiceDesc whose CheckResponse
@@ -157,8 +176,10 @@ func (s *Server) watchRefusal(ctx context.Context, dec func(any) error) func(any
 }
 
 // checkListener refuses a TCP listener that is reachable from off the host
-// unless the operator opted in. Opting in without a shared secret is logged,
-// because then whoever reaches the port decides what the gateway serves.
+// unless the operator opted in. Opting in with neither a shared secret nor a
+// verified client certificate is logged, because then whoever reaches the port
+// decides what the gateway serves; server-only TLS protects the bytes, not the
+// port, so it does not silence the warning (O-2, D19 planned).
 func (s *Server) checkListener(addr net.Addr) error {
 	local, err := isLocalAddr(addr)
 	if err != nil {
@@ -170,8 +191,8 @@ func (s *Server) checkListener(addr net.Addr) error {
 	if !s.allowRemote {
 		return fmt.Errorf("%w: %s", errRemoteListener, strconv.Quote(addr.String()))
 	}
-	if s.secret == "" {
-		s.log.Warn("serving hooks on a non-loopback listener without a shared secret: anyone who reaches it decides what the gateway serves",
+	if s.secret == "" && !s.verifiesClients() {
+		s.log.Warn("serving hooks on a non-loopback listener without a shared secret or a verified client certificate: anyone who reaches it decides what the gateway serves",
 			"server", s.server, "addr", strconv.Quote(addr.String()))
 	}
 	return nil
