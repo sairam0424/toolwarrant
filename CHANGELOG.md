@@ -13,6 +13,12 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Added
+
+- `toolwarrant diff` prints `drift: GRADE (kinds)` after the `to:` header: the change from the from version to the to version classified by the new `internal/drift` package (CRITICAL for a parameter removed, retyped or newly required, an annotation hint loosened or the name changed; WARNING for a description, optional parameter, schema, annotations or `_meta` change, the description grade being owner decision O-6; INFO for the title and icons), or `drift: not classified (nothing approved to compare with)` against the empty document; the classification is advice, the gate stays the digest (`TestDiffPrintsTheDriftClassification`, `TestCompare_DescriptionChangeIsWarningNotInfo`, `TestCompare_HostileKeysAreEscapedInPaths`).
+- `toolwarrant show` adds a CHANGE column with each version's grade against the approved one and, under the table, one line grouping the other versions by what they change, the worst group first; `show --json` gives every version `"change": {"severity", "kinds"}`, `null` for the approved version and while nothing is approved (`TestShowGroupsVersionsByChangeKinds`).
+- `toolwarrant approve` prints `change versus the approved version N: GRADE (kinds)` on stderr before the suspicious-character review and never refuses on it (`TestApprovePrintsTheClassificationAndNeverGatesOnIt`).
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
