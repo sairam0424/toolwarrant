@@ -15,29 +15,33 @@
 // proposes new definitions faster than people decide stops gaining versions
 // (MaxProposalsPerDecision), and a server whose upstream keeps listing fresh
 // names stops gaining rows and bytes (MaxToolsPerServer, MaxServerBytes).
-// Nothing is served until a person approves it, and every read path re-hashes
-// the canonical bytes behind the digests it hands out, and serves an approval
-// only when the tool's newest approve or rollback record names that exact
-// version and digest and the newest version.approved or version.rolled_back
-// audit entry about the tool recorded that digest and is part of the chain
-// the Store verified (D15: a Store verifies the whole chain once at open and
-// the suffix on every reload, keeps the hash of every decision entry it
-// walked, and trusts an entry only when its fields hash to that value; a
-// forger must rewrite every entry from the forged one to the head, which the
-// head a running Store pinned betrays while that Store runs, and which only
-// the head the operator records outside the file betrays once no Store holds
-// a pin, the CLI's state between commands, D17 k). A Store remembers each
-// version row it has verified for
-// RecheckTTL (ten minutes), so the processor's reload after a crawl does not
-// read every approved definition again; the price, stated in full at
-// RecheckTTL, is that a change to the stored bytes of a row this Store
-// verified within the last RecheckTTL is not reported until that time has
-// passed or a Store without the memory reads the row. Decisions always load
-// their tool afresh and require every version's status, ever-approved flag and
-// proposer list to be what the verified version.* entries about the tool leave
-// behind (D17 a). A Store also remembers the catalog identity and the file it
-// opened, so every read reports ErrReplaced once the file at the path is
-// another one.
+// Nothing is served until a person approves it. The serving path (Snapshot,
+// and the Tools and Tool views) hands out digests, each anchored to a verified
+// audit entry, and reads no canonical bytes; every path that hands out bytes
+// (Approved, Versions, a decision through loadTool) hashes them against the
+// digest on every call, with no memory between calls (D21 d; before, every
+// read path re-hashed the bytes behind the digests it handed out and
+// remembered each verified row for ten minutes, a window in which a rewrite of
+// the bytes went unreported). An approval is served only when the tool's
+// newest approve or rollback record names that exact version and digest and
+// the newest version.approved or version.rolled_back audit entry about the
+// tool recorded that digest and is part of the chain the Store verified (D15:
+// a Store verifies the whole chain once at open and the suffix on every
+// reload, keeps the hash of every decision entry it walked, and trusts an
+// entry only when its fields hash to that value; a forger must rewrite every
+// entry from the forged one to the head, which the head a running Store
+// pinned betrays while that Store runs, and which only the head the operator
+// records outside the file betrays once no Store holds a pin, the CLI's state
+// between commands, D17 k). A rewrite of an approved version's bytes with the
+// digest column intact is therefore invisible to the snapshot and the list,
+// cannot change what the gateway serves (the processor compares the live
+// definition's digest with the anchored one) and is refused at once by the
+// export, emit, show, diff and every decision, and named by Integrity. Decisions
+// always load their tool afresh and require every version's status,
+// ever-approved flag and proposer list to be what the verified version.*
+// entries about the tool leave behind (D17 a). A Store also remembers the
+// catalog identity and the file it opened, so every read reports ErrReplaced
+// once the file at the path is another one.
 //
 // The servers and tools tables are the current policy and have no update
 // guard: their columns must change with every crawl and decision; nothing is

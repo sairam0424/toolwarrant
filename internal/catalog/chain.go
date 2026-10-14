@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -45,7 +46,7 @@ import (
 // verify and compare it before every decision made after the processors were
 // stopped. The fifth review showed why the previous rule (the newest approval
 // entry re-sealed from its predecessor only, remembered by the stored hash
-// column for RecheckTTL) was not enough: an entry below the head rewritten in
+// column for ten minutes) was not enough: an entry below the head rewritten in
 // place was served, and an after_hash edited with the hash column kept was
 // served for ten minutes. The seventh review showed that a walk bounded by
 // seq > 0 never read a row at seq 0 or below (D17 d, firstPossibleSeq) and that
@@ -74,6 +75,14 @@ type chainMemory struct {
 	mu     sync.RWMutex
 	head   chainPin
 	hashes map[int64]entryHash
+	// hashed counts the entries verify has hashed since the Store opened: the
+	// anchor pass of every checked read, which is the only hashing that grows
+	// with the tool count since D21 (d). The pin check and the suffix walk
+	// hash through audit.HashOf and audit.VerifyFrom directly and are not
+	// counted, so the hashes/op of the reload benchmarks and the count
+	// TestBenchmarkSnapshotHashesOnlyAuditEntries pins are the anchor pass
+	// alone.
+	hashed atomic.Int64
 }
 
 func newChainMemory() *chainMemory { return &chainMemory{hashes: map[int64]entryHash{}} }
@@ -122,10 +131,14 @@ func (c *chainMemory) drop() {
 	c.hashes = map[int64]entryHash{}
 }
 
+// hashCount is the number of entries verify has hashed so far.
+func (c *chainMemory) hashCount() int64 { return c.hashed.Load() }
+
 // verify requires e, as read now, to be an entry of the verified chain: the
 // hash computed from its fields must be the one the walk recorded for its
 // seq. The Hash field of e is not looked at.
 func (c *chainMemory) verify(e audit.Entry) error {
+	c.hashed.Add(1)
 	local, err := audit.HashOf(e)
 	if err != nil {
 		return fmt.Errorf("%w: audit entry %d about %s cannot be hashed: %v", ErrCorrupt, e.Seq, quote(e.Subject), err)

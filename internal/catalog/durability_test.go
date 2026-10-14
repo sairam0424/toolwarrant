@@ -145,6 +145,10 @@ type anchorQuery struct {
 	name string
 	sql  string
 	want string
+	// derived is the alias of the derived table the query joins, when it
+	// joins one: the plan must probe that table through an automatic index
+	// on the subject (planDerivedProbe) and never scan it per outer row.
+	derived string
 }
 
 const (
@@ -155,21 +159,28 @@ const (
 	// subqueries of anchor.go and stateanchor.go.
 	logTable = "audit_log"
 	logAlias = "l"
+	// snapshotDerived is the alias snapshotQuery gives newestEntriesOfServer,
+	// and planDerivedProbe how a plan must reach that table once it is
+	// materialised: an automatic index on the join column, probed once per
+	// tool row. A SCAN of the table per tool row would be a tools x entries
+	// nested loop that the lines about the log alone would not show.
+	snapshotDerived  = "n"
+	planDerivedProbe = "USING AUTOMATIC COVERING INDEX (subject=?)"
 )
 
 // anchorQueries lists every statement that reads the newest entry or entries
-// about a subject: the stand-alone forms, the three queries that embed the
-// correlated forms, and the two full-row forms.
+// about a subject: the stand-alone forms, the snapshot's one-pass form, the
+// two views that embed the correlated forms, and the two full-row forms.
 func anchorQueries() []anchorQuery {
 	return []anchorQuery{
-		{"decisionEntryOfSubject (anchorOne)", `SELECT ` + decisionEntryOfSubject, planCovering},
-		{"stateEntryOfSubject (anchorToolState)", `SELECT ` + stateEntryOfSubject, planCovering},
-		{"snapshotQuery (Snapshot; decisionEntryOfTool and stateEntryOfTool)", snapshotQuery, planCovering},
-		{"toolViewQuery (Tool; decisionEntryOfServerTool and stateEntryOfServerTool)", toolViewQuery, planCovering},
-		{"toolViewsQuery (Tools)", toolViewsQuery, planCovering},
-		{"approvedQuery (Approved; decisionEntryOfServerTool)", approvedQuery, planCovering},
-		{"newestServerEntryQuery (anchorServer)", newestServerEntryQuery, planSeek},
-		{"versionEntriesQuery (versionsFromLog)", versionEntriesQuery, planSeek},
+		{"decisionEntryOfSubject (anchorOne)", `SELECT ` + decisionEntryOfSubject, planCovering, ""},
+		{"stateEntryOfSubject (anchorToolState)", `SELECT ` + stateEntryOfSubject, planCovering, ""},
+		{"snapshotQuery (Snapshot; newestEntriesOfServer, one range read per reload)", snapshotQuery, planCovering, snapshotDerived},
+		{"toolViewQuery (Tool; decisionEntryOfServerTool and stateEntryOfServerTool)", toolViewQuery, planCovering, ""},
+		{"toolViewsQuery (Tools)", toolViewsQuery, planCovering, ""},
+		{"approvedQuery (Approved; decisionEntryOfServerTool)", approvedQuery, planCovering, ""},
+		{"newestServerEntryQuery (anchorServer)", newestServerEntryQuery, planSeek, ""},
+		{"versionEntriesQuery (versionsFromLog)", versionEntriesQuery, planSeek, ""},
 	}
 }
 
@@ -180,7 +191,9 @@ func anchorQueries() []anchorQuery {
 // forms that return whole entries as an index seek, and none as a scan. The
 // research pass of 2026-10-14 measured ten thousand of these probes at 0.07 s
 // with the index and 58.9 s without it, a cliff that a schema change or a
-// rewritten query could bring back without any other test noticing.
+// rewritten query could bring back without any other test noticing. The
+// snapshot's one-pass form must also join its materialised range read to the
+// tool rows through an automatic index, never by scanning it per tool row.
 func TestAnchorQueries_StayOnTheAuditLogBySubjectIndex(t *testing.T) {
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
@@ -251,6 +264,30 @@ func checkPlan(t *testing.T, q anchorQuery, plan []string) {
 	}
 	if touched == 0 {
 		t.Errorf("%s: no plan line reads the audit log; the full plan:\n%s", q.name, shown)
+	}
+	if q.derived != "" {
+		checkDerived(t, q, plan, shown)
+	}
+}
+
+// checkDerived requires the plan to probe the query's derived table through
+// an automatic index on the subject and never to scan it: the lines about the
+// log show only the inner range read, and a planner that chose a SCAN of the
+// materialised table per outer row would turn the reload into a tools x
+// entries nested loop with every log line still a covering SEARCH.
+func checkDerived(t *testing.T, q anchorQuery, plan []string, shown string) {
+	t.Helper()
+	probe := "SEARCH " + q.derived + " " + planDerivedProbe
+	probed := false
+	for _, line := range plan {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "SCAN" && f[1] == q.derived {
+			t.Errorf("%s: the plan scans the derived table %s per tool row: %q; the full plan:\n%s", q.name, q.derived, line, shown)
+		}
+		probed = probed || strings.HasPrefix(line, probe)
+	}
+	if !probed {
+		t.Errorf("%s: no plan line starts with %q; the full plan:\n%s", q.name, probe, shown)
 	}
 }
 
