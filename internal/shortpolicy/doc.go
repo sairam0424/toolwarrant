@@ -5,5 +5,8 @@
 // full in the ci test-full job. The thirty seconds are read off the timing
 // table by a person; the two mechanical halves (named in CLAUDE.md, run in
 // full) are what the test checks, so that the sentence cannot drift from the
-// tree the way a doc claim does when nothing fails.
+// tree the way a doc claim does when nothing fails. The test reads every Go
+// file of the module, not only the test files, so a testing.Short() in a
+// helper outside a _test.go file is a failure too, not a skip the policy never
+// sees.
 package shortpolicy

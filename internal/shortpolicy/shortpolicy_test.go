@@ -6,7 +6,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,11 +50,17 @@ func TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	callers := shortCallersInTree(t, root)
-	if len(callers) == 0 {
+	report, err := shortCallersInTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range report.problems {
+		t.Error(p)
+	}
+	if len(report.callers) == 0 {
 		t.Fatal("no test consults testing.Short(); CLAUDE.md names six, so the walk is wrong")
 	}
-	for _, c := range callers {
+	for _, c := range report.callers {
 		if !strings.Contains(claude, "`"+c.name+"`") {
 			t.Errorf("%s consults testing.Short() but %s does not name it", c, claudeFile)
 		}
@@ -170,62 +175,6 @@ func keys(set map[string]bool) string {
 	}
 	slices.Sort(out)
 	return strings.Join(out, " ")
-}
-
-// skipDir names the directories the walk never enters: not Go the module
-// tests (the go tool ignores testdata and dot and underscore directories), or
-// vendored and downloaded trees.
-func skipDir(name string) bool {
-	switch name {
-	case "testdata", "bin", "dist", "third_party", "seam":
-		return true
-	}
-	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
-}
-
-// shortCallersInTree parses every _test.go file under root and collects the
-// test functions that consult testing.Short(); a call the policy cannot name
-// (a helper, a method, TestMain, a package-level expression) is a failure
-// reported on the file.
-func shortCallersInTree(t *testing.T, root string) []shortCaller {
-	t.Helper()
-	var callers []shortCaller
-	fset := token.NewFileSet()
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path != root && skipDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(d.Name(), "_test.go") {
-			return nil
-		}
-		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		names, err := shortCallers(f)
-		if err != nil {
-			t.Errorf("%s: %v", path, err)
-			return nil
-		}
-		rel, err := filepath.Rel(root, filepath.Dir(path))
-		if err != nil {
-			return err
-		}
-		for _, n := range names {
-			callers = append(callers, shortCaller{pkg: filepath.ToSlash(rel), name: n})
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return callers
 }
 
 // shortCallers returns the top-level test functions of one file whose body
