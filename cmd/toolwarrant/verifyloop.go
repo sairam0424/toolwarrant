@@ -46,8 +46,8 @@ func (t loopTally) outcome() error {
 	case t.completed == 0:
 		return fmt.Errorf("no check of this run completed (%d could not run); nothing was proven about the gateway", t.errored)
 	case t.failedVerdicts+t.errored > 0 || t.verdictLines > 0:
-		return fmt.Errorf("%d of %d check(s) in this run failed: at least one check of this run found a %s or %s, a %s, %s or %s, or could not run; the lines above say which",
-			t.failedVerdicts+t.errored, t.completed+t.errored, verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive)
+		return fmt.Errorf("%d of %d check(s) in this run failed: at least one check of this run found a %s or %s, a %s, %s, %s or %s, or could not run; the lines above say which",
+			t.failedVerdicts+t.errored, t.completed+t.errored, verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive, verdictProbeChanged)
 	}
 	return nil
 }
