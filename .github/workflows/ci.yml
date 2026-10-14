@@ -264,7 +264,7 @@ jobs:
               echo "cited test does not exist: $n"
               fail=1
             fi
-          done < <(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sort -u)
+          done < <(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CONTRIBUTING.md CLAUDE.md CHANGELOG.md docs/*.md seam/RESULTS.md | sort -u)
           exit "$fail"
       - name: every relative link resolves
         run: |
@@ -278,7 +278,7 @@ jobs:
               echo "broken link in $file: $link"
               fail=1
             fi
-          done < <(grep -oHE '\]\([^)]+\)' README.md SECURITY.md CLAUDE.md docs/*.md seam/RESULTS.md | sed -E 's/\]\((.*)\)$/\1/')
+          done < <(grep -oHE '\]\([^)]+\)' README.md SECURITY.md CONTRIBUTING.md CLAUDE.md CHANGELOG.md docs/*.md seam/RESULTS.md | sed -E 's/\]\((.*)\)$/\1/')
           exit "$fail"
 
   e2e:
