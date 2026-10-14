@@ -785,9 +785,7 @@ log must carry the same digest and must be part of the chain the catalog
 verified (decision D14 for the entry, D15 for the chain; before the fifth
 round a definition and its `hash_seen` rewritten together under two dropped
 and re-created guard triggers reached the serving path, because the approvals
-table was the only evidence); and every path that hands out the bytes behind
-a digest (`export`, `emit`, `show`, `diff`, every decision) hashes them against
-that digest on every call, with no memory between calls, while the serving path
+table was the only evidence); and every path that reads the stored bytes behind a digest (`export`, `emit`, `show`, `diff`, every decision) hashes them against that digest on every call, with no memory between calls; `export`, `show` and `diff` are the paths that hand those bytes out, while the serving path
 (the snapshot the processor serves from, and `list`) hands out digests alone,
 each anchored to a verified audit entry, and reads no bytes (decision D21 (d);
 before the v0.3 round every read path re-hashed the bytes behind the digests
