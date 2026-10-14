@@ -166,7 +166,7 @@ test or seam result that proves it, is in [docs/threat-model.md](docs/threat-mod
 Its second table lists the residual risks and what an operator can do about
 each. The spike findings F1 to F5 and the design decisions are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md);
-the design decisions run to D20.
+the design decisions run to D21.
 
 ## Operator hardening checklist
 

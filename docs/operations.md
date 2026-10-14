@@ -6,7 +6,7 @@ table in `cmd/toolwarrant/main.go` (`toolwarrant help COMMAND` prints them).
 Every behaviour described here is covered by an in-process test of
 `cmd/toolwarrant` or of the package behind the command, and the chain through
 the real gateway by a scenario of the end-to-end test (`e2e/`, `make e2e`,
-scenarios A to Q); see [threat-model.md](threat-model.md) for the test names.
+scenarios A to R); see [threat-model.md](threat-model.md) for the test names.
 The fourth round (the fixes after the third review, 2026-10-11, decision D13 in
 [decisions.md](decisions.md)) changed the canary, `crawl --every`, `emit`,
 `audit verify` and the recovery procedures. The fifth round (the fixes after

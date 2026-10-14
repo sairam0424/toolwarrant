@@ -27,7 +27,7 @@ corrections they forced to the spike's findings. Each record gives the context
 (what a review found), the decision, its consequences for operators and for
 other packages, and where it lives in code with the tests that pin it. Where a
 decision is proven on the real gateway, the end-to-end scenario is named:
-`TestEndToEnd` in `e2e/` runs scenarios A to Q against the agentgateway v1.6.0
+`TestEndToEnd` in `e2e/` runs scenarios A to R against the agentgateway v1.6.0
 binary (`make e2e`; `demo/run.sh` keeps the last run in `demo/last-run.log`).
 
 ## D1. The digest covers the whole definition: profile `full-v1`

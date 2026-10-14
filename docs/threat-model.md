@@ -16,7 +16,7 @@ a numbered result in [../seam/RESULTS.md](../seam/RESULTS.md). Tests are cited
 as the package name followed by the test function names; the packages live under
 `internal/` except `cmd`, which is `cmd/toolwarrant`, and `e2e`, whose
 `TestEndToEnd` runs the whole chain on the real agentgateway v1.6.0 binary
-(scenarios A to Q; `make e2e`; `demo/run.sh` keeps the last run in
+(scenarios A to R; `make e2e`; `demo/run.sh` keeps the last run in
 `demo/last-run.log`). Where a control depends on the live gateway, the scenario
 letter is the proof. The `docs` job of
 [../.github/workflows/ci.yml](../.github/workflows/ci.yml) checks that every
