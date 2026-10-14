@@ -103,9 +103,13 @@ func FuzzSeeds(f *testing.F) { if testing.Short() { f.Skip("slow seeds") }; f.Fu
 }
 
 func TestFullPackages_readsTheTestFullJobOnly(t *testing.T) {
+	// The comment and the name: line carry ./ tokens that are not commands;
+	// only the two run: lines count.
 	ci := "jobs:\n  test:\n    steps:\n      - run: go test -short ./...\n" +
 		"  test-full:\n    steps:\n      - run: go install x@v1\n" +
+		"      # unlike the e2e job's run: ./e2e/... line, these run in full\n" +
 		"      - run: gotestsum --jsonfile \"$RUNNER_TEMP/g.json\" -- -race ./internal/a/ ./internal/b/c/\n" +
+		"      - name: the table, not a run: ./internal/not/ command\n        if: always()\n        run: |\n          echo ./internal/body/\n" +
 		"  docs:\n    steps:\n      - run: go test ./internal/d/\n"
 	got, err := testFullPackages(ci)
 	if err != nil {
@@ -311,6 +315,9 @@ func consultsShort(node ast.Node, short func(*ast.CallExpr) bool) bool {
 // wildcard) that any run: line of the test-full job names. The job key is
 // matched literally and the job ends at the next key at the same indent, so
 // a renamed job or an empty command fails here rather than passing silently.
+// Only the run: line itself is read (not a comment or a name: that mentions
+// one, and not the body of a run: | block), so a command moved into a block
+// fails here until this parser learns the shape, instead of passing.
 func testFullPackages(ci string) (map[string]bool, error) {
 	pkgs := map[string]bool{}
 	in := false
@@ -322,7 +329,7 @@ func testFullPackages(ci string) (map[string]bool, error) {
 		if in && isJobKey(line) {
 			break
 		}
-		if !in || !strings.Contains(line, "run:") {
+		if !in || !isRunLine(line) {
 			continue
 		}
 		for _, tok := range strings.Fields(line) {
@@ -335,6 +342,14 @@ func testFullPackages(ci string) (map[string]bool, error) {
 		return nil, fmt.Errorf("%s: no run: line of the %q job names a ./ package; the job or this parser changed", ciFile, strings.TrimSpace(testFullJob))
 	}
 	return pkgs, nil
+}
+
+// isRunLine reports whether line is a run: step of a job, as a list item or as
+// the key after a name:. A comment starts with #, a name: with its own key, so
+// neither matches even when its text mentions run: and a ./ path.
+func isRunLine(line string) bool {
+	trim := strings.TrimSpace(line)
+	return strings.HasPrefix(trim, "- run:") || strings.HasPrefix(trim, "run:")
 }
 
 // isJobKey reports whether line opens a job under jobs: (two spaces of
