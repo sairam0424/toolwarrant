@@ -290,7 +290,7 @@ func TestCompare_HostileKeysAreEscapedInPaths(t *testing.T) {
 		`"_meta":{"a\"b\\c\nd":1},"pa\u200bth\u001b[31m\u202e":true}`
 	r := mustCompare(t, from, to)
 	wantOnly(t, r,
-		finding(MetaChanged, `$._meta["a\"b\\c\u{000A}d"]`, "added"),
+		finding(MetaChanged, `$._meta["a\"b\\c\nd"]`, "added"),
 		finding(OptionalParameterAdded, propertiesPath+`["pa\u{200B}th\u{001B}[31m\u{202E}"]`, "added"),
 		finding(Other, `$["pa\u{200B}th\u{001B}[31m\u{202E}"]`, "added"))
 	for _, f := range r.Findings {

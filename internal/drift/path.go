@@ -23,10 +23,12 @@ func mergedKeys(from, to map[string]any) []string {
 	return out
 }
 
-// escapedNewline is how a line break inside a key is shown, in the \u{HEX}
-// form textdiff.Escape uses for every other invisible character; Escape keeps
-// a newline, and a path must stay on one line.
-const escapedNewline = `\u{000A}`
+// escapedNewline is how a line break inside a key is shown: \n, the spelling
+// textdiff gives it in the paths it prints, so one key reads the same in the
+// drift line and in the textdiff lines under it. Escape keeps a real newline
+// (a path must stay on one line) and doubles every real backslash, so the
+// form stays unambiguous.
+const escapedNewline = `\n`
 
 // segment renders an object key as a path segment. A simple key prints as
 // .key; anything else is quoted and escaped, with a quotation mark written \"
