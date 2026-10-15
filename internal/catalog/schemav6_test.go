@@ -126,6 +126,40 @@ func TestMigrate_RefusesAV6FileThatAlreadyHoldsAForeignSignedRecordsTable(t *tes
 	}
 }
 
+// A version 6 file that lost a guard is corruption, not a file to migrate:
+// the migration runs inside the transaction and the guard comparison after it
+// fails, so the transaction rolls back and nothing commits (D22 g, the
+// fail-closed half of the migration). Open is ErrCorrupt naming the guard,
+// user_version is still 6, no object the migration creates exists, the 31
+// objects that were there are what they were and the file's bytes are
+// unchanged; the file stays a version 6 file for a v0.3.x build to inspect.
+func TestMigrate_RefusesAV6FileThatLostAGuardAndCommitsNothing(t *testing.T) {
+	t.Parallel()
+	f := newV6File(t)
+	mustExec(t, rawDBNoFK(t, f.path), `DROP TRIGGER approvals_no_update`)
+	before := fileDigest(t, f.path)
+	_, err := Open(f.path, lifecycle.DefaultPolicy())
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open = %v, want ErrCorrupt", err)
+	}
+	if want := "guard trigger approvals_no_update is missing"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not say %q", err, want)
+	}
+	if after := fileDigest(t, f.path); after != before {
+		t.Errorf("the rolled-back migration changed the file: %s before, %s after", before, after)
+	}
+	db := rawDB(t, f.path)
+	if v := mustCount(t, db, `PRAGMA user_version`); v != v6Version {
+		t.Errorf("user_version = %d after the rolled-back migration, want %d", v, v6Version)
+	}
+	if n := mustCount(t, db, `SELECT COUNT(*) FROM sqlite_master WHERE name LIKE ?`, v7Added); n != 0 {
+		t.Errorf("%d objects named %s exist after the rolled-back migration, want none", n, v7Added)
+	}
+	if n := mustCount(t, db, `SELECT COUNT(*) FROM sqlite_master`); n != v6Objects-1 {
+		t.Errorf("sqlite_master holds %d objects, want %d (the version 6 objects minus the dropped guard)", n, v6Objects-1)
+	}
+}
+
 // Several processes may open a version 6 file at the same moment (a crawl on
 // a schedule and an operator's init): the migration runs in the immediate
 // transaction migrate holds, so exactly one process adds the objects and the
