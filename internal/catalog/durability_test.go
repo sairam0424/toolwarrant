@@ -204,6 +204,28 @@ func TestAnchorQueries_StayOnTheAuditLogBySubjectIndex(t *testing.T) {
 	for _, q := range anchorQueries() {
 		checkPlan(t, q, explain(t, s, q.sql))
 	}
+	checkSignedRecordsPlan(t, s)
+}
+
+// planSignedByKey is how the walk's read of the signed records must reach the
+// table: by its INTEGER PRIMARY KEY, one seek per entry of the page, never a
+// scan (D22 c; the rows are read only for the signed entries of a walked
+// page, so a crawl-only reload reads none).
+const planSignedByKey = "SEARCH signed_records USING INTEGER PRIMARY KEY"
+
+// checkSignedRecordsPlan runs EXPLAIN QUERY PLAN over readSignedRecords's
+// statement for a two-seq chunk and requires the primary-key seek.
+func checkSignedRecordsPlan(t *testing.T, s *Store) {
+	t.Helper()
+	plan := explain(t, s, signedRecordsSelect+placeholders(2)+`)`)
+	if !slices.ContainsFunc(plan, func(line string) bool { return strings.HasPrefix(line, planSignedByKey) }) {
+		t.Errorf("readSignedRecords: no plan line starts with %q; the full plan:\n%s", planSignedByKey, strings.Join(plan, "\n"))
+	}
+	for _, line := range plan {
+		if strings.HasPrefix(line, "SCAN ") {
+			t.Errorf("readSignedRecords: the plan scans a table: %q", line)
+		}
+	}
 }
 
 // explain returns the detail column of every EXPLAIN QUERY PLAN row of the

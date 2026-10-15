@@ -24,7 +24,11 @@ import (
 // event about a tool, tool.discovered to tool.unusable, whose newest entry
 // anchors the tool's state), as the walk computed it from the entry's fields.
 // Every later read verifies only the suffix appended after the head and
-// extends the memory. An audit entry is trusted on the serving path and on the
+// extends the memory. Since D22 (c) the walk also verifies every signed entry
+// of the pages it walks (trustwalk.go: the trust records once at open and the
+// new ones on each reload, none on a crawl-only reload, O-15) and carries the
+// trust list in force and the outcome of every verified decision record in
+// the same memory. An audit entry is trusted on the serving path and on the
 // decision path only when the hash computed from the fields read now equals
 // the hash recorded for its seq in that walk (chainMemory.verify): the stored
 // hash column is never consulted for trust, since whoever can write the file
@@ -83,9 +87,21 @@ type chainMemory struct {
 	// TestBenchmarkSnapshotHashesOnlyAuditEntries pins are the anchor pass
 	// alone.
 	hashed atomic.Int64
+	// trust is what the walk knows about the operator trust list and signed
+	// what it recorded about every verified decision.signed entry
+	// (trustwalk.go); both grow with the walk, under mu.
+	trust  trustMemory
+	signed map[int64]signedOutcome
+	// verified counts the signatures the walks have verified since the Store
+	// opened: every signed entry once at open, the new ones on each reload,
+	// none on a crawl-only reload (O-15;
+	// TestReload_ANewTrustListEntersTheStateOnTheSuffixWalk).
+	verified atomic.Int64
 }
 
-func newChainMemory() *chainMemory { return &chainMemory{hashes: map[int64]entryHash{}} }
+func newChainMemory() *chainMemory {
+	return &chainMemory{hashes: map[int64]entryHash{}, signed: map[int64]signedOutcome{}}
+}
 
 // pin returns the head of the verified chain.
 func (c *chainMemory) pin() chainPin {
@@ -94,14 +110,27 @@ func (c *chainMemory) pin() chainPin {
 	return c.head
 }
 
-// record extends the memory with one page of entries that walkChain has just
-// verified in order. audit.VerifyFrom accepted the page, so each entry's Hash
-// field equals the hash it computed from the entry's fields; that computed
-// value is what is kept, for every decision entry and for the head.
-func (c *chainMemory) record(page []audit.Entry) {
+// recordPage extends the memory with one page of entries that walkChain has
+// just verified in order. audit.VerifyFrom accepted the page, so each entry's
+// Hash field equals the hash it computed from the entry's fields; that
+// computed value is what is kept, for every decision entry and for the head.
+// The signed entries of the page are verified first (verifySignedPage),
+// against the trust list in force as the memory holds it after the pages
+// before, and nothing of the page is recorded when one of them is refused:
+// the walk stops there, the pin stays below the refused record, and the
+// refusal is the ErrCorrupt the caller returns.
+func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.Entry, identity, pinnedRoot string) error {
 	if len(page) == 0 {
-		return
+		return nil
 	}
+	c.mu.RLock()
+	tm := c.trust
+	c.mu.RUnlock()
+	out, err := verifySignedPage(ctx, q, page, tm, identity, pinnedRoot)
+	if err != nil {
+		return err
+	}
+	c.verified.Add(int64(out.verified))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, e := range page {
@@ -112,8 +141,13 @@ func (c *chainMemory) record(page []audit.Entry) {
 			c.hashes[e.Seq] = h
 		}
 	}
+	c.trust = out.trust
+	for seq, o := range out.signed {
+		c.signed[seq] = o
+	}
 	last := page[len(page)-1]
 	c.head = chainPin{seq: last.Seq, hash: last.Hash}
+	return nil
 }
 
 // decisions is how many decision entries the memory holds; tests read it.
@@ -129,6 +163,8 @@ func (c *chainMemory) drop() {
 	defer c.mu.Unlock()
 	c.head = chainPin{}
 	c.hashes = map[int64]entryHash{}
+	c.trust = trustMemory{}
+	c.signed = map[int64]signedOutcome{}
 }
 
 // hashCount is the number of entries verify has hashed so far.
@@ -175,7 +211,8 @@ func errEntryRewritten(seq int64, subject string) error {
 // evidence (server.added anchors a server's URL and allow_private flag,
 // server.processor_set its processor address, server.paused and
 // server.resumed its paused flag, and the newest lifecycle event about a tool
-// its state column, D17 c).
+// its state column, D17 c), and the three signed events, whose entries the
+// signed-record reads verify through the memory (D22 c).
 func isChainRecordedEvent(event string) bool {
 	switch event {
 	case string(lifecycle.EvProposed), string(lifecycle.EvSuperseded), string(lifecycle.EvRejected),
@@ -183,7 +220,8 @@ func isChainRecordedEvent(event string) bool {
 		evServerPaused, evServerResumed,
 		string(lifecycle.EvDiscovered), string(lifecycle.EvDrifted), string(lifecycle.EvReverted), string(lifecycle.EvDisabled),
 		string(lifecycle.EvEnabled), string(lifecycle.EvMissing), string(lifecycle.EvDeprecated), string(lifecycle.EvReappeared),
-		string(lifecycle.EvReturned), string(lifecycle.EvUnusable):
+		string(lifecycle.EvReturned), string(lifecycle.EvUnusable),
+		evDecisionSigned, evTrustBootstrap, evTrustRotated:
 		return true
 	}
 	return false
@@ -203,13 +241,15 @@ func decodeEntryHash(s string) (entryHash, bool) {
 
 // walkChain reads the entries after from.seq in pages, requires each page to
 // continue the chain (audit.VerifyFrom; from the genesis when from is the zero
-// pin) and hands every verified page to visit, which may be nil. It returns
-// the new head and the number of entries walked. A break is returned as
-// audit.VerifyFrom reports it, unwrapped, so VerifyAudit can hand it on as is.
-// A walk from the genesis starts at the smallest seq SQLite can store, bound
-// included, so a row at seq 0 or below, which the catalog never writes, is
-// read and refused as a break (expected seq 1) instead of skipped (D17 d).
-func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit.Entry)) (chainPin, int, error) {
+// pin) and hands every verified page to visit, which may be nil; an error
+// from visit ends the walk and is returned as is, so a signed record the
+// rules refuse stops the walk at its page. It returns the new head and the
+// number of entries walked. A break is returned as audit.VerifyFrom reports
+// it, unwrapped, so VerifyAudit can hand it on as is. A walk from the genesis
+// starts at the smallest seq SQLite can store, bound included, so a row at
+// seq 0 or below, which the catalog never writes, is read and refused as a
+// break (expected seq 1) instead of skipped (D17 d).
+func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit.Entry) error) (chainPin, int, error) {
 	prev := audit.Entry{Seq: from.seq, Hash: from.hash}
 	next := prev.Seq + 1
 	if from.seq == 0 {
@@ -225,7 +265,9 @@ func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit
 			return chainPin{}, 0, err
 		}
 		if visit != nil {
-			visit(page)
+			if err := visit(page); err != nil {
+				return chainPin{}, 0, err
+			}
 		}
 		walked += len(page)
 		if len(page) > 0 {
@@ -270,26 +312,35 @@ func (s *Store) checkFile(ctx context.Context, q queryer) error {
 // goes on to return). Callers that record the head beside what they read in
 // the same transaction (ApprovedWithHead, AuditHead) use it.
 func (s *Store) checkFilePinned(ctx context.Context, q queryer) (chainPin, error) {
+	cs, err := s.checkFileState(ctx, q)
+	return cs.pin, err
+}
+
+// checkFileState is checkFilePinned returning, beside the pin, the trust
+// memory of the same walk and its decision count, taken under the same hold
+// of walkMu, so SigningState hands out a head and the list in force of one
+// snapshot (D22 c, as ApprovedWithHead pairs the head with the approvals).
+func (s *Store) checkFileState(ctx context.Context, q queryer) (chainState, error) {
 	if err := s.checkFileIdentity(); err != nil {
-		return chainPin{}, err
+		return chainState{}, err
 	}
 	s.chain.walkMu.Lock()
 	defer s.chain.walkMu.Unlock()
 	if err := s.checkStoredIdentity(ctx, q); err != nil {
-		return chainPin{}, err
+		return chainState{}, err
 	}
 	if !s.forensic {
 		if err := checkGhostRows(ctx, q); err != nil {
-			return chainPin{}, err
+			return chainState{}, err
 		}
 		if err := verifyGuards(ctx, q); err != nil {
-			return chainPin{}, err
+			return chainState{}, err
 		}
 	}
 	if err := s.verifyChainLocked(ctx, q); err != nil {
-		return chainPin{}, err
+		return chainState{}, err
 	}
-	return s.chain.pin(), nil
+	return s.chain.state(), nil
 }
 
 // verifyChain brings the Store's memory of the chain up to the log as this
@@ -306,9 +357,11 @@ func (s *Store) verifyChain(ctx context.Context, q queryer) error {
 
 // verifyChainLocked is verifyChain with walkMu held: the pinned entry must
 // still hash, from its fields as stored now, to the recorded hash, every entry
-// after it must continue the chain, and the memory is extended to the new
-// head. Nothing before the pin is read again; with no pin yet (a fresh Store,
-// or an empty log so far) the walk starts at the genesis.
+// after it must continue the chain, every signed entry after it must pass the
+// rules of trustwalk.go against this catalog's identity and the pinned trust
+// root, and the memory is extended to the new head. Nothing before the pin is
+// read again; with no pin yet (a fresh Store, or an empty log so far) the walk
+// starts at the genesis.
 func (s *Store) verifyChainLocked(ctx context.Context, q queryer) error {
 	pin := s.chain.pin()
 	if pin.seq != 0 {
@@ -316,7 +369,8 @@ func (s *Store) verifyChainLocked(ctx context.Context, q queryer) error {
 			return err
 		}
 	}
-	_, _, err := walkChain(ctx, q, pin, s.chain.record)
+	visit := func(page []audit.Entry) error { return s.chain.recordPage(ctx, q, page, s.identity, s.trustRoot) }
+	_, _, err := walkChain(ctx, q, pin, visit)
 	var broken *audit.BrokenError
 	switch {
 	case err == nil:

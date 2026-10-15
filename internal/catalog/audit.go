@@ -11,9 +11,11 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
+	"github.com/sairam0424/toolwarrant/internal/signing"
 )
 
-// Audit events the catalog adds to the lifecycle's own.
+// Audit events the catalog adds to the lifecycle's own (the three signed
+// events are in signed.go).
 const (
 	evServerAdded   = "server.added"
 	evServerPaused  = "server.paused"
@@ -62,14 +64,31 @@ func scanAudit(sc rowScanner) (audit.Entry, error) {
 // verified head of the chain at the start of the transaction, or the entry
 // appended before it.
 func (t *txn) appendAudit(ctx context.Context, by Actor, event, subject, before, after, detail string) error {
+	sealed, err := t.sealEntry(by, event, subject, before, after, detail)
+	if err != nil {
+		return err
+	}
+	return t.storeEntry(ctx, sealed)
+}
+
+// sealEntry chains one entry to the previous one without storing it, so a
+// caller can check the entry it is about to write (SetTrust runs the walk's
+// own rules on it) before storeEntry makes it the one the next chains from.
+func (t *txn) sealEntry(by Actor, event, subject, before, after, detail string) (audit.Entry, error) {
 	prev := t.last
 	sealed, err := audit.Seal(prev, audit.Entry{
 		Seq: prev.Seq + 1, TS: t.ts, Actor: by.Name, ActorType: string(by.Type),
 		Event: event, Subject: subject, BeforeHash: before, AfterHash: after, Detail: detail,
 	})
 	if err != nil {
-		return fmt.Errorf("catalog: seal audit entry: %w", err)
+		return audit.Entry{}, fmt.Errorf("catalog: seal audit entry: %w", err)
 	}
+	return sealed, nil
+}
+
+// storeEntry inserts a sealed entry and makes it the one the next entry
+// chains from. The entry must have been sealed from t.last by sealEntry.
+func (t *txn) storeEntry(ctx context.Context, sealed audit.Entry) error {
 	if _, err := t.exec(ctx, insertAudit, sealed.Seq, sealed.TS, sealed.Actor, sealed.ActorType,
 		sealed.Event, sealed.Subject, sealed.BeforeHash, sealed.AfterHash, sealed.Detail,
 		sealed.PrevHash, sealed.Hash); err != nil {
@@ -77,6 +96,22 @@ func (t *txn) appendAudit(ctx context.Context, by Actor, event, subject, before,
 	}
 	t.last = sealed
 	return nil
+}
+
+// sealSigned seals the entry of a signed record: detail followed by the
+// signer and sigref tokens (signedDetail), no before or after hash, chained
+// from t.last, so its prev_hash is the head the record's payload must name.
+func (t *txn) sealSigned(by Actor, event, subject, detail string, rec signing.Record) (audit.Entry, error) {
+	return t.sealEntry(by, event, subject, "", "", signedDetail(detail, rec))
+}
+
+// storeSigned stores a sealed signed entry and then its record at the entry's
+// seq, in the same transaction, so neither exists without the other.
+func (t *txn) storeSigned(ctx context.Context, sealed audit.Entry, rec signing.Record) error {
+	if err := t.storeEntry(ctx, sealed); err != nil {
+		return err
+	}
+	return t.insertSignedRecord(ctx, sealed.Seq, rec)
 }
 
 // toolState is the part of a tool row that a tool detail records: the
