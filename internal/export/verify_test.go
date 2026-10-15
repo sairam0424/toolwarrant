@@ -35,6 +35,26 @@ func flipByte(t *testing.T, p string, at int) {
 	}
 }
 
+// swapBase64Char replaces the base64 character at offset i of the file with
+// another character of the standard alphabet, so the text still decodes and
+// the signature it decodes to is a different one. flipByte would do for a
+// tool file, but a flipped bit in base64 text may leave the alphabet, and
+// then Verify refuses the text as not base64 before it checks the signature
+// (the ci run 38691818349 of 2026-10-15 saw that message instead).
+func swapBase64Char(t *testing.T, path string, i int) {
+	t.Helper()
+	b := []byte(readFile(t, path))
+	if i >= len(b) {
+		t.Fatalf("%s is %d bytes, no byte %d", path, len(b), i)
+	}
+	if b[i] == 'A' {
+		b[i] = 'B'
+	} else {
+		b[i] = 'A'
+	}
+	writeFile(t, path, string(b))
+}
+
 // The round trip: a signed export verifies with the signer's public key, with
 // and without the recorded head, and the report says what was checked.
 func TestVerify_RoundTripsASignedExport(t *testing.T) {
@@ -86,7 +106,7 @@ func TestVerify_FailsClosedOnEveryTamper(t *testing.T) {
 			writeFile(t, filepath.Join(dir, publicKeyName), string(mustPKIX(t, otherPub)))
 		}, nil, []string{publicKeyName + " records another public key"}},
 		"edited manifest":    {func(t *testing.T, dir string) { editHead(t, dir) }, nil, []string{signatureName + " is not a signature over " + manifestName}},
-		"edited signature":   {func(t *testing.T, dir string) { flipByte(t, filepath.Join(dir, signatureName), 10) }, nil, []string{signatureName + " is not a signature over"}},
+		"edited signature":   {func(t *testing.T, dir string) { swapBase64Char(t, filepath.Join(dir, signatureName), 10) }, nil, []string{signatureName + " is not a signature over"}},
 		"garbage signature":  {func(t *testing.T, dir string) { writeFile(t, filepath.Join(dir, signatureName), "***\n") }, nil, []string{"does not hold a base64 Ed25519 signature"}},
 		"signature missing":  {func(t *testing.T, dir string) { mustRemove(t, filepath.Join(dir, signatureName)) }, nil, []string{signatureName + " not found", "export --sign-key"}},
 		"public key missing": {func(t *testing.T, dir string) { mustRemove(t, filepath.Join(dir, publicKeyName)) }, nil, []string{publicKeyName + " not found"}},
