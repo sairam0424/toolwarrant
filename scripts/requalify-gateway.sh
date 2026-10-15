@@ -198,7 +198,7 @@ item_probe() (
 	elif scenario_passed "$scenario_probe" && grep -q '^O: the hostile upstream.s request log gained .* the gateway forwarded the id-less call' "$e2e_report"; then
 		report PASS 1 "unhooked-call probe answers 202 (L17)" "scenario O saw the id-less tools/call forwarded to the upstream without the hook, as the documents say of $pinned"
 	else
-		report CHANGED 1 "unhooked-call probe answers 202 (L17)" "scenario O no longer records the forwarded id-less call ($(grep '^O: ' "$e2e_report" | head -1 | cut -c1-160)); rewrite the L17 text in README.md (canary step), SECURITY.md (hardening checklist), docs/operations.md (Running the canary), docs/threat-model.md (L17 and row 25) and the --no-probe help in cmd/toolwarrant/verify.go"
+		report CHANGED 1 "unhooked-call probe answers 202 (L17)" "scenario O no longer records the forwarded id-less call ($(grep '^O: ' "$e2e_report" | head -1 | cut -c1-160)); rewrite the L17 text in README.md (known limits), SECURITY.md (hardening checklist), docs/operations.md (Running the canary, Deployment requirements), docs/threat-model.md (L17 and row 25), the D18 correction in docs/decisions.md and the --no-probe and --expect-unhooked help in cmd/toolwarrant/verify.go"
 	fi
 )
 
