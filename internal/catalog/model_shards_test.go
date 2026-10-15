@@ -15,6 +15,12 @@ import (
 // serial test returns only after its subtests have finished. No other
 // rapid.Check therefore reads the lowered value, which is also why the model
 // test itself must never call t.Parallel.
+//
+// A failing shard is reproduced the way rapid says: its printed
+// -run="TestModel_StoreFollowsTheLifecycleModel/shards/shardN" plus the
+// -rapid.failfile or -rapid.seed it names. That runs the one shard, so
+// checkShardRuns compares the count only when every shard ran
+// (TestCheckShardRuns_toleratesAShardDeselectedByRun).
 
 const (
 	// modelShards is how many parallel rapid runs the model test is split
@@ -79,6 +85,11 @@ func setChecks(t *testing.T, n int) func() {
 // models built agree with the sum, and the sum is rapid's full count or,
 // under -short, its fifth. After a failure the count says nothing, since rapid
 // re-runs a failing case while it shrinks it, so only the log line is kept.
+// A shard that ran no check was left out by -run, which is how rapid's
+// reproduction command runs one shard: a shard the go tool runs performs at
+// least perShard/rapidShortDivisor checks, at least one whenever the plan is
+// sharded, since perShard is then a positive multiple of rapidShortDivisor.
+// The count is not compared then either.
 func checkShardRuns(t *testing.T, plan shardPlan, runs []int, built int64) {
 	t.Helper()
 	sum := 0
@@ -88,6 +99,12 @@ func checkShardRuns(t *testing.T, plan shardPlan, runs []int, built int64) {
 	t.Logf("model runs: %d checks across %d shards (%s=%d)", sum, plan.shards, rapidChecksFlag, plan.total)
 	if t.Failed() {
 		return
+	}
+	for i, n := range runs {
+		if n == 0 {
+			t.Logf("shard %d ran no check: -run selected a subset of the shards, so the count is not compared", i)
+			return
+		}
 	}
 	for i, n := range runs {
 		if n != runs[0] {
@@ -100,6 +117,18 @@ func checkShardRuns(t *testing.T, plan shardPlan, runs []int, built int64) {
 	if sum != plan.total && sum != plan.total/rapidShortDivisor {
 		t.Errorf("the shards ran %d checks in all, want %d (or %d under -short)", sum, plan.total, plan.total/rapidShortDivisor)
 	}
+}
+
+// TestCheckShardRuns_toleratesAShardDeselectedByRun is the reproduction
+// path: rapid's printed -run selects one shard, the other slots stay at zero,
+// and the count check must not fail the parent. checkShardRuns reports
+// through this test's t, so any t.Errorf it made would fail this test.
+func TestCheckShardRuns_toleratesAShardDeselectedByRun(t *testing.T) {
+	t.Parallel()
+	plan := shardPlan{total: 100, shards: modelShards, perShard: 10}
+	runs := make([]int, plan.shards)
+	runs[3] = 2
+	checkShardRuns(t, plan, runs, 2)
 }
 
 // mergeStats adds the shards' coverage counters into one map for the log.
