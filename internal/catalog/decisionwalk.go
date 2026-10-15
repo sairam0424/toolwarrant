@@ -24,11 +24,20 @@ import (
 // transaction, which the walk knows as the entry at N itself or the entries
 // right after it that carry the same token (the write lock makes a
 // transaction's entries contiguous), about the same subject, by the same
-// actor, at the same time, whose kind writes that event and, for an approval,
-// rollback or rejection, whose digest is the one the entry records. The
+// actor, at the same time, whose kind writes that event, for an approval,
+// rollback or rejection, whose digest is the one the entry records, and whose
+// content is what the kind does (bindContent): a tool entry's state=A->B is a
+// transition the kind can make (lifecycle.DecisionMayMove; a budget reset
+// stays) and a server entry's paused flag is the one the kind leaves. The
 // contiguity rule is what refuses a replay: a correctly sealed version.approved
 // appended later, naming a decision.signed that alice did make, with her time
-// and her digest, would otherwise undo a disable she made since. Rule 6,
+// and her digest, would otherwise undo a disable she made since. The content
+// rule is what refuses a borrowed token: a sealed tool.disabled or
+// version.superseded with state=disabled->enabled, or a server.paused with
+// paused=false, naming the decision.signed of the disable or pause whose
+// transaction is still open at the head, with the actor and the time copied,
+// would otherwise pass every other comparison and the state anchor would
+// serve the tool or the server again. Rule 6,
 // checkCrawlTransition: after the bootstrap, an entry about a tool that
 // carries no token moves the tool's state only along a transition a crawl can
 // make (lifecycle.CrawlMayMove), so a sealed tool.reverted with
@@ -196,9 +205,10 @@ func checkSignedBinding(e audit.Entry, token string, w decisionWalk) error {
 }
 
 // bindOutcome compares one entry with the outcome of the decision.signed entry
-// it names: same subject, actor and time, a kind that writes the event, and
-// the digest the entry records for an approval, rollback or rejection. The
-// walk (checkSignedBinding) and the anchor pass (requireSigned) share it.
+// it names: same subject, actor and time, a kind that writes the event, the
+// digest the entry records for an approval, rollback or rejection, and a
+// transition or paused flag the kind produces (bindContent). The walk
+// (checkSignedBinding) and the anchor pass (requireSigned) share it.
 func bindOutcome(e audit.Entry, n int64, o signedOutcome) error {
 	if o.subject != e.Subject || o.actor != e.Actor || e.ActorType != string(ActorHuman) || o.ts != e.TS {
 		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, a decision.signed about %s by %s at %s, but the entry is about %s by %s at %s; the entries of one decision share its subject, actor and time",
@@ -211,7 +221,70 @@ func bindOutcome(e audit.Entry, n int64, o signedOutcome) error {
 	if decides && recorded != o.digest {
 		return problemf(ruleSignedBinding, nil, "audit entry %d is a %s of digest %s but names %s=%d, which decided digest %s", e.Seq, e.Event, shownDigest(recorded), fieldSigned, n, o.digest)
 	}
+	return bindContent(e, n, o)
+}
+
+// bindContent is the last comparison of bindOutcome: what the entry says it
+// did is what a decision of the kind can do. An entry of a kind that names a
+// tool carries a state=A->B transition kindMayMove admits; an entry of a pause
+// or resume carries the paused flag the kind leaves (bindPausedFlag). A tool
+// entry without a state field, or whose field is not a transition, is refused
+// as such: the entries of a tool decision record its transition, and the
+// state anchor reads it.
+func bindContent(e audit.Entry, n int64, o signedOutcome) error {
+	if !o.kind.NamesTool() {
+		return bindPausedFlag(e, n, o)
+	}
+	state, ok := detailField(e.Detail, fieldState)
+	if !ok {
+		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, a decision of kind %s about a tool, but carries no %s field; the entries of a tool decision record its transition", e.Seq, fieldSigned, n, o.kind, fieldState)
+	}
+	from, to, ok := strings.Cut(state, transitionArrow)
+	if !ok {
+		return problemf(ruleSignedBinding, nil, "audit entry %d about %s carries a %s field %s that is not a transition", e.Seq, quote(e.Subject), fieldState, quote(state))
+	}
+	if !kindMayMove(o.kind, lifecycle.State(from), lifecycle.State(to)) {
+		return problemf(ruleSignedBinding, nil, "audit entry %d moves tool %s from %s to %s under event %s but names %s=%d, a decision of kind %s, which makes no such move; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), from, to, e.Event, fieldSigned, n, o.kind)
+	}
 	return nil
+}
+
+// bindPausedFlag binds a server.paused or server.resumed entry to the kind of
+// the decision it names: the paused flag it records is the one the decision
+// leaves, true for a pause and false for a resume, and an entry without the
+// flag is refused as such.
+func bindPausedFlag(e audit.Entry, n int64, o signedOutcome) error {
+	paused, ok := detailBool(e.Detail, fieldPaused)
+	if !ok {
+		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, a decision of kind %s about a server, but carries no %s flag", e.Seq, fieldSigned, n, o.kind, fieldPaused)
+	}
+	if want := o.kind == signing.KindPause; paused != want {
+		return problemf(ruleSignedBinding, nil, "audit entry %d is a %s saying %s=%t but names %s=%d, a decision of kind %s, which leaves the server %s=%t; the entry was appended outside toolwarrant", e.Seq, e.Event, fieldPaused, paused, fieldSigned, n, o.kind, fieldPaused, want)
+	}
+	return nil
+}
+
+// kindMayMove is the transition table of one decision kind as the binding
+// reads it: the five lifecycle commands through lifecycle.DecisionMayMove; the
+// budget reset, which touches no state, as a state the lifecycle defines that
+// stays (CrawlMayMove admits exactly the known states staying); nothing for
+// pause and resume, whose entries carry no state.
+func kindMayMove(kind signing.Kind, from, to lifecycle.State) bool {
+	switch kind {
+	case signing.KindApprove:
+		return lifecycle.DecisionMayMove(lifecycle.Approve{}, from, to)
+	case signing.KindReject:
+		return lifecycle.DecisionMayMove(lifecycle.Reject{}, from, to)
+	case signing.KindRollback:
+		return lifecycle.DecisionMayMove(lifecycle.Rollback{}, from, to)
+	case signing.KindDisable:
+		return lifecycle.DecisionMayMove(lifecycle.Disable{}, from, to)
+	case signing.KindEnable:
+		return lifecycle.DecisionMayMove(lifecycle.Enable{}, from, to)
+	case signing.KindBudgetReset:
+		return from == to && lifecycle.CrawlMayMove(from, to)
+	}
+	return false
 }
 
 // eventDigest is the digest an entry's event decided, when it decided one:
@@ -260,9 +333,11 @@ func (c *chainMemory) lookupSigned(seq int64) (signedOutcome, bool) {
 // verified chain holds (entryChecker.verify): when a bootstrap is in force
 // below the entry and its event is one only a human command writes, the entry
 // must carry signed=N and N must be a verified decision.signed entry whose
-// outcome binds it (bindOutcome). One detailField parse and one map lookup;
-// nothing is read from the file and nothing is hashed, so the hashes/op of the
-// reload benchmarks are unchanged (TestBenchmarkSnapshotHashesOnlyAuditEntries).
+// outcome binds it (bindOutcome). Two token parses (the signed= token, then
+// the state field or the paused flag bindContent compares) and one map
+// lookup; nothing is read from the file and nothing is hashed, so the
+// hashes/op of the reload benchmarks are unchanged
+// (TestBenchmarkSnapshotHashesOnlyAuditEntries).
 // The contiguity of rule 5 was checked by the walk that recorded the entry.
 func (c *chainMemory) requireSigned(e audit.Entry) error {
 	if !isHumanOnlyEvent(e.Event) {

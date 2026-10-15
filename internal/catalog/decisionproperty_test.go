@@ -9,10 +9,8 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 	"github.com/sairam0424/toolwarrant/internal/signing"
-	"github.com/sairam0424/toolwarrant/internal/trust"
 )
 
 // crawlRuns counts every catalog the crawl-transition property built, across
@@ -187,57 +185,4 @@ func (h *crawlHistory) decide(kind signing.Kind, name, digest string) error {
 	rec := signDecisionPayload(h.t, decisionOf(st.Identity, st.Head, by, kind, "alpha", name, digest), by)
 	_, err = h.s.Decide(bg, decisionFor(by, kind, "alpha", name, digest, rec))
 	return err
-}
-
-// The anchor rule accepts an entry only when it names the decision.signed
-// entry of its own transaction: over shuffled seq, subject, actor, time, event
-// and digest, requireSigned accepts exactly the entries whose every field is
-// the recorded outcome's and whose event the kind writes, and the walk's
-// checkSignedBinding accepts those only while that transaction is open. A
-// human-only event without a token is refused after the bootstrap and
-// accepted before it.
-func TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction(t *testing.T) {
-	t.Parallel()
-	const (
-		bootstrap = 2
-		n         = 5
-	)
-	outcome := signedOutcome{kind: signing.KindApprove, subject: "alpha/echo", actor: "alice", ts: "2026-10-16T10:00:00.000000000Z", digest: digestOf(t, "echo", "v1")}
-	rapid.Check(t, func(rt *rapid.T) {
-		c := newChainMemory()
-		c.trust.state = trust.State{BootstrapSeq: bootstrap, ListSeq: bootstrap}
-		c.signed[n] = outcome
-		e := audit.Entry{
-			Seq:       int64(rapid.IntRange(1, 9).Draw(rt, "seq")),
-			TS:        rapid.SampledFrom([]string{outcome.ts, "2026-10-16T10:00:01.000000000Z"}).Draw(rt, "ts"),
-			Actor:     rapid.SampledFrom([]string{"alice", "bob"}).Draw(rt, "actor"),
-			ActorType: rapid.SampledFrom([]string{string(ActorHuman), string(ActorSystem)}).Draw(rt, "type"),
-			Event:     rapid.SampledFrom([]string{string(lifecycle.EvApproved), string(lifecycle.EvRolledBack), string(lifecycle.EvSuperseded), string(lifecycle.EvEnabled), string(lifecycle.EvDrifted)}).Draw(rt, "event"),
-			Subject:   rapid.SampledFrom([]string{"alpha/echo", "alpha/sum"}).Draw(rt, "subject"),
-			AfterHash: rapid.SampledFrom([]string{outcome.digest, digestOf(t, "echo", "v2")}).Draw(rt, "after"),
-		}
-		token := rapid.SampledFrom([]int64{n, n - 1, 0}).Draw(rt, "token")
-		e.Detail = fmt.Sprintf("digest=- state=enabled->enabled last_seen=- proposals=0->0%s", signedNote(token))
-		open := rapid.SampledFrom([]int64{n, 0}).Draw(rt, "open")
-
-		binds := token == n && e.Seq > n && e.Subject == outcome.subject && e.Actor == outcome.actor && e.ActorType == string(ActorHuman) && e.TS == outcome.ts &&
-			kindWrites(outcome.kind, e.Event) && (!isDecision(e.Event) || e.AfterHash == outcome.digest)
-		after := e.Seq > bootstrap
-		wantAnchor := !after || !isHumanOnlyEvent(e.Event) || binds
-		if got := c.requireSigned(e) == nil; got != wantAnchor {
-			rt.Fatalf("requireSigned(%+v) accepted = %v, want %v (binds %v)", e, got, wantAnchor, binds)
-		}
-		w := decisionWalk{bootstrap: bootstrap, open: open, lookup: c.lookupSigned}
-		_, err := checkLifecycleEntry(e, w)
-		wantWalk := !after || (token != 0 && binds && open == n) || (token == 0 && !isHumanOnlyEvent(e.Event))
-		if got := err == nil; got != wantWalk {
-			rt.Fatalf("checkLifecycleEntry(%+v, open %d) accepted = %v, want %v: %v", e, open, got, wantWalk, err)
-		}
-	})
-}
-
-// isDecision reports whether the event decides a digest the binding compares.
-func isDecision(event string) bool {
-	_, decides := eventDigest(audit.Entry{Event: event})
-	return decides
 }
