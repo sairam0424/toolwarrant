@@ -23,10 +23,11 @@ const insertSignedRecord = `INSERT INTO signed_records (seq, payload, signer_fin
 const sampleFingerprint = "SHA256:0000000000000000000000000000000000000000000"
 
 // Modelled on TestTriggers_RowidAliasUpdatesAreRefused: a planted row cannot
-// be updated (any column, the seq, or a rowid alias), deleted or replaced,
-// a row below seq 1 is refused by the positive-id guard, and one planted
-// under a dropped guard makes every read and open refuse the file and
-// Integrity count it.
+// be updated (any column, the seq, or a rowid alias), deleted or replaced, a
+// row of no audit entry is refused by the foreign key, a row below seq 1 is
+// refused by the positive-id guard, and a well-formed planted row is inert
+// (nothing reads the table in this round). What a row planted under a
+// dropped guard does is TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity.
 func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *testing.T) {
 	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
@@ -59,7 +60,19 @@ func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *test
 	if _, err := s.Snapshot(bg, "alpha"); err != nil {
 		t.Fatalf("Snapshot with an inert planted row: %v", err)
 	}
+}
 
+// A row planted under a dropped positive-id guard is a ghost row like one in
+// any history table: Snapshot and a write refuse the file naming the table,
+// so does the first read of a fresh Store (Open verifies the chain and the
+// guards; the ghost-row check is the first thing every read and write runs,
+// as for the other history tables), and a forensic open's Integrity counts
+// the row in GhostRows and names its seq.
+func TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity(t *testing.T) {
+	t.Parallel()
+	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
+	mustAddServer(t, s, "alpha")
+	noFK := rawDBNoFK(t, path)
 	mustExec(t, noFK, `DROP TRIGGER signed_records_positive_id`)
 	mustExec(t, noFK, insertSignedRecord, -1, []byte(`{}`), sampleFingerprint, []byte{0})
 	restoreGuard(t, noFK, "signed_records_positive_id")
@@ -71,9 +84,6 @@ func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *test
 		t.Errorf("a write with a ghost row = %v, want ErrCorrupt saying %q", err, want)
 	}
 	_ = s.Close()
-	// Open verifies the chain and the guards; the ghost-row check is the first
-	// thing every read and write runs (as for the other history tables), so a
-	// fresh Store refuses the file on its first read.
 	fresh := openStore(t, path, lifecycle.DefaultPolicy())
 	if _, err := fresh.Snapshot(bg, "alpha"); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), want) {
 		t.Errorf("first read of a fresh Store with a ghost row = %v, want ErrCorrupt saying %q", err, want)

@@ -1329,7 +1329,12 @@ nothing written, and so is a v6 file that lost a guard: the migration runs
 inside the transaction and the guard comparison after it fails, so the
 transaction rolls back, `user_version` stays 6, no object the migration
 creates exists and the file's bytes are unchanged
-(`TestMigrate_RefusesAV6FileThatLostAGuardAndCommitsNothing`). Procedure: stop every processor of the file; back the file
+(`TestMigrate_RefusesAV6FileThatLostAGuardAndCommitsNothing`). The new table
+is guarded like every history table: no update, delete or replace through
+SQL, no row below seq 1, and a row planted under a dropped guard is a ghost
+row that every read and write refuses and `Integrity` counts
+(`TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows`,
+`TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity`). Procedure: stop every processor of the file; back the file
 up and record its `audit verify` head with the build that wrote it (not with
 the new one: its `audit verify` refuses a v6 file, and its `list` would
 migrate it before the backup exists); run `toolwarrant init` with the new
