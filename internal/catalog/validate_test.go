@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/sairam0424/toolwarrant/internal/trust"
 )
 
 // cp builds a string from code points at run time, so no test source holds an
@@ -164,6 +166,17 @@ func TestNormalizeActor(t *testing.T) {
 		}
 		if err == nil && got.Type != tc.actor.Type {
 			t.Errorf("normalizeActor changed the type: %+v", got)
+		}
+		if tc.actor.Type != ActorHuman {
+			continue
+		}
+		// internal/trust re-implements this rule as NormalizeName (its own
+		// TestNormalizeName_AgreesWithCatalogsNormalizeActorTable holds a copy
+		// of this table); running it on every human row here means a change to
+		// either rule fails a test on one side.
+		name, err2 := trust.NormalizeName(tc.actor.Name)
+		if (err == nil) != (err2 == nil) || got.Name != name {
+			t.Errorf("trust.NormalizeName(%q) = %q, %v; normalizeActor gave %q, %v", tc.actor.Name, name, err2, got.Name, err)
 		}
 	}
 }

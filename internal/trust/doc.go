@@ -3,10 +3,11 @@
 // well formed, which list may follow which, and which key stands for which
 // person. It decides rules 3 and 4 of the chain walk described in the v0.4
 // plan; the catalog applies them to the records it reads and the CLI to the
-// list it is about to sign. The package imports internal/signing for the
-// payload shape, the key line, the key policy and the two namespaces, and
-// nothing else: no catalog, no cmd, no I/O, no state outside the values it is
-// handed.
+// list it is about to sign. The package imports internal/signing (the
+// payload shape, the key line, the key policy and the two namespaces) and
+// golang.org/x/text/unicode/norm (the NFKC fold the catalog's normalizeActor
+// applies), and nothing else: no catalog, no cmd, no I/O, no state outside
+// the values it is handed.
 //
 // A list. Validate turns a signing.TrustList into a Record: every name
 // normalised as D7 does (NFKC, lower-cased, then ^[a-z0-9][a-z0-9._@-]{0,63}$,

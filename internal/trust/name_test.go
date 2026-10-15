@@ -9,10 +9,11 @@ import (
 // NormalizeName is internal/catalog's normalizeActor re-implemented, and this
 // is that function's own table (TestNormalizeActor in
 // internal/catalog/validate_test.go), name column only: the catalog exports no
-// normaliser, so the two are pinned on the same rows. The catalog's two rows
+// normaliser, so the two are pinned on the same rows here, and the catalog's
+// TestNormalizeActor runs NormalizeName on every human row of its table, so a
+// change to either rule fails a test on one side. The catalog's two rows
 // about the actor type ("alice" with an empty or unknown type) have no name
-// counterpart and are left out. A change to either rule must land in both
-// tables.
+// counterpart and are left out.
 func TestNormalizeName_AgreesWithCatalogsNormalizeActorTable(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
