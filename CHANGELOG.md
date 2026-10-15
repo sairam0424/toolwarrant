@@ -13,6 +13,11 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+
+### Changed
+
+- `toolwarrant verify-gateway` help for `--no-probe` and `--expect-unhooked` says that agentgateway v1.6.0 forwards the id-less probe to the upstream without the hook and relays the upstream's answer (HTTP 202 from an upstream that accepts the call as a notification, a bare 400 from one that refuses a request without an id, such as the go-sdk `cmd/mockupstream`), instead of attributing the 202 to the gateway on every check; `scripts/requalify-gateway.sh` item 1 names the same documents in its CHANGED hint (`TestHelpAndVersion`).
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
