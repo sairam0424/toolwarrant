@@ -334,24 +334,31 @@ func auditEventsOf(entries []audit.Entry) []string {
 }
 
 // A decision whose kind, digest or tool does not fit is refused before any
-// lock is taken, and a signed decision whose payload names another decision
-// than the one made is ErrInvalid.
+// lock is taken, with a sentence that names the decision by its kind, and a
+// signed decision whose payload names another decision than the one made is
+// ErrInvalid.
 func TestDecide_RefusesADecisionWhoseShapeOrPayloadDoesNotFit(t *testing.T) {
 	t.Parallel()
 	s, _, alice, _ := trustedCatalog(t)
 	d := pendingSum(t)
-	cases := map[string]Decision{
-		"an unknown kind":           {Kind: "bless", Server: "alpha", Tool: "sum", By: alice.actor()},
-		"a digest on a disable":     {Kind: signing.KindDisable, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor()},
-		"no digest on an approve":   {Kind: signing.KindApprove, Server: "alpha", Tool: "sum", By: alice.actor()},
-		"a tool on a pause":         {Kind: signing.KindPause, Server: "alpha", Tool: "sum", By: alice.actor()},
-		"no tool on an approve":     {Kind: signing.KindApprove, Server: "alpha", Digest: d, By: alice.actor()},
-		"a payload of another tool": {Kind: signing.KindApprove, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor(), Signed: signDecision(t, s, alice, signing.KindApprove, "alpha", "echo", d)},
-		"a payload of another kind": {Kind: signing.KindApprove, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor(), Signed: signDecision(t, s, alice, signing.KindReject, "alpha", "sum", d)},
+	cases := []struct {
+		name     string
+		dec      Decision
+		sentence string
+	}{
+		{"an unknown kind", Decision{Kind: "bless", Server: "alpha", Tool: "sum", By: alice.actor()}, "is not one of approve, reject, rollback, disable, enable, pause, resume, budget_reset"},
+		{"a digest on a disable", Decision{Kind: signing.KindDisable, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor()}, "the disable decision names no digest"},
+		{"no digest on an approve", Decision{Kind: signing.KindApprove, Server: "alpha", Tool: "sum", By: alice.actor()}, ""},
+		{"a tool on a pause", Decision{Kind: signing.KindPause, Server: "alpha", Tool: "sum", By: alice.actor()}, "the pause decision acts on a server and names no tool"},
+		{"no tool on an approve", Decision{Kind: signing.KindApprove, Server: "alpha", Digest: d, By: alice.actor()}, "the approve decision names a tool"},
+		{"a digest on an enable", Decision{Kind: signing.KindEnable, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor()}, "the enable decision names no digest"},
+		{"a payload of another tool", Decision{Kind: signing.KindApprove, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor(), Signed: signDecision(t, s, alice, signing.KindApprove, "alpha", "echo", d)}, "is not the decision being made"},
+		{"a payload of another kind", Decision{Kind: signing.KindApprove, Server: "alpha", Tool: "sum", Digest: d, By: alice.actor(), Signed: signDecision(t, s, alice, signing.KindReject, "alpha", "sum", d)}, "is not the decision being made"},
 	}
-	for name, dec := range cases {
-		if _, err := s.Decide(bg, dec); !errors.Is(err, ErrInvalid) {
-			t.Errorf("%s = %v, want ErrInvalid", name, err)
+	for _, tc := range cases {
+		_, err := s.Decide(bg, tc.dec)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.sentence) {
+			t.Errorf("%s = %v, want ErrInvalid saying %q", tc.name, err, tc.sentence)
 		}
 	}
 	if _, err := s.Decide(bg, Decision{Kind: signing.KindApprove, Server: "alpha", Tool: "sum", Digest: d, By: crawler}); !errors.Is(err, ErrHumanRequired) {

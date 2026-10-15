@@ -111,13 +111,13 @@ func (s *Store) prepareDecision(d Decision) (decisionRequest, error) {
 			return decisionRequest{}, err
 		}
 	case d.Digest != "":
-		return decisionRequest{}, invalidf("a %s names no digest", d.Kind)
+		return decisionRequest{}, invalidf("the %s decision names no digest", d.Kind)
 	}
 	switch {
 	case d.Kind.NamesTool() && d.Tool == "":
-		return decisionRequest{}, invalidf("a %s names a tool", d.Kind)
+		return decisionRequest{}, invalidf("the %s decision names a tool", d.Kind)
 	case !d.Kind.NamesTool() && d.Tool != "":
-		return decisionRequest{}, invalidf("a %s acts on a server and names no tool", d.Kind)
+		return decisionRequest{}, invalidf("the %s decision acts on a server and names no tool", d.Kind)
 	}
 	req := decisionRequest{d: d, actor: actor, subject: decisionSubject(d.Kind, d.Server, d.Tool)}
 	if d.Signed != nil {
