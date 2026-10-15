@@ -6,8 +6,10 @@
 # sits at the repository root, so the autobuilder's go build sees it; the e2e
 # package is behind the e2e build tag and is not analysed), runs the default
 # security queries and uploads the SARIF to code scanning under the category
-# /language:go, which is how code scanning tells this analysis from the
-# Scorecard upload of scorecard.yml and from any later language. The
+# /language:go, the analysis category code scanning files this upload under:
+# the SARIF tool name (CodeQL) already separates it from the Scorecard upload
+# of scorecard.yml; the category separates analyses of the same tool, such as
+# a later second language. The
 # repository has no default code scanning setup (the code-scanning/
 # default-setup API answered not-configured on 2026-10-15); GitHub refuses an
 # advanced configuration like this one while the default setup is on, so the
@@ -21,7 +23,8 @@
 # traces. setup-go reads the version from go.mod as the ci jobs do, so the
 # traced build compiles with the pinned toolchain and no toolchain switch
 # happens inside it. GOFLAGS=-mod=readonly is set on the analyze step, where
-# the build runs (the CodeQL CLI runs the Go autobuilder when it finalizes a
+# the build runs (the CodeQL CLI runs the traced Go build inside the analyze
+# step, with database trace-command --use-build-mode, before it finalizes the
 # database created in build mode autobuild), and not on the workflow: the init
 # step warns that GOFLAGS in its environment is deprecated.
 #
