@@ -359,8 +359,9 @@ func (s *Store) verifyChain(ctx context.Context, q queryer) error {
 // still hash, from its fields as stored now, to the recorded hash, every entry
 // after it must continue the chain, every signed entry after it must pass the
 // rules of trustwalk.go against this catalog's identity and the pinned trust
-// root, and the memory is extended to the new head. Nothing before the pin is
-// read again; with no pin yet (a fresh Store, or an empty log so far) the walk
+// root, the memory is extended to the new head, and with a root pinned a list
+// must then be in force (requireTrustRoot). Nothing before the pin is read
+// again; with no pin yet (a fresh Store, or an empty log so far) the walk
 // starts at the genesis.
 func (s *Store) verifyChainLocked(ctx context.Context, q queryer) error {
 	pin := s.chain.pin()
@@ -374,7 +375,7 @@ func (s *Store) verifyChainLocked(ctx context.Context, q queryer) error {
 	var broken *audit.BrokenError
 	switch {
 	case err == nil:
-		return nil
+		return s.requireTrustRoot()
 	case !errors.As(err, &broken):
 		return err
 	case pin.seq == 0:

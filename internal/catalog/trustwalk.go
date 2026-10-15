@@ -72,6 +72,17 @@ func errNoSignedRecord(e audit.Entry) error {
 	return problemf(ruleBinding, nil, "audit entry %d is a %s with no signed record at its seq; the row was deleted or the entry was appended without one", e.Seq, e.Event)
 }
 
+// errNoTrustList is the second rule of the pinned root: a walk that reaches
+// the head with no trust list in force while a root was pinned refuses the
+// file, since the pin says the operator bootstrapped this catalog, so a file
+// without a bootstrap is another file, or one whose history was cut back
+// below the bootstrap. Every walk applies it (verifyChainLocked), so a
+// forensic open, which does not walk at open, meets it on its first view,
+// and Integrity prints it for a log that holds no trust entry at all.
+func errNoTrustList(root string) error {
+	return problemf(ruleTrust, ErrNoTrustList, "the catalog has no trust list and a trust root %s was given; the catalog was never bootstrapped, or this is another file", root)
+}
+
 // signedOutcome is what the walk recorded about one verified decision.signed
 // entry: the fields the signed= binding of the lifecycle entries compares
 // (the next round's rule 5).

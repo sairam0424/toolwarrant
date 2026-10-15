@@ -61,20 +61,27 @@ func TestOpen_PinnedTrustRootRefusesAnotherBootstrapAndAcceptsTheRightOne(t *tes
 
 // A trust root pinned against a catalog that was never bootstrapped is a
 // refusal: the pin says the operator bootstrapped this catalog, so a file
-// without a bootstrap is another file or a history cut back below it. Without
-// the pin the catalog opens as v0.3 did; once bootstrapped, the pin accepts.
+// without a bootstrap is another file or a history cut back below it. A
+// read-only and a read-write open refuse at open; a forensic open, which does
+// not walk at open, refuses on its first view (Tools, TrustList) with the
+// same sentence, its chain verifies (nothing is broken, the file is merely
+// not the one the pin names) and its Integrity counts the problem under
+// TrustListsInvalid and prints the sentence. Without the pin the catalog
+// opens as v0.3 did; once bootstrapped, the pin accepts, and the forensic
+// Store opened before the bootstrap sees it on its next view.
 func TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap(t *testing.T) {
 	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	alice := newOperator(t, "alice")
+	sentence := fmt.Sprintf("the catalog has no trust list and a trust root %s was given; the catalog was never bootstrapped, or this is another file", alice.fp())
 	for name, opts := range map[string]OpenOptions{"read-only": {ReadOnly: true}, "read-write": {Policy: lifecycle.DefaultPolicy()}} {
 		opts.TrustRoot = alice.fp()
 		pinned, err := OpenWith(path, opts)
 		if pinned != nil {
 			_ = pinned.Close()
 		}
-		wantCorruptNaming(t, name+" open with a root and no bootstrap", err, "the catalog has no trust list and a trust root")
+		wantCorruptNaming(t, name+" open with a root and no bootstrap", err, sentence)
 		if !errors.Is(err, ErrNoTrustList) {
 			t.Errorf("%s open = %v, want it to wrap ErrNoTrustList", name, err)
 		}
@@ -85,6 +92,23 @@ func TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap(t *testing.T) {
 		}
 		_ = plain.Close()
 	}
+	f := forensicOpen(t, path, alice.fp())
+	_, err := f.Tools(bg, "")
+	wantCorruptNaming(t, "forensic Tools with a root and no bootstrap", err, sentence)
+	_, err = f.TrustList(bg)
+	wantCorruptNaming(t, "forensic TrustList with a root and no bootstrap", err, sentence)
+	if !errors.Is(err, ErrNoTrustList) {
+		t.Errorf("forensic TrustList = %v, want it to wrap ErrNoTrustList", err)
+	}
+	if _, err := f.VerifyAudit(bg); err != nil {
+		t.Errorf("VerifyAudit = %v; the chain is intact, the pin is what refuses the file", err)
+	}
+	rep := mustIntegrity(t, f)
+	if rep.TrustListsInvalid != 1 || len(rep.Problems) != 1 {
+		t.Errorf("Integrity = %+v, want exactly the missing trust list", rep)
+	}
+	problemMentioning(t, rep, sentence)
+
 	mustSetTrust(t, s, 1, alice, alice)
 	pinned, err := OpenWith(path, OpenOptions{ReadOnly: true, TrustRoot: alice.fp()})
 	if err != nil {
@@ -94,6 +118,10 @@ func TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap(t *testing.T) {
 	if view := mustTrustList(t, pinned); view.Root != alice.fp() {
 		t.Errorf("TrustList = %+v", view)
 	}
+	if view := mustTrustList(t, f); view.Root != alice.fp() {
+		t.Errorf("forensic TrustList after the bootstrap = %+v; the suffix walk meets the bootstrap", view)
+	}
+	mustBeClean(t, f, "forensic Integrity after the bootstrap")
 }
 
 // A long-lived read-only Store (the processor's) sees a new trust list on its

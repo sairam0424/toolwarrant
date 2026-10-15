@@ -126,7 +126,9 @@ type IntegrityReport struct {
 	// refuses (rule 3: a second bootstrap, a rotation before one, a version
 	// that is not exactly one above the list in force, a signer not in both
 	// lists, a bootstrap not signed by its own list or by the pinned root, an
-	// invalid list, an actor the new list names another key for). The list in
+	// invalid list, an actor the new list names another key for) and, with a
+	// trust root pinned, a log that holds no trust entry at all, which every
+	// walk refuses as a catalog that was never bootstrapped. The list in
 	// force stays what it was, so later records are judged against it.
 	TrustListsInvalid int
 	// Problems lists every finding in one line each, in table order.

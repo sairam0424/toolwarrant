@@ -67,8 +67,28 @@ func (c *integrityCheck) checkSignedGhostRows() error {
 
 // checkSignedEntries runs the walk's rules over every signed entry in seq
 // order, against the identity the file carries and the pinned trust root,
-// reporting each refusal and folding the trust list past it.
+// reporting each refusal and folding the trust list past it; then, with a
+// root pinned, it reports a log that holds no trust entry at all, which is
+// what the walk refuses when it reaches the head with no list in force
+// (requireTrustRoot).
 func (c *integrityCheck) checkSignedEntries() error {
+	if err := c.foldSignedEntries(); err != nil {
+		return err
+	}
+	if c.trustRoot != "" && !slices.ContainsFunc(c.signedEntries, isTrustEntry) {
+		c.noteSignedProblem(errNoTrustList(c.trustRoot))
+	}
+	return nil
+}
+
+// isTrustEntry reports whether e is a trust.bootstrap or trust.rotated entry.
+func isTrustEntry(e audit.Entry) bool {
+	return e.Event == evTrustBootstrap || e.Event == evTrustRotated
+}
+
+// foldSignedEntries applies checkSignedEntry to every signed entry in order,
+// reading the rows by primary key once, and notes each refusal.
+func (c *integrityCheck) foldSignedEntries() error {
 	if len(c.signedEntries) == 0 {
 		return nil
 	}

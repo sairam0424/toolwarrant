@@ -73,7 +73,9 @@ type OpenOptions struct {
 	// it set, a catalog whose bootstrap was signed by another key, or that has
 	// no trust list at all, is refused as ErrCorrupt: the former was
 	// re-bootstrapped or replaced, the latter is the v0.3 boundary the pin is
-	// there to close. Empty means the bootstrap's own signer is trusted.
+	// there to close. Both rules are applied by every walk, so a forensic
+	// open, which walks on its first view, refuses there and its Integrity
+	// names the problem. Empty means the bootstrap's own signer is trusted.
 	TrustRoot string
 }
 
@@ -135,7 +137,7 @@ func Open(path string, policy lifecycle.Policy) (*Store, error) {
 // open, which exists to inspect such a file and verifies lazily on the views.
 // The walk verifies every signed record against the identity and, with
 // TrustRoot set, requires the bootstrap to be signed by that key and the
-// catalog to have one (D22 c).
+// catalog to have one (D22 c; requireTrustRoot, applied by every walk).
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" || path == memoryPath {
 		return nil, fmt.Errorf("%w: a database file path is required", ErrInvalid)
@@ -168,26 +170,23 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 			_ = s.Close()
 			return nil, err
 		}
-		if err := s.requireTrustRoot(); err != nil {
-			_ = s.Close()
-			return nil, err
-		}
 	}
 	return s, nil
 }
 
-// requireTrustRoot refuses, after the open-time walk, a catalog that has no
-// trust list while a trust root was pinned: the pin says the operator
-// bootstrapped this catalog, so a file without a bootstrap is another file,
-// or one whose history was cut back before the bootstrap. A bootstrap signed
-// by another key was refused by the walk itself. A forensic open does not
-// walk at open and applies the pin lazily, on its views.
+// requireTrustRoot refuses, after a walk that reached the head, a catalog
+// that has no trust list while a trust root was pinned (errNoTrustList). A
+// bootstrap signed by another key was refused by the walk itself. Every walk
+// ends with it (verifyChainLocked): the open-time walk, so a pinned open
+// refuses such a file; every write transaction; and every checked read, so a
+// forensic open, which does not walk at open, refuses on its first view, as it
+// applies every other check.
 func (s *Store) requireTrustRoot() error {
 	if s.trustRoot == "" {
 		return nil
 	}
 	if tm, _ := s.chain.signedState(); tm.state.Current == nil {
-		return fmt.Errorf("%w: %w: the catalog has no trust list and a trust root %s was given; the catalog was never bootstrapped, or this is another file", ErrCorrupt, ErrNoTrustList, s.trustRoot)
+		return fmt.Errorf("%w: %w", ErrCorrupt, errNoTrustList(s.trustRoot))
 	}
 	return nil
 }
