@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -97,27 +98,26 @@ func TestCrawlEveryStopsAtOnceOnACorruptCatalog(t *testing.T) {
 	c, _ := fixture(t)
 	run := c.launch("crawl", "s1", "--every", loopEvery.String())
 	waitFor(t, "one complete crawl", func() bool { return strings.Contains(run.stdout.String(), "complete") })
-	var before int
-	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1", &before)
+	// A crawl the loop had already started when the guard goes may still
+	// commit (each iteration checks the file when it opens it, not while it
+	// runs), and under load the drop can land a second or more after the
+	// "complete" line was read; so the judgement is by the crawl rows: no
+	// crawl STARTED after the drop may complete. The row id is the start order.
+	var lastStarted int
+	queryRow(t, c.db, "SELECT COALESCE(MAX(id), 0) FROM crawls", &lastStarted)
 	execSQL(t, c.db, "DROP TRIGGER audit_log_no_update")
 	// Every one-shot command now refuses the file.
 	r := c.fail(exitFailure, "list", "s1")
 	wantContains(t, "list after the drop", r.stderr, "guard trigger audit_log_no_update is missing", adviceCorrupt)
-	lines := len(nonEmptyLines(run.stdout.String()))
 	if code := run.wait(); code != exitFailure {
 		t.Errorf("crawl --every exited %d against a corrupt catalog, want %d\nstdout: %s\nstderr: %s", code, exitFailure, run.stdout.String(), run.stderr.String())
 	}
-	for _, line := range nonEmptyLines(run.stdout.String())[lines:] {
-		if strings.Contains(line, "complete") {
-			t.Errorf("a crawl was recorded as complete into a catalog every other command refuses: %s", line)
-		}
-	}
 	wantContains(t, "stdout", run.stdout.String(), "s1: crawl of s1: ", "guard trigger audit_log_no_update is missing")
 	wantContains(t, "stderr", run.stderr.String(), "stopping the crawl schedule", adviceCorrupt)
-	var after int
-	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1", &after)
-	if after != before {
-		t.Errorf("%d complete crawl(s) were recorded after the guard was dropped", after-before)
+	var completedAfter int
+	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1 AND id > "+strconv.Itoa(lastStarted), &completedAfter)
+	if completedAfter != 0 {
+		t.Errorf("%d crawl(s) started after the guard was dropped were recorded as complete into a catalog every other command refuses", completedAfter)
 	}
 }
 
