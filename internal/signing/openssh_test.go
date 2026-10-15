@@ -28,7 +28,8 @@ func interopKeys(t testing.TB) map[string]sigtest.Key {
 
 // A signature Sign made, armored, passes `ssh-keygen -Y verify` under the
 // decision namespace with the signer's key in allowed_signers, and fails under
-// `-n git`, for every key type.
+// `-n git`, for every key type; and both readers refuse the same armored file
+// with text before the header, ssh-keygen with "missing header".
 func TestSign_ProducesASignatureSshKeygenVerifiesUnderTheNamespace(t *testing.T) {
 	t.Parallel()
 	sshKeygen(t)
@@ -58,6 +59,14 @@ func TestSign_ProducesASignatureSshKeygenVerifiesUnderTheNamespace(t *testing.T)
 		if _, err := runSSHKeygen(t, dir, payload, nil, "-Y", "check-novalidate", "-n", string(NamespaceDecision), "-s", sig); err != nil {
 			t.Errorf("%s: ssh-keygen -Y check-novalidate: %v", label, err)
 		}
+		prefixed := append([]byte("junk\n"), armored...)
+		junk := writeFile(t, filepath.Join(dir, "junk.sig"), prefixed, 0o600)
+		out, err = runSSHKeygen(t, dir, payload, nil, "-Y", "check-novalidate", "-n", string(NamespaceDecision), "-s", junk)
+		if err == nil || !strings.Contains(out, "missing header") {
+			t.Errorf("%s: ssh-keygen -Y check-novalidate read past text before the header: %v: %s", label, err, out)
+		}
+		_, err = Unarmor(prefixed)
+		wantErrIs(t, label+": Unarmor of text before the header, which ssh-keygen refuses", err, ErrSignatureFormat, "")
 	}
 }
 

@@ -93,6 +93,7 @@ func FuzzUnarmor(f *testing.F) {
 		[]byte("-----BEGIN SSH SIGNATURE-----\n\n-----END SSH SIGNATURE-----\n"),
 		[]byte(""),
 		[]byte("-----BEGIN"),
+		append([]byte("junk\n"), armored...),
 	}
 	for _, s := range seeds {
 		f.Add(s)

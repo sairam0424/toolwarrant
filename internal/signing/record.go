@@ -75,6 +75,10 @@ const (
 	// a Sign call takes the caller's context instead.
 	AgentTimeout = 5 * time.Second
 
+	// armorHeader is the first line of an armored signature as ssh-keygen
+	// writes it; its dearmor compares the header at offset 0, so Unarmor does.
+	armorHeader = "-----BEGIN " + sshsig.PEMType + "-----"
+
 	// fingerprintPrefix and fingerprintLen pin the one form of key identity
 	// this package prints: `SHA256:` and 43 unpadded base64 characters, as
 	// `ssh-keygen -l` prints it.
@@ -301,12 +305,17 @@ func Armor(sig []byte) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: sshsig.PEMType, Bytes: sig}), nil
 }
 
-// Unarmor reads one PEM block of type SSH SIGNATURE, as ssh-keygen writes it,
-// and returns the wire blob after parsing it. Headers, a second block or
-// trailing text are refused; the library's Unarmor would ignore them.
+// Unarmor reads one PEM block of type SSH SIGNATURE beginning at the first
+// byte, as ssh-keygen writes it and as its dearmor requires it, and returns
+// the wire blob after parsing it. Text before the header, headers, a second
+// block or trailing text are refused; pem.Decode skips leading text and the
+// library's Unarmor ignores the rest.
 func Unarmor(armored []byte) ([]byte, error) {
 	if len(armored) > MaxArmoredSignatureBytes {
 		return nil, fmt.Errorf("%w: armored form is %d bytes, more than %d", ErrSignatureFormat, len(armored), MaxArmoredSignatureBytes)
+	}
+	if !bytes.HasPrefix(armored, []byte(armorHeader)) {
+		return nil, fmt.Errorf("%w: does not begin with %s, as ssh-keygen requires", ErrSignatureFormat, armorHeader)
 	}
 	block, rest := pem.Decode(armored)
 	if block == nil {

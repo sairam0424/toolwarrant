@@ -270,8 +270,10 @@ func TestRecordDigest_ChangesWithPayloadSignatureOrSigner(t *testing.T) {
 }
 
 // Armor frames a valid blob as the PEM block ssh-keygen reads and Unarmor
-// takes back exactly that; headers, trailing text, another PEM type, a second
-// block, an invalid blob and an oversized input are refused.
+// takes back exactly that. Text before the block (a junk line, a bare newline,
+// one space: ssh-keygen's dearmor compares the header at offset 0 and says
+// "Couldn't parse signature: missing header"), headers, trailing text, another
+// PEM type, a second block, an invalid blob and an oversized input are refused.
 func TestUnarmor_RefusesWhatSshKeygenWouldNotWrite(t *testing.T) {
 	t.Parallel()
 	k := sigtest.GenerateEd25519(t)
@@ -291,24 +293,18 @@ func TestUnarmor_RefusesWhatSshKeygenWouldNotWrite(t *testing.T) {
 		t.Errorf("Armor of garbage: %v", err)
 	}
 	cases := map[string][]byte{
-		"headers":        bytes.Replace(armored, []byte("-----\n"), []byte("-----\nComment: x\n\n"), 1),
-		"trailing text":  append(bytes.Clone(armored), []byte("trailing\n")...),
-		"second block":   append(bytes.Clone(armored), armored...),
-		"other type":     bytes.ReplaceAll(armored, []byte("SSH SIGNATURE"), []byte("PUBLIC KEY")),
-		"no block":       []byte("plain text"),
-		"invalid blob":   []byte("-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"),
-		"oversized":      append(bytes.Clone(armored), bytes.Repeat([]byte("x"), MaxArmoredSignatureBytes)...),
-		"garbage prefix": append([]byte("junk\n"), armored...),
+		"headers":         bytes.Replace(armored, []byte("-----\n"), []byte("-----\nComment: x\n\n"), 1),
+		"trailing text":   append(bytes.Clone(armored), []byte("trailing\n")...),
+		"second block":    append(bytes.Clone(armored), armored...),
+		"other type":      bytes.ReplaceAll(armored, []byte("SSH SIGNATURE"), []byte("PUBLIC KEY")),
+		"no block":        []byte("plain text"),
+		"invalid blob":    []byte("-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"),
+		"oversized":       append(bytes.Clone(armored), bytes.Repeat([]byte("x"), MaxArmoredSignatureBytes)...),
+		"garbage prefix":  append([]byte("junk\n"), armored...),
+		"leading newline": append([]byte("\n"), armored...),
+		"leading space":   append([]byte(" "), armored...),
 	}
 	for label, in := range cases {
-		if label == "garbage prefix" {
-			// pem.Decode skips text before the block, as ssh-keygen does;
-			// the block itself must still be the whole signature.
-			if _, err := Unarmor(in); err != nil {
-				t.Errorf("%s: %v, want the block read past the leading text", label, err)
-			}
-			continue
-		}
 		if _, err := Unarmor(in); !errors.Is(err, ErrSignatureFormat) {
 			t.Errorf("%s: error %v, want ErrSignatureFormat", label, err)
 		}
