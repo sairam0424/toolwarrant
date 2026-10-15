@@ -217,7 +217,12 @@ func Verify(payload, sig []byte, ns Namespace, signer string) (ssh.PublicKey, er
 	return parsed.PublicKey, nil
 }
 
-// parseSignature bounds and parses an sshsig wire blob.
+// parseSignature bounds and parses an sshsig wire blob and requires the blob
+// to be the canonical encoding of what it parsed to: the exact-bytes rule the
+// payload is held to, applied to the signature. The library's Signature type
+// drops the wire reserved string without checking it, so without this rule
+// one signature would have unboundedly many byte forms, each with its own
+// RecordDigest; ssh-keygen writes the field empty, as Sign does.
 func parseSignature(sig []byte) (*sshsig.Signature, error) {
 	if len(sig) == 0 {
 		return nil, fmt.Errorf("%w: empty", ErrSignatureFormat)
@@ -228,6 +233,9 @@ func parseSignature(sig []byte) (*sshsig.Signature, error) {
 	parsed, err := sshsig.ParseSignature(sig)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSignatureFormat, err)
+	}
+	if !bytes.Equal(parsed.Marshal(), sig) {
+		return nil, fmt.Errorf("%w: the blob is not the canonical encoding of the signature it parses to", ErrSignatureFormat)
 	}
 	return parsed, nil
 }

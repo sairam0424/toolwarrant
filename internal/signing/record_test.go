@@ -139,6 +139,39 @@ func TestVerify_RefusesAnRsaSha2256Signature(t *testing.T) {
 	}
 }
 
+// A blob is accepted only as the exact bytes its parse re-marshals to. The
+// wire reserved string, which ssh-keygen and the library write empty and the
+// library's Signature type drops without a check, is the one field that could
+// vary: a blob with reserved set verifies under the library and has another
+// RecordDigest, so one signature would have unboundedly many byte forms; here
+// it is ErrSignatureFormat, from Verify and from Armor alike.
+func TestVerify_RefusesANonCanonicalSignatureEncoding(t *testing.T) {
+	t.Parallel()
+	k := sigtest.GenerateEd25519(t)
+	fp := Fingerprint(k.Public)
+	payload := mustMarshalDecision(t, sampleDecision(fp))
+	canonical := wireBlob(t, payload, k, NamespaceDecision, "", ssh.KeyAlgoED25519)
+	if _, err := Verify(payload, canonical, NamespaceDecision, fp); err != nil {
+		t.Fatalf("the hand-built canonical blob: %v", err)
+	}
+	variant := wireBlob(t, payload, k, NamespaceDecision, "anything-at-all", ssh.KeyAlgoED25519)
+	_, err := Verify(payload, variant, NamespaceDecision, fp)
+	wantErrIs(t, "non-empty reserved", err, ErrSignatureFormat, "canonical encoding")
+	if _, err := Armor(variant); !errors.Is(err, ErrSignatureFormat) {
+		t.Errorf("Armor of the variant: %v", err)
+	}
+	parsed, err := sshsig.ParseSignature(variant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sshsig.Verify(bytes.NewReader(payload), parsed, k.Public, HashAlgorithm, string(NamespaceDecision)); err != nil {
+		t.Errorf("the library refused the variant itself (%v); the check above would then be redundant", err)
+	}
+	if RecordDigest(Record{Payload: payload, Signature: canonical, Signer: fp}) == RecordDigest(Record{Payload: payload, Signature: variant, Signer: fp}) {
+		t.Error("the two byte forms of one signature share a digest")
+	}
+}
+
 // Every single-bit change to the payload fails the cryptographic check, and
 // every single-bit change to the signature blob fails somewhere: the shape,
 // the key, the namespace, the hash name or the cryptography.
