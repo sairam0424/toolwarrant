@@ -41,7 +41,7 @@ SHA-256 given in full in Appendix B.
 | `github.com/google/jsonschema-go` | v0.4.3 | MIT | LICENSE (2d56c5344969; A2) | mockupstream, seamclient |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause | LICENSE (0a8d61ed3cbf; A3) | toolwarrant |
 | `github.com/gowebpki/jcs` | v1.0.2 | Apache-2.0 | LICENSE (cfc7749b96f6; A4) | seamgate, toolwarrant |
-| `github.com/hiddeco/sshsig` | v0.2.0 | Apache-2.0 | LICENSE (c71d239df917; A5) | none yet |
+| `github.com/hiddeco/sshsig` | v0.2.0 | Apache-2.0 | LICENSE (c71d239df917; A5) | toolwarrant |
 | `github.com/mattn/go-isatty` | v0.0.24 | MIT | LICENSE (08eab1118c80; A6) | toolwarrant |
 | `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | Apache-2.0 and MIT, per contribution (transition notice; MIT attribution applies) | LICENSE (af679003d933; A7) | mockupstream, seamclient |
 | `github.com/ncruces/go-strftime` | v1.0.0 | MIT | LICENSE (38ae43959daf; A8) | toolwarrant |
@@ -49,7 +49,7 @@ SHA-256 given in full in Appendix B.
 | `github.com/segmentio/asm` | v1.1.3 | MIT | LICENSE (e2a78de21d6d; A10) | mockupstream, seamclient |
 | `github.com/segmentio/encoding` | v0.5.4 | MIT | LICENSE (d6d71a1f7dc6; A11) | mockupstream, seamclient |
 | `github.com/yosida95/uritemplate/v3` | v3.0.2 | BSD-3-Clause | LICENSE (0761aadfb192; A12) | mockupstream, seamclient |
-| `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A13), PATENTS (96f408bfae65; A14) | none yet |
+| `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A13), PATENTS (96f408bfae65; A14) | toolwarrant |
 | `golang.org/x/net` | v0.60.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A13), PATENTS (96f408bfae65; A14) | seamgate, seamprocessor, toolwarrant |
 | `golang.org/x/oauth2` | v0.36.0 | BSD-3-Clause | LICENSE (911f8f578293; A13) | mockupstream, seamclient |
 | `golang.org/x/sync` | v0.24.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A13), PATENTS (96f408bfae65; A14) | mockupstream, seamclient |

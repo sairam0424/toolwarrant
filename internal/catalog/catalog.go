@@ -90,10 +90,12 @@ var (
 	// not verify at open, an entry this Store had verified is gone or
 	// rewritten, a proposer list is not what the log names, a write failed a
 	// constraint the schema does not have, a guard object or table is missing
-	// or redefined, or a table, trigger, view, unique index or automatic index
-	// exists that the schema did not create. Someone edited the file outside
-	// this package, or a bug wrote it. Callers must not serve from a corrupt
-	// catalog.
+	// or redefined, a table, trigger, view, unique index or automatic index
+	// exists that the schema did not create, or a signed record fails a rule
+	// of the walk (trustwalk.go: replaced, unverifiable, for another catalog
+	// or head, a trust list the rotation rule refuses, a signer the list does
+	// not name). Someone edited the file outside this package, or a bug wrote
+	// it. Callers must not serve from a corrupt catalog.
 	ErrCorrupt = errors.New("catalog: database integrity check failed")
 	// ErrReplaced is returned by Generation when the file at the path the Store
 	// opened is no longer the file it opened (another device and inode, or
@@ -114,6 +116,26 @@ var (
 	// back, disable, enable, pause, resume) is attempted by a system actor.
 	// Only a named person decides; the crawler identity may only observe.
 	ErrHumanRequired = errors.New("catalog: a decision requires a human actor")
+	// ErrSignatureRequired is returned by a decision made without a signed
+	// record while a trust list is in force: from the bootstrap on, every
+	// human decision must be signed by a listed key (D22 c; the decision path
+	// applies it in the signed-decision round).
+	ErrSignatureRequired = errors.New("catalog: this decision must be signed: a trust list is in force")
+	// ErrNotASigner is returned when a signed record was made with a key the
+	// rule in force does not admit: a rotation not signed by a key of both
+	// lists, a bootstrap not signed by its own list, or a decision signed by
+	// a key the list does not name. A valid signature from such a key is not
+	// authorisation (research finding 6).
+	ErrNotASigner = errors.New("catalog: the key is not in the trust list")
+	// ErrHeadMoved is returned by a signed write whose payload names another
+	// audit head than the one the chain has: the log grew between the signing
+	// and the transaction, so the signature must be made again over the new
+	// head (the compare-and-set of finding 12). Nothing is written.
+	ErrHeadMoved = errors.New("catalog: audit head mismatch")
+	// ErrNoTrustList is returned when an operation needs the trust list and
+	// the catalog was never bootstrapped; OpenWith wraps it in ErrCorrupt when
+	// a trust root was pinned.
+	ErrNoTrustList = errors.New("catalog: the catalog has no trust list")
 )
 
 // ActorType says whether a principal is a person or an automated process.

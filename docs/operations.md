@@ -1217,6 +1217,125 @@ file, a `PUBLIC KEY` block, an ECDSA key and a garbage block, each with exit 1
 and the export directory not created. `TestVerify_FailsClosedOnEveryTamper`
 covers the remaining shapes in the export package.
 
+## The operator trust list
+
+Since the v0.4 round the catalog can hold a signed, versioned list of the
+people allowed to decide, inside its own audit chain (decision D22 (c); owner
+decisions O-11, O-12, O-14 and O-15 of the v0.4 plan). The `trust` commands
+that write a list arrive with the CLI round of v0.4; this section describes
+the records the catalog holds and the rules every reader applies to them from
+the moment the first list is recorded.
+
+What a trust list is. A trust list is a `toolwarrant/trust-list/v1` payload:
+the catalog identity, the audit head it extends (`prev_head`), the signer's
+`SHA256:` fingerprint, the operators as `{"key": "<type base64>", "name":
+"<name>"}` in order, `threshold` (1 in this release) and `version`. It is
+signed with an OpenSSH `sshsig` signature under the namespace
+`trust@toolwarrant.invalid` by one of the keys it names and stored verbatim,
+bytes, signature and fingerprint, in the `signed_records` table at the
+sequence number of the audit entry that records it. Names follow the rule of
+every actor (decision D7: NFKC, lower-cased, `^[a-z0-9][a-z0-9._@-]{0,63}$`)
+and are unique per list, as are the keys, so one person is one entry and a
+second key is enrolled under a second name (`alice@backup`).
+
+The two events. `trust.bootstrap` is the first list of a catalog, version 1,
+signed by one of its own keys (trust on first use, or the key you pin as the
+trust root); `trust.rotated` is every later list. Both are entries about the
+subject `@trust`, a name no server or tool can take, with the detail
+`version=N signers=K signer=SHA256:... sigref=<hex>`; `sigref` is the SHA-256
+of the stored record (payload, signature and signer), so the entry's hash, and
+through it the whole chain, commits to the exact record, and a row replaced
+under an entry no longer matches the token the chain verified. The bootstrap
+is also the signed attestation over the unsigned history before it: approvals
+made before it stand as they did in v0.3 and nothing is rewritten (O-12). The
+payload's `prev_head` is compared with the audit head inside the write
+transaction, after the chain was verified to its head, and the record is
+refused with `audit head mismatch` when the log grew since it was signed, so a
+stored `prev_head` always equals its entry's `prev_hash` and every trust
+record is a signed head (research finding 12;
+`TestSetTrust_ExpectHeadRefusesWhenTheLogMoved` runs fifty rotations under a
+crawler that commits every few tens of milliseconds, retries each refused one,
+and finds the two equal in every row).
+
+The rule a list must follow, in one paragraph. It is TUF's root-rotation rule
+at a threshold of one (finding 10): the bootstrap appears once, before any
+rotation, is version 1 and is signed by a key of its own list; every later
+list is exactly one version above the list in force (version N and version
+N+2 are both refused as rollback) and is signed by a key that is in both the
+list in force and the new list, so one listed key may add any key or remove
+any other key in one step, a key cannot sign its own removal, a key that is
+arriving cannot vouch for itself, the last signer cannot remove itself and a
+list is never emptied; and the entry's actor must be, letter for letter, the
+canonical name the new list gives the signing key (the catalog writes no other
+spelling, so `ALICE` under alice's key is a forgery). Every walk a `Store`
+makes applies these rules: once over every signed record when it opens, then
+over the records appended since on each reload (a crawl-only reload verifies
+no signature), and a record that breaks one is `ErrCorrupt` with a sentence
+naming the entry, so the processor refuses the file at open and the CLI
+refuses every command on it: `a second trust bootstrap at entry N; the trust
+list cannot start twice`, `trust list at entry N has version V, expected W
+(exactly one above the list in force)`, `the trust list at entry N is not
+signed by a key of both the list in force and the new list`, `the trust
+bootstrap at entry N was signed by SHA256:X, not the pinned trust root
+SHA256:Y; the catalog was re-bootstrapped or replaced`, `the signed record of
+audit entry N was replaced`, `signed_records row N belongs to audit entry N, a
+"tool.discovered", which carries no signed record; the row was inserted by
+hand` (a row copied under an entry that carries no record, refused where the
+walk meets the entry; a row above the head, which only a write with the
+foreign key off can place, is inert until an entry arrives at its seq), and
+the record's own binding (the signature verifies, the payload is canonical, of
+the trust-list type, for this catalog and over the entry's own `prev_hash`,
+the entry is a person's). `audit verify`'s integrity report prints the same
+sentences, one `integrity problem:` line per record, goes on past each refused
+record with the list in force unchanged, and names every `signed_records` row
+that belongs to no signed entry, above the head included
+(`TestSetTrust_BootstrapWritesAVersionOneListSignedByItsOwnKeyAndBindsItToTheChain`,
+`TestSetTrust_RotationAddsAKeySignedByAKeyOfBothLists`,
+`TestSetTrust_RemovalNeedsAKeyThatStaysAndTheLastSignerCannotBeRemoved`,
+`TestWalk_RefusesATrustListWithTheWrongVersionOrSigner`,
+`TestWalk_RefusesATrustRecordWhoseTokensOrPayloadDisagreeWithTheEntry`,
+`TestWalk_RefusesASwappedSignedRecordBecauseTheTokenDisagrees`,
+`TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone`,
+`TestWalk_RefusesAReplayedTrustRecordFromAnotherCatalog`,
+`TestReload_ANewTrustListEntersTheStateOnTheSuffixWalk`,
+`TestForensicOpen_VerifiesTrustLazilyAndNamesTheBrokenRecord`,
+`TestIntegrity_ReportsEveryTrustProblemTheWalkRefuses`,
+`TestProperty_trustStateAfterAWalkEqualsTheStateAfterReplayingTheRecords`).
+
+The pinned root. Record the fingerprint that signed the bootstrap together
+with the audit head, outside the database, and hand it to every processor and
+every command as the trust root (`OpenOptions.TrustRoot` of the catalog; the
+`--trust-root` flag of the CLI round). With it set, a catalog whose bootstrap
+another key signed is refused at open with the sentence above, and so is a
+catalog with no trust list at all (`the catalog has no trust list and a trust
+root SHA256:... was given; the catalog was never bootstrapped, or this is
+another file`): the pin says you bootstrapped this catalog, so a file without
+a bootstrap is another file or a history cut back below it. Both rules end
+every walk, so `audit verify` and `audit list`, which open the file for
+inspection and walk on their first view, refuse with the same sentence, and
+the integrity report prints it as one `integrity problem:` line
+(`TestOpen_PinnedTrustRootRefusesAnotherBootstrapAndAcceptsTheRightOne`,
+`TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap`). Without it the
+bootstrap's own signer is trusted on first use.
+
+The threshold-1 residual, stated plainly. With one signature per record, one
+compromised key rotates the list and can evict the other signer: the rule
+allows it because the compromised key is in both lists, and the evicted
+operator's key signs nothing afterwards. The rotation is a signed record in
+the chain naming the key that made it, so it is attributed, and it is visible
+to `audit verify --expect-head` and in the head returned after every signed
+write; a threshold of two, where no single key rotates, is the fix and waits
+(O-14). Removal is not retroactive: what a key signed before its removal
+stands and is undone by hand. A rollback of the file to an earlier signed
+state while no `Store` holds a pin is the pin limit of decision D17 and is
+caught by the recorded head and the trust root alone.
+
+Enrol a backup key. A lost key has no in-file recovery: a list whose keys are
+all lost cannot be rotated, and the path is re-initialisation. Enrol a second
+key for every operator from the first list on, under a second name
+(`alice@backup`), generated on another device and kept offline; the rotation
+rule lets either key add or remove the other.
+
 ## Recovering from ErrCorrupt and ErrSchema
 
 `catalog: database integrity check failed` (`ErrCorrupt`) means the file

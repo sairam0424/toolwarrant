@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	sqlite "modernc.org/sqlite" // the pure-Go SQLite driver, registered as "sqlite"
@@ -66,6 +67,16 @@ type OpenOptions struct {
 	// file is ErrNotFound, never created); nothing is ever served or written
 	// from such an open.
 	Forensic bool
+	// TrustRoot pins the operator trust list to the key that must have signed
+	// its bootstrap: the SHA256: fingerprint the operator recorded when the
+	// catalog was bootstrapped (O-11, trust on first use made explicit). With
+	// it set, a catalog whose bootstrap was signed by another key, or that has
+	// no trust list at all, is refused as ErrCorrupt: the former was
+	// re-bootstrapped or replaced, the latter is the v0.3 boundary the pin is
+	// there to close. Both rules are applied by every walk, so a forensic
+	// open, which walks on its first view, refuses there and its Integrity
+	// names the problem. Empty means the bootstrap's own signer is trusted.
+	TrustRoot string
 }
 
 // Store is the catalog. Create one with Open or OpenWith and release it with
@@ -99,6 +110,9 @@ type Store struct {
 	path     string
 	identity string
 	file     fileID
+	// trustRoot is OpenOptions.TrustRoot: the fingerprint the walk requires
+	// of the bootstrap's signer, "" when none was pinned.
+	trustRoot string
 }
 
 // Open opens or creates the database at path with the default options: read
@@ -121,9 +135,15 @@ func Open(path string, policy lifecycle.Policy) (*Store, error) {
 // file (ErrReplaced), and then verifies the whole audit chain once and pins
 // its head (D15 a): a broken chain is ErrCorrupt at open, except on a forensic
 // open, which exists to inspect such a file and verifies lazily on the views.
+// The walk verifies every signed record against the identity and, with
+// TrustRoot set, requires the bootstrap to be signed by that key and the
+// catalog to have one (D22 c; requireTrustRoot, applied by every walk).
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" || path == memoryPath {
 		return nil, fmt.Errorf("%w: a database file path is required", ErrInvalid)
+	}
+	if opts.TrustRoot != "" && !strings.HasPrefix(opts.TrustRoot, fingerprintPrefix) {
+		return nil, fmt.Errorf("%w: the trust root %s is not a %s fingerprint", ErrInvalid, quote(opts.TrustRoot), fingerprintPrefix)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -152,6 +172,23 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 		}
 	}
 	return s, nil
+}
+
+// requireTrustRoot refuses, after a walk that reached the head, a catalog
+// that has no trust list while a trust root was pinned (errNoTrustList). A
+// bootstrap signed by another key was refused by the walk itself. Every walk
+// ends with it (verifyChainLocked): the open-time walk, so a pinned open
+// refuses such a file; every write transaction; and every checked read, so a
+// forensic open, which does not walk at open, refuses on its first view, as it
+// applies every other check.
+func (s *Store) requireTrustRoot() error {
+	if s.trustRoot == "" {
+		return nil
+	}
+	if tm, _ := s.chain.signedState(); tm.state.Current == nil {
+		return fmt.Errorf("%w: %w", ErrCorrupt, errNoTrustList(s.trustRoot))
+	}
+	return nil
 }
 
 // openPools opens the connection pools for the requested mode and wires the Store.

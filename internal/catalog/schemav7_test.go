@@ -11,9 +11,11 @@ import (
 
 // The signed_records table of schema version 7 (D22 g) and its guards, probed
 // with a SQLite shell's powers, as the other history tables are in
-// triggers_test.go and integrity_test.go. Nothing in this round writes a row;
-// the rows here are planted to show what the guards and the column CHECKs
-// refuse and what the ghost-row check and Integrity report.
+// triggers_test.go and integrity_test.go. The rows here are planted under
+// entries that carry no signed record, to show what the guards and the column
+// CHECKs refuse and what the ghost-row check and Integrity report; the rows
+// the Store writes, and the walk's rules over them, are trust_test.go and
+// trustwalk_test.go.
 
 // insertSignedRecord is the statement a shell would use to plant a row.
 const insertSignedRecord = `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (?, ?, ?, ?)`
@@ -25,9 +27,12 @@ const sampleFingerprint = "SHA256:0000000000000000000000000000000000000000000"
 // Modelled on TestTriggers_RowidAliasUpdatesAreRefused: a planted row cannot
 // be updated (any column, the seq, or a rowid alias), deleted or replaced, a
 // row of no audit entry is refused by the foreign key, a row below seq 1 is
-// refused by the positive-id guard, and a well-formed planted row is inert
-// (nothing reads the table in this round). What a row planted under a
-// dropped guard does is TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity.
+// refused by the positive-id guard, and a well-formed row planted under an
+// entry that carries no signed record is refused by the walk where it meets
+// the entry, so the next read of the Store names the row (D22 c;
+// TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone has every
+// reader and Integrity). What a row planted under a dropped guard does is
+// TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity.
 func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *testing.T) {
 	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
@@ -57,10 +62,15 @@ func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *test
 	if n := mustCount(t, db, `SELECT COUNT(*) FROM signed_records`); n != 1 {
 		t.Fatalf("%d rows after the refused statements, want the planted one", n)
 	}
-	if _, err := s.Snapshot(bg, "alpha"); err != nil {
-		t.Fatalf("Snapshot with an inert planted row: %v", err)
+	_, err := s.Snapshot(bg, "alpha")
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), orphanRowUnderServerAdded) {
+		t.Errorf("Snapshot with a planted row under an unsigned entry = %v, want ErrCorrupt saying %q", err, orphanRowUnderServerAdded)
 	}
 }
+
+// orphanRowUnderServerAdded is the sentence the walk and Integrity say about a
+// row planted at seq 1 of a catalog whose first entry is the server.added.
+const orphanRowUnderServerAdded = `signed_records row 1 belongs to audit entry 1, a "server.added", which carries no signed record; the row was inserted by hand`
 
 // A row planted under a dropped positive-id guard is a ghost row like one in
 // any history table: Snapshot and a write refuse the file naming the table,
@@ -138,5 +148,16 @@ func TestSchema_SignedRecordsRefusesOversizedRows(t *testing.T) {
 	if n := mustCount(t, db, fmt.Sprintf(`SELECT COUNT(*) FROM signed_records WHERE length(payload) = %d AND length(signature) = %d`, maxPayload, maxSignature)); n != 1 {
 		t.Errorf("a row at both bounds was not stored as given")
 	}
-	mustBeClean(t, s, "with a well-formed planted row") // nothing reads it in this round
+	// The row sits under the server.added entry, which carries no signed
+	// record: since the trust-list round the walk refuses it where it meets
+	// the entry and Integrity names it as an orphan (D22 c).
+	_, err := s.Snapshot(bg, "alpha")
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), orphanRowUnderServerAdded) {
+		t.Errorf("Snapshot with a planted row under an unsigned entry = %v, want ErrCorrupt saying %q", err, orphanRowUnderServerAdded)
+	}
+	rep := mustIntegrity(t, s)
+	if rep.SignedRecordsOrphaned != 1 || len(rep.Problems) != 1 {
+		t.Errorf("Integrity = %+v, want exactly the orphan row", rep)
+	}
+	problemMentioning(t, rep, orphanRowUnderServerAdded)
 }

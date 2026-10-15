@@ -15,7 +15,7 @@ import (
 func wireStore(wdb, rdb *sql.DB, path string, opts OpenOptions) *Store {
 	return &Store{wdb: wdb, rdb: rdb, path: path, policy: opts.Policy, now: time.Now,
 		readOnly: opts.ReadOnly || opts.Forensic, forensic: opts.Forensic, caps: defaultServerCaps(),
-		chain: newChainMemory()}
+		chain: newChainMemory(), trustRoot: opts.TrustRoot}
 }
 
 // approvedRef names one approved version row so that its approval can be

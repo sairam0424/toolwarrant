@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
@@ -109,6 +110,27 @@ type IntegrityReport struct {
 	// Enable re-proposes without adding anybody): a proposer rewritten out of
 	// the history under a re-created guard may then approve their own bytes.
 	ProposerMismatches int
+	// SignedRecordsInvalid counts the signed entries (trust.bootstrap,
+	// trust.rotated, decision.signed) whose record fails the binding rule of
+	// the walk (trustwalk.go, rule 1: no row at the seq, a sigref or signer
+	// token the row does not match, a signature that does not verify, a
+	// payload that is not canonical, of another type, for another catalog or
+	// another head, or by a system actor) and the decision records whose
+	// signer the list in force does not authorise (rule 4).
+	SignedRecordsInvalid int
+	// SignedRecordsOrphaned counts signed_records rows at the seq of an entry
+	// that carries no record, or of no entry; the catalog writes a row only
+	// with a signed entry, so such a row was inserted by hand.
+	SignedRecordsOrphaned int
+	// TrustListsInvalid counts the trust entries whose list the rotation rule
+	// refuses (rule 3: a second bootstrap, a rotation before one, a version
+	// that is not exactly one above the list in force, a signer not in both
+	// lists, a bootstrap not signed by its own list or by the pinned root, an
+	// invalid list, an actor the new list names another key for) and, with a
+	// trust root pinned, a log that holds no trust entry at all, which every
+	// walk refuses as a catalog that was never bootstrapped. The list in
+	// force stays what it was, so later records are judged against it.
+	TrustListsInvalid int
 	// Problems lists every finding in one line each, in table order.
 	Problems []string
 }
@@ -135,7 +157,7 @@ type IntegrityReport struct {
 func (s *Store) Integrity(ctx context.Context) (IntegrityReport, error) {
 	var rep IntegrityReport
 	err := s.inRead(ctx, func(q queryer) error {
-		c := newIntegrityCheck(ctx, q, &rep)
+		c := newIntegrityCheck(ctx, q, &rep, s.trustRoot)
 		return c.run()
 	})
 	if err != nil {
@@ -158,7 +180,9 @@ type integrityCheck struct {
 	// servers what the log says about each server; decisions the multiset of
 	// decision entries, by key, with their sequence numbers, which
 	// checkApprovals consumes; seen the tool subjects that have a row, which
-	// checkTools fills for checkLogSubjects.
+	// checkTools fills for checkLogSubjects; signedEntries the entries that
+	// carry a signed record, in seq order, which checkSignedRecords verifies
+	// against the rows with the pinned trustRoot (integrity_signed.go).
 	latest         map[string]toolTrace
 	latestApproval map[string]decisionTrace
 	discovered     map[string]int64
@@ -166,9 +190,11 @@ type integrityCheck struct {
 	servers        map[string]*serverTrace
 	decisions      map[decisionKey][]int64
 	seen           map[string]bool
+	signedEntries  []audit.Entry
+	trustRoot      string
 }
 
-func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport) *integrityCheck {
+func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport, trustRoot string) *integrityCheck {
 	return &integrityCheck{
 		ctx: ctx, q: q, rep: rep,
 		latest:         map[string]toolTrace{},
@@ -178,6 +204,7 @@ func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport) *in
 		servers:        map[string]*serverTrace{},
 		decisions:      map[decisionKey][]int64{},
 		seen:           map[string]bool{},
+		trustRoot:      trustRoot,
 	}
 }
 

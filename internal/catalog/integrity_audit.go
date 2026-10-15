@@ -134,8 +134,17 @@ func (c *integrityCheck) checkLink(prev, e audit.Entry) {
 }
 
 // noteEntry records what one entry says. Entries arrive in sequence order, so
-// the last one written about a subject is the one that stands.
+// the last one written about a subject is the one that stands. A signed entry
+// (trust.bootstrap, trust.rotated, decision.signed) is kept for
+// checkSignedRecords and describes no tool or server row: its detail starts
+// with version= or kind=, never digest=, so isToolDetail would leave it out
+// anyway, and its subject is @trust or the decision's subject, whose own
+// lifecycle entries carry the state.
 func (c *integrityCheck) noteEntry(e audit.Entry) {
+	if isSignedEvent(e.Event) {
+		c.noteSignedEntry(e)
+		return
+	}
 	if isDecisionEvent(e.Event) {
 		digest, _ := detailField(e.Detail, fieldDigest)
 		k := decisionKey{event: e.Event, subject: e.Subject, digest: digest, actor: e.Actor, actorType: e.ActorType, ts: e.TS}
