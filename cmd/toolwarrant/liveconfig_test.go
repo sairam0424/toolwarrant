@@ -15,6 +15,7 @@ import (
 // the backendTLS block, yields every gateway and every route with exactly the
 // fields the comparison needs, and never the secret.
 func TestEmittedConfigReadsWhatEmitWrites(t *testing.T) {
+	t.Parallel()
 	out, err := emit.AgentGateway(emit.Input{ListenPort: 8080, BindAddress: "::1", Servers: []emit.Server{
 		{Name: "beta", URL: "http://127.0.0.1:3002/mcp?q=" + plant("query"), ProcessorAddr: "127.0.0.1:9002", Secret: plant("shared"), ApprovedTools: []string{"b"}},
 		{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: plant("shared"), ApprovedTools: []string{"x", "a"},
@@ -98,6 +99,7 @@ func route(name, gateway, path string, processors ...processorConfig) routeConfi
 // Decision D13 (e): the comparison covers the whole document and names every
 // difference once, with every live value escaped and no backend host shown.
 func TestCompareDocumentsNamesEveryDifference(t *testing.T) {
+	t.Parallel()
 	proc := processorConfig{host: "127.0.0.1:9001", kind: "remote", failureMode: "failClosed", methods: map[string]string{"tools/list": "response"}}
 	emitted := configDoc{gateways: map[string]gatewayConfig{"toolwarrant": {bindAddress: "127.0.0.1", port: "3000"}},
 		routes: []routeConfig{route("s1", "toolwarrant", "/s1/mcp", proc), route("s2", "toolwarrant", "/s2/mcp", proc)}}
@@ -174,6 +176,7 @@ func TestCompareDocumentsNamesEveryDifference(t *testing.T) {
 // document is never taken as the compared one, and the admin API client fails
 // closed on an address it cannot reach.
 func TestCompareRoutesEscapesAndFailsClosed(t *testing.T) {
+	t.Parallel()
 	proc := processorConfig{host: "h:1", kind: "remote", failureMode: "failClosed", methods: map[string]string{"tools/list": "response"}}
 	emitted := route("s1", "toolwarrant", "/s1/mcp", proc)
 	if diffs := compareRoutes(emitted, emitted); len(diffs) != 0 {
@@ -227,6 +230,7 @@ func TestCompareRoutesEscapesAndFailsClosed(t *testing.T) {
 // The skip reasons of the live comparison, which only the --every summary
 // lines show, and the comparison's own refusal of an unreadable file.
 func TestCompareLiveSkipsWhatItCannotTrust(t *testing.T) {
+	t.Parallel()
 	v := &verifier{admin: "http://127.0.0.1:1", server: "s1"}
 	var res verdicts
 	if err := v.compareLive(context.Background(), nil, &res); err != nil || res.live.skipped != liveSkippedUnreadable || res.live.compared {

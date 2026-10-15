@@ -29,6 +29,7 @@ func fakeGateway(t *testing.T, dir, name string, code int, message string) (scri
 // refusal exits 1, prints the gateway's message escaped and leaves no file,
 // neither the staged one nor a target that was not there before.
 func TestEmitValidatesWithTheGatewayBinary(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	dir := t.TempDir()
@@ -98,6 +99,7 @@ func TestEmitValidatesWithTheGatewayBinary(t *testing.T) {
 }
 
 func TestOneLineBoundsTheGatewayMessage(t *testing.T) {
+	t.Parallel()
 	if got := oneLine([]byte("  a\n\tb  c\n")); got != "a b c" {
 		t.Errorf("oneLine = %q", got)
 	}
@@ -133,6 +135,7 @@ func realGatewayBinary(t *testing.T) string {
 // included, in --validate-only mode (the only mode the binary may be run in
 // outside the seam scripts and the end-to-end test).
 func TestEmitValidatesWithTheRealGatewayBinary(t *testing.T) {
+	t.Parallel()
 	bin := realGatewayBinary(t)
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)

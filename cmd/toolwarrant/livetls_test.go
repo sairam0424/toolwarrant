@@ -98,6 +98,7 @@ func (c *cli) policiesDoc(upstreamURL, policies string) string {
 // values are paths on the gateway host and a name, not secrets, so the lines
 // show them, escaped.
 func TestLiveComparisonComparesTheProcessorTLS(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	withProcessorTLS(t, cfg, tlsBlock(tlsCertPath, tlsKeyPath, tlsRootPath, tlsHostname))
 	wantContains(t, "emitted file", readFile(t, cfg), "        policies:\n          backendTLS:\n", `hostname: "`+tlsHostname+`"`)
@@ -158,6 +159,7 @@ func TestLiveComparisonComparesTheProcessorTLS(t *testing.T) {
 // processor and transformations rewrite the hook, so each is a change to the
 // link the comparison must not call a match.
 func TestLiveComparisonReportsAnInsecureTLSFlag(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	withProcessorTLS(t, cfg, tlsBlock(tlsCertPath, tlsKeyPath, tlsRootPath, tlsHostname))
 	inside := func(extra string) string {

@@ -28,6 +28,7 @@ func bindsSection(upstreamURL string) string {
 // does not carry is now one LIVE-CONFIG-MISMATCH line; an empty or null one
 // binds nothing and is not reported.
 func TestLiveComparisonReportsASectionTheFileDoesNotCarry(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	const sectionLine = ": not in the emitted file; it may bind ports and routes the comparison cannot see"
 	cases := map[string]struct {
@@ -59,6 +60,7 @@ func TestLiveComparisonReportsASectionTheFileDoesNotCarry(t *testing.T) {
 // listener gone (the gateway then binds its wildcard default) or a readiness
 // probe elsewhere is a difference the routes never show.
 func TestLiveComparisonComparesTheConfigListeners(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	cases := map[string]struct {
 		old, repl, want string
@@ -86,6 +88,7 @@ func TestLiveComparisonComparesTheConfigListeners(t *testing.T) {
 // a live entry with the filter removed compared as the same fields. The two
 // lists are now compared, and the healthy fixture carries the block.
 func TestLiveComparisonComparesTheRequestHeaderFilter(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	file := readFile(t, cfg)
 	wantContains(t, "emitted file", file, "requestHeaders:", `"authorization"`, `"proxy-authorization"`)
@@ -116,6 +119,7 @@ func TestLiveComparisonComparesTheRequestHeaderFilter(t *testing.T) {
 // document identical in host, kind, failureMode and methods but without the
 // filter must differ from a freshly emitted file.
 func TestCompareDocumentsSeesAMissingRequestHeaderFilter(t *testing.T) {
+	t.Parallel()
 	out, err := emit.AgentGateway(emit.Input{ListenPort: 3000, Servers: []emit.Server{{
 		Name: "mock", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", ApprovedTools: []string{"echo"},
 	}}})
@@ -156,6 +160,7 @@ func TestCompareDocumentsSeesAMissingRequestHeaderFilter(t *testing.T) {
 // (D14 i): a live entry that lost it, gained it or holds another value is
 // reported in words only.
 func TestLiveComparisonComparesTheProcessorMetadataWithoutShowingIt(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -206,6 +211,7 @@ func TestLiveComparisonComparesTheProcessorMetadataWithoutShowingIt(t *testing.T
 // come from the config block, and the metadata leaves only its hash behind,
 // the same hash for the same block whatever the order of its keys.
 func TestEmittedConfigReadsTheHeaderFilterAndHashesTheMetadata(t *testing.T) {
+	t.Parallel()
 	secret := plant("shared")
 	in := emit.Input{ListenPort: 8080, Servers: []emit.Server{{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: secret, ApprovedTools: []string{"a"}}}}
 	out, err := emit.AgentGateway(in)
@@ -265,6 +271,7 @@ func TestEmittedConfigReadsTheHeaderFilterAndHashesTheMetadata(t *testing.T) {
 // admin API renders the section is for the end-to-end harness to pin. Skips
 // loudly without the binary.
 func TestGatewayAcceptsAMixedGatewaysAndBindsDocument(t *testing.T) {
+	t.Parallel()
 	bin := realGatewayBinary(t)
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)

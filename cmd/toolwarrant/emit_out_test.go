@@ -26,6 +26,7 @@ import (
 // naming the fix; a file emit wrote, and a file the gateway rewrote keeping
 // the header lines, are still replaced.
 func TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	before, err := os.ReadFile(c.db)
@@ -142,6 +143,7 @@ func TestEmitRefusesToReplaceTheCatalogOrAFileItDidNotWrite(t *testing.T) {
 // printed as new or changed (TestEmitWritesTheGatewayConfigAtomically pins
 // the changed-from line for an override).
 func TestEmitRefusesACatalogWhoseProcessorAddressIsNotTheOneTheChainRecords(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")

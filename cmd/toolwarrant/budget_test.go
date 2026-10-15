@@ -14,6 +14,7 @@ import (
 // unblock. budget reset is that decision: a named person only, the audit
 // entry printed back, and the next new digest stored again.
 func TestBudgetResetUnblocksATool(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -94,6 +95,7 @@ func TestBudgetResetUnblocksATool(t *testing.T) {
 // The reset is a write: a missing database and a database the process cannot
 // write are refused, and the budget stays as it was.
 func TestBudgetResetNeedsAWritableDatabase(t *testing.T) {
+	t.Parallel()
 	missing := &cli{t: t, db: filepath.Join(t.TempDir(), "none.db"), env: map[string]string{}}
 	r := missing.fail(exitFailure, "--as", "alice", "budget", "reset", "s1", "echo")
 	wantContains(t, "missing database", r.stderr, "does not exist", programName+" init")

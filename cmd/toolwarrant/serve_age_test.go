@@ -14,6 +14,7 @@ import (
 // drives the flag against the real gateway. On the code before this round the
 // first run fails with "flag provided but not defined: -max-crawl-age".
 func TestServeRejectsANegativeMaxCrawlAge(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	r := c.fail(exitUsage, "serve", "--server", "s1", "--listen", "127.0.0.1:0", "--max-crawl-age", "-1s")
 	wantContains(t, "stderr", r.stderr, "--max-crawl-age must not be negative", "usage: "+programName)

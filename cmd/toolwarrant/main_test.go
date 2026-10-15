@@ -11,6 +11,7 @@ import (
 )
 
 func TestHelpAndVersion(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	out := c.ok("help")
 	wantContains(t, "help", out, "approve SERVER TOOL --hash HASH", "server add NAME URL", "server pause NAME", "server resume NAME",
@@ -53,6 +54,7 @@ func TestHelpAndVersion(t *testing.T) {
 }
 
 func TestUsageErrors(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	c.env["SHORT_SECRET"] = "short"
 	cases := []struct {
@@ -111,6 +113,7 @@ func TestUsageErrors(t *testing.T) {
 }
 
 func TestInitIsIdempotentAndPrivate(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	first := c.ok("init")
 	second := c.ok("init")
@@ -134,6 +137,7 @@ func TestInitIsIdempotentAndPrivate(t *testing.T) {
 // between the path check (TestInitRefusesASymbolicLink) and the open creates
 // nothing where the link points.
 func TestEnsurePrivateFileNeverFollowsALink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.db")
 	link := filepath.Join(dir, "link.db")
@@ -159,6 +163,7 @@ func TestEnsurePrivateFileNeverFollowsALink(t *testing.T) {
 }
 
 func TestCommandsNeedAnExistingDatabase(t *testing.T) {
+	t.Parallel()
 	c := &cli{t: t, db: filepath.Join(t.TempDir(), "missing.db"), env: map[string]string{}}
 	for _, args := range [][]string{{"list"}, {"audit", "verify"}, {"serve", "--server", "s1", "--listen", "127.0.0.1:0"}, {"--as", "alice", "budget", "reset", "s1", "echo"}} {
 		r := c.fail(exitFailure, args...)
@@ -170,6 +175,7 @@ func TestCommandsNeedAnExistingDatabase(t *testing.T) {
 }
 
 func TestDatabasePathComesFromTheEnvironment(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "env.db")
 	var out, errb bytes.Buffer
 	getenv := func(k string) string {
@@ -190,6 +196,7 @@ func TestDatabasePathComesFromTheEnvironment(t *testing.T) {
 }
 
 func TestRunUsesASignalContext(t *testing.T) {
+	t.Parallel()
 	var out, errb bytes.Buffer
 	code := run([]string{"version"}, strings.NewReader(""), &out, &errb, func(string) string { return "" })
 	if code != exitOK || !strings.Contains(out.String(), programName+" dev") {
@@ -205,6 +212,7 @@ func TestRunUsesASignalContext(t *testing.T) {
 // go run binary nor to a binary without build information. The command then
 // prints that decision for this very binary in its fixed two-line format.
 func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
+	t.Parallel()
 	const pseudo = "v0.1.2-0.20261014065709-6ab9e4aad92e"
 	cases := []struct{ name, linked, module, want string }{
 		{"go install of a tag reports the tag", devVersion, "v0.1.1", "v0.1.1"},
@@ -233,6 +241,7 @@ func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
 }
 
 func TestBrokenStreamsExitOne(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	none := func(string) string { return "" }
 	var errb bytes.Buffer
@@ -260,6 +269,7 @@ func TestBrokenStreamsExitOne(t *testing.T) {
 }
 
 func TestActorNamesAreValidatedAndLowerCased(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, nil)
 	r := c.fail(exitUsage, "--as", "ali ce", "server", "add", "s1", u.url())
@@ -280,6 +290,7 @@ func TestActorNamesAreValidatedAndLowerCased(t *testing.T) {
 }
 
 func TestDefaultActorIsTheOSUser(t *testing.T) {
+	t.Parallel()
 	who, err := user.Current()
 	if err != nil || !actorNamePattern.MatchString(who.Username) {
 		t.Skipf("os user %q is not usable as an actor name: %v", who, err)

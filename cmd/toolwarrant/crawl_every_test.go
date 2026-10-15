@@ -24,6 +24,7 @@ func downUpstream(t *testing.T) *httptest.Server {
 // upstream that is down for a while does not stop the schedule and, once a
 // crawl has completed, does not fail it either (D13 f).
 func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	broken := downUpstream(t)
 	c.ok("server", "add", "down", broken.URL, "--allow-private")
@@ -74,6 +75,7 @@ func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
 // exited 0 at SIGTERM, although operations.md lists a crawl failure under
 // exit code 1. Now the run fails at the end and says why (D13 f).
 func TestCrawlEveryExits1WhenNoCrawlCompleted(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	down := downUpstream(t)
 	c.ok("server", "add", "down", down.URL, "--allow-private")
@@ -91,6 +93,7 @@ func TestCrawlEveryExits1WhenNoCrawlCompleted(t *testing.T) {
 // the schedule re-checks the catalog before every crawl and stops at once
 // with exit 1, the way the canary does (D13 f).
 func TestCrawlEveryStopsAtOnceOnACorruptCatalog(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	run := c.launch("crawl", "s1", "--every", loopEvery.String())
 	waitFor(t, "one complete crawl", func() bool { return strings.Contains(run.stdout.String(), "complete") })
@@ -122,6 +125,7 @@ func TestCrawlEveryStopsAtOnceOnACorruptCatalog(t *testing.T) {
 // refused a listing (a cap); a listing failure beside a completed crawl does
 // not fail it.
 func TestCrawlTallyOutcome(t *testing.T) {
+	t.Parallel()
 	var tally crawlTally
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "no crawl of this run completed (0 failed, 0 refused by the catalog)") {
 		t.Errorf("empty run: %v", err)

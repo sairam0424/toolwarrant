@@ -20,6 +20,7 @@ func readFile(t *testing.T, path string) string {
 }
 
 func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	c.ok("server", "add", "s0", "http://127.0.0.1:3001/mcp")
@@ -99,6 +100,7 @@ func TestEmitWritesTheGatewayConfigAtomically(t *testing.T) {
 }
 
 func TestEmitWithASecretWritesAPrivateFileAndWiresServe(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	c.env[secretVar] = plant("secret")
@@ -139,6 +141,7 @@ func TestEmitWithASecretWritesAPrivateFileAndWiresServe(t *testing.T) {
 }
 
 func TestEmitWithNoServersFailsAndSkippedToolsAreWarnedAbout(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	r := c.fail(exitFailure, "emit", "--out", filepath.Join(t.TempDir(), "g.yaml"))
 	wantContains(t, "stderr", r.stderr, "no servers")
@@ -164,6 +167,7 @@ func TestEmitWithNoServersFailsAndSkippedToolsAreWarnedAbout(t *testing.T) {
 // write fails the way every other invalid input does; and no refusal touches
 // the file.
 func TestEmitBindsLoopbackUnlessAsked(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -224,6 +228,7 @@ func TestEmitBindsLoopbackUnlessAsked(t *testing.T) {
 }
 
 func TestExportWritesFilesAndCommits(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -260,6 +265,7 @@ func TestExportWritesFilesAndCommits(t *testing.T) {
 // out and the CLI must say so, or a missing file would look like a missing
 // approval.
 func TestExportReportsSkippedTools(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"Echo": "Upper case.", "echo": "Lower case.", "add": "Adds two numbers."})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")

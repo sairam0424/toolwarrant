@@ -80,6 +80,7 @@ func wantUnavailable(t *testing.T, ctx context.Context, client api.ExtMcpClient,
 // with both (usage errors, exit 2); a file that is missing or not PEM is a
 // failure of the command (exit 1). No message carries key material.
 func TestServeTLSFlagsNeedCertAndKeyTogether(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	f := newTLSFiles(t)
 	r := c.fail(exitUsage, "serve", "--server", "s1", "--listen", "127.0.0.1:0", "--tls-cert", f.certPath)
@@ -108,6 +109,7 @@ func TestServeTLSFlagsNeedCertAndKeyTogether(t *testing.T) {
 // A unix socket is guarded by its file permissions and dialled in plaintext by
 // the gateway, so the TLS flags are refused with it before anything is bound.
 func TestServeTLSRefusesAUnixSocketListener(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	f := newTLSFiles(t)
 	path := filepath.Join(t.TempDir(), "p.sock")
@@ -124,6 +126,7 @@ func TestServeTLSRefusesAUnixSocketListener(t *testing.T) {
 // stand in for the processor. The certificate is public and may be shared; a
 // key that is not a regular file is refused before it is opened.
 func TestServeTLSRefusesAGroupReadableKey(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	f := newTLSFiles(t)
 	for _, mode := range []os.FileMode{0o640, 0o604, 0o644} {
@@ -153,6 +156,7 @@ func TestServeTLSRefusesAGroupReadableKey(t *testing.T) {
 // plaintext, the listening line names the mode, and a shared secret given as
 // well is still checked on every hook.
 func TestServeTLSOverGRPCEnforcesApprovals(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	f := newTLSFiles(t)
@@ -211,6 +215,7 @@ func TestServeTLSOverGRPCEnforcesApprovals(t *testing.T) {
 // authority signed never reaches a hook, and neither does a plaintext one;
 // nothing is counted because nothing was read.
 func TestServeTLSRefusesAClientWithoutACertificate(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	f := newTLSFiles(t)
 	out, _, stop := c.start(f.serveArgs("--tls-client-ca", f.caPath)...)
@@ -234,6 +239,7 @@ func TestServeTLSRefusesAClientWithoutACertificate(t *testing.T) {
 // still needed. The accepted command fails later on the unknown server (exit
 // 1), which shows the policy passed without binding the wildcard address.
 func TestServeTLSClientCASatisfiesTheNonLoopbackRule(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	f := newTLSFiles(t)
 	exposed := []string{"--listen", "0.0.0.0:0", "--allow-non-loopback", "--tls-cert", f.certPath, "--tls-key", f.keyPath}

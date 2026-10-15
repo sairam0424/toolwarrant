@@ -22,6 +22,7 @@ import (
 // cannot prove the hook. Not the pinned gateway's shape (v1.6.0 answers 202);
 // it matters on every move of the pin (L7).
 func TestProbeDoesNotAttributeARelayedPlainTextRefusalToTheGateway(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	up := newUpstream(t, map[string]string{"echo": echoV1})
@@ -51,6 +52,7 @@ func TestProbeDoesNotAttributeARelayedPlainTextRefusalToTheGateway(t *testing.T)
 // than probeMaxBody, which the reader cuts into invalid JSON. Each is now
 // PROBE-INCONCLUSIVE, at the unit level and through the forwarding stand-in.
 func TestProbeReadsTheJSONShapesAnUpstreamCanRelayOnA400(t *testing.T) {
+	t.Parallel()
 	rpcErr := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"id required"}}`
 	split := "event: message\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":null,\"error\":{\"code\":-32600,\"message\":\"id required\"}}\n\n"
 	long := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"` + strings.Repeat("x", probeMaxBody) + `"}}`

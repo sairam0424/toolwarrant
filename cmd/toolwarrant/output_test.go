@@ -29,6 +29,7 @@ var classTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*( [a-z0-9._-]+)
 const maxClassLen = 64
 
 func TestCellEscapesEverythingATerminalWouldObey(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"":                         emptyCell,
 		"plain":                    "plain",
@@ -56,6 +57,7 @@ func TestCellEscapesEverythingATerminalWouldObey(t *testing.T) {
 }
 
 func TestStreamKeepsTheFirstWriteError(t *testing.T) {
+	t.Parallel()
 	pipe := &brokenPipe{}
 	s := &stream{w: pipe}
 	s.printf("one %d\n", 1)
@@ -84,6 +86,7 @@ func TestStreamKeepsTheFirstWriteError(t *testing.T) {
 }
 
 func TestShortDigest(t *testing.T) {
+	t.Parallel()
 	full := strings.Repeat("ab", 32)
 	if got := shortDigest(full); got != "abababababab" {
 		t.Errorf("shortDigest = %q", got)
@@ -97,6 +100,7 @@ func TestShortDigest(t *testing.T) {
 }
 
 func TestSafeURLKeepsOnlySchemeHostAndPath(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"http://user:pw@host:8080/mcp?token=x#frag": "http://host:8080/mcp",
 		"https://example.com/":                      "https://example.com/",
@@ -122,6 +126,7 @@ func TestSafeURLKeepsOnlySchemeHostAndPath(t *testing.T) {
 }
 
 func TestShellWordQuotesOnlyWhenNeeded(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"/tmp/tw.db":     "/tmp/tw.db",
 		"127.0.0.1:9001": "127.0.0.1:9001",
@@ -137,6 +142,7 @@ func TestShellWordQuotesOnlyWhenNeeded(t *testing.T) {
 }
 
 func TestParseArgsAcceptsFlagsAnywhere(t *testing.T) {
+	t.Parallel()
 	a := &app{}
 	c := &command{name: "x", synopsis: "x"}
 	parse := func(args ...string) ([]string, string, error) {
@@ -177,6 +183,7 @@ func TestParseArgsAcceptsFlagsAnywhere(t *testing.T) {
 }
 
 func TestDescribeMapsSentinelsToAdvice(t *testing.T) {
+	t.Parallel()
 	wrap := func(err error) error { return fmt.Errorf("catalog: approve: %w", err) }
 	cases := []struct {
 		err  error
@@ -213,6 +220,7 @@ func TestDescribeMapsSentinelsToAdvice(t *testing.T) {
 }
 
 func TestScrubCrawlErrorNeverLeaksTextAndYieldsCatalogClasses(t *testing.T) {
+	t.Parallel()
 	secret := "http://host/mcp?token=SECRET"
 	cases := []struct {
 		err  error
@@ -253,6 +261,7 @@ func TestScrubCrawlErrorNeverLeaksTextAndYieldsCatalogClasses(t *testing.T) {
 }
 
 func TestIsLoopbackHost(t *testing.T) {
+	t.Parallel()
 	for host, want := range map[string]bool{
 		"127.0.0.1": true, "127.5.4.3": true, "::1": true, "localhost": true, "LOCALHOST": true,
 		// D15 (h): the aliases common resolvers map to loopback without DNS,
@@ -269,6 +278,7 @@ func TestIsLoopbackHost(t *testing.T) {
 }
 
 func TestNormalizeActorName(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{"Alice": "alice", "a.b_c@d-e": "a.b_c@d-e", "X": "x"} {
 		got, err := normalizeActorName(in)
 		if err != nil || got != want {
@@ -283,6 +293,7 @@ func TestNormalizeActorName(t *testing.T) {
 }
 
 func TestReadSecretAppliesTheEmitterRule(t *testing.T) {
+	t.Parallel()
 	c := &command{name: "x", synopsis: "x"}
 	env := map[string]string{
 		"GOOD":    strings.Repeat("s", emit.MinSecretLen),
@@ -312,6 +323,7 @@ func TestReadSecretAppliesTheEmitterRule(t *testing.T) {
 }
 
 func TestSummarizeLabelsAndFlags(t *testing.T) {
+	t.Parallel()
 	changes := []catalog.ToolChange{
 		{Tool: "a", Kind: catalog.ChangeNew, State: lifecycle.PendingReview},
 		{Tool: "b", Kind: catalog.ChangeChanged, State: lifecycle.ChangedPendingReapproval},
@@ -347,6 +359,7 @@ func TestSummarizeLabelsAndFlags(t *testing.T) {
 }
 
 func TestWalkStringsFindsHiddenCharactersWithPaths(t *testing.T) {
+	t.Parallel()
 	doc := []byte(`{"name":"t","description":"a` + zeroWidth + `b","inputSchema":{"properties":{"x` + bidi + `":{"description":"ok"}}},"list":["\u001b[31m"]}`)
 	found, err := scanStrings(doc)
 	if err != nil {
@@ -369,6 +382,7 @@ func TestWalkStringsFindsHiddenCharactersWithPaths(t *testing.T) {
 }
 
 func TestProcessorOverridesFlag(t *testing.T) {
+	t.Parallel()
 	p := processorOverrides{}
 	if err := p.Set("s1=127.0.0.1:9001"); err != nil {
 		t.Fatal(err)

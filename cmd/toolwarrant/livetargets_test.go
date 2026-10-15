@@ -59,6 +59,7 @@ func firstTarget(t *testing.T, root map[string]any) map[string]any {
 // name is now read on both sides and compared; it is the server name, so it
 // is shown.
 func TestLiveComparisonComparesTheBackendTargetName(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	renamed := editLiveDoc(t, c.adminDoc(u.url()), func(root map[string]any) {
 		target := firstTarget(t, root)
@@ -111,6 +112,7 @@ func TestLiveComparisonComparesTheBackendTargetName(t *testing.T) {
 // address is a loopback one, since a listing that left the host cannot have
 // reached a loopback listener.
 func TestLiveComparisonHoldsTheURLAndAdminPortsAgainstTheEmittedFile(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	other := newUpstream(t, map[string]string{"echo": echoV1})
@@ -141,6 +143,7 @@ func TestLiveComparisonHoldsTheURLAndAdminPortsAgainstTheEmittedFile(t *testing.
 // address, an adminAddr that is off names the other process, and a URL that
 // does not parse or an emitted file without the route adds nothing.
 func TestCompareCanaryAddresses(t *testing.T) {
+	t.Parallel()
 	emitted := configDoc{
 		listeners: listenerConfig{adminAddr: "127.0.0.1:15000"},
 		gateways:  map[string]gatewayConfig{"toolwarrant": {bindAddress: "127.0.0.1", port: "3000"}},

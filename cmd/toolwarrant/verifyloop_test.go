@@ -20,6 +20,7 @@ import (
 // runs, so a LEAK seen at the same time is reported too, and a gateway that
 // is down does not hide the file verdict either.
 func TestVerifyGatewayEveryFailsClosedOnAnUnreadableConfig(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	missing := filepath.Join(t.TempDir(), "none.yaml")
 	before := u.sessions.Load()
@@ -41,6 +42,7 @@ func TestVerifyGatewayEveryFailsClosedOnAnUnreadableConfig(t *testing.T) {
 // failed" for ever. The catalog error is produced while the canary runs, by
 // dropping a guard trigger between two checks.
 func TestVerifyGatewayEveryStopsAtOnceOnACatalogError(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -65,6 +67,7 @@ func TestVerifyGatewayEveryStopsAtOnceOnACatalogError(t *testing.T) {
 // "check failed", counted, and does not stop the schedule; the run then exits
 // 1 when it is stopped, and a run in which no check ever completed says so.
 func TestVerifyGatewayEveryCountsListingFailures(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -100,6 +103,7 @@ func TestVerifyGatewayEveryCountsListingFailures(t *testing.T) {
 // healthy document once, then holds every request open until the canary is
 // stopped, while the stand-in gateway starts serving a poisoned echo.
 func TestKeepGoingExits1WhenStoppedDuringACheckThatFoundALeak(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -146,6 +150,7 @@ func TestKeepGoingExits1WhenStoppedDuringACheckThatFoundALeak(t *testing.T) {
 }
 
 func TestIsFatalCheckError(t *testing.T) {
+	t.Parallel()
 	for _, err := range []error{catalog.ErrNotFound, catalog.ErrCorrupt, catalog.ErrSchema} {
 		if !isFatalCheckError(fmt.Errorf("open database: %w", err)) {
 			t.Errorf("%v is not fatal", err)
@@ -162,6 +167,7 @@ func TestIsFatalCheckError(t *testing.T) {
 // or fail, or that printed a failing verdict line; a check cut short by the
 // stop signal before it found anything is not counted either way.
 func TestLoopTallyOutcome(t *testing.T) {
+	t.Parallel()
 	var tally loopTally
 	if tally.outcome() == nil {
 		t.Error("a run without a completed check must fail")

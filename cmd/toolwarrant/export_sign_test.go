@@ -98,6 +98,7 @@ func headOf(t *testing.T, out string) string {
 // stages the signature and the public key and refuses a signature left behind
 // by an earlier export.
 func TestExportSignsTheManifestAndVerifyRoundTrips(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	keys := newExportKeys(t)
@@ -187,6 +188,7 @@ func TestExportSignsTheManifestAndVerifyRoundTrips(t *testing.T) {
 // missing, not a PKCS#8 PRIVATE KEY block, or not an Ed25519 key; the refusal
 // names the flag, the path and the shape, and never the key.
 func TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	keys := newExportKeys(t)
@@ -241,6 +243,7 @@ func TestExportRefusesAnUnsafeSigningKeyBeforeTouchingAnything(t *testing.T) {
 // file), or a directory that is not an export, fail with exit 1 naming what
 // was found.
 func TestExportVerifyUsageHelpAndRefusals(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	keys := newExportKeys(t)
 	dir := t.TempDir()

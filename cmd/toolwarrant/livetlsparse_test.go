@@ -21,6 +21,7 @@ import (
 // policies.backendTLS and keeps the map nil for an absent, null or empty
 // policies object and for a null block.
 func TestEmittedConfigReadsTheProcessorTLS(t *testing.T) {
+	t.Parallel()
 	secret := plant("shared")
 	out, err := emit.AgentGateway(emit.Input{ListenPort: 8080, Servers: []emit.Server{
 		{Name: "alpha", URL: "http://127.0.0.1:3001/mcp", ProcessorAddr: "127.0.0.1:9001", Secret: secret, ApprovedTools: []string{"a"}},
@@ -161,6 +162,7 @@ func liveTLSShapes(t *testing.T, want map[string]string) {
 // shown and escaped. The shape walk accepts the four fields and reports a
 // block that is not an object as a whole.
 func TestCompareProcessorsSeesAMissingBackendTLS(t *testing.T) {
+	t.Parallel()
 	with := processorConfig{host: "127.0.0.1:9001", kind: "remote", failureMode: "failClosed", methods: map[string]string{"tools/list": "response"},
 		allowed: []string{":method"}, metadataHash: "abc", tls: map[string]string{keyTLSCert: tlsCertPath, keyTLSKey: tlsKeyPath, keyTLSRoot: tlsRootPath, keyTLSHostname: tlsHostname}}
 	without, empty := with, with

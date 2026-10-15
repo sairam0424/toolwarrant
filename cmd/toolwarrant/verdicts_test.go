@@ -17,6 +17,7 @@ import (
 // it; MISSING never fails. The summary prefix is the one docs/operations.md
 // quotes.
 func TestCompareSortsLiveToolsIntoVerdicts(t *testing.T) {
+	t.Parallel()
 	approved := strings.Repeat("a", 64)
 	other := strings.Repeat("b", 64)
 	snap := catalog.Snapshot{Server: "s1", Tools: map[string]catalog.ToolPolicy{
@@ -85,6 +86,7 @@ func TestCompareSortsLiveToolsIntoVerdicts(t *testing.T) {
 // Each of the other verdicts fails on its own, and the summary names the state
 // of every check so a log line stands alone.
 func TestVerdictsFailAndSummarizeEachCheck(t *testing.T) {
+	t.Parallel()
 	for name, v := range map[string]verdicts{
 		"config edited":         {configEdited: true},
 		"body hash differs":     {configEdited: true, configExpected: strings.Repeat("0", 64)},

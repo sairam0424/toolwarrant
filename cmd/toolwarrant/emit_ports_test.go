@@ -66,6 +66,7 @@ func (c *cli) processorSetEntries() []auditRow {
 // file at --out is never read for them, so another --out gets the same
 // addresses and a re-emit that changes nothing adds no entry.
 func TestEmitKeepsProcessorAddressesAcrossReEmits(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"echo": echoV1})
 	c.ok("server", "add", "b", u.url(), "--allow-private")
@@ -132,6 +133,7 @@ func TestEmitKeepsProcessorAddressesAcrossReEmits(t *testing.T) {
 // file is simply overwritten, and a live configuration that still dials the
 // forged address is LIVE-CONFIG-MISMATCH.
 func TestReEmitIgnoresAForgedAddressInTheFileAtOut(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -172,6 +174,7 @@ func TestReEmitIgnoresAForgedAddressInTheFileAtOut(t *testing.T) {
 // added, a first emit numbers from the base port, an override reserves its
 // port without raising the start, and an unknown override is refused.
 func TestPlanEmitKeepsPreviousAddresses(t *testing.T) {
+	t.Parallel()
 	c := &command{name: "emit"}
 	before := []catalog.Server{{ServerSpec: catalog.ServerSpec{Name: "b", URL: "http://127.0.0.1:3001/mcp"}}, {ServerSpec: catalog.ServerSpec{Name: "c", URL: "http://127.0.0.1:3002/mcp"}}}
 	plans, err := planEmit(c, before, nil, defaultProcessorBasePort, processorOverrides{})
@@ -216,6 +219,7 @@ func TestPlanEmitKeepsPreviousAddresses(t *testing.T) {
 
 // The allocator never hands out a port in use and refuses to wrap around.
 func TestPortAllocator(t *testing.T) {
+	t.Parallel()
 	p := newPortAllocator(9001, map[string]string{"x": "10.0.0.7:9005", "y": "nonsense"}, processorOverrides{"z": "127.0.0.1:9006"})
 	for _, want := range []int{9007, 9008} {
 		if got, err := p.next(); err != nil || got != want {
@@ -240,6 +244,7 @@ func TestPortAllocator(t *testing.T) {
 // directory does not exist record nothing, and the first emit that writes a
 // file announces every address.
 func TestEmitRecordsProcessorAddressesOnlyAfterTheFileIsWritten(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")

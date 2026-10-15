@@ -18,6 +18,7 @@ import (
 // steady state looks exactly like that. The fixture is the shape the real
 // gateway returned.
 func TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	healthy := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	out := c.ok("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", healthy.hostPort())
@@ -73,6 +74,7 @@ func TestVerifyGatewayComparesTheLiveConfigurationWithTheEmittedFile(t *testing.
 // OK. The whole-document comparison names the parked path, the added route
 // and the path two routes match.
 func TestLiveComparisonCatchesAShadowRouteThatOwnsThePath(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	shadow := `{"name": "s1-shadow", "gateways": "toolwarrant", "matches": [{"path": {"exact": "` + routePath + `"}}],` +
 		` "policies": {"mcpAuthorization": {"rules": [{"allow": "mcp.tool.name == \"echo\""}]}},` +
@@ -91,6 +93,7 @@ func TestLiveComparisonCatchesAShadowRouteThatOwnsThePath(t *testing.T) {
 // interface on another port, with a copy of the route that has no processor
 // and an allow rule that matches everything.
 func TestLiveComparisonCatchesAnAddedOpenGateway(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	open := `{"name": "s1-open", "gateways": "open", "matches": [{"path": {"exact": "` + routePath + `"}}],` +
 		` "policies": {"mcpAuthorization": {"rules": [{"allow": "true"}]}},` +
@@ -113,6 +116,7 @@ func TestLiveComparisonCatchesAnAddedOpenGateway(t *testing.T) {
 // with no rule and no processor, is reported whether it comes first or second
 // in the document.
 func TestLiveComparisonReportsAnAddedRoute(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	added := map[string]struct {
 		route string
@@ -150,6 +154,7 @@ func TestLiveComparisonReportsAnAddedRoute(t *testing.T) {
 // another path is a difference of its own, and the one difference reported
 // when the live document is otherwise the emitted one.
 func TestLiveComparisonChecksTheURLPath(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	admin := c.live.admin.serve(http.StatusOK, c.adminDoc(u.url()))
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", strings.TrimSuffix(gw, routePath)+"/s1/other", "--config", cfg, "--admin", admin.hostPort(), "--no-probe")
@@ -164,6 +169,7 @@ func TestLiveComparisonChecksTheURLPath(t *testing.T) {
 // the comparison does not even run against a file that is not what emit
 // wrote or that cannot be read: the check already fails as CONFIG-EDITED.
 func TestVerifyGatewayLiveComparisonFailsClosed(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	verify := func(admin string) result {
 		return c.run("verify-gateway", "--server", "s1", "--url", gw, "--config", cfg, "--admin", admin)
@@ -233,6 +239,7 @@ func TestVerifyGatewayLiveComparisonFailsClosed(t *testing.T) {
 // so the evasion is not refused at load time and the canary is the control.
 // Skips loudly without the binary.
 func TestGatewayAcceptsTheShadowRouteDocument(t *testing.T) {
+	t.Parallel()
 	bin := realGatewayBinary(t)
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
@@ -261,6 +268,7 @@ func TestGatewayAcceptsTheShadowRouteDocument(t *testing.T) {
 // printed and named in the error next to the listing failure, and the run
 // still exits 1 (sixth round).
 func TestVerifyGatewayComparesTheLiveConfigurationWhenTheListingFails(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +290,7 @@ func TestVerifyGatewayComparesTheLiveConfigurationWhenTheListingFails(t *testing
 // default fails here instead of silently rendering a live document that no
 // longer matches what emit writes (eighth review).
 func TestLiveFixtureDefaultsMatchEmit(t *testing.T) {
+	t.Parallel()
 	if defaultGatewayPort != strconv.Itoa(defaultListenPort) {
 		t.Errorf("defaultGatewayPort = %q, emit's defaultListenPort = %d", defaultGatewayPort, defaultListenPort)
 	}

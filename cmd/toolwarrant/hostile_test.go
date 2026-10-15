@@ -60,6 +60,7 @@ func queryRow(t *testing.T, path, query string, dest ...any) {
 }
 
 func TestApproveRefusesSuspiciousCharactersUnlessAccepted(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"sneaky": "Harmless" + zeroWidth + " tool " + esc + "[31m" + bidi})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
@@ -99,6 +100,7 @@ func TestApproveRefusesSuspiciousCharactersUnlessAccepted(t *testing.T) {
 // name for machines when it answers at all. audit list, which never consults
 // the tools table, is checked for raw bytes only.
 func TestHostileToolNamesFromTheDatabaseAreEscaped(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	hostile := "ev" + zeroWidth + "il" + esc + "[31m" + bidi
 	execSQL(t, c.db, "UPDATE tools SET name = 'ev' || char(8203) || 'il' || char(27) || '[31m' || char(8238) WHERE name = 'add'")
@@ -152,6 +154,7 @@ func TestHostileToolNamesFromTheDatabaseAreEscaped(t *testing.T) {
 }
 
 func TestUnknownCommandsAndSubcommandsAreEscaped(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	r := c.fail(exitUsage, "ev"+esc+"[31mil")
 	wantContains(t, "stderr", r.stderr, `unknown command ev\u{001B}[31mil`)
@@ -168,6 +171,7 @@ func TestUnknownCommandsAndSubcommandsAreEscaped(t *testing.T) {
 // valid tools are recorded, the hostile entry is reported as rejected with its
 // name withheld, and only --strict turns that into a failure.
 func TestCrawlReportsAnInvisibleToolNameAsRejected(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"echo" + zeroWidth: "Looks like echo.", "add": "Adds two numbers."})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
@@ -206,6 +210,7 @@ func TestCrawlReportsAnInvisibleToolNameAsRejected(t *testing.T) {
 // observed as unusable: hidden, flagged, nothing stored, and the approval kept
 // for when a clean definition returns.
 func TestCrawlMarksAKnownToolWithAnUnusableDefinition(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -244,6 +249,7 @@ func TestCrawlMarksAKnownToolWithAnUnusableDefinition(t *testing.T) {
 }
 
 func TestServerURLsAreShownWithoutCredentials(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	c.ok("server", "add", "s1", "http://127.0.0.1:1/mcp?q="+plant("query"))
 	out := c.ok("server", "list")
@@ -270,6 +276,7 @@ func TestServerURLsAreShownWithoutCredentials(t *testing.T) {
 }
 
 func TestCrawlFailureIsRecordedWithoutSecrets(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	var gotAuth atomic.Value
 	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
