@@ -21,8 +21,8 @@ import (
 // bootstrap once and only before any rotation, the version exactly one above
 // the list in force, the signer in both lists (the bootstrap signed by a key
 // of its own list and by the pinned root when one is given), the entry's
-// actor the name the new list gives the signing key, and the version and
-// signer-count tokens what the payload says. Rule 4, authorisation: a
+// actor the name the new list gives the signing key, letter for letter, and
+// the version and signer-count tokens what the payload says. Rule 4, authorisation: a
 // decision record's signer is in the list in force at that seq and listed for
 // the entry's actor (rules 2 and 5, the decision's own fields and the signed=
 // binding of the lifecycle entries, arrive with Decide). Every failure is
@@ -239,15 +239,33 @@ func checkTrustRecord(e audit.Entry, rec signing.Record, tm trustMemory, identit
 	if err != nil {
 		return tm, trustRuleProblem(e, list, tm.state, rec.Signer, pinnedRoot, err)
 	}
-	if err := next.Current.Authorize(rec.Signer, e.Actor); err != nil {
-		name, _ := next.Current.Lookup(rec.Signer)
-		return tm, problemf(ruleTrust, err, "the trust list at entry %d is signed by %s, which it names for %s, but the entry's actor is %s", e.Seq, rec.Signer, quote(name), quote(e.Actor))
+	if err := checkTrustActor(e, rec.Signer, next.Current); err != nil {
+		return tm, err
 	}
 	root := tm.root
 	if e.Event == evTrustBootstrap {
 		root = rec.Signer
 	}
 	return trustMemory{state: next, root: root, lists: tm.lists + 1}, nil
+}
+
+// checkTrustActor is the last part of rule 3: the entry's actor is the name
+// the new list gives the signing key, letter for letter. Authorize compares
+// after normalisation, which admits any spelling that folds to the name; the
+// Store writes only the canonical name (requireHuman), so a spelling that
+// merely folds to it is one a forger wrote and is refused with the same
+// sentence (TestWalk_RefusesATrustListWithTheWrongVersionOrSigner, the
+// non-canonical actor).
+func checkTrustActor(e audit.Entry, signer string, list *trust.Record) error {
+	err := list.Authorize(signer, e.Actor)
+	name, _ := list.Lookup(signer)
+	if err == nil && name != e.Actor {
+		err = fmt.Errorf("%w: the list names the key for %s and the entry spells its actor %s", trust.ErrAnotherOperatorsKey, quote(name), quote(e.Actor))
+	}
+	if err != nil {
+		return problemf(ruleTrust, err, "the trust list at entry %d is signed by %s, which it names for %s, but the entry's actor is %s", e.Seq, signer, quote(name), quote(e.Actor))
+	}
+	return nil
 }
 
 // checkTrustTokens requires a trust entry to be about the trust subject and

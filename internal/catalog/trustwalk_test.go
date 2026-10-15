@@ -15,7 +15,9 @@ import (
 // appends a correctly sealed entry past the head, with its row, signed by a
 // key they hold. The chain is intact, so audit.Verify passes; the rules are
 // what refuse the record: the long-lived Store on its next reload (the suffix
-// walk meets the entry), every fresh open, and Integrity, which names it.
+// walk meets the entry), every fresh open, and Integrity, which names it. The
+// actor of a forged entry may be spelled as the Store never spells it: the
+// Store writes the canonical name, so "ALICE" under alice's key is refused.
 
 // trustForgery is one forged trust record and the sentence the walk must say.
 type trustForgery struct {
@@ -73,6 +75,14 @@ func rotationForgeries() []trustForgery {
 			},
 			func(seq int64, alice, bob operator) string {
 				return fmt.Sprintf(`the trust list at entry %d is signed by %s, which it names for "alice", but the entry's actor is "bob"`, seq, alice.fp())
+			}},
+		{"an actor spelled non-canonically", false,
+			func(t *testing.T, s *Store, db *sql.DB, alice, bob, carol operator) int64 {
+				shouting := Actor{Name: "ALICE", Type: ActorHuman} // folds to alice, which only a forger writes
+				return forgeTrust(t, db, s.identity, evTrustRotated, 3, alice, shouting, alice, bob, carol)
+			},
+			func(seq int64, alice, bob operator) string {
+				return fmt.Sprintf(`the trust list at entry %d is signed by %s, which it names for "alice", but the entry's actor is "ALICE"`, seq, alice.fp())
 			}},
 		{"a bootstrap of version 2", true,
 			func(t *testing.T, s *Store, db *sql.DB, alice, bob, carol operator) int64 {
