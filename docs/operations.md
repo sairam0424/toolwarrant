@@ -1265,30 +1265,37 @@ N+2 are both refused as rollback) and is signed by a key that is in both the
 list in force and the new list, so one listed key may add any key or remove
 any other key in one step, a key cannot sign its own removal, a key that is
 arriving cannot vouch for itself, the last signer cannot remove itself and a
-list is never emptied; and the entry's actor must be the name the new list
-gives the signing key. Every walk a `Store` makes applies these rules: once
-over every signed record when it opens, then over the records appended since
-on each reload (a crawl-only reload verifies no signature), and a record that
-breaks one is `ErrCorrupt` with a sentence naming the entry, so the processor
-refuses the file at open and the CLI refuses every command on it: `a second
-trust bootstrap at entry N; the trust list cannot start twice`, `trust list at
-entry N has version V, expected W (exactly one above the list in force)`, `the
-trust list at entry N is not signed by a key of both the list in force and the
-new list`, `the trust bootstrap at entry N was signed by SHA256:X, not the
-pinned trust root SHA256:Y; the catalog was re-bootstrapped or replaced`, `the
-signed record of audit entry N was replaced`, and the record's own binding
-(the signature verifies, the payload is canonical, of the trust-list type, for
-this catalog and over the entry's own `prev_hash`, the entry is a person's).
-`audit verify`'s integrity report prints the same sentences, one `integrity
-problem:` line per record, goes on past each refused record with the list in
-force unchanged, and names a `signed_records` row that belongs to no signed
-entry
+list is never emptied; and the entry's actor must be, letter for letter, the
+canonical name the new list gives the signing key (the catalog writes no other
+spelling, so `ALICE` under alice's key is a forgery). Every walk a `Store`
+makes applies these rules: once over every signed record when it opens, then
+over the records appended since on each reload (a crawl-only reload verifies
+no signature), and a record that breaks one is `ErrCorrupt` with a sentence
+naming the entry, so the processor refuses the file at open and the CLI
+refuses every command on it: `a second trust bootstrap at entry N; the trust
+list cannot start twice`, `trust list at entry N has version V, expected W
+(exactly one above the list in force)`, `the trust list at entry N is not
+signed by a key of both the list in force and the new list`, `the trust
+bootstrap at entry N was signed by SHA256:X, not the pinned trust root
+SHA256:Y; the catalog was re-bootstrapped or replaced`, `the signed record of
+audit entry N was replaced`, `signed_records row N belongs to audit entry N, a
+"tool.discovered", which carries no signed record; the row was inserted by
+hand` (a row copied under an entry that carries no record, refused where the
+walk meets the entry; a row above the head, which only a write with the
+foreign key off can place, is inert until an entry arrives at its seq), and
+the record's own binding (the signature verifies, the payload is canonical, of
+the trust-list type, for this catalog and over the entry's own `prev_hash`,
+the entry is a person's). `audit verify`'s integrity report prints the same
+sentences, one `integrity problem:` line per record, goes on past each refused
+record with the list in force unchanged, and names every `signed_records` row
+that belongs to no signed entry, above the head included
 (`TestSetTrust_BootstrapWritesAVersionOneListSignedByItsOwnKeyAndBindsItToTheChain`,
 `TestSetTrust_RotationAddsAKeySignedByAKeyOfBothLists`,
 `TestSetTrust_RemovalNeedsAKeyThatStaysAndTheLastSignerCannotBeRemoved`,
 `TestWalk_RefusesATrustListWithTheWrongVersionOrSigner`,
 `TestWalk_RefusesATrustRecordWhoseTokensOrPayloadDisagreeWithTheEntry`,
 `TestWalk_RefusesASwappedSignedRecordBecauseTheTokenDisagrees`,
+`TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone`,
 `TestWalk_RefusesAReplayedTrustRecordFromAnotherCatalog`,
 `TestReload_ANewTrustListEntersTheStateOnTheSuffixWalk`,
 `TestForensicOpen_VerifiesTrustLazilyAndNamesTheBrokenRecord`,
@@ -1301,8 +1308,12 @@ every command as the trust root (`OpenOptions.TrustRoot` of the catalog; the
 `--trust-root` flag of the CLI round). With it set, a catalog whose bootstrap
 another key signed is refused at open with the sentence above, and so is a
 catalog with no trust list at all (`the catalog has no trust list and a trust
-root ... was given`): the pin says you bootstrapped this catalog, so a file
-without a bootstrap is another file or a history cut back below it
+root SHA256:... was given; the catalog was never bootstrapped, or this is
+another file`): the pin says you bootstrapped this catalog, so a file without
+a bootstrap is another file or a history cut back below it. Both rules end
+every walk, so `audit verify` and `audit list`, which open the file for
+inspection and walk on their first view, refuse with the same sentence, and
+the integrity report prints it as one `integrity problem:` line
 (`TestOpen_PinnedTrustRootRefusesAnotherBootstrapAndAcceptsTheRightOne`,
 `TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap`). Without it the
 bootstrap's own signer is trusted on first use.
