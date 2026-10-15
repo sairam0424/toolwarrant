@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strconv"
@@ -41,12 +42,13 @@ type Operator struct {
 // Record is a trust list Validate accepted: the version, the threshold, and
 // the operators in the order the list gives them, names canonical, keys and
 // names unique. Every rule function refuses a Record that did not come from
-// Validate, so a zero or hand-built value authorises nothing.
+// Validate or whose fields were changed after it did (sum binds the content),
+// so a zero, hand-built or altered value authorises nothing.
 type Record struct {
 	Version   int
 	Threshold int
 	Signers   []Operator
-	valid     bool
+	sum       [sha256.Size]byte
 }
 
 // Validate applies every rule a list must satisfy on its own, independent of
@@ -82,7 +84,9 @@ func Validate(l signing.TrustList) (Record, error) {
 		names[op.Name], keys[op.Fingerprint] = i, i
 		signers = append(signers, op)
 	}
-	return Record{Version: l.Version, Threshold: l.Threshold, Signers: signers, valid: true}, nil
+	r := Record{Version: l.Version, Threshold: l.Threshold, Signers: signers}
+	r.sum = r.digest()
+	return r, nil
 }
 
 // validateOperator applies the per-operator rules to signers[i]: a D7 name
@@ -102,10 +106,32 @@ func validateOperator(i int, s signing.Signer) (Operator, error) {
 	return Operator{Name: name, Key: s.Key, Fingerprint: signing.Fingerprint(pub)}, nil
 }
 
-// check refuses a Record that Validate did not produce.
+// check refuses a Record that Validate did not produce or that was changed
+// after it did: the stored sum must equal the digest of the current content.
 func (r Record) check() error {
-	if !r.valid {
-		return fmt.Errorf("%w: the record was not produced by Validate", ErrList)
+	if r.sum != r.digest() {
+		return fmt.Errorf("%w: the record was not produced by Validate or was changed after it", ErrList)
 	}
 	return nil
+}
+
+// digest binds the content of a Record: the version, the threshold, the
+// number of operators and each operator's name, key and fingerprint, every
+// field as a netstring (decimal length, a colon, the bytes) so that no two
+// contents share an encoding.
+func (r Record) digest() [sha256.Size]byte {
+	var buf []byte
+	field := func(s string) {
+		buf = append(strconv.AppendInt(buf, int64(len(s)), 10), ':')
+		buf = append(buf, s...)
+	}
+	field(strconv.Itoa(r.Version))
+	field(strconv.Itoa(r.Threshold))
+	field(strconv.Itoa(len(r.Signers)))
+	for _, op := range r.Signers {
+		field(op.Name)
+		field(op.Key)
+		field(op.Fingerprint)
+	}
+	return sha256.Sum256(buf)
 }

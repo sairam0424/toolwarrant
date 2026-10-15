@@ -125,7 +125,13 @@ func TestRecord_RulesRefuseARecordValidateDidNotProduce(t *testing.T) {
 	a := sigtest.GenerateEd25519(t)
 	good := mustValidate(t, listOf(1, named{"alice", a}))
 	forged := Record{Version: 1, Threshold: 1, Signers: []Operator{{Name: "alice", Key: signing.MarshalKey(a.Public), Fingerprint: fp(a)}}}
-	for label, r := range map[string]Record{"zero": {}, "hand-built": forged} {
+	// A Record Validate produced and a caller changed afterwards (a copy keeps
+	// the sum, the content no longer matches it) is refused the same way.
+	renamed := mustValidate(t, listOf(1, named{"alice", a}))
+	renamed.Signers[0].Name = "mallory"
+	bumped := mustValidate(t, listOf(1, named{"alice", a}))
+	bumped.Version = 2
+	for label, r := range map[string]Record{"zero": {}, "hand-built": forged, "renamed after Validate": renamed, "version bumped after Validate": bumped} {
 		if name, ok := r.Lookup(fp(a)); ok || name != "" {
 			t.Errorf("%s: Lookup = %q, %t", label, name, ok)
 		}

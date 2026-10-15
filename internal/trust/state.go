@@ -35,9 +35,9 @@ var (
 // State is the trust list in force after folding every trust record up to a
 // point of the chain: the current list, the seq of the bootstrap and the seq
 // of the record that put Current in force. A zero State has no list; Current
-// is nil and both seqs are 0. Apply returns a new State and never changes the
-// one it was called on, so a walk can keep the state it had before a refused
-// record.
+// is nil and both seqs are 0. Apply returns the new State when it accepts a
+// record and the receiver, unchanged, when it refuses one, so a caller that
+// writes s, err = s.Apply(...) and records the problem keeps the list in force.
 type State struct {
 	Current      *Record
 	BootstrapSeq int64
@@ -53,28 +53,28 @@ type State struct {
 // next.
 func (s State) Apply(seq int64, kind Kind, next Record, signer, pinnedRoot string) (State, error) {
 	if seq < 1 || seq <= s.ListSeq {
-		return State{}, fmt.Errorf("%w: seq %d after seq %d", ErrSeqOrder, seq, s.ListSeq)
+		return s, fmt.Errorf("%w: seq %d after seq %d", ErrSeqOrder, seq, s.ListSeq)
 	}
 	if err := next.check(); err != nil {
-		return State{}, err
+		return s, err
 	}
 	switch kind {
 	case KindBootstrap:
 		if s.Current != nil {
-			return State{}, fmt.Errorf("%w: the list in force started at seq %d", ErrSecondBootstrap, s.BootstrapSeq)
+			return s, fmt.Errorf("%w: the list in force started at seq %d", ErrSecondBootstrap, s.BootstrapSeq)
 		}
 		if err := CheckBootstrap(next, signer, pinnedRoot); err != nil {
-			return State{}, err
+			return s, err
 		}
 		return State{Current: &next, BootstrapSeq: seq, ListSeq: seq}, nil
 	case KindRotated:
 		if s.Current == nil {
-			return State{}, ErrNoList
+			return s, ErrNoList
 		}
 		if err := CheckRotation(*s.Current, next, signer); err != nil {
-			return State{}, err
+			return s, err
 		}
 		return State{Current: &next, BootstrapSeq: s.BootstrapSeq, ListSeq: seq}, nil
 	}
-	return State{}, fmt.Errorf("%w: %s", ErrKind, strconv.Quote(string(kind)))
+	return s, fmt.Errorf("%w: %s", ErrKind, strconv.Quote(string(kind)))
 }

@@ -93,7 +93,7 @@ func checkAcceptedRecord(t *testing.T, l signing.TrustList, r Record) {
 
 // equalRecords compares two records field by field.
 func equalRecords(x, y Record) bool {
-	if x.Version != y.Version || x.Threshold != y.Threshold || x.valid != y.valid || len(x.Signers) != len(y.Signers) {
+	if x.Version != y.Version || x.Threshold != y.Threshold || x.sum != y.sum || len(x.Signers) != len(y.Signers) {
 		return false
 	}
 	for i := range x.Signers {

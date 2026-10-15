@@ -63,8 +63,8 @@ func TestProperty_stateAfterFoldingEqualsTheLastAcceptedRecord(t *testing.T) {
 			kind := kinds[rapid.IntRange(0, len(kinds)-1).Draw(rt, "kind")]
 			after, err := s.Apply(seq, kind, next, signer, "")
 			if err != nil {
-				if after != (State{}) {
-					rt.Fatalf("a refused record returned a state: %+v", after)
+				if after != s {
+					rt.Fatalf("a refused record returned another state: %+v, had %+v", after, s)
 				}
 				continue
 			}

@@ -17,9 +17,9 @@ var (
 )
 
 // Lookup returns the name the list gives the key with this fingerprint. A
-// Record Validate did not produce names nobody.
+// Record Validate did not produce, or one changed since, names nobody.
 func (r Record) Lookup(fingerprint string) (name string, ok bool) {
-	if !r.valid {
+	if r.check() != nil {
 		return "", false
 	}
 	for _, op := range r.Signers {

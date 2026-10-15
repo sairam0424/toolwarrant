@@ -58,8 +58,11 @@ func TestState_RefusesAnUnknownKindAndASeqOutOfOrderAndLeavesTheReceiverUnchange
 	before := State{Current: &v1, BootstrapSeq: 3, ListSeq: 3}
 	_, err = State{}.Apply(3, KindBootstrap, v1, fp(a), fp(b))
 	wantErrIs(t, "bootstrap under another root", err, ErrNotThePinnedRoot, "")
-	_, err = s1.Apply(4, Kind("decision.signed"), v2, fp(a), "")
+	kept, err := s1.Apply(4, Kind("decision.signed"), v2, fp(a), "")
 	wantErrIs(t, "another event", err, ErrKind, `"decision.signed"`)
+	if !reflect.DeepEqual(kept, s1) {
+		t.Errorf("a refused record returned %+v, not the receiver %+v", kept, s1)
+	}
 	_, err = s1.Apply(4, "", v2, fp(a), "")
 	wantErrIs(t, "an empty kind", err, ErrKind, "")
 	_, err = s1.Apply(3, KindRotated, v2, fp(a), "")
