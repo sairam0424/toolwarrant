@@ -1,7 +1,13 @@
 package catalog
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -163,14 +169,24 @@ func TestMigrate_RefusesAV6FileThatLostAGuardAndCommitsNothing(t *testing.T) {
 // Several processes may open a version 6 file at the same moment (a crawl on
 // a schedule and an operator's init): the migration runs in the immediate
 // transaction migrate holds, so exactly one process adds the objects and the
-// others wait and then find version 7; every opener succeeds and sees the
-// same rows and head.
+// others wait on the lock and then find version 7; every opener succeeds and
+// sees the same rows and head. The openers are real processes: the test
+// re-executes its own binary with this test selected and the file named in
+// the environment (the standard library's pattern; the child half is
+// openV6AsChild), every child says ready and then blocks until the parent
+// closes its stdin, which the parent does for all of them at once, and four
+// goroutines of this process open the file in the same instant.
 func TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce(t *testing.T) {
+	if path := os.Getenv(v6ChildEnv); path != "" {
+		openV6AsChild(t, path)
+		return
+	}
 	t.Parallel()
 	f := newV6File(t)
-	const openers = 8
-	stores := make([]*Store, openers)
-	errs := make([]error, openers)
+	const children, goroutines = 4, 4
+	kids := startV6Children(t, f.path, children)
+	stores := make([]*Store, goroutines)
+	errs := make([]error, goroutines)
 	var wg sync.WaitGroup
 	for i := range stores {
 		wg.Add(1)
@@ -179,7 +195,17 @@ func TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce(t *testing.T) {
 			stores[i], errs[i] = Open(f.path, lifecycle.DefaultPolicy())
 		}()
 	}
+	for _, k := range kids {
+		_ = k.stdin.Close() // the start signal
+	}
 	wg.Wait()
+	for i, k := range kids {
+		if head, err := k.wait(); err != nil {
+			t.Errorf("child process %d: %v", i, err)
+		} else if head != f.head {
+			t.Errorf("child process %d read head %s, want %s", i, head, f.head)
+		}
+	}
 	for i, err := range errs {
 		if err != nil {
 			t.Errorf("opener %d: %v", i, err)
@@ -193,6 +219,16 @@ func TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce(t *testing.T) {
 			t.Errorf("opener %d does not serve the legacy approval", i)
 		}
 	}
+	assertMigratedOnce(t, f)
+	if errs[0] == nil {
+		mustBeClean(t, stores[0], "after the concurrent migration")
+	}
+}
+
+// assertMigratedOnce checks the file after the concurrent opens: version 7,
+// exactly the table and its four guards, and every row the version 6 file held.
+func assertMigratedOnce(t *testing.T, f v6Fixture) {
+	t.Helper()
 	db := rawDB(t, f.path)
 	if v := mustCount(t, db, `PRAGMA user_version`); v != schemaVersion {
 		t.Errorf("user_version = %d, want %d", v, schemaVersion)
@@ -200,16 +236,117 @@ func TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce(t *testing.T) {
 	if n := mustCount(t, db, `SELECT COUNT(*) FROM sqlite_master WHERE name LIKE ?`, v7Added); n != 5 {
 		t.Errorf("%d objects named %s, want exactly the table and its four guards", n, v7Added)
 	}
-	if got := rowCounts(t, db); len(got) != len(f.rows) {
+	got := rowCounts(t, db)
+	if len(got) != len(f.rows) {
 		t.Errorf("row counts %v, want %v", got, f.rows)
-	} else {
-		for table, want := range f.rows {
-			if got[table] != want {
-				t.Errorf("%s holds %d rows, want %d", table, got[table], want)
-			}
+	}
+	for table, want := range f.rows {
+		if got[table] != want {
+			t.Errorf("%s holds %d rows, want %d", table, got[table], want)
 		}
 	}
-	if errs[0] == nil {
-		mustBeClean(t, stores[0], "after the concurrent migration")
+}
+
+const (
+	// v6ChildEnv names, in a child process's environment, the version 6 file
+	// it opens. It travels through exec.Cmd.Env, never t.Setenv, so the test
+	// stays parallel; a process that finds it set runs the child half of the
+	// test and nothing else.
+	v6ChildEnv = "TOOLWARRANT_TEST_MIGRATE_V6_PATH"
+	// childReady is the line a child prints before it blocks on stdin, and
+	// childHead starts the line that carries the audit head it read.
+	childReady = "ready"
+	childHead  = "head="
+)
+
+// openV6AsChild is the child half of the two-process test: it says ready,
+// blocks until the parent closes its stdin (the start signal every child gets
+// in the same instant), opens the file read-write, which migrates it or finds
+// it migrated, and prints the audit head it reads. A failure fails the
+// child's run of the test, and the parent sees it as a non-zero exit.
+func openV6AsChild(t *testing.T, path string) {
+	t.Helper()
+	fmt.Println(childReady)
+	if _, err := io.ReadAll(os.Stdin); err != nil {
+		t.Fatalf("child: wait for the start signal: %v", err)
 	}
+	s, err := Open(path, lifecycle.DefaultPolicy())
+	if err != nil {
+		t.Fatalf("child: open the version 6 file: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	head, err := s.AuditHead(bg)
+	if err != nil {
+		t.Fatalf("child: read the audit head: %v", err)
+	}
+	fmt.Println(childHead + head)
+}
+
+// v6Child is one child process of the two-process test: the command, the
+// stdin whose close is its start signal, its stdout line by line and its
+// stderr for the failure message.
+type v6Child struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	out    *bufio.Scanner
+	stderr bytes.Buffer
+}
+
+// startV6Children re-executes the test binary n times with this test
+// selected and the file named in the environment, and returns once every
+// child has said ready, so that all of them are blocked on the start signal.
+func startV6Children(t *testing.T, path string, n int) []*v6Child {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kids := make([]*v6Child, 0, n)
+	for range n {
+		k := &v6Child{cmd: exec.Command(exe, "-test.run=^"+t.Name()+"$", "-test.count=1")}
+		k.cmd.Env = append(os.Environ(), v6ChildEnv+"="+path)
+		k.cmd.Stderr = &k.stderr
+		stdout, err := k.cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		k.out = bufio.NewScanner(stdout)
+		if k.stdin, err = k.cmd.StdinPipe(); err != nil {
+			t.Fatal(err)
+		}
+		if err := k.cmd.Start(); err != nil {
+			t.Fatalf("start the child process: %v", err)
+		}
+		t.Cleanup(func() { _ = k.stdin.Close(); _ = k.cmd.Process.Kill(); _ = k.cmd.Wait() })
+		kids = append(kids, k)
+	}
+	for i, k := range kids {
+		if !k.out.Scan() || k.out.Text() != childReady {
+			t.Fatalf("child process %d did not say ready: %q, %v; stderr: %s", i, k.out.Text(), k.out.Err(), k.stderr.String())
+		}
+	}
+	return kids
+}
+
+// wait reads the rest of the child's stdout, returns the head it printed and
+// fails on a non-zero exit or a missing head line, quoting what the child
+// wrote (the testing package writes a failed test's messages to stdout).
+func (k *v6Child) wait() (string, error) {
+	var head string
+	var lines []string
+	for k.out.Scan() {
+		line := k.out.Text()
+		if strings.HasPrefix(line, childHead) {
+			head = strings.TrimPrefix(line, childHead)
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if err := k.cmd.Wait(); err != nil {
+		return "", fmt.Errorf("exit: %w; stdout: %q; stderr: %q", err, strings.Join(lines, "\n"), k.stderr.String())
+	}
+	if head == "" {
+		return "", fmt.Errorf("printed no head line; stdout: %q", strings.Join(lines, "\n"))
+	}
+	return head, nil
 }
