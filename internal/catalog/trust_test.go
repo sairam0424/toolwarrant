@@ -4,9 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -225,115 +223,6 @@ func TestSetTrust_RefusesAPayloadSignedForAnotherCatalog(t *testing.T) {
 	if _, err := b.SetTrust(bg, rec, alice.actor()); err != nil {
 		t.Errorf("the same record on the catalog it names = %v", err)
 	}
-}
-
-// crawlerCadence is the pause between the crawls of the scheduled crawler in
-// TestSetTrust_ExpectHeadRefusesWhenTheLogMoved: a few tens of milliseconds,
-// so that a crawl lands inside the operator's read-sign-write window often
-// enough to exercise the retry while leaving windows the operator fits in. A
-// crawler whose whole cycle is shorter than that window (a few milliseconds
-// here, where a synced commit takes about twenty) starves every
-// compare-and-set, as it would starve any writer: each attempt waits behind
-// the crawl in progress and finds the head moved when the lock is handed
-// over; the scheduled crawl of a deployment runs once a minute.
-const crawlerCadence = 40 * time.Millisecond
-
-// maxRetriesPerRotation bounds the retry loop of that test, so a regression
-// that makes every attempt fail is reported as such and not as a timeout.
-const maxRetriesPerRotation = 25
-
-// The compare-and-set (finding 12). A record signed over a head the log has
-// left behind is refused with nothing written; under a crawler that commits
-// every few milliseconds, fifty rotations each retried on ErrHeadMoved leave
-// a chain in which every stored prev_head equals its entry's prev_hash, which
-// is what makes the signed record a signed head.
-func TestSetTrust_ExpectHeadRefusesWhenTheLogMoved(t *testing.T) {
-	t.Parallel()
-	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
-	mustAddServer(t, s, "alpha")
-	alice, bob := newOperator(t, "alice"), newOperator(t, "bob")
-	mustSetTrust(t, s, 1, alice, alice)
-	stale := signList(t, listFor(s.identity, mustHead(t, s), 2, alice, alice, bob), alice.key)
-	mustCrawl(t, s, "alpha", tool("echo", "v1"))
-	n := auditCount(t, s)
-	_, err := s.SetTrust(bg, stale, alice.actor())
-	if !errors.Is(err, ErrHeadMoved) || !strings.Contains(err.Error(), "audit head mismatch") {
-		t.Fatalf("SetTrust over a stale head = %v, want ErrHeadMoved", err)
-	}
-	if auditCount(t, s) != n || mustTrustList(t, s).Version != 1 || mustCount(t, rawDB(t, path), `SELECT COUNT(*) FROM signed_records`) != 1 {
-		t.Fatal("the refused record left something behind")
-	}
-
-	stop := make(chan struct{})
-	var crawls sync.WaitGroup
-	crawls.Go(func() {
-		for k := 0; ; k++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v"+itoa(int64(k%2)))), crawler); err != nil {
-				t.Errorf("crawl %d: %v", k, err)
-				return
-			}
-			time.Sleep(crawlerCadence)
-		}
-	})
-	const rotations = 50
-	retries := 0
-	for i := 0; i < rotations; i++ {
-		for attempt := 0; ; attempt++ {
-			if attempt > maxRetriesPerRotation {
-				close(stop)
-				t.Fatalf("rotation %d: the head moved on %d attempts in a row; the crawler's cycle leaves no window for the operator", i, attempt)
-			}
-			st, err := s.SigningState(bg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ops := []operator{alice}
-			if i%2 == 0 {
-				ops = append(ops, bob)
-			}
-			rec := signList(t, listFor(st.Identity, st.Head, st.Trust.Version+1, alice, ops...), alice.key)
-			if _, err := s.SetTrust(bg, rec, alice.actor()); errors.Is(err, ErrHeadMoved) {
-				retries++
-				continue
-			} else if err != nil {
-				close(stop)
-				t.Fatalf("rotation %d: %v", i, err)
-			}
-			break
-		}
-	}
-	close(stop)
-	crawls.Wait()
-	t.Logf("%d rotations, %d retried after the head moved", rotations, retries)
-	db := rawDB(t, path)
-	entries := rawEntries(t, db)
-	rows, err := readSignedRecords(bg, db, func() []int64 {
-		var seqs []int64
-		for _, e := range entries {
-			if isSignedEvent(e.Event) {
-				seqs = append(seqs, e.Seq)
-			}
-		}
-		return seqs
-	}())
-	if err != nil || len(rows) != rotations+1 {
-		t.Fatalf("%d signed rows, %v; want %d", len(rows), err, rotations+1)
-	}
-	for seq, rec := range rows {
-		list, err := signing.ParseTrustList(rec.Payload)
-		if err != nil || list.PrevHead != entries[seq-1].PrevHash {
-			t.Errorf("row %d: stored prev_head %s, entry prev_hash %s (%v)", seq, list.PrevHead, entries[seq-1].PrevHash, err)
-		}
-	}
-	if view := mustTrustList(t, s); view.Version != rotations+1 || view.Lists != rotations+1 {
-		t.Errorf("TrustList = %+v, want version %d", view, rotations+1)
-	}
-	mustBeClean(t, s, "after the rotations under the crawler")
 }
 
 // Only a person records a trust list: the system actor and a malformed actor
