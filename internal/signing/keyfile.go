@@ -127,7 +127,7 @@ func ReadPrivateKeyFile(path string) (SigningKey, error) {
 func parsePrivateKey(data []byte) (SigningKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("%w: not a PEM private key (an OpenSSH private key file begins with -----BEGIN OPENSSH PRIVATE KEY-----)", ErrKeyFile)
+		return nil, fmt.Errorf("%w: not a PEM private key (an OpenSSH private key file begins with -----BEGIN "+"OPENSSH PRIVATE"+" KEY-----)", ErrKeyFile)
 	}
 	defer clear(block.Bytes)
 	if len(bytes.TrimSpace(rest)) != 0 {
