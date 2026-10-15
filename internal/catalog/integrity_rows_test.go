@@ -22,6 +22,7 @@ import (
 // too; alice's approval of her own bytes then goes through the serving path,
 // which is the limit D14 states, with Integrity naming the laundering.
 func TestIntegrity_DeletedToolRowIsRefusedAndReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1"), tool("zeta", "v1")), alice); err != nil {
@@ -84,6 +85,7 @@ func TestIntegrity_DeletedToolRowIsRefusedAndReported(t *testing.T) {
 // proposer list with the actors of the version.proposed entries and names the
 // rewrite, before and after alice approves her own bytes.
 func TestIntegrity_ProposerHistoryRewrittenUnderRecreatedGuardsIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), alice); err != nil {
@@ -125,6 +127,7 @@ func TestIntegrity_ProposerHistoryRewrittenUnderRecreatedGuardsIsReported(t *tes
 // between, is still reported when a forger with write access appends the
 // approval entry to the log itself.
 func TestIntegrity_RejectedVersionFlippedToPendingIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -159,6 +162,7 @@ func TestIntegrity_RejectedVersionFlippedToPendingIsReported(t *testing.T) {
 // person, a re-proposal by another crawler, an Enable that re-proposes without
 // adding anybody, and a reappearance.
 func TestIntegrity_ProposerAndStatusReconstructionAcceptsStoreWrittenHistory(t *testing.T) {
+	t.Parallel()
 	p := lifecycle.DefaultPolicy()
 	s, _ := newStoreAt(t, p)
 	mustAddServer(t, s, "alpha")
@@ -194,6 +198,7 @@ func TestIntegrity_ProposerAndStatusReconstructionAcceptsStoreWrittenHistory(t *
 // A version row the log never proposed, and a version the log proposed whose
 // row is gone, are both reported.
 func TestIntegrity_RowsTheLogDoesNotDescribeAreReported(t *testing.T) {
+	t.Parallel()
 	t.Run("planted version", func(t *testing.T) {
 		s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 		d1 := approvedEcho(t, s)

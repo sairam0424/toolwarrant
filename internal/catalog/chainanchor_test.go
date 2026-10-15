@@ -94,6 +94,7 @@ func rechainFrom(t *testing.T, db *sql.DB, seq int64) {
 // newest version.approved entry about the tool recorded the digest a person
 // saw, and it still re-seals, so every path is ErrCorrupt.
 func TestSnapshot_RewritingHashSeenUnderRecreatedGuardsIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "benign"))
@@ -142,6 +143,7 @@ func TestSnapshot_RewritingHashSeenUnderRecreatedGuardsIsCorrupt(t *testing.T) {
 // decision again. The chain anchor closes it: the newest approval entry about
 // the tool recorded the digest that was really approved last.
 func TestSnapshot_AppendedApprovalRowIsCaughtByTheChainAnchor(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -177,6 +179,7 @@ func TestSnapshot_AppendedApprovalRowIsCaughtByTheChainAnchor(t *testing.T) {
 // than trusting a memory of it (the fifth review's in-place edit under a warm
 // memory).
 func TestSnapshot_AnchorAcceptsStoreWrittenHistoryAndRemembersEntries(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("sum", "v1"))
@@ -227,6 +230,7 @@ func TestSnapshot_AnchorAcceptsStoreWrittenHistoryAndRemembersEntries(t *testing
 // A legitimate append advances the pin: after every write the next Snapshot
 // verifies the new entries and pins the new head.
 func TestSnapshot_LegitimateAppendsAdvanceThePin(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	if pin := s.loadPin(); pin.seq != 0 {
 		t.Fatalf("a fresh Store pins %+v before any read", pin)
@@ -268,6 +272,7 @@ func TestSnapshot_LegitimateAppendsAdvanceThePin(t *testing.T) {
 // the end: a fresh open trusts the re-chained log, and only the head the
 // operator recorded before the rewrite disagrees.
 func TestSnapshot_ReChainedLogIsCaughtByThePinAndTheRecordedHead(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -310,6 +315,7 @@ func TestSnapshot_ReChainedLogIsCaughtByThePinAndTheRecordedHead(t *testing.T) {
 // Truncating the log after the pin, or rewriting the entries appended since
 // without chaining them from the pinned entry, is caught the same way.
 func TestSnapshot_LogChangedAfterThePinIsCorrupt(t *testing.T) {
+	t.Parallel()
 	t.Run("pinned entry deleted", func(t *testing.T) {
 		s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 		mustAddServer(t, s, "alpha")

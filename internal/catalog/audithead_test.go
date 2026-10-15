@@ -19,6 +19,7 @@ import (
 // every other read does instead of vouching for the head of a file that is
 // gone.
 func TestAuditHead_IsTheVerifiedHeadAndMovesWithTheLog(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	wantHead := func(when string) string {
 		t.Helper()
@@ -135,6 +136,7 @@ func headReaders(stores []*Store, stop <-chan struct{}) func() ([]headSeen, stri
 // this test reports as a mismatch (it did so on the two-call export: see the
 // decision record).
 func TestApprovedWithHead_HeadAndToolsComeFromOneSnapshot(t *testing.T) {
+	t.Parallel()
 	policy := lifecycle.DefaultPolicy()
 	policy.ReEnableRequiresReview = false
 	w, path := newStoreAt(t, policy)

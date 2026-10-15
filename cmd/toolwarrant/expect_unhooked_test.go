@@ -24,6 +24,7 @@ const (
 // the line on every check exits 0 when it is stopped, because KNOWN-LIMIT is a
 // report, not a failing verdict line.
 func TestExpectUnhookedTurnsThe202IntoAKnownLimitLine(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -57,6 +58,7 @@ func TestExpectUnhookedTurnsThe202IntoAKnownLimitLine(t *testing.T) {
 // run stops at the first such check, as it does for every failing verdict.
 // Without the flag the same answers keep the verdicts they had.
 func TestExpectUnhookedFailsWhenTheGatewayStopsForwarding(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -97,6 +99,7 @@ func TestExpectUnhookedFailsWhenTheGatewayStopsForwarding(t *testing.T) {
 // 2) that names both flags, decided before anything is fetched: no session is
 // opened against the gateway and no probe reaches the upstream.
 func TestExpectUnhookedAndNoProbeAreExclusive(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
 	sessions := g.sessions.Load()

@@ -17,6 +17,7 @@ import (
 // A guard dropped between two RecordCrawl calls on one open Store: the second
 // crawl is refused and leaves no crawls row, no tool change and no audit entry.
 func TestRecordCrawl_RefusesToCommitAfterAGuardWasDropped(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -47,6 +48,7 @@ func TestRecordCrawl_RefusesToCommitAfterAGuardWasDropped(t *testing.T) {
 // Every decision and every other write is refused the same way, whichever
 // guard is gone, and a redefined guard counts as gone.
 func TestDecisions_RefuseToCommitAfterAGuardWasDroppedOrRedefined(t *testing.T) {
+	t.Parallel()
 	// Every write below is valid from the state this sets up: echo is on d2
 	// with d1 to roll back to and d3 pending (a budget of 1), sum is disabled,
 	// alpha runs and beta is paused.

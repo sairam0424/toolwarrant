@@ -17,6 +17,7 @@ import (
 // into "already paused=false" while the log still said paused.
 
 func TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt(t *testing.T) {
+	t.Parallel()
 	s, path := anchoredServers(t)
 	if err := s.PauseServer(bg, "alpha", bob); err != nil {
 		t.Fatal(err)
@@ -70,6 +71,7 @@ func TestServers_PausedFlagIsAnchoredOnEveryPathThatReadsIt(t *testing.T) {
 // A server the log never paused cannot be paused by the column alone either:
 // the flag must have an entry.
 func TestServers_PausedFlagWithoutAnEntryIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := anchoredServers(t)
 	db := rawDB(t, path)
 	mustExec(t, db, `UPDATE servers SET paused = 1 WHERE name = 'beta'`)

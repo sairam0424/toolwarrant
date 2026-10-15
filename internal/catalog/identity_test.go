@@ -27,6 +27,7 @@ func removeDatabase(t *testing.T, path string) {
 }
 
 func TestGeneration_DetectsADeletedAndReinitialisedFile(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	writer := openStore(t, path, lifecycle.DefaultPolicy())
 	approvedEcho(t, writer)
@@ -69,6 +70,7 @@ func TestGeneration_DetectsADeletedAndReinitialisedFile(t *testing.T) {
 }
 
 func TestGeneration_DetectsARenamedFileAndRecoversWhenItReturns(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	s := openStore(t, path, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
@@ -92,6 +94,7 @@ func TestGeneration_DetectsARenamedFileAndRecoversWhenItReturns(t *testing.T) {
 }
 
 func TestGeneration_DetectsAnotherIdentityInMeta(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	db := rawDB(t, path)
@@ -108,6 +111,7 @@ func TestGeneration_DetectsAnotherIdentityInMeta(t *testing.T) {
 // init writes a random identity; every init draws another; a reopen keeps it;
 // a file whose identity is gone is refused except by a forensic open.
 func TestOpen_WritesAndKeepsACatalogIdentity(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	identity := s.identity
 	if len(identity) != 32 || !isHex(identity) {

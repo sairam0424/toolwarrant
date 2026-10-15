@@ -32,6 +32,7 @@ func approvalPaths(s *Store, server, name string) map[string]error {
 // would never serve it again. Three UPDATEs on mutable columns put v1 back;
 // v1 still has its old approve row, so per-version evidence was satisfied.
 func TestSnapshot_PointerFlipToASupersededVersionIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -81,6 +82,7 @@ func TestSnapshot_PointerFlipToASupersededVersionIsCorrupt(t *testing.T) {
 // table can tell: hash_seen is the digest the approver viewed and the rewritten
 // digest no longer equals it.
 func TestSnapshot_DropEditRecreateGuardIsCaughtByTheNewestDecision(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "benign"))
@@ -132,6 +134,7 @@ func TestSnapshot_DropEditRecreateGuardIsCaughtByTheNewestDecision(t *testing.T)
 // between, a disable with the approval retained and the enable that restores
 // it. Each step is checked on every read path.
 func TestSnapshot_NewestDecisionRuleAcceptsEveryStoreWrittenHistory(t *testing.T) {
+	t.Parallel()
 	p := lifecycle.DefaultPolicy()
 	p.ReEnableRequiresReview = false
 	s, _ := newStoreAt(t, p)

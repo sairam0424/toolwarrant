@@ -15,6 +15,7 @@ import (
 // foreign object, and a constraint failure inside a write transaction is
 // ErrCorrupt.
 func TestOpen_ForeignUniqueIndexIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	mustExec(t, rawDB(t, path), `CREATE UNIQUE INDEX one_event_only ON audit_log (event)`)
@@ -65,6 +66,7 @@ func TestOpen_ForeignUniqueIndexIsCorrupt(t *testing.T) {
 // write does, so it is still tolerated, whatever its case or layout, and a
 // unique one is recognised however it is written.
 func TestOpen_PlainForeignIndexIsTolerated(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	mustExec(t, rawDB(t, path), "create\tindex   by_actor ON audit_log (actor)")
@@ -95,6 +97,7 @@ func TestOpen_PlainForeignIndexIsTolerated(t *testing.T) {
 // fires is one the schema does not have or a guard refusing a row; any other
 // error passes through as it is, so a bug is not disguised as tampering.
 func TestInTx_ConstraintFailureIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, _ := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	before := takeTrace(t, s)

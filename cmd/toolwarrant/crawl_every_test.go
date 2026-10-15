@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,7 @@ func downUpstream(t *testing.T) *httptest.Server {
 // upstream that is down for a while does not stop the schedule and, once a
 // crawl has completed, does not fail it either (D13 f).
 func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	broken := downUpstream(t)
 	c.ok("server", "add", "down", broken.URL, "--allow-private")
@@ -74,6 +76,7 @@ func TestCrawlEveryRepeatsAndSurvivesFailures(t *testing.T) {
 // exited 0 at SIGTERM, although operations.md lists a crawl failure under
 // exit code 1. Now the run fails at the end and says why (D13 f).
 func TestCrawlEveryExits1WhenNoCrawlCompleted(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	down := downUpstream(t)
 	c.ok("server", "add", "down", down.URL, "--allow-private")
@@ -91,30 +94,30 @@ func TestCrawlEveryExits1WhenNoCrawlCompleted(t *testing.T) {
 // the schedule re-checks the catalog before every crawl and stops at once
 // with exit 1, the way the canary does (D13 f).
 func TestCrawlEveryStopsAtOnceOnACorruptCatalog(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	run := c.launch("crawl", "s1", "--every", loopEvery.String())
 	waitFor(t, "one complete crawl", func() bool { return strings.Contains(run.stdout.String(), "complete") })
-	var before int
-	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1", &before)
+	// A crawl the loop had already started when the guard goes may still
+	// commit (each iteration checks the file when it opens it, not while it
+	// runs), and under load the drop can land a second or more after the
+	// "complete" line was read; so the judgement is by the crawl rows: no
+	// crawl STARTED after the drop may complete. The row id is the start order.
+	var lastStarted int
+	queryRow(t, c.db, "SELECT COALESCE(MAX(id), 0) FROM crawls", &lastStarted)
 	execSQL(t, c.db, "DROP TRIGGER audit_log_no_update")
 	// Every one-shot command now refuses the file.
 	r := c.fail(exitFailure, "list", "s1")
 	wantContains(t, "list after the drop", r.stderr, "guard trigger audit_log_no_update is missing", adviceCorrupt)
-	lines := len(nonEmptyLines(run.stdout.String()))
 	if code := run.wait(); code != exitFailure {
 		t.Errorf("crawl --every exited %d against a corrupt catalog, want %d\nstdout: %s\nstderr: %s", code, exitFailure, run.stdout.String(), run.stderr.String())
 	}
-	for _, line := range nonEmptyLines(run.stdout.String())[lines:] {
-		if strings.Contains(line, "complete") {
-			t.Errorf("a crawl was recorded as complete into a catalog every other command refuses: %s", line)
-		}
-	}
 	wantContains(t, "stdout", run.stdout.String(), "s1: crawl of s1: ", "guard trigger audit_log_no_update is missing")
 	wantContains(t, "stderr", run.stderr.String(), "stopping the crawl schedule", adviceCorrupt)
-	var after int
-	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1", &after)
-	if after != before {
-		t.Errorf("%d complete crawl(s) were recorded after the guard was dropped", after-before)
+	var completedAfter int
+	queryRow(t, c.db, "SELECT COUNT(*) FROM crawls WHERE complete = 1 AND id > "+strconv.Itoa(lastStarted), &completedAfter)
+	if completedAfter != 0 {
+		t.Errorf("%d crawl(s) started after the guard was dropped were recorded as complete into a catalog every other command refuses", completedAfter)
 	}
 }
 
@@ -122,6 +125,7 @@ func TestCrawlEveryStopsAtOnceOnACorruptCatalog(t *testing.T) {
 // refused a listing (a cap); a listing failure beside a completed crawl does
 // not fail it.
 func TestCrawlTallyOutcome(t *testing.T) {
+	t.Parallel()
 	var tally crawlTally
 	if err := tally.outcome(); err == nil || !strings.Contains(err.Error(), "no crawl of this run completed (0 failed, 0 refused by the catalog)") {
 		t.Errorf("empty run: %v", err)

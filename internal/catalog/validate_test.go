@@ -42,6 +42,7 @@ const (
 // finding: agentgateway v1.6.0 refuses '_' and a trailing '-', and with them
 // the whole emitted file). Dots are refused on purpose; see validateServerName.
 func TestValidateServerName(t *testing.T) {
+	t.Parallel()
 	long63 := "a" + strings.Repeat("b", 62)
 	for _, tc := range []struct {
 		name string
@@ -64,6 +65,7 @@ func TestValidateServerName(t *testing.T) {
 }
 
 func TestValidateURL(t *testing.T) {
+	t.Parallel()
 	long := "https://example.com/" + strings.Repeat("a", maxURLBytes)
 	for _, tc := range []struct {
 		url string
@@ -120,6 +122,7 @@ func TestValidateURL(t *testing.T) {
 
 // D7: actor names are identifiers, normalised before storage and comparison.
 func TestNormalizeActor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		actor Actor
 		want  string // "" means refused
@@ -167,6 +170,7 @@ func TestNormalizeActor(t *testing.T) {
 
 // Tool names follow internal/toolname: the rule every component shares.
 func TestValidateToolName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		ok   bool
@@ -219,6 +223,7 @@ func TestValidateToolName(t *testing.T) {
 const maxToolNameBytes = 256
 
 func TestNormalizeDigestAndPrefix(t *testing.T) {
+	t.Parallel()
 	full := strings.Repeat("ab12", 16)
 	if got, err := normalizeDigest(strings.ToUpper(full)); err != nil || got != full {
 		t.Errorf("normalizeDigest(upper) = %q, %v", got, err)
@@ -239,6 +244,7 @@ func TestNormalizeDigestAndPrefix(t *testing.T) {
 }
 
 func TestSanitizeTextAndClasses(t *testing.T) {
+	t.Parallel()
 	if got := sanitizeText("a\nb\tc\x00d"+cp(zwsp)+"e", 100); got != "a b c?d?e" {
 		t.Errorf("sanitizeText = %q", got)
 	}

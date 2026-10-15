@@ -2080,6 +2080,13 @@ only for a public repository on the free plan):
   blocks the creation, update and deletion of `v*` tags for everyone but the
   repository owner, whose Admin role bypasses it always and who holds to the
   tag policy above.
+- Workflows: besides `ci.yml` and `release.yml`, the nightly workflow
+  `.github/workflows/nightly.yml` is the flake radar: once a day (03:17 UTC)
+  and on dispatch, its one job `flake radar: go test -race -count=10 -short`
+  runs the short race suite ten times through gotestsum with no reruns, writes
+  the tests slower than one second and every failure with its count of failing
+  runs to the step summary and uploads the gotestsum json as an artifact; it
+  is not a required check and no ruleset references it.
 - Security: private vulnerability reporting on; secret scanning on with push
   protection; Dependabot alerts on, with weekly version updates for the GitHub
   Actions and the Go modules from `.github/dependabot.yml`; Dependabot

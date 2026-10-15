@@ -21,6 +21,7 @@ import (
 )
 
 func TestEscape_table(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, in, want string }{
 		{"empty", "", ""},
 		{"ascii passes", "Add two numbers.", "Add two numbers."},
@@ -77,6 +78,7 @@ func TestEscape_table(t *testing.T) {
 }
 
 func TestEscape_literalEscapeDiffersFromRealCharacter(t *testing.T) {
+	t.Parallel()
 	real := Escape("\u200b")
 	literal := Escape(`\u{200B}`)
 	if real == literal {
@@ -85,6 +87,7 @@ func TestEscape_literalEscapeDiffersFromRealCharacter(t *testing.T) {
 }
 
 func TestEscape_inlineEscapesNewline(t *testing.T) {
+	t.Parallel()
 	if got := escapeInline("a\nb"); got != `a\nb` {
 		t.Fatalf("escapeInline = %q", got)
 	}
@@ -121,6 +124,7 @@ func requiredEscapes() []rune {
 }
 
 func TestEscape_requiredCharactersAreAllEscaped(t *testing.T) {
+	t.Parallel()
 	for _, r := range requiredEscapes() {
 		got := Escape("x" + string(r) + "y")
 		digits := strings.ToUpper(strconv.FormatInt(int64(r), 16))
@@ -141,6 +145,7 @@ func TestEscape_requiredCharactersAreAllEscaped(t *testing.T) {
 // TestEscape_everyRune walks all of Unicode. The safety invariant: a rune
 // that is written raw must be an ordinary printable character.
 func TestEscape_everyRune(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("walks all of Unicode; run without -short")
 	}
@@ -169,6 +174,7 @@ func TestEscape_everyRune(t *testing.T) {
 // letters or marks) must also be invisible to no one here: Escape writes it
 // as an escape. Tab and newline are the two exceptions by design.
 func TestEscape_coversEveryRuneTheToolNameRuleForbids(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("walks all of Unicode; run without -short")
 	}
@@ -200,6 +206,7 @@ func defaultIgnorableRanges() [][2]rune {
 }
 
 func TestEscape_defaultIgnorableCodePointsAreNeverRaw(t *testing.T) {
+	t.Parallel()
 	for _, rg := range defaultIgnorableRanges() {
 		for r := rg[0]; r <= rg[1]; r++ {
 			if s := string(r); Escape(s) == s || len(Findings(s)) != 1 {
@@ -212,6 +219,7 @@ func TestEscape_defaultIgnorableCodePointsAreNeverRaw(t *testing.T) {
 // The invisible fillers and joiners that Unicode files as marks or letters
 // are escaped, reported and named like every other hidden character.
 func TestEscape_invisibleJoinersAndFillersAreNamed(t *testing.T) {
+	t.Parallel()
 	cases := map[rune][2]string{
 		0x16FE4: {"KHITAN SMALL SCRIPT FILLER", "invisible-filler"},
 		0x2D7F:  {"TIFINAGH CONSONANT JOINER", "invisible-joiner"},
@@ -233,6 +241,7 @@ func TestEscape_invisibleJoinersAndFillersAreNamed(t *testing.T) {
 }
 
 func TestEscape_variationSelectorsAndTagsNeverRaw(t *testing.T) {
+	t.Parallel()
 	for r := rune(0xE0000); r <= 0xE007F; r++ {
 		if strings.ContainsRune(Escape(string(r)), r) {
 			t.Fatalf("tag U+%04X written raw", r)
@@ -246,6 +255,7 @@ func TestEscape_variationSelectorsAndTagsNeverRaw(t *testing.T) {
 }
 
 func TestEscape_outputIsValidUTF8ForAnyBytes(t *testing.T) {
+	t.Parallel()
 	var all strings.Builder
 	for i := 0; i < 256; i++ {
 		all.WriteByte(byte(i))
@@ -262,6 +272,7 @@ func TestEscape_outputIsValidUTF8ForAnyBytes(t *testing.T) {
 }
 
 func TestWriteHex_padding(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	writeHex(&b, 0, 4)
 	b.WriteByte(' ')

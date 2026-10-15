@@ -55,6 +55,7 @@ func injectionCorpus() []corpusCase {
 }
 
 func TestCorpus_escapeIsSafeAndReversible(t *testing.T) {
+	t.Parallel()
 	for _, tc := range injectionCorpus() {
 		t.Run(tc.name, func(t *testing.T) {
 			out := Escape(tc.input)
@@ -71,6 +72,7 @@ func TestCorpus_escapeIsSafeAndReversible(t *testing.T) {
 }
 
 func TestCorpus_unifiedIsSafe(t *testing.T) {
+	t.Parallel()
 	for _, tc := range injectionCorpus() {
 		t.Run(tc.name, func(t *testing.T) {
 			assertSafe(t, Unified("old "+tc.input, "new "+tc.input, "clean\n"+tc.input, tc.input+"\nclean"))
@@ -81,6 +83,7 @@ func TestCorpus_unifiedIsSafe(t *testing.T) {
 }
 
 func TestCorpus_toolIsSafe(t *testing.T) {
+	t.Parallel()
 	for _, tc := range injectionCorpus() {
 		t.Run(tc.name, func(t *testing.T) {
 			clean, _ := json.Marshal(map[string]any{"name": "t", "description": "clean"})
@@ -104,6 +107,7 @@ func TestCorpus_toolIsSafe(t *testing.T) {
 }
 
 func TestCorpus_zeroWidthHiddenBetweenLetters(t *testing.T) {
+	t.Parallel()
 	got := Escape("de\u200blete")
 	if got != `de\u{200B}lete` {
 		t.Fatalf("got %q", got)
@@ -115,6 +119,7 @@ func TestCorpus_zeroWidthHiddenBetweenLetters(t *testing.T) {
 }
 
 func TestCorpus_bidiOverrideIsVisibleNotApplied(t *testing.T) {
+	t.Parallel()
 	got := Escape("safe \u202eevil text\u202c done")
 	if got != `safe \u{202E}evil text\u{202C} done` {
 		t.Fatalf("got %q", got)
@@ -126,6 +131,7 @@ func TestCorpus_bidiOverrideIsVisibleNotApplied(t *testing.T) {
 }
 
 func TestCorpus_tagCharactersSpellTheHiddenInstruction(t *testing.T) {
+	t.Parallel()
 	in := "Adds numbers." + tagSpell(hiddenInstruction)
 	out := Escape(in)
 	for _, r := range out {
@@ -153,6 +159,7 @@ func TestCorpus_tagCharactersSpellTheHiddenInstruction(t *testing.T) {
 }
 
 func TestCorpus_terminalSequencesCannotActOnTerminal(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{"\x1b[2J", "\x1b]0;x\x07", "\u009b2J", "\x1b[1A"} {
 		out := Escape(in)
 		if strings.ContainsAny(out, "\x1b\x07\x7f") || strings.ContainsRune(out, '\u009b') {
@@ -166,6 +173,7 @@ func TestCorpus_terminalSequencesCannotActOnTerminal(t *testing.T) {
 }
 
 func TestCorpus_nfcAndNfdPassThroughAndStayDistinct(t *testing.T) {
+	t.Parallel()
 	nfc, nfd := "café", "cafe\u0301"
 	if Escape(nfc) != nfc || Escape(nfd) != nfd {
 		t.Fatal("NFC/NFD text must pass unchanged")
@@ -179,6 +187,7 @@ func TestCorpus_nfcAndNfdPassThroughAndStayDistinct(t *testing.T) {
 }
 
 func TestCorpus_veryLongLine(t *testing.T) {
+	t.Parallel()
 	line := strings.Repeat("x", 1<<20) + "\u200b"
 	out := Escape(line)
 	if !strings.HasSuffix(out, `x\u{200B}`) || len(out) != 1<<20+len(`\u{200B}`) {
@@ -191,6 +200,7 @@ func TestCorpus_veryLongLine(t *testing.T) {
 }
 
 func TestCorpus_hostileLabelsCannotForgeHeaders(t *testing.T) {
+	t.Parallel()
 	out := Unified("old\n+++ forged\n@@ -1 +1 @@", "new\r\x1b[2J", "a", "b")
 	lines := strings.Split(out, "\n")
 	if !strings.HasPrefix(lines[0], "--- old") || !strings.HasPrefix(lines[1], "+++ new") {

@@ -93,6 +93,7 @@ func expectOneVerdictThenExit(t *testing.T, run *running, verdict string) {
 // now ends an un-flagged run whatever error followed it, with the "check
 // failed" line printed as well.
 func TestEveryWithoutKeepGoingStopsAtALeakWhenTheProbeErrors(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	up := newUpstream(t, map[string]string{"echo": echoV2}) // drifted bytes behind a route without its processor: LEAK (MISMATCH)
@@ -106,6 +107,7 @@ func TestEveryWithoutKeepGoingStopsAtALeakWhenTheProbeErrors(t *testing.T) {
 // The same branch with CONFIG-EDITED plus a listing failure: an edited file
 // while the gateway is down ends an un-flagged run at the first check.
 func TestEveryWithoutKeepGoingStopsAtAnEditedConfigWhenTheListingFails(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	cfg := filepath.Join(t.TempDir(), "gateway.yaml")

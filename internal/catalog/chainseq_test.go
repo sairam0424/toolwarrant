@@ -56,6 +56,7 @@ func wantBreakAt(t *testing.T, what string, err error, seq int64) {
 // read and decision refuses the file naming it, a fresh open refuses the file,
 // and a forensic open can still inspect it. Removing the row restores the log.
 func TestAudit_RowBelowSeqOneIsAChainBreakOnEveryWalk(t *testing.T) {
+	t.Parallel()
 	for _, seq := range []int64{0, -7, math.MinInt64} {
 		t.Run("seq "+itoa(seq), func(t *testing.T) {
 			s, path := newStoreAt(t, lifecycle.DefaultPolicy())
@@ -142,6 +143,7 @@ func forensicShowsTheRow(t *testing.T, path string, seq int64, rows int) {
 // a rewrite made while no Store holds a pin, so the documents must not say
 // that only a chain rewritten completely is caught by the recorded head alone.
 func TestOpen_SuffixRewrittenWhileNoStoreHeldAPinIsCaughtByTheRecordedHeadAlone(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "beta") // another server's whole history comes first in the log
 	mustCrawl(t, s, "beta", tool("sum", "v1"))

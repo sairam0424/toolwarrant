@@ -13,6 +13,7 @@ import (
 )
 
 func TestOpen_CreatesSchemaAndSettings(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	db := rawDB(t, path)
 
@@ -45,6 +46,7 @@ func TestOpen_CreatesSchemaAndSettings(t *testing.T) {
 }
 
 func TestOpen_ReopenKeepsDataAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	s1, err := Open(path, lifecycle.DefaultPolicy())
 	if err != nil {
@@ -65,6 +67,7 @@ func TestOpen_ReopenKeepsDataAndIsIdempotent(t *testing.T) {
 }
 
 func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
+	t.Parallel()
 	// Versions 3, 4 and 5 are the previous unreleased builds (D13(i): the audit
 	// detail format gained fields; D14(k): the catalog identity, the processor
 	// address column and the new guards; D17(b): the positive-id guards); each
@@ -102,6 +105,7 @@ func makePrivate(t *testing.T, path string) {
 }
 
 func TestOpen_RefusesForeignDatabases(t *testing.T) {
+	t.Parallel()
 	t.Run("another application's tables", func(t *testing.T) {
 		path := dbPath(t)
 		mustExec(t, rawDB(t, path), `CREATE TABLE notes (id INTEGER PRIMARY KEY)`)
@@ -123,6 +127,7 @@ func TestOpen_RefusesForeignDatabases(t *testing.T) {
 // A foreign database is refused before its journal mode is touched: pointing
 // toolwarrant at the wrong file must not modify that file.
 func TestOpen_LeavesAForeignDatabaseUntouched(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	db := openRaw(t, "file:"+path+"?_pragma=journal_mode(delete)")
 	mustExec(t, db, `CREATE TABLE theirs (x)`)
@@ -150,6 +155,7 @@ func TestOpen_LeavesAForeignDatabaseUntouched(t *testing.T) {
 // Only a forensic open reads it, read-only, so that the tampering can be
 // examined and VerifyAudit can name the broken entry.
 func TestOpen_RefusesADatabaseWithAGuardDropped(t *testing.T) {
+	t.Parallel()
 	for _, drop := range []string{`DROP TRIGGER tool_versions_immutable`, `DROP INDEX one_pending_version`, `DROP TRIGGER audit_log_no_update`} {
 		s, path := seededStore(t)
 		_ = s.Close()
@@ -185,6 +191,7 @@ func TestOpen_RefusesADatabaseWithAGuardDropped(t *testing.T) {
 }
 
 func TestOpen_RejectsBadPaths(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	garbage := filepath.Join(dir, "garbage.db")
 	if err := os.WriteFile(garbage, []byte("this is definitely not a sqlite database file, just text"), 0o600); err != nil {
@@ -214,6 +221,7 @@ func TestOpen_RejectsBadPaths(t *testing.T) {
 }
 
 func TestOpen_PathWithAwkwardCharacters(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "a b#c%d")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -229,6 +237,7 @@ func TestOpen_PathWithAwkwardCharacters(t *testing.T) {
 }
 
 func TestOpen_NewFileIsPrivate(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits")
 	}
@@ -243,6 +252,7 @@ func TestOpen_NewFileIsPrivate(t *testing.T) {
 }
 
 func TestClose_MakesTheStoreUnusable(t *testing.T) {
+	t.Parallel()
 	s, err := Open(dbPath(t), lifecycle.DefaultPolicy())
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +269,7 @@ func TestClose_MakesTheStoreUnusable(t *testing.T) {
 }
 
 func TestGeneration_IncreasesByOneForEachCommittedWrite(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	g0 := mustGeneration(t, s)
 
@@ -294,6 +305,7 @@ func TestGeneration_IncreasesByOneForEachCommittedWrite(t *testing.T) {
 }
 
 func TestTwoHandlesShareOneFile(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	writer := openStore(t, path, lifecycle.DefaultPolicy())
 	reader := openStore(t, path, lifecycle.DefaultPolicy())
@@ -337,6 +349,7 @@ func TestTwoHandlesShareOneFile(t *testing.T) {
 // Several processes started together may all be the first to open a new file:
 // exactly one creates the schema and the rest find it.
 func TestOpen_ManyOpenersOfOneNewFile(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	const openers = 8
 	stores := make([]*Store, openers)
@@ -363,6 +376,7 @@ func TestOpen_ManyOpenersOfOneNewFile(t *testing.T) {
 }
 
 func TestOperations_RejectAnInvalidActorBeforeTakingTheLock(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	bad := Actor{Name: "", Type: ActorHuman}
 	for name, err := range map[string]error{

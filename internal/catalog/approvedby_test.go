@@ -28,6 +28,7 @@ func rewriteApprover(t *testing.T, path, approver, at string) {
 }
 
 func TestApproved_ApproverAndTimeComeFromTheVerifiedEntry(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	entry := entryOf(t, s, string(lifecycle.EvApproved))
@@ -81,6 +82,7 @@ func TestApproved_ApproverAndTimeComeFromTheVerifiedEntry(t *testing.T) {
 // the comparison with the verified entry runs whenever Approved shows the row,
 // and an empty time cannot be what the entry recorded (eighth review).
 func TestApproved_BlankedApprovalTimeIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	rewriteApprover(t, path, "mallory", "")

@@ -14,6 +14,7 @@ import (
 // quoted class in the note or by a detail of another shape, and it reads the
 // after half of the state and proposals transitions (D13).
 func TestToolDetail_FieldsRoundTrip(t *testing.T) {
+	t.Parallel()
 	before := toolState{tool: lifecycle.Tool{State: lifecycle.Enabled, LastSeen: strings.Repeat("a", 64)}, budget: 3}
 	after := toolState{tool: lifecycle.Tool{State: lifecycle.ChangedPendingReapproval, LastSeen: lifecycle.UnusableDigest}, budget: 4}
 	detail := toolDetail("", before, after, ` reason="http status 401" budget=20`)

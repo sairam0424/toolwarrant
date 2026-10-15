@@ -29,6 +29,7 @@ const pinRaceDuration = 2 * time.Second
 // Readers calling Snapshot while the same Store writes never see a false
 // truncation, and no other error either.
 func TestSnapshot_ConcurrentReadersAndAWriterNeverSeeAFalseTruncation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))

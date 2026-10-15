@@ -31,6 +31,7 @@ func lineText() *rapid.Generator[string] {
 }
 
 func TestProperty_escapeIsIdempotentExceptForBackslashDoubling(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		s := hostileString().Draw(t, "s")
 		e := Escape(s)
@@ -44,6 +45,7 @@ func TestProperty_escapeIsIdempotentExceptForBackslashDoubling(t *testing.T) {
 }
 
 func TestProperty_escapeIsReversibleAndSafe(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		s := hostileString().Draw(t, "s")
 		e := Escape(s)
@@ -59,6 +61,7 @@ func TestProperty_escapeIsReversibleAndSafe(t *testing.T) {
 }
 
 func TestProperty_escapeKeepsOrdinaryTextVerbatim(t *testing.T) {
+	t.Parallel()
 	ordinary := rapid.StringOf(rapid.RuneFrom([]rune("abc XYZ 019 .,;:!?é日本語😀\n")))
 	rapid.Check(t, func(t *rapid.T) {
 		s := ordinary.Draw(t, "s")
@@ -69,6 +72,7 @@ func TestProperty_escapeKeepsOrdinaryTextVerbatim(t *testing.T) {
 }
 
 func TestProperty_escapeInlineHasNoNewline(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		s := hostileString().Draw(t, "s")
 		e := escapeInline(s)
@@ -83,6 +87,7 @@ func TestProperty_escapeInlineHasNoNewline(t *testing.T) {
 }
 
 func TestProperty_findingOffsetsAreOrderedAndInRange(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		s := hostileString().Draw(t, "s")
 		prev := -1
@@ -96,6 +101,7 @@ func TestProperty_findingOffsetsAreOrderedAndInRange(t *testing.T) {
 }
 
 func TestProperty_unifiedOfEqualInputsHasNoChangeLines(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		x := rapid.OneOf(lineText(), hostileString()).Draw(t, "x")
 		out := Unified("a", "b", x, x)
@@ -109,6 +115,7 @@ func TestProperty_unifiedOfEqualInputsHasNoChangeLines(t *testing.T) {
 }
 
 func TestProperty_unifiedAppliesCleanlyAndIsSafe(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		gen := rapid.OneOf(lineText(), hostileString())
 		from, to := gen.Draw(t, "from"), gen.Draw(t, "to")
@@ -123,6 +130,7 @@ func TestProperty_unifiedAppliesCleanlyAndIsSafe(t *testing.T) {
 }
 
 func TestProperty_diffEngineIsMinimal(t *testing.T) {
+	t.Parallel()
 	seq := rapid.SliceOfN(rapid.IntRange(0, 3), 0, 16)
 	rapid.Check(t, func(t *rapid.T) {
 		a, b := seq.Draw(t, "a"), seq.Draw(t, "b")
@@ -134,6 +142,7 @@ func TestProperty_diffEngineIsMinimal(t *testing.T) {
 }
 
 func TestProperty_toolNeverPanicsAndIsSafe(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		gen := hostileString()
 		doc := func(label string) []byte {

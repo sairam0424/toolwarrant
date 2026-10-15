@@ -47,6 +47,7 @@ type showHistory struct {
 }
 
 func TestDiffPrintsTheDriftClassification(t *testing.T) {
+	t.Parallel()
 	c, u := copyFixture(t)
 	v1 := c.tool("s1", "copy").Pending
 	// Before anything is approved the diff is against the empty document and
@@ -73,6 +74,7 @@ func TestDiffPrintsTheDriftClassification(t *testing.T) {
 }
 
 func TestShowGroupsVersionsByChangeKinds(t *testing.T) {
+	t.Parallel()
 	c, u := copyFixture(t)
 	// Nothing approved: every CHANGE cell is - and there is no summary line.
 	out := c.ok("show", "s1", "copy")
@@ -120,6 +122,7 @@ func TestShowGroupsVersionsByChangeKinds(t *testing.T) {
 }
 
 func TestApprovePrintsTheClassificationAndNeverGatesOnIt(t *testing.T) {
+	t.Parallel()
 	c, u := copyFixture(t)
 	v1 := c.tool("s1", "copy").Pending
 	r := c.run("--as", "alice", "approve", "s1", "copy", "--hash", v1)

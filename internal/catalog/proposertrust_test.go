@@ -20,6 +20,7 @@ import (
 // ErrCorrupt, Versions shows no laundered history, Integrity reports the link
 // the rewrite broke, and a fresh Store refuses the file at open.
 func TestApprove_ProposerLaunderedByInPlaceRewriteIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlFor("alpha", tool("echo", "v1")), alice); err != nil {
@@ -116,6 +117,7 @@ func TestApprove_ProposerLaunderedByInPlaceRewriteIsCorrupt(t *testing.T) {
 // extends its own memory to the head of the file. No Store-written history is
 // refused.
 func TestDecisions_TrustEntriesAnotherHandleAppended(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	a := openStore(t, path, lifecycle.DefaultPolicy())
 	b := openStore(t, path, lifecycle.DefaultPolicy())

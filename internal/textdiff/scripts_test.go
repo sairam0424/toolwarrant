@@ -12,6 +12,7 @@ import (
 // a code point in no script table is the script Unknown and mixes with
 // everything.
 func TestMixedScriptWords_highlyRestrictiveProfile(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -58,6 +59,7 @@ func TestMixedScriptWords_highlyRestrictiveProfile(t *testing.T) {
 // The script with the fewest code points is listed first, since it is usually
 // the intruder, and the list per script is capped with a count.
 func TestMixedWord_listsTheRarestScriptFirstAndCapsEachList(t *testing.T) {
+	t.Parallel()
 	word := strings.Repeat(cyrillicA, maxScriptRunes+4) + "x"
 	words := MixedScriptWords(word)
 	if len(words) != 1 {
@@ -74,6 +76,7 @@ func TestMixedWord_listsTheRarestScriptFirstAndCapsEachList(t *testing.T) {
 // answers, at every range boundary of the index and on a sample of the whole
 // code space; a code point in no table is Unknown.
 func TestScriptOf_agreesWithTheStdlibTables(t *testing.T) {
+	t.Parallel()
 	slow := func(r rune) string {
 		for name, table := range unicode.Scripts {
 			if unicode.Is(table, r) {
@@ -112,6 +115,7 @@ func TestScriptOf_agreesWithTheStdlibTables(t *testing.T) {
 }
 
 func TestHighlyRestrictive_combinations(t *testing.T) {
+	t.Parallel()
 	set := func(names ...string) []ScriptRunes {
 		out := make([]ScriptRunes, 0, len(names))
 		for _, n := range names {

@@ -28,6 +28,7 @@ func (tr trace) mustEqual(t *testing.T, s *Store, what string) {
 }
 
 func TestApprove_RecordsTheDecisionEverywhere(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -81,6 +82,7 @@ func TestApprove_RecordsTheDecisionEverywhere(t *testing.T) {
 }
 
 func TestOperations_RefusedCommandsLeaveNoTrace(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	// alice's crawl proposes pend v1 and live v1; the crawler's crawl proposes pend v2.
@@ -134,6 +136,7 @@ func TestOperations_RefusedCommandsLeaveNoTrace(t *testing.T) {
 }
 
 func TestReject(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("new", "v1"), tool("live", "v1"))
@@ -168,6 +171,7 @@ func TestReject(t *testing.T) {
 // D4: the person who re-enables a tool proposes nothing, so they may approve
 // the re-proposed digest; the original proposer stays refused.
 func TestDisableAndEnable_ReReviewPolicy(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), alice); err != nil { // alice proposes v1
@@ -220,6 +224,7 @@ func TestDisableAndEnable_ReReviewPolicy(t *testing.T) {
 }
 
 func TestEnable_WithoutReReviewRestoresTheApproval(t *testing.T) {
+	t.Parallel()
 	p := lifecycle.DefaultPolicy()
 	p.ReEnableRequiresReview = false
 	s, _ := newStoreAt(t, p)
@@ -242,6 +247,7 @@ func TestEnable_WithoutReReviewRestoresTheApproval(t *testing.T) {
 }
 
 func TestRollback(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	dA, dB, dC := digestOf(t, "echo", "A"), digestOf(t, "echo", "B"), digestOf(t, "echo", "C")
@@ -285,6 +291,7 @@ func TestRollback(t *testing.T) {
 }
 
 func TestResolveDigest(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("other", "v1"))

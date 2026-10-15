@@ -20,6 +20,7 @@ var mismatchLine = regexp.MustCompile(`LEAK echo live [0-9a-f]{12} approved [0-9
 var bodyHashLine = regexp.MustCompile(`body sha256 ([0-9a-f]{64})`)
 
 func TestVerifyGatewayReportsLeaksAgainstAPassThroughUpstream(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", u.url())
 	wantContains(t, "stdout", r.stdout, verdictLeak+" add live ", verdictLeak+" echo live ", verdictLeak+" wipe_database live ")
@@ -41,6 +42,7 @@ func TestVerifyGatewayReportsLeaksAgainstAPassThroughUpstream(t *testing.T) {
 // catalog knows the other digest, through a crawl or a reject, the same line
 // is a plain LEAK.
 func TestVerifyGatewayOKMissingAndMismatch(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -96,6 +98,7 @@ func TestVerifyGatewayOKMissingAndMismatch(t *testing.T) {
 // lifecycle.LastSeenVerifiable (D13 j): a LEAK with the UNVERIFIED sub-label
 // when served, nothing when absent.
 func TestVerifyGatewayReportsAnUnverifiedToolAsALeak(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -128,6 +131,7 @@ func TestVerifyGatewayReportsAnUnverifiedToolAsALeak(t *testing.T) {
 }
 
 func TestVerifyGatewayChecksTheEmittedConfig(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	gateway := newUpstream(t, map[string]string{"echo": echoV1})
@@ -173,6 +177,7 @@ func TestVerifyGatewayChecksTheEmittedConfig(t *testing.T) {
 // verifies but hashes to anything else is CONFIG-EDITED, in --every mode too,
 // and the live comparison then has nothing trustworthy to compare with.
 func TestVerifyGatewayComparesTheRecordedBodyHash(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	m := bodyHashLine.FindStringSubmatch(c.ok("emit", "--out", cfg))
 	if m == nil {
@@ -214,6 +219,7 @@ func TestVerifyGatewayComparesTheRecordedBodyHash(t *testing.T) {
 // Each scheduled check opens a fresh MCP session for the listing and another
 // for the probe, which the upstream counts.
 func TestVerifyGatewayEveryUsesAFreshSessionPerCheck(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	gateway := newUpstream(t, map[string]string{"echo": echoV1})
@@ -232,6 +238,7 @@ func TestVerifyGatewayEveryUsesAFreshSessionPerCheck(t *testing.T) {
 }
 
 func TestVerifyGatewayEveryStopsAtTheFirstLeakUnlessKeepGoing(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	before := u.sessions.Load()
 	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", u.url(), "--every", loopEvery.String(), "--no-probe")

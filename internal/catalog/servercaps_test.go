@@ -45,6 +45,7 @@ func fileSize(t *testing.T, s *Store, path string) int64 {
 // file stops growing. The caps are lowered on the Store so that the test
 // reaches them in seconds; the constants are pinned separately.
 func TestRecordCrawl_RenamedToolsStopAtTheServerCap(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	const perCrawl, crawls = 100, 3
 	s.caps = serverCaps{tools: perCrawl * crawls, bytes: MaxServerBytes}
@@ -100,6 +101,7 @@ func TestRecordCrawl_RenamedToolsStopAtTheServerCap(t *testing.T) {
 // The byte cap holds the same way: a definition the server has no room for
 // fails the crawl, and a crawl of known digests still completes.
 func TestRecordCrawl_NewDefinitionsStopAtTheServerByteCap(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -145,6 +147,7 @@ func TestRecordCrawl_NewDefinitionsStopAtTheServerByteCap(t *testing.T) {
 // a deprecated row whose versions would fail the load does not touch a crawl
 // that does not name it, and fails the one that does.
 func TestRecordCrawl_DeprecatedToolsAreLoadedOnlyWhenListed(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("gone", "v1"), tool("keep", "v1"))
@@ -183,6 +186,7 @@ func TestRecordCrawl_DeprecatedToolsAreLoadedOnlyWhenListed(t *testing.T) {
 // The caps are what the documentation says, and a crawl within the per-crawl
 // caps always fits an empty server.
 func TestServerCaps_Constants(t *testing.T) {
+	t.Parallel()
 	if MaxToolsPerServer != 50000 || MaxServerBytes != 1<<30 {
 		t.Errorf("MaxToolsPerServer = %d, MaxServerBytes = %d; the documentation names 50000 and 1 GiB", MaxToolsPerServer, MaxServerBytes)
 	}
@@ -206,6 +210,7 @@ func TestServerCaps_Constants(t *testing.T) {
 // Without this the store and the lifecycle model diverge (the model test found
 // it: store LastSeen unusable, model LastSeen empty).
 func TestRecordCrawl_DeprecatedToolWithAMarkerIsClearedOnce(t *testing.T) {
+	t.Parallel()
 	s, _ := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("gone", "v1"), tool("keep", "v1"))

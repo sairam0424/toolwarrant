@@ -21,6 +21,7 @@ import (
 // key inside a known section that the emitted file cannot carry is now one
 // LIVE-CONFIG-MISMATCH line.
 func TestLiveComparisonReportsWhatTheFileCannotCarryInsideAKnownSection(t *testing.T) {
+	t.Parallel()
 	c, u, gw, cfg := liveFixture(t)
 	cases := map[string]struct {
 		old, repl string
@@ -85,6 +86,7 @@ func TestLiveComparisonReportsWhatTheFileCannotCarryInsideAKnownSection(t *testi
 // the four lines about them and nothing else; the same document without them
 // yields none.
 func TestCompareDocumentsReportsAPolicyOrBackendTheFileCannotCarry(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -145,6 +147,7 @@ func TestCompareDocumentsReportsAPolicyOrBackendTheFileCannotCarry(t *testing.T)
 // the container the shape expects is reported as a whole rather than passed,
 // and list elements are numbered from one.
 func TestShapeWalkFailsClosedOnWhatItCannotRead(t *testing.T) {
+	t.Parallel()
 	route := routeShape()
 	for name, doc := range map[string]string{
 		"absent": ``, "null": `null`, "empty": `{}`,
@@ -193,6 +196,7 @@ func TestShapeWalkFailsClosedOnWhatItCannotRead(t *testing.T) {
 // is the control; whether the running gateway applies them to an MCP route is
 // for the end-to-end harness to pin. Skips loudly without the binary.
 func TestGatewayAcceptsExtraRoutePoliciesAndBackends(t *testing.T) {
+	t.Parallel()
 	bin := realGatewayBinary(t)
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)

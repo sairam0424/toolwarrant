@@ -36,6 +36,7 @@ func emittedTLSBlock() string { return tlsBlock(tlsCertPath, tlsKeyPath, tlsRoot
 // and the audit log show no path, and the next emit without the flag writes
 // an entry without the block, so the flag is given on every emit.
 func TestEmitWritesBackendTLSForAProcessorOverride(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -104,6 +105,7 @@ func TestEmitWritesBackendTLSForAProcessorOverride(t *testing.T) {
 // decided while the flags are parsed, so no file is written; the message names
 // the grammar and escapes the value.
 func TestEmitProcessorTLSFlagGrammar(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -146,6 +148,7 @@ func TestEmitProcessorTLSFlagGrammar(t *testing.T) {
 // that names nothing would leave the link it meant in plaintext; the name is
 // escaped and no file is written.
 func TestEmitProcessorTLSNamesUnknownServer(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -165,6 +168,7 @@ func TestEmitProcessorTLSNamesUnknownServer(t *testing.T) {
 // after --secret-env when there is one, and the command of a server without
 // the block is unchanged; the help text names the flag.
 func TestEmitPrintsTheServeCommandWithTLSPlaceholders(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	c.ok("server", "add", "s2", "http://127.0.0.1:3002/mcp")
@@ -198,6 +202,7 @@ func TestEmitPrintsTheServeCommandWithTLSPlaceholders(t *testing.T) {
 // with the gateway's `read resource file` message and no file written, when
 // they do not.
 func TestEmitWithTheGatewayBinaryNeedsTheTLSFilesOnThisHost(t *testing.T) {
+	t.Parallel()
 	bin := realGatewayBinary(t)
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)

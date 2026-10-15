@@ -82,9 +82,9 @@ jobs:
       # edit of the table would change what reads as a look-alike without a
       # change to the data or its pinned version.
       - run: scripts/gen-confusables.sh --check
-      # actionlint checks both workflow files for expression and schema errors
-      # on every pull request; before it, such an error surfaced only when a
-      # tag ran release.yml (the v0.1.0 candidates). The release tarball is
+      # actionlint checks the three workflow files for expression and schema
+      # errors on every pull request; before it, such an error surfaced only
+      # when a tag ran release.yml (the v0.1.0 candidates). The release tarball is
       # pinned by its SHA-256 the way the e2e job pins the gateway asset; bump
       # the version and the digest together, Dependabot does not see this one.
       - name: actionlint v1.7.12
@@ -96,7 +96,7 @@ jobs:
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
-          /tmp/actionlint -color .github/workflows/ci.yml .github/workflows/release.yml
+          /tmp/actionlint -color .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/nightly.yml
 
   build:
     name: go build and go vet

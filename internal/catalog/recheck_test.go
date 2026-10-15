@@ -105,6 +105,7 @@ func canonicalFor(t *testing.T, name, desc string) []byte {
 // a fresh Store, on a read-only Store, and for a decision; the repaired row is
 // clean again at once, with no memory to lapse on either side.
 func TestApproved_TamperedBytesAreCaughtAtOnce(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	approvedServer(t, s, 2)
 	digest := digestOf(t, "tool-00000", "v1")
@@ -142,6 +143,7 @@ func TestApproved_TamperedBytesAreCaughtAtOnce(t *testing.T) {
 // after_hash is the digest the approver saw). Every path that hands out the
 // digest or the bytes refuses it.
 func TestSnapshot_AChangedDigestColumnIsCaughtByTheAnchor(t *testing.T) {
+	t.Parallel()
 	forged := strings.Repeat("0", 64)
 	cases := map[string]struct {
 		rewriteHashSeen bool
@@ -176,6 +178,7 @@ func TestSnapshot_AChangedDigestColumnIsCaughtByTheAnchor(t *testing.T) {
 }
 
 func TestRecheck_APointerAtAnotherToolsVersionIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	approvedServer(t, s, 2)
 	mustSnapshot(t, s, "alpha")
@@ -200,6 +203,7 @@ func TestRecheck_APointerAtAnotherToolsVersionIsCorrupt(t *testing.T) {
 // definition with, so the rewrite cannot change what is served. The paths that
 // hand out bytes, a decision and Integrity all refuse or name it at once.
 func TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest(t *testing.T) {
+	t.Parallel()
 	for name, stmt := range map[string]string{"snapshotQuery": snapshotQuery, "toolViewsQuery": toolViewsQuery, "toolViewQuery": toolViewQuery} {
 		if m := bytesColumn.FindString(stmt); m != "" {
 			t.Errorf("%s names the %s column; the serving path must not read bytes:\n%s", name, m, stmt)
@@ -246,6 +250,7 @@ func TestSnapshot_ReadsNoCanonicalBytesAndStillServesTheAnchoredDigest(t *testin
 // while Tool, which show reads first and which hands out the digest alone,
 // still answers; the repaired row is clean again at once.
 func TestVersions_TamperedBytesAreCaughtAtOnce(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))

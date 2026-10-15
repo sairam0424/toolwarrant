@@ -29,6 +29,7 @@ func approvedEcho(t *testing.T, s *Store) string {
 // the eighth review the serving path refuses it too (D17 c, the state anchor)
 // instead of serving the genuine approval under a forged state.
 func TestIntegrity_StateFlipReenablingADisabledToolIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	if err := s.Disable(bg, "alpha", "echo", alice); err != nil {
@@ -66,6 +67,7 @@ func TestIntegrity_StateFlipReenablingADisabledToolIsReported(t *testing.T) {
 // A deprecated tool keeps its approval; one UPDATE on tools.state puts it back
 // into the snapshot. The latest entry about it says state=enabled->deprecated.
 func TestIntegrity_StateFlipRevivingADeprecatedToolIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("keep", "v1"))
@@ -88,6 +90,7 @@ func TestIntegrity_StateFlipRevivingADeprecatedToolIsReported(t *testing.T) {
 // servers.paused is flipped by one UPDATE; the latest server entry says
 // paused=true.
 func TestIntegrity_PausedFlagFlipUnpausingAServerIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	if err := s.PauseServer(bg, "alpha", alice); err != nil {
@@ -116,6 +119,7 @@ func TestIntegrity_PausedFlagFlipUnpausingAServerIsReported(t *testing.T) {
 // tool.budget_reset entry that ResetProposalBudget writes; every tool detail
 // now carries the budget, so the latest entry says proposals=19->20.
 func TestIntegrity_BudgetColumnResetByRawSQLIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	for i := 0; i <= MaxProposalsPerDecision; i++ {
@@ -147,6 +151,7 @@ func TestIntegrity_BudgetColumnResetByRawSQLIsReported(t *testing.T) {
 // file, a Store that is already open refuses to commit the disable and to
 // serve, a forensic open tolerates the trigger and Integrity names it.
 func TestOpen_ForeignTriggerIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	const keepServing = `CREATE TRIGGER keep_serving AFTER UPDATE OF state ON tools
@@ -206,6 +211,7 @@ func TestOpen_ForeignTriggerIsCorrupt(t *testing.T) {
 // A view is refused the same way: it cannot change rows, but nothing the
 // schema did not create may exist in the file.
 func TestOpen_ForeignViewIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	_ = s.Close()

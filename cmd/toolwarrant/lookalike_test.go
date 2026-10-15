@@ -27,6 +27,7 @@ const (
 // and refuses, the state is unchanged, diff shows the same section, and the
 // flag approves it with a warning.
 func TestApproveRefusesALookAlikeSwapUnlessAccepted(t *testing.T) {
+	t.Parallel()
 	c, u := copyFixture(t)
 	v1 := c.tool("s1", "copy").Pending
 	c.approve("alice", "s1", "copy", v1)
@@ -68,6 +69,7 @@ func TestApproveRefusesALookAlikeSwapUnlessAccepted(t *testing.T) {
 // swaps cannot be found; a word that mixes scripts is found on its own and
 // refused the same way, with the code points and never the characters.
 func TestApproveRefusesMixedScriptWordsUnlessAccepted(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"fetch": "Fetch the " + cyrillicCapitalA + "PI t" + cyrillicOText + "ken."})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
@@ -100,6 +102,7 @@ func TestApproveRefusesMixedScriptWordsUnlessAccepted(t *testing.T) {
 // Highly Restrictive combinations: approved without the flag and without a
 // word of warning, and so is a later version whose change is visible.
 func TestApproveAcceptsCJKWithLatinAcronyms(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"tokyo": tokyoDescription, "seoul": seoulDescription, "taipei": taipeiDescription})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")

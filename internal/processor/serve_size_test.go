@@ -63,8 +63,9 @@ func TestServe_RefusesAPageOverTheRecvLimit(t *testing.T) {
 	// The server stream writes the status to the client before it returns the
 	// error to the decoder (serve.go, serviceDesc), so the marking lands a
 	// moment after the client has its error; wait for it rather than read the
-	// statistics inside that moment.
-	awaitMarking(t, func() bool { return s.Stats().ListsDenied == 1 })
+	// statistics inside that moment. The log line is written after the count
+	// (list.go, noteListDenied), so wait for it as well before reading the log.
+	awaitMarking(t, func() bool { return s.Stats().ListsDenied == 1 && strings.Contains(logs.String(), "tools/list denied") })
 	if st := s.Stats(); st.ListsServed != 0 || st.ListsDenied != 1 || st.SourceErrors != 0 {
 		t.Errorf("stats = %+v, want the refused page counted as one denied list", st)
 	}

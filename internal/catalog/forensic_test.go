@@ -15,6 +15,7 @@ import (
 // forensic open now takes a non-WAL file with immutable=1; the read-only and
 // read-write opens keep their rules and leave the file as it is.
 func TestOpenWith_ForensicOpensANonWALFile(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	_ = s.Close()

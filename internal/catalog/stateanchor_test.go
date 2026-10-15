@@ -15,6 +15,7 @@ import (
 // serving path, in the views, in the export, in the decisions and in the
 // crawl, on the long-lived Store and on a fresh one.
 func TestSnapshot_DisabledToolReEnabledByAColumnFlipIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	if err := s.Disable(bg, "alpha", "echo", bob); err != nil {
@@ -75,6 +76,7 @@ func TestSnapshot_DisabledToolReEnabledByAColumnFlipIsCorrupt(t *testing.T) {
 // A tool the log never created cannot exist by a planted row alone: without a
 // state-bearing entry about it, every path refuses the file.
 func TestSnapshot_PlantedToolRowWithoutAnEntryIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	db := rawDB(t, path)
@@ -97,6 +99,7 @@ func TestSnapshot_PlantedToolRowWithoutAnEntryIsCorrupt(t *testing.T) {
 // binary). Every tool row is anchored now, exported or not, on the long-lived
 // Store and on a fresh read-only one.
 func TestApproved_ToolHiddenByAColumnFlipIsCorrupt(t *testing.T) {
+	t.Parallel()
 	for _, flip := range []string{"disabled", "deprecated"} {
 		t.Run(flip, func(t *testing.T) {
 			s, path := newStoreAt(t, lifecycle.DefaultPolicy())
@@ -130,6 +133,7 @@ func TestApproved_ToolHiddenByAColumnFlipIsCorrupt(t *testing.T) {
 // refused the file. Every row of the server is anchored now; deprecated ones
 // still stay out of the policy.
 func TestSnapshot_ToolDeprecatedByAColumnFlipIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	if snap := mustSnapshot(t, s, "alpha"); !snap.Serves("echo", d1) {

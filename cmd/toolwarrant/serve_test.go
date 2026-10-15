@@ -124,6 +124,7 @@ func dial(t *testing.T, addr string) (api.ExtMcpClient, context.Context) {
 }
 
 func TestServeRefusesNonLoopbackAndBadAddresses(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	r := c.fail(exitUsage, "serve", "--server", "s1", "--listen", "0.0.0.0:0")
 	wantContains(t, "stderr", r.stderr, "not a loopback address", "--allow-non-loopback", "--secret-env")
@@ -151,6 +152,7 @@ func TestServeRefusesNonLoopbackAndBadAddresses(t *testing.T) {
 // given and either the hooks will carry the secret or --insecure-no-secret
 // asks for an unauthenticated processor in so many words.
 func TestCheckListenAddrPolicy(t *testing.T) {
+	t.Parallel()
 	c := &command{name: "serve"}
 	allow := listenPolicy{allowNonLoopback: true}
 	withSecret := listenPolicy{allowNonLoopback: true, hasSecret: true}
@@ -205,6 +207,7 @@ func TestCheckListenAddrPolicy(t *testing.T) {
 // parse, the processor starts, and the listening line still says whether
 // hooks are authenticated.
 func TestServeAcceptsTheExposureFlagsOnLoopback(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	out, _, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0", "--allow-non-loopback", "--insecure-no-secret")
 	if addr := waitListening(t, out); !strings.HasPrefix(addr, "127.0.0.1:") {
@@ -226,6 +229,7 @@ func TestServeAcceptsTheExposureFlagsOnLoopback(t *testing.T) {
 }
 
 func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out, _, stop := c.start("serve", "--server", "s1", "--listen", "127.0.0.1:0")
@@ -275,6 +279,7 @@ func TestServeEnforcesApprovalsOverGRPC(t *testing.T) {
 // every counter is pinned here in order, with values that cannot be confused
 // with one another.
 func TestWriteStatsPinsTheLine(t *testing.T) {
+	t.Parallel()
 	var sb strings.Builder
 	writeStats(&stream{w: &sb}, processor.Stats{ListsServed: 1, ListsDenied: 2, ToolsHidden: 3, ToolsMismatched: 4, ToolsUnapproved: 5, ToolsOversized: 6, ToolsUnverified: 7,
 		CallsAllowed: 8, CallsDenied: 9, CallsStale: 10, WrongBackend: 11, Unauthenticated: 12, Throttled: 13, SourceErrors: 14, EvidenceDropped: 15})
@@ -285,6 +290,7 @@ func TestWriteStatsPinsTheLine(t *testing.T) {
 }
 
 func TestServeRequiresTheSharedSecretWhenConfigured(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	c.env[secretVar] = plant("shared")
@@ -316,6 +322,7 @@ func TestServeRequiresTheSharedSecretWhenConfigured(t *testing.T) {
 }
 
 func TestServeHidesEverythingOfAPausedServer(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	c.ok("--as", "alice", "server", "pause", "s1")
@@ -344,6 +351,7 @@ func TestServeHidesEverythingOfAPausedServer(t *testing.T) {
 }
 
 func TestServeOpensTheCatalogReadOnly(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	a := &app{ctx: context.Background(), stdout: &stream{w: io.Discard}, stderr: &stream{w: io.Discard}, getenv: c.getenv, globals: globals{db: c.db}}
 	alice := catalog.Actor{Name: "alice", Type: catalog.ActorHuman}
@@ -378,6 +386,7 @@ func TestServeOpensTheCatalogReadOnly(t *testing.T) {
 }
 
 func TestServeOnAUnixSocketIsOwnerOnlyAndWarnsAboutALooseDirectory(t *testing.T) {
+	t.Parallel()
 	dir, err := os.MkdirTemp("", "tw")
 	if err != nil {
 		t.Fatal(err)

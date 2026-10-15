@@ -11,6 +11,7 @@ import (
 // hostile input, and what they write while doing it.
 
 func TestAddServer_RejectsBadInputAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	before := mustGeneration(t, s)
 	good := ServerSpec{Name: "alpha", URL: "https://a.example.com/mcp"}
@@ -43,6 +44,7 @@ func TestAddServer_RejectsBadInputAndWritesNothing(t *testing.T) {
 }
 
 func TestServers_StoreAndReturnExactlyWhatWasGiven(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	spec := ServerSpec{Name: "beta", URL: "http://127.0.0.1:9000/mcp?x=1", OwnerGroup: "data team", AllowPrivate: true}
 	added, err := s.AddServer(bg, spec, alice)
@@ -74,6 +76,7 @@ func TestServers_StoreAndReturnExactlyWhatWasGiven(t *testing.T) {
 }
 
 func TestInjectionLookingValuesAreStoredAsPlainData(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	nasty := []string{
@@ -119,6 +122,7 @@ func TestInjectionLookingValuesAreStoredAsPlainData(t *testing.T) {
 
 // An actor the catalog cannot attribute an audit entry to writes nothing.
 func TestRecordCrawl_RejectsBadActorsAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("keep", "v1"))
@@ -153,6 +157,7 @@ func TestRecordCrawl_RejectsBadActorsAndWritesNothing(t *testing.T) {
 // A listing that breaks a whole-crawl cap is recorded as a failed crawl under
 // its class and changes no tool.
 func TestRecordCrawl_ListingOverACapIsRecordedAsFailed(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("keep", "v1"))
@@ -199,6 +204,7 @@ func TestRecordCrawl_ListingOverACapIsRecordedAsFailed(t *testing.T) {
 }
 
 func TestRecordCrawl_AcceptsNamesTheRulesAllow(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	names := []string{"plain", "with space", cp(0x65E5, 0x672C, 0x8A9E), "emoji" + cp(0x1F600), "dots.and-dashes_1", strings.Repeat("n", maxToolNameBytes)}

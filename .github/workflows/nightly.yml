@@ -1,0 +1,73 @@
+# toolwarrant nightly flake radar.
+#
+# Why this file exists: in October 2026 three tests failed in ci with no
+# defect, each once, each after passing many runs: #35 asserted that an
+# emitted file does not contain a bare "9999", and the file's sha256 header
+# can spell any four digits; #36 read the processor's statistics as soon as
+# the client saw a transport refusal, while pageRefused was still counting on
+# the server; #41 flipped one bit of base64 text, which may leave the base64
+# alphabet and then fails on another message. A test like that is found by
+# running often, not by reading. This workflow runs the short race suite ten
+# times once a day, in a run nobody is waiting on, and writes every failure
+# and the slowest tests to the job summary; the gotestsum json is kept as an
+# artifact so that a failure can be read in full. It is not a required check,
+# no ruleset references it, and ci.yml stays the gate for every pull request.
+#
+# GitHub pauses a schedule after sixty days without a commit; workflow_dispatch
+# runs the job by hand at any time.
+#
+# Action pins as in ci.yml: every action is pinned by the commit SHA its
+# release tag resolved to on the day the line was written (gh api on the tag);
+# the tag is the trailing comment, in the bare form Dependabot rewrites.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC, once a day
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+
+jobs:
+  flake-radar:
+    name: "flake radar: go test -race -count=10 -short"
+    runs-on: ubuntu-latest
+    # go test's -timeout is per package; this bounds the whole job.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # the token stays out of .git/config, where the checked-out code could read it
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # gotestsum at the version ci.yml pins, for the same reasons.
+      - run: go install gotest.tools/gotestsum@v1.13.0
+      # The short race suite ten times in one go test run per package.
+      # --rerun-fails=0 spells out that a failure is reported, never retried:
+      # a retry would hide exactly what this job exists to find.
+      - name: ten runs of the short race suite
+        run: gotestsum --format pkgname --jsonfile "$RUNNER_TEMP/flake-radar.json" --rerun-fails=0 -- -race -short -count=10 -timeout 3000s ./...
+      # The slowest tests, as the ci jobs write them, and every test or package
+      # that failed with the number of failing runs out of ten, also after a
+      # failure (which is when the table is wanted).
+      - name: slowest tests and failures
+        if: always()
+        run: |
+          set -euo pipefail
+          json="$RUNNER_TEMP/flake-radar.json"
+          table="$(gotestsum tool slowest --jsonfile "$json" --threshold 1s)"
+          printf '## Tests slower than 1s\n\n~~~\n%s\n~~~\n' "${table:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          failures="$(jq -r 'select(.Action == "fail") | .Package + " " + (.Test // "(package)")' "$json" | sort | uniq -c | sort -rn)"
+          printf '## Failures (failing runs out of 10, package, test)\n\n~~~\n%s\n~~~\n' "${failures:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: flake-radar-gotestsum-json
+          path: ${{ runner.temp }}/flake-radar.json
+          retention-days: 30

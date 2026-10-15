@@ -14,6 +14,7 @@ import (
 // never checked. emit now fails like list does, writes nothing and appends
 // nothing; a file emit wrote before stays as it was.
 func TestEmitRefusesACatalogWhoseToolStateColumnWasEdited(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")

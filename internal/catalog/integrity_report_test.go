@@ -61,6 +61,7 @@ func richHistory(t *testing.T, s *Store) {
 }
 
 func TestIntegrity_ACatalogWrittenByTheStoreHasNoProblems(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	richHistory(t, s)
 	mustBeClean(t, s, "after a long mixed history")
@@ -85,6 +86,7 @@ func TestIntegrity_ACatalogWrittenByTheStoreHasNoProblems(t *testing.T) {
 // the way a SQLite shell would, with any guard it needs dropped and restored
 // so that the report shows the data problem alone.
 func TestIntegrity_ReportsEachKindOfDisagreement(t *testing.T) {
+	t.Parallel()
 	type want struct {
 		rep       IntegrityReport // counters only; Problems is checked by fragments
 		fragments []string
@@ -341,6 +343,7 @@ const forgedAuditEntry = `INSERT INTO audit_log (seq, ts, actor, actor_type, eve
 // cannot run: a cancelled context, or a table one of its passes needs renamed
 // away, which also shows that each pass fails on its own query.
 func TestIntegrity_ReportsWhenTheCheckItselfCannotRun(t *testing.T) {
+	t.Parallel()
 	for _, table := range []string{"", "audit_log", "servers", "tools", "approvals"} {
 		t.Run("missing "+table, func(t *testing.T) {
 			s, path := newStoreAt(t, defaultPolicyForTests())
@@ -367,6 +370,7 @@ func TestIntegrity_ReportsWhenTheCheckItselfCannotRun(t *testing.T) {
 // redefined guard is caught by Snapshot and Approved on the next load, not only
 // by Open.
 func TestIntegrity_RehashesApprovedBytesAndReadsGuardsOnEveryLoad(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))

@@ -51,6 +51,7 @@ func itemsDoc(n int, v string) []byte {
 // input became 23 MB of output. The indent now stops at maxIndentDepth and
 // paths share their prefixes, so the output stays proportional to the input.
 func TestTool_deepNestingDoesNotAmplifyTheOutput(t *testing.T) {
+	t.Parallel()
 	const depth, size = 255, 64 << 10
 	from, to := deepDoc(depth, size, false), deepDoc(depth, size, true)
 	if !json.Valid(from) || !json.Valid(to) {
@@ -77,6 +78,7 @@ func TestTool_deepNestingDoesNotAmplifyTheOutput(t *testing.T) {
 // and tells the approver to refuse the definition, instead of handing a pager
 // hundreds of megabytes.
 func TestTool_reportIsCappedWithAClosingLine(t *testing.T) {
+	t.Parallel()
 	const items = 300000 // the whole-block replace alone is about 6.6 MB
 	out := mustTool(t, string(itemsDoc(items, "a")), string(itemsDoc(items, "b")))
 	if len(out) > maxReportBytes+256 {
@@ -102,6 +104,7 @@ func TestTool_reportIsCappedWithAClosingLine(t *testing.T) {
 // are missing and how many there were, so one changed description cannot
 // hide among thousands of renamed schema properties.
 func TestTool_changedValuesAreCappedWithACount(t *testing.T) {
+	t.Parallel()
 	const n = maxChangedValues + 50
 	from, to := make([]string, n), make([]string, n)
 	for i := range from {
@@ -125,6 +128,7 @@ func TestTool_changedValuesAreCappedWithACount(t *testing.T) {
 // token twice with nothing to say where the difference was. The span is now
 // narrowed to the bytes that differ, with their offsets.
 func TestTool_changeInsideALongTokenIsNarrowed(t *testing.T) {
+	t.Parallel()
 	blob := strings.Repeat("abcdefghij", 5000)
 	evil := blob[:25000] + "IGNORE_PREVIOUS_INSTRUCTIONS" + blob[25000:]
 	from, _ := json.Marshal(map[string]string{"name": "t", "description": blob})
@@ -151,6 +155,7 @@ func TestTool_changeInsideALongTokenIsNarrowed(t *testing.T) {
 }
 
 func TestNarrow_cutsOnRuneBoundaries(t *testing.T) {
+	t.Parallel()
 	pad := strings.Repeat("é", longSpanBytes)
 	got := narrow(wordChange{removed: pad + "éx" + pad, added: pad + "éy" + pad})
 	if got.removed != "x" || got.added != "y" || got.before != len(pad)+len("é") || got.after != len(pad) {
@@ -166,6 +171,7 @@ func TestNarrow_cutsOnRuneBoundaries(t *testing.T) {
 // unassigned runes cost a gigabyte of allocation. The tables are now built
 // once, so each finding costs only its own name.
 func TestFindings_nameTablesAreBuiltOnce(t *testing.T) {
+	// Serial: testing.AllocsPerRun panics inside a parallel test.
 	first, second := names(), names()
 	if first != second {
 		t.Fatal("names() must return the one shared table")
@@ -182,6 +188,7 @@ func TestFindings_nameTablesAreBuiltOnce(t *testing.T) {
 // Tool prints maxFindingLines detail lines per document, so it must not pay
 // for a name and a path for every suspicious rune it merely counts.
 func TestTool_namesOnlyTheListedFindings(t *testing.T) {
+	// Serial: testing.AllocsPerRun panics inside a parallel test.
 	const n = 100000
 	doc, _ := json.Marshal(map[string]string{"name": "t", "description": strings.Repeat("\u0378", n)})
 	base := []byte(`{"name":"t"}`)
@@ -199,6 +206,7 @@ func TestTool_namesOnlyTheListedFindings(t *testing.T) {
 // Display paths must be injective over (parent, key) and must never look like
 // an array index, or "Changed text" could merge two values into one entry.
 func TestProperty_displayPathsAreInjective(t *testing.T) {
+	t.Parallel()
 	hostileKey := rapid.OneOf(
 		rapid.String(),
 		rapid.StringOf(rapid.SampledFrom([]rune{'a', '"', '\\', '[', ']', '.', '0', '$', '\n', '\u200b', 'u', '{', '}'})),
@@ -235,6 +243,7 @@ func TestProperty_displayPathsAreInjective(t *testing.T) {
 }
 
 func TestReport_truncatesAtALineBoundaryAndCountsEverything(t *testing.T) {
+	t.Parallel()
 	r := &report{limit: 10}
 	r.writeString("12345\n")
 	r.writeString("67890\nabc\n")

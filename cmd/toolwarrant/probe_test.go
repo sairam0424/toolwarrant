@@ -35,6 +35,7 @@ const (
 // OK; --no-probe sends nothing. The test upstream's five modes cover the
 // three outcomes.
 func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	g := newUpstream(t, map[string]string{"echo": echoV1})
@@ -87,6 +88,7 @@ func TestVerifyGatewayProbesForUnhookedCalls(t *testing.T) {
 // answer is PROBE-INCONCLUSIVE, exit 1. Not the pinned gateway's behaviour
 // (v1.6.0 answers 202 itself); the rule matters on every move of the pin (L7).
 func TestProbeReportsARelayedUpstreamAnswerAsInconclusive(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	up := newUpstream(t, map[string]string{"echo": echoV1})
@@ -163,6 +165,7 @@ func (s scripted) serve(t *testing.T) string {
 }
 
 func TestProbeFailsClosedOnAGatewayItCannotRead(t *testing.T) {
+	t.Parallel()
 	client, err := fetch.NewClient(fetch.Policy{AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
@@ -211,6 +214,7 @@ func TestProbeFailsClosedOnAGatewayItCannotRead(t *testing.T) {
 }
 
 func TestProbeHelpers(t *testing.T) {
+	t.Parallel()
 	name, err := probeToolName()
 	if err != nil || !strings.HasPrefix(name, probeToolPrefix) || len(name) != len(probeToolPrefix)+2*probeSuffixBytes {
 		t.Errorf("probeToolName = %q, %v", name, err)
@@ -301,6 +305,7 @@ func TestProbeHelpers(t *testing.T) {
 // what the go-sdk upstream answers and what the pinned gateway's own refusal
 // would look like.
 func TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	up := newUpstream(t, map[string]string{"echo": echoV1})
@@ -330,6 +335,7 @@ func TestProbeReportsARelayed400WithAJSONRPCErrorAsInconclusive(t *testing.T) {
 // "rejected by the gateway" with exit 0 for the same relayed-upstream shape
 // D14 (i) made inconclusive. Any JSON body on a 400 is now PROBE-INCONCLUSIVE.
 func TestProbeReportsA400WithABatchOfJSONRPCErrorsAsInconclusive(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	up := newUpstream(t, map[string]string{"echo": echoV1})
@@ -356,6 +362,7 @@ func TestProbeReportsA400WithABatchOfJSONRPCErrorsAsInconclusive(t *testing.T) {
 // carried a body (fourth review cli-docs-7: it said "without a body" for a 500
 // that had one).
 func TestProbeErrorSaysWhetherTheAnswerHadABody(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"boom"}}`)
 	_, err := classifyProbe(rawResponse{status: http.StatusInternalServerError, contentType: mediaJSON, body: body})
 	if err == nil || !strings.Contains(err.Error(), "http status 500 with a body of "+strconv.Itoa(len(body))+" bytes") || strings.Contains(err.Error(), "boom") {
@@ -375,6 +382,7 @@ func TestProbeErrorSaysWhetherTheAnswerHadABody(t *testing.T) {
 // lines, so a relayed JSON-RPC refusal behind it stays inconclusive instead
 // of passing as a bare 400 (eighth review).
 func TestProbeReadsAnEventStreamBehindALeadingByteOrderMark(t *testing.T) {
+	t.Parallel()
 	body := "\ufeffdata: {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"no id\"}}\n\n"
 	resp := rawResponse{status: 400, contentType: mediaSSE, body: []byte(body)}
 	if !resp.carriesJSONAnswer() {

@@ -9,6 +9,7 @@ import (
 var headLine = regexp.MustCompile(`audit log ok: (\d+) entries, head ([0-9a-f]{64})`)
 
 func TestAuditVerifyAndList(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	out := c.ok("audit", "verify")
 	m := headLine.FindStringSubmatch(out)
@@ -49,6 +50,7 @@ func TestAuditVerifyAndList(t *testing.T) {
 // the audit ones, which open it forensically so the broken entry can be named
 // and the rows examined.
 func TestAuditVerifyDetectsATamperedDatabase(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	execSQL(t, c.db, "DROP TRIGGER audit_log_no_update", "UPDATE audit_log SET detail = 'nothing happened' WHERE seq = 2")
 	r := c.fail(exitFailure, "audit", "verify")
@@ -68,6 +70,7 @@ func TestAuditVerifyDetectsATamperedDatabase(t *testing.T) {
 // when it reports a problem; the head reminder is withheld, because a head of
 // a file not to be trusted is not worth recording.
 func TestAuditVerifyReportsIntegrityProblemsTheChainCannotSee(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -110,6 +113,7 @@ func TestAuditVerifyReportsIntegrityProblemsTheChainCannotSee(t *testing.T) {
 // head moved) and withheld the diagnosis (which rows disagree with the log).
 // Both are reported now, in one error, and the head reminder stays withheld.
 func TestAuditVerifyReportsIntegrityWhenTheHeadMismatches(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)
@@ -130,6 +134,7 @@ func TestAuditVerifyReportsIntegrityWhenTheHeadMismatches(t *testing.T) {
 // reported together; the head is not compared, since a broken chain has none
 // worth comparing.
 func TestAuditVerifyReportsIntegrityWhenTheChainIsBroken(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	execSQL(t, c.db,
 		"DROP TRIGGER audit_log_no_update",

@@ -36,6 +36,7 @@ func (c *cli) approve(as, server, tool, hash string) string {
 }
 
 func TestFirstCrawlListShowAndDiff(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"echo": echoV1, "add": "Adds two numbers.", "wipe_database": "Deletes every row."})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
@@ -87,6 +88,7 @@ func TestFirstCrawlListShowAndDiff(t *testing.T) {
 // approve what the crawl proposed; a person whose own crawl proposed a version
 // is the one who is refused.
 func TestApprovalFlowWithDriftRejectEnableAndRollback(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	out := c.approve("alice", "s1", "echo", v1[:shortDigestLen])
@@ -174,6 +176,7 @@ func TestApprovalFlowWithDriftRejectEnableAndRollback(t *testing.T) {
 }
 
 func TestSelfApprovalAndSystemActorRefusals(t *testing.T) {
+	t.Parallel()
 	c := newCLI(t)
 	u := newUpstream(t, map[string]string{"echo": echoV1})
 	c.ok("server", "add", "s1", u.url(), "--allow-private")
@@ -203,6 +206,7 @@ func TestSelfApprovalAndSystemActorRefusals(t *testing.T) {
 }
 
 func TestHashPrefixHandling(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	r := c.fail(exitFailure, "--as", "alice", "approve", "s1", "echo", "--hash", "abc")
@@ -216,6 +220,7 @@ func TestHashPrefixHandling(t *testing.T) {
 }
 
 func TestMissingToolsReturnAreDeprecatedAndReappear(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	u.remove("add")
 	out := c.ok("crawl", "s1")
@@ -242,6 +247,7 @@ func TestMissingToolsReturnAreDeprecatedAndReappear(t *testing.T) {
 }
 
 func TestPauseBlocksCrawlingAndServing(t *testing.T) {
+	t.Parallel()
 	c, u := fixture(t)
 	v1 := c.tool("s1", "echo").Pending
 	c.approve("alice", "s1", "echo", v1)

@@ -20,6 +20,7 @@ import (
 // every read, not only by Generation: a long-lived reader that calls Snapshot
 // without Generation (the canary) sees ErrReplaced too.
 func TestSnapshot_ComparesTheStoredIdentityOnEveryRead(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	mustSnapshot(t, s, "alpha")
@@ -85,6 +86,7 @@ func recreateWithExtraConstraint(t *testing.T, db *sql.DB, table, constraint str
 // a fresh open refuses, and Integrity lists both while the chain (rows copied)
 // still verifies.
 func TestOpen_TableRecreatedWithAnExtraConstraintIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	mustBeClean(t, s, "before the edit")
@@ -128,6 +130,7 @@ func TestOpen_TableRecreatedWithAnExtraConstraintIsCorrupt(t *testing.T) {
 // A CHECK constraint added the same way refuses one decision: the error names
 // the constraint SQLite reports, and the reads name the redefined table.
 func TestDisable_CheckConstraintFromARecreatedTableIsNamed(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	recreateWithExtraConstraint(t, rawDBNoFK(t, path), "tools", "CHECK (state <> 'disabled')")
@@ -148,6 +151,7 @@ func TestDisable_CheckConstraintFromARecreatedTableIsNamed(t *testing.T) {
 // time (SQLite numbers them), so a fresh file pins the list, and the tables the
 // check compares are exactly the tables a fresh file holds.
 func TestSchema_AutomaticIndexesArePinned(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	db := rawDB(t, path)

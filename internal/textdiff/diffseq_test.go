@@ -72,6 +72,7 @@ func checkEdits[T comparable](t failer, a, b []T, edits []edit) int {
 }
 
 func TestDiffSeq_smallCasesAreMinimal(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ a, b string }{
 		{"", ""}, {"abc", "abc"}, {"", "abc"}, {"abc", ""}, {"abc", "abd"},
 		{"abcabba", "cbabac"}, {"xaxbx", "ab"}, {"ab", "xaxbx"}, {"aaaa", "aa"},
@@ -87,6 +88,7 @@ func TestDiffSeq_smallCasesAreMinimal(t *testing.T) {
 }
 
 func TestDiffSeq_isDeterministic(t *testing.T) {
+	t.Parallel()
 	a, b := []byte("abcabbaabcabba"), []byte("cbabaccbabac")
 	first := diffSeq(a, b)
 	for i := 0; i < 5; i++ {
@@ -125,6 +127,7 @@ func countKinds(edits []edit) (equal, del, ins int) {
 }
 
 func TestDiffSeq_hugeUnrelatedInputFallsBackToBlockReplace(t *testing.T) {
+	t.Parallel()
 	a, b := lines("a", maxDiffItems+5), lines("b", maxDiffItems+5)
 	edits := diffSeq(a, b)
 	equal, del, ins := countKinds(edits)
@@ -135,6 +138,7 @@ func TestDiffSeq_hugeUnrelatedInputFallsBackToBlockReplace(t *testing.T) {
 }
 
 func TestDiffSeq_tooFarApartFallsBackToBlockReplace(t *testing.T) {
+	t.Parallel()
 	a, b := lines("a", 3000), lines("b", 3000)
 	if _, ok := myers(a, b); ok {
 		t.Fatal("myers should give up beyond maxEditDistance")
@@ -146,6 +150,7 @@ func TestDiffSeq_tooFarApartFallsBackToBlockReplace(t *testing.T) {
 }
 
 func TestDiffSeq_hugeInputWithSmallChangeIsStillExact(t *testing.T) {
+	t.Parallel()
 	a := lines("line", 3*maxDiffItems)
 	b := append([]string(nil), a...)
 	b[len(b)/2] = "changed"
@@ -158,6 +163,7 @@ func TestDiffSeq_hugeInputWithSmallChangeIsStillExact(t *testing.T) {
 }
 
 func TestDiffSeq_manyScatteredChangesWithinLimit(t *testing.T) {
+	t.Parallel()
 	a := lines("line", 1500)
 	b := append([]string(nil), a...)
 	for i := 0; i < len(b); i += 3 {
@@ -170,6 +176,7 @@ func TestDiffSeq_manyScatteredChangesWithinLimit(t *testing.T) {
 }
 
 func TestReplaceBlock(t *testing.T) {
+	t.Parallel()
 	edits := replaceBlock(2, 3)
 	equal, del, ins := countKinds(edits)
 	if equal != 0 || del != 2 || ins != 3 {

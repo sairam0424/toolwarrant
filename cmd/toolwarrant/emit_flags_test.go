@@ -15,6 +15,7 @@ import (
 // an address other hosts can reach needs the same permission as a wildcard
 // bind and is warned about line by line.
 func TestEmitWritesListenerAddressesAndRefusesCollisions(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -99,6 +100,7 @@ func emitMode(t *testing.T, c *cli) (os.FileMode, string, string) {
 // query-string warning stays and names the server, never the URL; the planted
 // values appear nowhere in the output.
 func TestEmitAlwaysWritesAnOwnerOnlyFile(t *testing.T) {
+	t.Parallel()
 	plainCatalog, _ := fixture(t)
 	plainCatalog.approve("alice", "s1", "echo", plainCatalog.tool("s1", "echo").Pending)
 	if mode, stderr, _ := emitMode(t, plainCatalog); mode != configFileMode || configFileMode != 0o600 || strings.Contains(stderr, "warning") {
@@ -131,6 +133,7 @@ func TestEmitAlwaysWritesAnOwnerOnlyFile(t *testing.T) {
 // with a warning, and the printed serve command carries the flag serve needs
 // to accept it (serve still refuses it without a secret, by design).
 func TestEmitWarnsAboutANonLoopbackProcessorOverride(t *testing.T) {
+	t.Parallel()
 	c, _ := fixture(t)
 	c.approve("alice", "s1", "echo", c.tool("s1", "echo").Pending)
 	out := filepath.Join(t.TempDir(), "gateway.yaml")
@@ -153,6 +156,7 @@ func TestEmitWarnsAboutANonLoopbackProcessorOverride(t *testing.T) {
 // created: a link planted in a shared working directory would otherwise make
 // init create an owner-only file wherever the link points.
 func TestInitRefusesASymbolicLink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "elsewhere.db")
 	link := filepath.Join(dir, "tw.db")

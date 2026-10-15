@@ -28,6 +28,7 @@ const (
 // The UTS #39 examples: a code point maps to its prototype, a ligature to its
 // letters, the letter m to rn, and the decomposition is applied first.
 func TestSkeleton_matchesUTS39Examples(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, in, want string }{
 		{"ascii letters stay", "path", "path"},
 		{"cyrillic a", "p" + cyrillicA + "ypal", "paypal"},
@@ -51,6 +52,7 @@ func TestSkeleton_matchesUTS39Examples(t *testing.T) {
 // source, every example and every hostile corpus entry is a fixed point of the
 // second application.
 func TestSkeleton_isIdempotent(t *testing.T) {
+	t.Parallel()
 	inputs := []string{"path", "p" + cyrillicA + "th", "m", fiLigature, "1I|0", "\u00E9", ""}
 	for _, c := range injectionCorpus() {
 		inputs = append(inputs, c.input)
@@ -74,6 +76,7 @@ func TestSkeleton_isIdempotent(t *testing.T) {
 // Bytes that are not valid UTF-8 are kept, so the skeleton never invents a
 // character and a byte-exact input stays comparable.
 func TestSkeleton_keepsBytesThatAreNotUTF8(t *testing.T) {
+	t.Parallel()
 	in := "a\xffb\xc0\xaf" + cyrillicA
 	got := Skeleton(in)
 	if !strings.HasPrefix(got, "a\xffb\xc0\xaf") || !strings.HasSuffix(got, "a") {
@@ -85,6 +88,7 @@ func TestSkeleton_keepsBytesThatAreNotUTF8(t *testing.T) {
 }
 
 func TestLookAlike_onlyWhenSkeletonsAgreeAndBytesDiffer(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		from, to string
 		want     bool
@@ -112,6 +116,7 @@ func TestLookAlike_onlyWhenSkeletonsAgreeAndBytesDiffer(t *testing.T) {
 // their scripts and the byte offset in the new text; the characters are never
 // written, since they would read as the text they replaced.
 func TestSwapsBetween_listCodePointsAndScripts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		from, to string
 		want     []string
@@ -141,6 +146,7 @@ func TestSwapsBetween_listCodePointsAndScripts(t *testing.T) {
 }
 
 func TestSwap_capsTheCodePointsItLists(t *testing.T) {
+	t.Parallel()
 	from := strings.Repeat("a", maxSwapRunes+5)
 	to := strings.Repeat(cyrillicA, maxSwapRunes+5)
 	swaps := swapsBetween(from, to)
@@ -158,6 +164,7 @@ func TestSwap_capsTheCodePointsItLists(t *testing.T) {
 }
 
 func TestCodePoints(t *testing.T) {
+	t.Parallel()
 	if got := codePoints([]rune{'a', 0x1F600}, 8); got != "U+0061 U+1F600" {
 		t.Fatalf("codePoints = %q", got)
 	}
