@@ -46,8 +46,9 @@ import (
 // anchoring alone, and the legacy residual is stated. Every failure is
 // ErrCorrupt with a fixed sentence naming the entry; the walk stops at the
 // first and records nothing of its page. The anchor pass applies rule 5 to
-// every entry it anchors (chainMemory.requireSigned) with one detailField
-// parse and one map lookup, and reads no bytes.
+// every entry it anchors (chainMemory.requireSigned) with two token parses
+// (the signed= token, then the state field or the paused flag) and one map
+// lookup, and reads no bytes.
 
 // isHumanOnlyEvent reports whether only a human command writes this event:
 // the eight events of the eight decisions (O-16). Every other lifecycle event
