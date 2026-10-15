@@ -1286,7 +1286,9 @@ Procedure:
 3. Restore the most recent backup whose `audit verify` head equals a head you
    recorded, re-run the crawls, and review anything the audit log shows between
    the backup and the corruption.
-4. Keep the corrupt file for investigation; it opens only in forensic mode.
+4. Keep the corrupt file for investigation; it opens only in forensic mode
+   (a v6 file this build refuses as corrupt before migrating it: with a
+   v0.3.x binary, see below).
 
 `catalog: unsupported schema version` (`ErrSchema`) means the file was not
 written by this build: schema v6, the first released schema (v0.1.0 to
@@ -1317,14 +1319,14 @@ rewritten); every command but serve, audit verify and audit list opens the
 file read-write and migrates it the same way, list and show included, so take
 the backup before running any of them; serve, audit verify and audit list
 never migrate`, leaving the file byte for byte as it was; a processor started
-on a v6 file exits 1 with that message. The migration adds the table and its guards in
-the one transaction `Open` already holds and reads or rewrites no row of any
-other table, so the audit head of a migrated file is the head it had, every
-approval is served as before, and a crash in the middle leaves a v6 file
-that migrates on the next read-write open; two processes opening a v6 file
-at once migrate it once (the second waits on the lock and finds v7). A v6
-file that already holds an object named `signed_records` or like one of its
-guards was edited outside toolwarrant and is refused as `ErrCorrupt` with
+on a v6 file exits 1 with that message. The migration adds the table and its
+guards in the one transaction `Open` already holds and reads or rewrites no
+row of any other table, so the audit head of a migrated file is the head it
+had, every approval is served as before, and a crash in the middle leaves a
+v6 file that migrates on the next read-write open; two processes opening a v6
+file at once migrate it once (the second waits on the lock and finds v7). A
+v6 file that already holds an object named `signed_records` or like one of
+its guards was edited outside toolwarrant and is refused as `ErrCorrupt` with
 nothing written, and so is a v6 file that lost a guard: the migration runs
 inside the transaction and the guard comparison after it fails, so the
 transaction rolls back, `user_version` stays 6, no object the migration
@@ -1334,23 +1336,45 @@ is guarded like every history table: no update, delete or replace through
 SQL, no row below seq 1, and a row planted under a dropped guard is a ghost
 row that every read and write refuses and `Integrity` counts
 (`TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows`,
-`TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity`). Procedure: stop every processor of the file; back the file
-up and record its `audit verify` head with the build that wrote it (not with
-the new one: its `audit verify` refuses a v6 file, and its `list` would
-migrate it before the backup exists); run `toolwarrant init` with the new
-binary, which prints the path as on any existing file; run `audit verify` with the new
-binary and compare the head with the one you recorded; start the processors
-again. A v0.3.x binary then refuses the migrated file with its own message
-("database is version 7, this build supports 6"), so every host that opens
-the file moves to the new build together (catalog
+`TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity`). Procedure:
+stop every processor of the file; back the file up and record its `audit
+verify` head with the build that wrote it (not with the new one: its `audit
+verify` refuses a v6 file, and its `list` would migrate it before the backup
+exists); run `toolwarrant init` with the new binary, which prints the path as
+on any existing file; run `audit verify` with the new binary and compare the
+head with the one you recorded; start the processors again. A v0.3.x binary
+then refuses the migrated file with its own message ("database is version 7,
+this build supports 6"), so every host that opens the file moves to the new
+build together. A v0.3.x processor the stop missed
+does not see the migration at once: the migration moves no generation, so it
+keeps answering from its cached snapshot until the first crawl or decision
+with the new build moves the generation; its reload then fails the guard
+check on the five objects it does not know and it denies every hook, logging
+`catalog unavailable, denying` with `load catalog snapshot: catalog: database
+integrity check failed: unexpected table signed_records, unexpected trigger
+signed_records_no_delete, unexpected trigger signed_records_no_replace,
+unexpected trigger signed_records_no_update, unexpected trigger
+signed_records_positive_id; the file was edited outside toolwarrant`. That is
+the migration, not a tamper: restart that processor with the new build and do
+not restore a backup over the migrated file, which would lose every decision
+written since. A v6 file this build refuses as corrupt before migrating it
+(the error names the missing guard or the foreign object) has no forensic
+path in this build, since `audit verify` and `audit list` refuse every v6
+file with the migration message and `init` refuses the corrupt one: inspect
+it with a v0.3.x binary, whose forensic open reads past a missing guard and
+whose integrity report names a foreign object, so keep one through the
+upgrade, verified against its checksums file (Releasing) (catalog
 `TestMigrate_V6FileIsMigratedInPlaceAndKeepsEveryRowAndTheHead`,
 `TestMigrate_ReadOnlyAndForensicOpensOfAV6FileNameTheMigrationAndWriteNothing`,
 `TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce`,
 `TestMigrate_RefusesAV6FileThatAlreadyHoldsAForeignSignedRecordsTable`;
 proven by hand on 2026-10-15 against a catalog the published v0.3.0 binary
 wrote: the read-only and forensic opens left the file's SHA-256 unchanged,
-`init` migrated it to `user_version` 7 with the same `audit verify` head, and
-the v0.3.0 binary then refused it).
+`init` migrated it to `user_version` 7 with the same `audit verify` head, the
+v0.3.0 binary then refused it, and a v0.3.0 `serve` left running on the file
+answered `pass` to a `tools/call` hook until `server pause` and `server
+resume` with the new binary moved the generation, after which it denied the
+next hook with the log line above).
 
 Schema v6 was the first released schema: a file below it belongs to an
 unreleased build and is deleted, and no message ever advises deleting a
