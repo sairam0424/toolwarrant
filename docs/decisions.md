@@ -2109,7 +2109,14 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   flag changed (e2e scenario O, `O_UnhookedCallProbe` of `TestEndToEnd`, and
   cmd `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`, which drives the
   go-sdk upstream's bare 400 to PROBE-CHANGED, already pin both answers).
-
+  The same unqualified claim stands as history in D13 (h) ("On the pinned
+  gateway, which answers 202"), in the D13 round summary ("the probe still
+  fails every check"), in D17 ("answers 202 before forwarding") and in the
+  D13 (h) entry of seam/RESULTS.md; this correction supersedes each of them,
+  and none is rewritten. The canary's own help text for --no-probe and
+  --expect-unhooked in cmd/toolwarrant/verify.go still attributes the 202 to
+  the gateway and recommends the flag; a follow-up change brings those two
+  strings in line with this correction.
 ## D19. TLS and client certificates on the processor link
 
 - Context. The link between the gateway and a processor was plain `host:port`
