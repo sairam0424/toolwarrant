@@ -1370,14 +1370,31 @@ to two rules. An entry whose event only a human command writes must name, as
 `signed=N`, a verified `decision.signed` entry of its own transaction: the
 entry at N or the entries right after it that carry the same token, about the
 same subject, by the same person, at the same time, whose kind writes that
-event and, for an approval, rollback or rejection, whose digest is the one
-the entry records; an approval appended later naming a decision that was
-made, with its time copied, is refused as a replay (`audit entry N is a
-version.approved after the trust bootstrap (entry B) and names no signed
-record; the entry was appended outside toolwarrant`;
-`TestWalk_RefusesAnUnsignedApprovalAppendedAfterTheBootstrap`,
+event, for an approval, rollback or rejection, whose digest is the one the
+entry records, and whose content is what the kind does: a tool entry's
+`state=A->B` is a transition the kind can make (`lifecycle.DecisionMayMove`;
+a budget reset stays put) and a server entry's `paused` flag is the one the
+kind leaves. Each failure has its sentence. An entry that names no record:
+`audit entry N is a version.approved after the trust bootstrap (entry B) and
+names no signed record; the entry was appended outside toolwarrant`. An
+approval appended later naming a decision that was made, with its time
+copied, refused as a replay: `audit entry N names signed=K, whose transaction
+ended before it; a signed record attests the entries of its own transaction
+only, and the entry was appended outside toolwarrant`. A sealed
+`tool.disabled`, `version.superseded` or `tool.budget_reset` with
+`state=disabled->enabled`, or a `server.paused` saying `paused=false`, that
+borrows the token of the disable, budget reset or pause whose transaction is
+open at the head, and which the state anchor would otherwise take as the
+tool's or the server's state: `audit entry N moves tool "S/T" from disabled
+to enabled under event tool.disabled but names signed=K, a decision of kind
+disable, which makes no such move; the entry was appended outside
+toolwarrant` and `audit entry N is a server.paused saying paused=false but
+names signed=K, a decision of kind pause, which leaves the server
+paused=true; the entry was appended outside toolwarrant`
+(`TestWalk_RefusesAnUnsignedApprovalAppendedAfterTheBootstrap`,
 `TestWalk_RefusesAnUnsignedEnableOrResumeAppendedAfterTheBootstrap`,
 `TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry`,
+`TestDecisionMayMove_EqualsTheInvariantsTable`,
 `TestWalk_RefusesAValidSignatureFromAKeyOutsideTheTrustList`,
 `TestWalk_RefusesASignatureWhoseKeyBelongsToAnotherName`,
 `TestWalk_RefusesAPayloadCopiedFromAnotherCatalog`,
@@ -1395,8 +1412,9 @@ appended outside toolwarrant` (`TestWalk_RefusesACrawlShapedEntryThatLeavesDisab
 `TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes`,
 `TestCrawlMayMove_EqualsTheInvariantsTable`). The serving path verifies no
 signature: the anchor pass of every snapshot reads the `signed=` token of each
-human decision it anchors and looks the record up in the memory of the walk,
-one parse and one lookup per anchored entry and no bytes
+human decision it anchors, looks the record up in the memory of the walk and
+compares the entry's state field or paused flag with the kind, two token
+parses and one lookup per anchored entry and no bytes
 (`TestSnapshot_ServesOnlySignedApprovalsAfterTheBootstrapAndReadsNoBytes`,
 `TestSnapshot_ReloadAfterACrawlVerifiesNoSignature`,
 `TestSnapshot_SwappedSignedRecordRowIsCorrupt`,
