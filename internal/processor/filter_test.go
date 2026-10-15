@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -280,4 +281,72 @@ func TestListFilter_PassOneHashesNothing(t *testing.T) {
 	if len(f.report.mismatched) != 0 || f.report.unapproved != 0 || f.report.oversized != 0 {
 		t.Errorf("pass two ran on a page pass one refused: %+v", f.report)
 	}
+}
+
+// D21 (f): a tool hidden for a digest mismatch gets its own Info line naming
+// the live digest, the one the upstream's definition hashes to, next to the
+// approved digest and the quoted name, so an operator can paste it into
+// `diff --to` once a crawl has recorded the same definition as pending. Both
+// digests are 64 hex digits and the definition's text stays out of the log.
+// The lines are capped at maxLoggedNames per page, in page order, and the
+// page summary carries the count.
+func TestFilter_DigestMismatchLogsTheLiveDigest(t *testing.T) {
+	d1, d2 := mustDigest(t, echoV1), mustDigest(t, echoV2)
+	s, logs := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
+	if got := servedNames(t, list(t, s, listBody("", echoV2))); len(got) != 0 {
+		t.Fatalf("served %v, want nothing: the live definition differs", got)
+	}
+	out := logs.String()
+	lines := mismatchLines(out)
+	if len(lines) != 1 {
+		t.Fatalf("got %d digest mismatch lines, want one:\n%s", len(lines), out)
+	}
+	line := lines[0]
+	t.Logf("the line reads: %s", line)
+	if !strings.Contains(line, "server="+testServer+` tool="\"echo\"" approved=`+d1+" live="+d2) || !strings.HasSuffix(line, " live="+d2) {
+		t.Errorf("the mismatch line should carry the quoted name, the approved digest and the live digest:\n%s", line)
+	}
+	live := line[strings.LastIndex(line, "live=")+len("live="):]
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(live) {
+		t.Errorf("live = %q, want 64 lower-case hex digits", live)
+	}
+	if strings.Contains(out, "ignore prior instructions") {
+		t.Errorf("the definition's text leaked into the log:\n%s", out)
+	}
+	if !strings.Contains(out, "hidden=1") || !strings.Contains(out, "mismatched=1") {
+		t.Errorf("the page summary should count the mismatch:\n%s", out)
+	}
+
+	const extra = 3
+	tools := make(map[string]catalog.ToolPolicy, maxLoggedNames+extra)
+	page := make([][]byte, 0, maxLoggedNames+extra)
+	for i := 0; i < maxLoggedNames+extra; i++ {
+		name := fmt.Sprintf("t%02d", i)
+		tools[name] = servedPolicy(mustDigest(t, tool(name, "approved")))
+		page = append(page, tool(name, "changed"))
+	}
+	s2, logs2 := newTestServer(newFakeSource(tools))
+	servedNames(t, list(t, s2, listBody("", page...)))
+	out2 := logs2.String()
+	lines = mismatchLines(out2)
+	if len(lines) != maxLoggedNames {
+		t.Fatalf("got %d digest mismatch lines for %d mismatched tools, want the cap %d:\n%s", len(lines), maxLoggedNames+extra, maxLoggedNames, out2)
+	}
+	if !strings.Contains(lines[0], `tool="\"t00\""`) || !strings.Contains(lines[maxLoggedNames-1], fmt.Sprintf(`tool="\"t%02d\""`, maxLoggedNames-1)) {
+		t.Errorf("the lines should follow page order from the first tool:\n%s", out2)
+	}
+	if !strings.Contains(out2, fmt.Sprintf("mismatched=%d", maxLoggedNames+extra)) {
+		t.Errorf("the page summary should count every mismatched tool, beyond the cap:\n%s", out2)
+	}
+}
+
+// mismatchLines returns the digest mismatch lines of a text-handler log.
+func mismatchLines(out string) []string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, `msg="digest mismatch"`) {
+			lines = append(lines, l)
+		}
+	}
+	return lines
 }

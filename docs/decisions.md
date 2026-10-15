@@ -3462,3 +3462,24 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestDigest_MetaIsPartOfTheDigest` (D1); catalog
   `TestOpen_RefusesOtherSchemaVersions` (schema v6 is the only version a `Store`
   opens).
+- Note (2026-10-15). The cheap substitute landed, with no schema change: the
+  processor writes one `digest mismatch` line per mismatched tool (the first
+  ten of a page, in page order, the cap every list of names in its log has)
+  with the quoted `tool` name, the `approved` digest and the `live` digest the
+  served definition hashes to, 64 hex digits each and never a byte of the
+  definition, and the `tools/list filtered` line gained a `mismatched` count
+  next to the other hidden categories, so the count survives the cap. The
+  field names are the `approved:` and `live:` rows of `show`; the live digest
+  is what `diff SERVER TOOL --to LIVE` takes once a crawl has recorded that
+  definition as pending, and a live digest no crawl records is the gateway's
+  re-serialisation (L2) or an upstream serving the crawler another definition
+  than the gateway (L4), since the crawler reads the upstream itself. The log
+  of `TestFilter_DigestMismatchLogsTheLiveDigest` shows `level=INFO
+  msg="digest mismatch" server=mock tool="\"echo\""
+  approved=e1d84112f0966155af725d179db9a8490e5692e1b80313684019e76608fae3c2
+  live=d32af4fc4f1eedfc912ce8406690b85a115fce218e1d593cd922593ef5375afb` for
+  the approved and the changed `echo`, the changed description absent from the
+  log, and for thirteen mismatched tools ten lines and `mismatched=13`; on the
+  code before this note the test fails on the missing `live=` field and on
+  the one line for the thirteen tools. `internal/processor/filter.go`,
+  `internal/processor/list.go`. The rest of the Phase 6 list stands as tracked.

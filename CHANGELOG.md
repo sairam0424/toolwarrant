@@ -13,6 +13,10 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Added
+
+- The processor's `digest mismatch` log line names the live digest: one Info line per mismatched tool (the first ten of a page, in page order) with the quoted `tool` name, the `approved` digest and the `live` digest the served definition hashes to, 64 hex digits each and never the definition, so an operator can run `crawl` and then `diff SERVER TOOL --to LIVE` instead of guessing which version the upstream serves (a live digest no crawl records is the gateway's re-serialisation, limit L2, or an upstream serving the crawler another definition than the gateway, L4), and the `tools/list filtered` line counts `mismatched` tools next to the other hidden categories (`TestFilter_DigestMismatchLogsTheLiveDigest`).
+
 ### Changed
 
 - The test suites run faster with the same tests, assertions and property-test check counts: `TestModel_StoreFollowsTheLifecycleModel` runs its 100 rapid checks (20 under `-short`) in ten parallel shards and logs the total it ran, and the independent tests of `internal/catalog`, `cmd/toolwarrant` and `internal/textdiff` call `t.Parallel`; on a ten-core laptop the full race suite went from 422 s to 152 s and `go test -race -short ./...` from 174 s to 66 s, so the ci jobs `go test -race -short` and `full textdiff Unicode walk, slow catalog tests and the processor gRPC size test` shorten accordingly (the runner has four cores and is slower).
