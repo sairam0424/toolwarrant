@@ -1,0 +1,10 @@
+# Known false positives of the gitleaks job, one fingerprint per line
+# (commit:path:rule:line). Each entry names why the match is not a secret.
+#
+# A test fixture in PR 7.1 (internal/signing/source_test.go, "garbage block")
+# started with the OpenSSH private-key PEM header followed by base64 garbage,
+# to prove that ReadPrivateKeyFile refuses a block that is not a key. It never
+# held key material. The fixture now assembles the header from pieces
+# (commit 3d407bd), but the commit that introduced the literal stays in the
+# history and the job scans the whole history.
+230ea683ddd729df70451a16217f240e166c4ce0:internal/signing/source_test.go:private-key:98
