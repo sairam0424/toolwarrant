@@ -50,6 +50,7 @@ func jsonValue(depth int) *rapid.Generator[any] {
 // Within maxIndentDepth levels the renderer must be byte-identical to
 // encoding/json, so every existing expectation about the diff still holds.
 func TestProperty_prettyJSONMatchesEncodingJSONWithinTheIndentCap(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		v := jsonValue(maxIndentDepth).Draw(t, "v")
 		got, err := prettyJSON(v)
@@ -63,6 +64,7 @@ func TestProperty_prettyJSONMatchesEncodingJSONWithinTheIndentCap(t *testing.T) 
 }
 
 func TestPrettyJSON_tableMatchesEncodingJSON(t *testing.T) {
+	t.Parallel()
 	cases := []any{
 		"a\x7fb",                        // DEL is written raw, as encoding/json does
 		"a\u2028b\u2029c",               // the two separators are escaped
@@ -86,6 +88,7 @@ func TestPrettyJSON_tableMatchesEncodingJSON(t *testing.T) {
 // Past maxIndentDepth the indentation stops growing but the document is still
 // the same JSON value, so nothing is lost for the approver.
 func TestPrettyJSON_indentStopsGrowingPastTheCap(t *testing.T) {
+	t.Parallel()
 	raw := []byte(strings.Repeat("[", 40) + `"x"` + strings.Repeat("]", 40))
 	v, err := decodeJSON(raw)
 	if err != nil {
@@ -113,6 +116,7 @@ func TestPrettyJSON_indentStopsGrowingPastTheCap(t *testing.T) {
 }
 
 func TestPrettyJSON_refusesUnexpectedTypes(t *testing.T) {
+	t.Parallel()
 	if _, err := prettyJSON(map[string]any{"a": 42}); err == nil {
 		t.Fatal("an int is not a value decodeJSON produces and must be refused")
 	}

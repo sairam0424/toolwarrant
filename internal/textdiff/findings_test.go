@@ -17,6 +17,7 @@ import (
 )
 
 func TestFindings_none(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"", "plain text", "tab\tand\nnewline", "é 日本 😀", `back\slash`} {
 		if fs := Findings(s); fs != nil {
 			t.Errorf("Findings(%q) = %+v, want nil", s, fs)
@@ -25,6 +26,7 @@ func TestFindings_none(t *testing.T) {
 }
 
 func TestFindings_namesCategoriesAndOffsets(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want Finding
@@ -64,6 +66,7 @@ func TestFindings_namesCategoriesAndOffsets(t *testing.T) {
 }
 
 func TestFindings_orderAndMultiple(t *testing.T) {
+	t.Parallel()
 	fs := Findings("a\u200bb\u202ec\x1b")
 	wantOffsets := []int{1, 5, 9}
 	if len(fs) != 3 {
@@ -77,6 +80,7 @@ func TestFindings_orderAndMultiple(t *testing.T) {
 }
 
 func TestFindings_offsetsPointAtTheRune(t *testing.T) {
+	t.Parallel()
 	s := "héllo\u200b wörld\U000E0041\x00"
 	for _, f := range Findings(s) {
 		r, _ := utf8.DecodeRuneInString(s[f.Offset:])
@@ -87,6 +91,7 @@ func TestFindings_offsetsPointAtTheRune(t *testing.T) {
 }
 
 func TestNames_tagBlockMirrorsAscii(t *testing.T) {
+	t.Parallel()
 	cases := map[rune]string{
 		0xE0020: "TAG SPACE",
 		0xE0031: "TAG DIGIT ONE",
@@ -105,6 +110,7 @@ func TestNames_tagBlockMirrorsAscii(t *testing.T) {
 }
 
 func TestNames_everyPrintableAsciiHasARealName(t *testing.T) {
+	t.Parallel()
 	seen := map[string]byte{}
 	for c := byte(0x20); c <= 0x7E; c++ {
 		n := asciiName(c)
@@ -119,6 +125,7 @@ func TestNames_everyPrintableAsciiHasARealName(t *testing.T) {
 }
 
 func TestNames_noSuspiciousRuneHasAnEmptyName(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("walks all of Unicode; run without -short")
 	}
@@ -133,6 +140,7 @@ func TestNames_noSuspiciousRuneHasAnEmptyName(t *testing.T) {
 }
 
 func TestNames_c0AndVariationSelectors(t *testing.T) {
+	t.Parallel()
 	if got := controlName(0x09); got != "CHARACTER TABULATION" {
 		t.Errorf("tab = %q", got)
 	}
@@ -151,6 +159,7 @@ func TestNames_c0AndVariationSelectors(t *testing.T) {
 }
 
 func TestClassify_invalidRunes(t *testing.T) {
+	t.Parallel()
 	if cat, bad := classify(0xD800); !bad || cat != "surrogate" {
 		t.Errorf("surrogate = %q %v", cat, bad)
 	}

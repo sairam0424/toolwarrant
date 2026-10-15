@@ -22,6 +22,7 @@ func lookAlikeSection(t *testing.T, out string) string {
 // them by code point and script, with the byte offset, and the renamed key is
 // also a mixed-script word.
 func TestTool_lookAlikeSwapIsListedWithCodePoints(t *testing.T) {
+	t.Parallel()
 	from := `{"name":"copy","description":"Copies a file.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}`
 	to := `{"name":"copy","description":"Copies \u0430 file.","inputSchema":{"type":"object","properties":{"p\u0430th":{"type":"string"}}}}`
 	out := mustTool(t, from, to)
@@ -49,6 +50,7 @@ func TestTool_lookAlikeSwapIsListedWithCodePoints(t *testing.T) {
 // A visible change is not a look-alike, and a value present on one side only
 // is not either: the diff and the Changed text section show those.
 func TestTool_visibleChangesAreNotLookAlikes(t *testing.T) {
+	t.Parallel()
 	out := mustTool(t, `{"description":"Copies a file.","a":"gone"}`, `{"description":"Copies a directory.","b":"new"}`)
 	if got := lookAlikeSection(t, out); got != "  none\n" {
 		t.Fatalf("section = %q", got)
@@ -68,6 +70,7 @@ func TestTool_visibleChangesAreNotLookAlikes(t *testing.T) {
 // not, and the words of a Japanese, Korean or Chinese text with a Latin
 // acronym pass.
 func TestTool_mixedScriptWordsAreListed(t *testing.T) {
+	t.Parallel()
 	// The description is the same on both sides, so it is no change at all;
 	// only the words of the new document are read.
 	from := `{"description":"Fetch the \u0410PI t\u043Eken"}`
@@ -90,6 +93,7 @@ func TestTool_mixedScriptWordsAreListed(t *testing.T) {
 // The detail lines are capped like the suspicious characters; the counts stay
 // complete.
 func TestTool_lookAlikeSectionIsCappedButCountsAreComplete(t *testing.T) {
+	t.Parallel()
 	const n = maxLookAlikeLines + 50
 	from, to := map[string]any{}, map[string]any{}
 	for i := 0; i < n; i++ {
@@ -112,6 +116,7 @@ func TestTool_lookAlikeSectionIsCappedButCountsAreComplete(t *testing.T) {
 }
 
 func TestLookAlikeChange_detailCapsTheSwaps(t *testing.T) {
+	t.Parallel()
 	from := strings.Repeat("a ", maxSwapsListed+3)
 	to := strings.Repeat("\u0430 ", maxSwapsListed+3)
 	changes, err := LookAlikeChanges([]byte(strconv.Quote(from)), []byte(strconv.Quote(to)))
@@ -125,6 +130,7 @@ func TestLookAlikeChange_detailCapsTheSwaps(t *testing.T) {
 }
 
 func TestLookAlikeChanges_refusesInvalidDocumentsWithoutEchoingThem(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		from, to string

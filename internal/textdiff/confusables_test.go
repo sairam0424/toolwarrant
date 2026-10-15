@@ -83,6 +83,7 @@ func hexRunes(t *testing.T, field string) []rune {
 // names the version and the count. A hand edit of the table or a data file
 // swapped under it fails here and in scripts/gen-confusables.sh --check.
 func TestConfusables_tableIsGeneratedFromTheVendoredFile(t *testing.T) {
+	t.Parallel()
 	version, want := readConfusables(t)
 	if len(want) != len(confusables) {
 		t.Fatalf("the table has %d entries, the vendored file %d", len(confusables), len(want))
@@ -124,6 +125,7 @@ func TestConfusables_tableIsGeneratedFromTheVendoredFile(t *testing.T) {
 // table is safe (see Skeleton); an older one would miss code points the
 // toolchain knows, so that is the direction refused.
 func TestConfusables_versionIsTheVendoredHeaderAndNotOlderThanTheToolchains(t *testing.T) {
+	t.Parallel()
 	version, _ := readConfusables(t)
 	if version != confusablesVersion {
 		t.Fatalf("the vendored file says version %q, the table was generated from %q", version, confusablesVersion)
@@ -161,6 +163,7 @@ func parseVersion(t *testing.T, v string) [versionParts]int {
 // every pull request. CHANGELOG.md and CLAUDE.md state that step; this is what
 // keeps the statement true.
 func TestConfusablesCI_lintJobRunsTheCheck(t *testing.T) {
+	t.Parallel()
 	workflow, err := os.ReadFile(ciWorkflowPath)
 	if err != nil {
 		t.Fatal(err)

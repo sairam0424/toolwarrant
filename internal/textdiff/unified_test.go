@@ -9,6 +9,7 @@ import (
 )
 
 func TestUnified_golden(t *testing.T) {
+	t.Parallel()
 	twentyLines := numberedLines("l", 20)
 	changedTwice := strings.Replace(strings.Replace(twentyLines, "l2\n", "X2\n", 1), "l18\n", "X18\n", 1)
 
@@ -101,6 +102,7 @@ func TestUnified_golden(t *testing.T) {
 }
 
 func TestUnified_hugeInputsStayBounded(t *testing.T) {
+	t.Parallel()
 	from := numberedLines("a", 3*maxDiffItems)
 	to := numberedLines("b", 3*maxDiffItems)
 	out := Unified("old", "new", from, to)
@@ -114,6 +116,7 @@ func TestUnified_hugeInputsStayBounded(t *testing.T) {
 // render as "-" plus the overlay, which displays as a plus sign: a removal that
 // reads as an addition. The mark is now written as an escape.
 func TestUnified_leadingCombiningMarkCannotAttachToTheMarker(t *testing.T) {
+	t.Parallel()
 	out := Unified("a", "b", "\u20d2removed", "kept")
 	if !strings.Contains(out, "\n- \\u{20D2}removed\n") || strings.ContainsRune(out, 0x20d2) {
 		t.Fatalf("combining mark not escaped at the start of a line:\n%s", out)
@@ -128,6 +131,7 @@ func TestUnified_leadingCombiningMarkCannotAttachToTheMarker(t *testing.T) {
 // line starting with "@@" as a hunk header. Every content line now carries the
 // marker, a space and an escaped first character, so neither can be forged.
 func TestUnified_contentCannotForgeHeaders(t *testing.T) {
+	t.Parallel()
 	to := "++ forged header\n@@ -1,1 +1,1 @@ fake\n-- also\n+plain\n--- old"
 	out := Unified("old", "new", "x", to)
 	assertSafe(t, out)
@@ -159,6 +163,7 @@ func TestUnified_contentCannotForgeHeaders(t *testing.T) {
 }
 
 func TestSplitLines(t *testing.T) {
+	t.Parallel()
 	if got := splitLines(""); got != nil {
 		t.Errorf(`splitLines("") = %#v`, got)
 	}

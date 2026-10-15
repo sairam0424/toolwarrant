@@ -47,6 +47,7 @@ func twoSpellings(t *rapid.T) (string, string) {
 // spellings are therefore look-alikes whenever their bytes differ, and the
 // skeleton of either is a fixed point.
 func TestProperty_skeletonIsInvariantUnderConfusableSubstitution(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(t *rapid.T) {
 		a, b := twoSpellings(t)
 		sa, sb := Skeleton(a), Skeleton(b)
@@ -90,6 +91,7 @@ func lookAlikeDoc(t *rapid.T, label string, spell func(string, string) string) [
 // in it is written with the escape, as every path is) and no control byte,
 // and the whole report stays safe.
 func TestProperty_lookAlikeSectionNeverHoldsRawSuspiciousRunes(t *testing.T) {
+	t.Parallel()
 	first := func(a, _ string) string { return a }
 	second := func(_, b string) string { return b }
 	rapid.Check(t, func(t *rapid.T) {
