@@ -293,12 +293,23 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   front of it that refuses an id-less `tools/call`, and keep the port off
   every other network (the emitted file binds it to 127.0.0.1;
   `emit --bind-address` widens it and warns). The canary's probe is how you see
-  that the gateway still has the shape: run `verify-gateway` with
-  `--expect-unhooked`, which prints the 202 as `KNOWN-LIMIT` with exit 0 and
-  fails as PROBE-CHANGED, exit 1, when the answer changes (decision D18; the
+  that the gateway still has the shape: it sends one id-less `tools/call` on
+  every check, the gateway forwards it without the hook and relays the
+  upstream's answer, and the status the canary reports is the upstream's (run
+  of 2026-10-15 with the published v0.3.0 binary and `cmd/mockupstream`: the
+  gateway's log carried `mcp: upstream error: 400 Bad Request` and the
+  processor's stats counted no probe). Behind an upstream that accepts the call
+  as a notification (HTTP 202, as the end-to-end harness's hostile upstream
+  does) run `verify-gateway` with `--expect-unhooked`, which prints the 202 as
+  `KNOWN-LIMIT` with exit 0 and fails as PROBE-CHANGED, exit 1, when the answer
+  changes; behind an upstream that refuses a request without an id (a bare
+  HTTP 400, as the go-sdk and so `cmd/mockupstream` do) the OK line names the
+  answer without attribution and `--expect-unhooked` is not for that
+  deployment, since it reports PROBE-CHANGED there by design (decision D18; the
   requirement is written out in [docs/operations.md](docs/operations.md),
   Deployment requirements; cmd `TestExpectUnhookedTurnsThe202IntoAKnownLimitLine`,
-  `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`; e2e scenario O).
+  `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`; e2e scenario O,
+  `O_UnhookedCallProbe` of `TestEndToEnd`).
 - Run `verify-gateway` as a canary, not once at deploy time. It opens a new MCP
   session on every run, which is the only way to see a processor that a reload
   dropped (sessions that already exist keep the old chain; seam test 14 as
@@ -307,22 +318,35 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   audit head is), pass `--admin ADDR`, use `--every DURATION`, and treat exit
   code 1 (LEAK, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS,
   PROBE-INCONCLUSIVE, PROBE-CHANGED) and every `check failed` line as an
-  incident. On agentgateway v1.6.0 the unhooked-call probe is answered with
-  HTTP 202 on every check (known limit L17): run it once without a probe flag
-  and see UNHOOKED-CALLS, exit 1, record the limit, then run the canary with
+  incident. On agentgateway v1.6.0 the unhooked-call probe is forwarded to the
+  upstream without the hook on every check (known limit L17) and the gateway
+  relays the upstream's answer, so the probe's line depends on the upstream
+  behind the route. Where the upstream accepts an id-less `tools/call` as a
+  notification and answers HTTP 202, as the end-to-end harness's hostile
+  upstream of `e2e/hostile_test.go` does: run the canary once without a probe
+  flag and see UNHOOKED-CALLS, exit 1, record the limit, then run it with
   `--expect-unhooked`, which keeps the probe on, prints that 202 as
   `KNOWN-LIMIT` with exit 0, and fails as PROBE-CHANGED, exit 1, the moment the
-  gateway answers anything else, which is how a moved pin or a gateway changed
-  under it is noticed (decision D18; before it the advice was `--no-probe`,
-  which silenced the one check that would notice; `--no-probe` still exists and
-  is exclusive with `--expect-unhooked`). A canary that fails on every run
-  trains its readers to ignore it, and one that sends no probe proves nothing
-  about the shape. The probe proves that fail-open shape and nothing else: a
-  bare 400 is reported as not accepted as a notification, by the gateway or by
-  the upstream, never as the gateway's refusal, because a forwarding gateway
-  relays whatever the upstream wrote (decision D17). Exit 0 is OK, MISSING or
-  KNOWN-LIMIT only; MISMATCH and UNVERIFIED are sub-labels of a LEAK line,
-  never a verdict that passes (decisions D12, D13 and D18).
+  answer changes, which is how a moved pin or a gateway changed under it is
+  noticed (decision D18; before it the advice was `--no-probe`, which silenced
+  the one check that would notice; `--no-probe` still exists and is exclusive
+  with `--expect-unhooked`). Where the upstream refuses a request without an id
+  with a plain-text HTTP 400, as a go-sdk server such as `cmd/mockupstream`
+  does: the check passes with the OK line ending `the id-less tools/call was
+  not accepted as a notification (HTTP 400, by the gateway or by the
+  upstream)`, and `--expect-unhooked` is not passed, because against that
+  answer it reports PROBE-CHANGED by design (run of 2026-10-15 with the
+  published v0.3.0 binary: exit 0 with that OK line without the flag,
+  PROBE-CHANGED naming HTTP 400 and exit 1 with it). A canary that fails on
+  every run trains its readers to ignore it, and one that sends no probe proves
+  nothing about the shape. The probe proves the fail-open shape and nothing
+  else: a bare 400 is reported as not accepted as a notification, by the
+  gateway or by the upstream, never as the gateway's refusal, because a
+  forwarding gateway relays whatever the upstream wrote (decision D17), which
+  is what that run's gateway log showed (`mcp: upstream error: 400 Bad
+  Request`) while the processor's stats counted none of the probes. Exit 0 is
+  OK, MISSING or KNOWN-LIMIT only; MISMATCH and UNVERIFIED are sub-labels of a
+  LEAK line, never a verdict that passes (decisions D12, D13 and D18).
 - Record the audit head outside the database after every `audit verify`, and
   verify with `audit verify --expect-head HASH`. The chain proves that nothing
   inside it was altered; only a head recorded elsewhere proves that the whole
@@ -415,9 +439,10 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   emitter's binary validation tests and the end-to-end test against the new
   release before the pin changes; scenario L re-derives which keys the gateway
   strips, and the canary probe re-checks whether id-less calls are still
-  forwarded (HTTP 202, the fail-open shape of v1.6.0); a canary running with
-  `--expect-unhooked` reports PROBE-CHANGED, exit 1, the moment that answer
-  changes (decision D18). The seventeen items of
+  forwarded (scenario O's hostile upstream, which accepts the forwarded call
+  as a notification, answers HTTP 202 when they are: the fail-open shape of
+  v1.6.0); a canary running with `--expect-unhooked` reports PROBE-CHANGED,
+  exit 1, the moment that answer changes (decision D18). The seventeen items of
   that re-qualification, the script that runs them
   (`scripts/requalify-gateway.sh vX.Y.Z SHA256 --e2e`, where SHA256 is the
   published digest of the candidate's linux asset, which the script checks
