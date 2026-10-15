@@ -1,5 +1,7 @@
 # toolwarrant
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sairam0424/toolwarrant/badge)](https://scorecard.dev/viewer/?uri=github.com/sairam0424/toolwarrant)
+
 toolwarrant is a control plane in front of the agentgateway v1.6.0 MCP gateway.
 It crawls each upstream MCP server, stores every tool definition it sees as an
 immutable version identified by the SHA-256 of its RFC 8785 canonical JSON, lets
