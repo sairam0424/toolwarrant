@@ -2,6 +2,8 @@ package signing
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha512"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/sairam0424/toolwarrant/internal/signing/sigtest"
 )
@@ -152,6 +156,52 @@ func writeFile(t testing.TB, path string, data []byte, mode os.FileMode) string 
 		t.Fatal(err)
 	}
 	return path
+}
+
+// sshsigBlob is the wire form of PROTOCOL.sshsig spelled out field by field,
+// so a test can write what the library's Signature type cannot express: a
+// non-empty reserved string, or an inner signature made with an algorithm the
+// library's Sign does not choose.
+type sshsigBlob struct {
+	Magic         [6]byte
+	Version       uint32
+	PublicKey     string
+	Namespace     string
+	Reserved      string
+	HashAlgorithm string
+	Signature     string
+}
+
+// sshsigMagic is the six-byte preamble of every sshsig blob and signed message.
+var sshsigMagic = [6]byte{'S', 'S', 'H', 'S', 'I', 'G'}
+
+// signedData is the message the inner signature covers: the magic, then the
+// namespace, an empty reserved string, the hash name and the sha512 of payload,
+// as PROTOCOL.sshsig and the library build it.
+func signedData(payload []byte, ns Namespace) []byte {
+	sum := sha512.Sum512(payload)
+	body := ssh.Marshal(struct{ Namespace, Reserved, HashAlgorithm, Hash string }{string(ns), "", HashAlgorithm.String(), string(sum[:])})
+	return append(sshsigMagic[:], body...)
+}
+
+// wireBlob writes an sshsig blob by hand: the inner signature is made with
+// algo (the key's own type, or rsa-sha2-512 or rsa-sha2-256 for an RSA key)
+// and the wire reserved field is set to reserved, which ssh-keygen and the
+// library always leave empty.
+func wireBlob(t testing.TB, payload []byte, k sigtest.Key, ns Namespace, reserved, algo string) []byte {
+	t.Helper()
+	as, ok := k.Signer.(ssh.AlgorithmSigner)
+	if !ok {
+		t.Fatalf("the %s signer cannot choose an algorithm", k.Public.Type())
+	}
+	sig, err := as.SignWithAlgorithm(rand.Reader, signedData(payload, ns), algo)
+	if err != nil {
+		t.Fatalf("sign with %s: %v", algo, err)
+	}
+	return ssh.Marshal(sshsigBlob{
+		Magic: sshsigMagic, Version: 1, PublicKey: string(k.Public.Marshal()), Namespace: string(ns),
+		Reserved: reserved, HashAlgorithm: HashAlgorithm.String(), Signature: string(ssh.Marshal(sig)),
+	})
 }
 
 // skipIfRoot skips a test whose refusals rest on file modes, which root

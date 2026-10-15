@@ -45,6 +45,11 @@ const (
 	// Verify passes it explicitly, so a signature made over sha256 fails
 	// cryptographically as well as by name.
 	HashAlgorithm = sshsig.HashSHA512
+	// RSASignatureAlgorithm is the only inner signature algorithm accepted
+	// from an ssh-rsa key: OpenSSH's default for sshsig. PROTOCOL.sshsig and
+	// the library admit rsa-sha2-256 as well; Verify refuses it by name. The
+	// other key types have one algorithm each, which x/crypto enforces.
+	RSASignatureAlgorithm = ssh.KeyAlgoRSASHA512
 
 	// MaxPayloadBytes bounds a signed payload: a 64-signer list of RSA-4096
 	// keys is about 50 KiB.
@@ -90,6 +95,9 @@ var (
 	// ErrHashAlgorithm is returned when a signature hashes with anything but
 	// HashAlgorithm.
 	ErrHashAlgorithm = errors.New("signing: signature hashes the message with another algorithm than sha512")
+	// ErrSignatureAlgorithm is returned when an ssh-rsa signature was made with
+	// another algorithm than RSASignatureAlgorithm.
+	ErrSignatureAlgorithm = errors.New("signing: ssh-rsa signature was made with another algorithm than rsa-sha2-512")
 	// ErrSignatureFormat is returned when the blob is not an sshsig signature.
 	ErrSignatureFormat = errors.New("signing: not an sshsig signature")
 	// ErrSignature is returned when the cryptographic check fails.
@@ -174,8 +182,9 @@ func Sign(ctx context.Context, payload []byte, key ssh.Signer, ns Namespace) (Re
 // Verify checks that sig is an sshsig signature over exactly payload under ns,
 // made with the key whose fingerprint is signer, and returns that key. The
 // order is fixed: bounds, blob shape, key policy, fingerprint, hash algorithm,
-// namespace, then the cryptography, so a refusal names the first rule broken
-// and no signature from a weak or unexpected key reaches the verifier.
+// the RSA signature algorithm, namespace, then the cryptography, so a refusal
+// names the first rule broken and no signature from a weak or unexpected key
+// reaches the verifier.
 func Verify(payload, sig []byte, ns Namespace, signer string) (ssh.PublicKey, error) {
 	if err := ns.check(); err != nil {
 		return nil, err
@@ -195,6 +204,9 @@ func Verify(payload, sig []byte, ns Namespace, signer string) (ssh.PublicKey, er
 	}
 	if parsed.HashAlgorithm != HashAlgorithm {
 		return nil, fmt.Errorf("%w: %s", ErrHashAlgorithm, strconv.Quote(parsed.HashAlgorithm.String()))
+	}
+	if parsed.PublicKey.Type() == ssh.KeyAlgoRSA && parsed.Signature.Format != RSASignatureAlgorithm {
+		return nil, fmt.Errorf("%w: %s, want %s", ErrSignatureAlgorithm, strconv.Quote(parsed.Signature.Format), RSASignatureAlgorithm)
 	}
 	if parsed.Namespace != string(ns) {
 		return nil, fmt.Errorf("%w: %s, verifying under %s", ErrNamespaceMismatch, strconv.Quote(parsed.Namespace), ns)

@@ -29,6 +29,7 @@ func TestConstants_PinTheNamespacesTypesAndBounds(t *testing.T) {
 		"TypeTrustList":            {TypeTrustList, "toolwarrant/trust-list/v1"},
 		"TypeHead":                 {TypeHead, "toolwarrant/head/v1"},
 		"HashAlgorithm":            {HashAlgorithm, sshsig.HashSHA512},
+		"RSASignatureAlgorithm":    {RSASignatureAlgorithm, "rsa-sha2-512"},
 		"MaxPayloadBytes":          {MaxPayloadBytes, 64 << 10},
 		"MaxSignatureBytes":        {MaxSignatureBytes, 4 << 10},
 		"MaxArmoredSignatureBytes": {MaxArmoredSignatureBytes, 8 << 10},
@@ -110,6 +111,31 @@ func TestVerify_RefusesASHA256Signature(t *testing.T) {
 	wantErrIs(t, "sha256 signature", err, ErrHashAlgorithm, `"sha256"`)
 	if err := sshsig.Verify(bytes.NewReader(payload), sig, k.Public, HashAlgorithm, string(NamespaceDecision)); err == nil {
 		t.Error("the library verified a sha256 signature under sha512")
+	}
+}
+
+// An ssh-rsa signature whose inner algorithm is rsa-sha2-256 is refused by
+// name although the message hash is sha512: PROTOCOL.sshsig admits both RSA
+// algorithms and so does the library, whose Verify accepts the very blob; the
+// trust root of section 1 of the plan is rsa-sha2-512 only, and Sign writes
+// nothing else. The same key signing rsa-sha2-512 by hand verifies.
+func TestVerify_RefusesAnRsaSha2256Signature(t *testing.T) {
+	t.Parallel()
+	k := sigtest.GenerateRSA(t, MinRSABits)
+	payload := mustMarshalDecision(t, sampleDecision(Fingerprint(k.Public)))
+	sha256Blob := wireBlob(t, payload, k, NamespaceDecision, "", ssh.KeyAlgoRSASHA256)
+	_, err := Verify(payload, sha256Blob, NamespaceDecision, Fingerprint(k.Public))
+	wantErrIs(t, "rsa-sha2-256 signature", err, ErrSignatureAlgorithm, `"rsa-sha2-256", want rsa-sha2-512`)
+	parsed, err := sshsig.ParseSignature(sha256Blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sshsig.Verify(bytes.NewReader(payload), parsed, k.Public, HashAlgorithm, string(NamespaceDecision)); err != nil {
+		t.Errorf("the library refused the rsa-sha2-256 signature itself (%v); the pin above would then be redundant", err)
+	}
+	sha512Blob := wireBlob(t, payload, k, NamespaceDecision, "", ssh.KeyAlgoRSASHA512)
+	if _, err := Verify(payload, sha512Blob, NamespaceDecision, Fingerprint(k.Public)); err != nil {
+		t.Errorf("rsa-sha2-512 signature by hand: %v", err)
 	}
 }
 
