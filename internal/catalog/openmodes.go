@@ -77,7 +77,7 @@ func dsnFor(absPath string, kind connKind, timeout time.Duration) string {
 // prepareFile decides whether the file is ours before changing anything about
 // it: a foreign database, an empty file carrying other tables, or another
 // schema version is refused with its journal mode untouched. Only then is the
-// file switched to WAL and the schema created or checked.
+// file switched to WAL and the schema created, migrated or checked.
 func prepareFile(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 	version, err := readUserVersion(ctx, db)
 	if err != nil {
@@ -90,6 +90,13 @@ func prepareFile(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 		}
 	case schemaVersion:
 		if err := checkOurs(ctx, db, true); err != nil {
+			return err
+		}
+	case migratableFrom:
+		// Ours, written by a released build without the objects the
+		// migration adds; the guards are compared once migrate has added
+		// them (D22 g).
+		if err := checkOurs(ctx, db, false); err != nil {
 			return err
 		}
 	default:
@@ -152,8 +159,10 @@ func openReadOnly(abs string, opts OpenOptions, timeout time.Duration) (*Store, 
 }
 
 // checkReadOnlyFile verifies that a read-only open found a complete database
-// of ours and returns its journal mode. Nothing can be created or converted on
-// this path. A forensic open skips the guard check (requireGuards false).
+// of ours and returns its journal mode. Nothing can be created, converted or
+// migrated on this path: a file at migratableFrom is refused with the message
+// that names the migration a read-write open runs (D22 g). A forensic open
+// skips the guard check (requireGuards false).
 func checkReadOnlyFile(ctx context.Context, db *sql.DB, requireGuards bool) (string, error) {
 	version, err := readUserVersion(ctx, db)
 	if err != nil {
@@ -166,6 +175,8 @@ func checkReadOnlyFile(ctx context.Context, db *sql.DB, requireGuards bool) (str
 		if err := checkOurs(ctx, db, requireGuards); err != nil {
 			return "", err
 		}
+	case migratableFrom:
+		return "", schemaError(version)
 	default:
 		return "", schemaError(version)
 	}

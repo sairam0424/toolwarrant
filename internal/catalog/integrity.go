@@ -43,13 +43,14 @@ type IntegrityReport struct {
 	// c), so its cross-checks against the log stand on their own; VerifyAudit
 	// stops at the first break, this counts every one.
 	ChainBreaks int
-	// GhostRows counts approvals and tool_versions rows whose id is below 1.
-	// The catalog assigns ids from 1, and SQLite evaluates an unsupplied id as
-	// -1 inside a BEFORE INSERT trigger, so such a row was never the newest
-	// decision, satisfied the per-version approval evidence, and made the
-	// no-replace guards refuse every later insert (D17 b, g); every read and
-	// write refuses a file that holds one, and the positive-id guards refuse
-	// the insert.
+	// GhostRows counts approvals and tool_versions rows whose id is below 1
+	// and signed_records rows whose seq is below 1. The catalog assigns ids
+	// from 1, and SQLite evaluates an unsupplied id as -1 inside a BEFORE
+	// INSERT trigger, so such a row was never the newest decision, satisfied
+	// the per-version approval evidence, and made the no-replace guards
+	// refuse every later insert (D17 b, g), and a signed record below seq 1
+	// belongs to no audit entry (D22 g); every read and write refuses a file
+	// that holds one, and the positive-id guards refuse the insert.
 	GhostRows int
 	// ApprovalsWithoutRecord counts versions in status approved, or marked
 	// ever approved, with no approve or rollback row in the approvals table:
@@ -186,6 +187,7 @@ func (c *integrityCheck) run() error {
 	steps := []func() error{
 		c.checkGuardObjects, c.readLog, c.checkServers, c.checkTools, c.checkLogSubjects,
 		c.checkVersions, c.checkVersionHistory, c.checkOrphanVersions, c.checkApprovedBytes, c.checkApprovals,
+		c.checkSignedRecords,
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
