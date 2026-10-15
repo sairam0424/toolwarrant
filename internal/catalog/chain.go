@@ -28,7 +28,11 @@ import (
 // of the pages it walks (trustwalk.go: the trust records once at open and the
 // new ones on each reload, none on a crawl-only reload, O-15) and carries the
 // trust list in force and the outcome of every verified decision record in
-// the same memory. An audit entry is trusted on the serving path and on the
+// the same memory; since D22 (b) and (d) it holds every entry after the
+// bootstrap to the signed= binding and the crawl-transition guard
+// (decisionwalk.go), and the anchor pass asks the memory whether an anchored
+// human decision names a verified record (requireSigned). An audit entry is
+// trusted on the serving path and on the
 // decision path only when the hash computed from the fields read now equals
 // the hash recorded for its seq in that walk (chainMemory.verify): the stored
 // hash column is never consulted for trust, since whoever can write the file
@@ -87,11 +91,14 @@ type chainMemory struct {
 	// TestBenchmarkSnapshotHashesOnlyAuditEntries pins are the anchor pass
 	// alone.
 	hashed atomic.Int64
-	// trust is what the walk knows about the operator trust list and signed
-	// what it recorded about every verified decision.signed entry
-	// (trustwalk.go); both grow with the walk, under mu.
-	trust  trustMemory
-	signed map[int64]signedOutcome
+	// trust is what the walk knows about the operator trust list, signed
+	// what it recorded about every verified decision.signed entry and
+	// openSigned the decision.signed entry whose transaction the head entry
+	// belongs to, 0 when none (trustwalk.go, decisionwalk.go); all three
+	// advance with the walk, under mu.
+	trust      trustMemory
+	signed     map[int64]signedOutcome
+	openSigned int64
 	// verified counts the signatures the walks have verified since the Store
 	// opened: every signed entry once at open, the new ones on each reload,
 	// none on a crawl-only reload (O-15;
@@ -114,19 +121,20 @@ func (c *chainMemory) pin() chainPin {
 // just verified in order. audit.VerifyFrom accepted the page, so each entry's
 // Hash field equals the hash it computed from the entry's fields; that
 // computed value is what is kept, for every decision entry and for the head.
-// The signed entries of the page are verified first (verifySignedPage),
-// against the trust list in force as the memory holds it after the pages
-// before, and nothing of the page is recorded when one of them is refused:
-// the walk stops there, the pin stays below the refused record, and the
-// refusal is the ErrCorrupt the caller returns.
+// The page is walked first (verifySignedPage): the signed entries against the
+// trust list in force as the memory holds it after the pages before, the
+// others against the bootstrap and the decision outcomes known at their
+// point (rules 5 and 6), and nothing of the page is recorded when one entry
+// is refused: the walk stops there, the pin stays below the refused entry,
+// and the refusal is the ErrCorrupt the caller returns.
 func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.Entry, identity, pinnedRoot string) error {
 	if len(page) == 0 {
 		return nil
 	}
 	c.mu.RLock()
-	tm := c.trust
+	in := pageInput{trust: c.trust, open: c.openSigned, identity: identity, pinnedRoot: pinnedRoot, lookup: c.lookupSigned}
 	c.mu.RUnlock()
-	out, err := verifySignedPage(ctx, q, page, tm, identity, pinnedRoot)
+	out, err := verifySignedPage(ctx, q, page, in)
 	if err != nil {
 		return err
 	}
@@ -142,6 +150,7 @@ func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.En
 		}
 	}
 	c.trust = out.trust
+	c.openSigned = out.open
 	for seq, o := range out.signed {
 		c.signed[seq] = o
 	}
@@ -165,6 +174,7 @@ func (c *chainMemory) drop() {
 	c.hashes = map[int64]entryHash{}
 	c.trust = trustMemory{}
 	c.signed = map[int64]signedOutcome{}
+	c.openSigned = 0
 }
 
 // hashCount is the number of entries verify has hashed so far.

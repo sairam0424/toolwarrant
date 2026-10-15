@@ -105,12 +105,13 @@ func versionsFromLog(ctx context.Context, q queryer, chain *chainMemory, subject
 	}
 	defer func() { _ = rows.Close() }()
 	out := map[string]*versionTrace{}
+	check := newEntryChecker(chain)
 	for rows.Next() {
 		e, err := scanAudit(rows)
 		if err != nil {
 			return nil, fmt.Errorf("catalog: read version entries: %w", err)
 		}
-		if err := chain.verify(e); err != nil {
+		if err := check.verify(e); err != nil {
 			return nil, err
 		}
 		digest, ok := versionDigest(e)

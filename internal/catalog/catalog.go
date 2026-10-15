@@ -118,8 +118,9 @@ var (
 	ErrHumanRequired = errors.New("catalog: a decision requires a human actor")
 	// ErrSignatureRequired is returned by a decision made without a signed
 	// record while a trust list is in force: from the bootstrap on, every
-	// human decision must be signed by a listed key (D22 c; the decision path
-	// applies it in the signed-decision round).
+	// human decision (approve, reject, rollback, disable, enable, pause,
+	// resume, budget reset) must be signed by a listed key and made through
+	// Decide (D22 b, O-16). Nothing is written.
 	ErrSignatureRequired = errors.New("catalog: this decision must be signed: a trust list is in force")
 	// ErrNotASigner is returned when a signed record was made with a key the
 	// rule in force does not admit: a rotation not signed by a key of both

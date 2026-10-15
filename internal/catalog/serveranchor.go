@@ -34,6 +34,9 @@ import (
 // refuses one, and PauseServer and ResumeServer, which compare the request
 // with the flag; an un-pause by one UPDATE therefore serves nothing and turns
 // the operator's resume into ErrCorrupt instead of "already paused=false".
+// Each anchored entry goes through entryChecker.verify, so a server.paused or
+// server.resumed entry after the trust bootstrap must also name the signed
+// decision of its own transaction (D22 (d), requireSigned).
 
 // firstServerEntry returns the oldest entry with this event about a server;
 // found is false when the log has none. One index seek, no sort.
@@ -99,7 +102,7 @@ func anchorPaused(ctx context.Context, q queryer, chain *chainMemory, srv Server
 		}
 		return fmt.Errorf("%w: paused of server %s is true but the audit log has no server.paused or server.resumed entry about it", ErrCorrupt, shown)
 	}
-	if err := chain.verify(e); err != nil {
+	if err := newEntryChecker(chain).verify(e); err != nil {
 		return err
 	}
 	paused, ok := detailBool(e.Detail, fieldPaused)
@@ -129,7 +132,7 @@ func anchorServerAdded(ctx context.Context, q queryer, chain *chainMemory, srv S
 	if !found {
 		return fmt.Errorf("%w: server %s has no server.added audit entry", ErrCorrupt, shown)
 	}
-	if err := chain.verify(added); err != nil {
+	if err := newEntryChecker(chain).verify(added); err != nil {
 		return err
 	}
 	private, ok := detailBool(added.Detail, fieldAllowPrivate)
@@ -163,7 +166,7 @@ func anchorProcessorAddr(ctx context.Context, q queryer, chain *chainMemory, srv
 		}
 		return fmt.Errorf("%w: processor_addr of server %s is %s but the audit log has no server.processor_set entry about it", ErrCorrupt, shown, quote(srv.ProcessorAddr))
 	}
-	if err := chain.verify(set); err != nil {
+	if err := newEntryChecker(chain).verify(set); err != nil {
 		return err
 	}
 	addr, ok := detailField(set.Detail, fieldProcessorAddr)

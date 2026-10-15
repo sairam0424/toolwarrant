@@ -23,14 +23,16 @@ import (
 // the list in force, the signer in both lists (the bootstrap signed by a key
 // of its own list and by the pinned root when one is given), the entry's
 // actor the name the new list gives the signing key, letter for letter, and
-// the version and signer-count tokens what the payload says. Rule 4, authorisation: a
-// decision record's signer is in the list in force at that seq and listed for
-// the entry's actor (rules 2 and 5, the decision's own fields and the signed=
-// binding of the lifecycle entries, arrive with Decide). Every failure is
-// ErrCorrupt with a fixed sentence naming the entry; the walk stops at the
-// first and records nothing of its page, so the pin stays below the refused
-// record. The writer runs the same functions on the entry it is about to
-// store (SetTrust), so the reader and the writer cannot drift apart.
+// the version and signer-count tokens what the payload says. Rules 2 and 4
+// (the decision's own tokens and subject, and the authorisation of its
+// signer by the list in force), rule 5 (the signed= binding of the entries
+// of a decision) and rule 6 (the crawl-transition guard) are decisionwalk.go;
+// verifySignedPage below applies all of them to one page in seq order. Every
+// failure is ErrCorrupt with a fixed sentence naming the entry; the walk
+// stops at the first and records nothing of its page, so the pin stays below
+// the refused record. The writer runs the same functions on the entry it is
+// about to store (SetTrust, Decide), so the reader and the writer cannot
+// drift apart.
 
 // signedRule says which rule a signed entry broke, so that Integrity counts
 // the refusal under the right counter while the walk names it.
@@ -45,6 +47,13 @@ const (
 	// ruleDecision is rule 4: a decision record whose signer the list in
 	// force does not authorise.
 	ruleDecision
+	// ruleSignedBinding is rule 5: an entry after the bootstrap whose event
+	// only a human command writes names no verified decision.signed entry of
+	// its own transaction (decisionwalk.go).
+	ruleSignedBinding
+	// ruleCrawl is rule 6: an entry after the bootstrap that no decision
+	// signed moves a tool along a transition no crawl can make.
+	ruleCrawl
 )
 
 // signedProblem is one refusal of a signed entry: the fixed sentence the walk
@@ -105,23 +114,39 @@ type trustMemory struct {
 	lists int
 }
 
+// pageInput is what verifySignedPage starts one page from: the trust memory
+// and the open decision transaction after the pages before, the catalog
+// identity and the pinned root, and how to find the outcome of a
+// decision.signed entry of an earlier page.
+type pageInput struct {
+	trust      trustMemory
+	open       int64
+	identity   string
+	pinnedRoot string
+	lookup     func(seq int64) (signedOutcome, bool)
+}
+
 // pageOutcome is what verifySignedPage hands back for one page: the trust
-// memory after the page, the decision outcomes of the page and how many
-// signatures it verified.
+// memory after the page, the decision outcomes of the page, the decision
+// transaction open at its end (decisionwalk.go) and how many signatures it
+// verified.
 type pageOutcome struct {
 	trust    trustMemory
 	signed   map[int64]signedOutcome
+	open     int64
 	verified int
 }
 
-// verifySignedPage verifies every signed entry of one page in seq order
-// against the trust list in force as tm holds it, reading the rows by primary
-// key once for the page, then requires every row within the page's seq range
-// to belong to one of those entries (checkOrphanRows), and returns the memory
-// after the page. The first refusal ends the page as ErrCorrupt with its
-// sentence.
-func verifySignedPage(ctx context.Context, q queryer, page []audit.Entry, tm trustMemory, identity, pinnedRoot string) (pageOutcome, error) {
-	out, err := verifySignedEntries(ctx, q, page, tm, identity, pinnedRoot)
+// verifySignedPage walks one page in seq order: every signed entry is
+// verified against the trust list in force as the memory holds it, the rows
+// read by primary key once for the page, and every other entry is held to
+// rules 5 and 6 (checkLifecycleEntry) against the bootstrap and the decision
+// outcomes known at that point; then every row within the page's seq range
+// must belong to one of the signed entries (checkOrphanRows). It returns the
+// memory after the page. The first refusal ends the page as ErrCorrupt with
+// its sentence.
+func verifySignedPage(ctx context.Context, q queryer, page []audit.Entry, in pageInput) (pageOutcome, error) {
+	out, err := verifySignedEntries(ctx, q, page, in)
 	if err != nil {
 		return pageOutcome{}, err
 	}
@@ -132,34 +157,44 @@ func verifySignedPage(ctx context.Context, q queryer, page []audit.Entry, tm tru
 }
 
 // verifySignedEntries is the per-entry half of verifySignedPage: rule 1, the
-// signature, then rule 3 or rule 4 for each signed entry of the page.
-func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, tm trustMemory, identity, pinnedRoot string) (pageOutcome, error) {
-	out := pageOutcome{trust: tm}
-	seqs := signedSeqs(page)
-	if len(seqs) == 0 {
-		return out, nil
-	}
-	rows, err := readSignedRecords(ctx, q, seqs)
+// signature, then rule 3 or rules 2 and 4 for each signed entry, and rules 5
+// and 6 for each entry that carries no record.
+func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in pageInput) (pageOutcome, error) {
+	out := pageOutcome{trust: in.trust, open: in.open, signed: make(map[int64]signedOutcome)}
+	rows, err := readSignedRecords(ctx, q, signedSeqs(page))
 	if err != nil {
 		return pageOutcome{}, err
 	}
-	out.signed = make(map[int64]signedOutcome)
+	w := decisionWalk{lookup: func(seq int64) (signedOutcome, bool) {
+		if o, ok := out.signed[seq]; ok {
+			return o, true
+		}
+		return in.lookup(seq)
+	}}
 	for _, e := range page {
 		if !isSignedEvent(e.Event) {
+			w.bootstrap, w.open = out.trust.state.BootstrapSeq, out.open
+			open, err := checkLifecycleEntry(e, w)
+			if err != nil {
+				return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
+			}
+			out.open = open
 			continue
 		}
 		rec, ok := rows[e.Seq]
 		if !ok {
 			return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, errNoSignedRecord(e))
 		}
-		res, err := checkSignedEntry(e, rec, out.trust, identity, pinnedRoot)
+		res, err := checkSignedEntry(e, rec, out.trust, in.identity, in.pinnedRoot)
 		if err != nil {
 			return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
 		}
 		out.verified++
 		out.trust = res.trust
+		out.open = 0
 		if res.decision != nil {
 			out.signed[e.Seq] = *res.decision
+			out.open = e.Seq
 		}
 	}
 	return out, nil
@@ -189,7 +224,7 @@ func checkSignedEntry(e audit.Entry, rec signing.Record, tm trustMemory, identit
 		next, err := checkTrustRecord(e, rec, tm, identity, pinnedRoot)
 		return signedResult{trust: next}, err
 	case evDecisionSigned:
-		outcome, err := checkDecisionBinding(e, rec, tm.state, identity)
+		outcome, err := checkDecisionRecord(e, rec, tm.state, identity)
 		return signedResult{trust: tm, decision: outcome}, err
 	}
 	return signedResult{trust: tm}, problemf(ruleBinding, nil, "audit entry %d is a %s, which carries no signed record", e.Seq, e.Event)
@@ -323,36 +358,4 @@ func trustRuleProblem(e audit.Entry, list signing.TrustList, state trust.State, 
 		return problemf(ruleTrust, err, "the trust list at entry %d is not signed by a key of both the list in force and the new list (signed by %s)", e.Seq, signer)
 	}
 	return problemf(ruleTrust, err, "the trust list at entry %d is refused: %v", e.Seq, err)
-}
-
-// checkDecisionBinding is rule 1 and rule 4 for one decision.signed entry
-// whose signature verified: the payload is a canonical decision bound to the
-// entry and its actor, the kind token says what the payload says, a list is
-// in force and it names the signing key for the entry's actor. The decision's
-// own fields against the entry's subject and digest (rule 2) and the signed=
-// binding of the lifecycle entries (rule 5) arrive with Decide.
-func checkDecisionBinding(e audit.Entry, rec signing.Record, state trust.State, identity string) (*signedOutcome, error) {
-	d, err := signing.ParseDecision(rec.Payload)
-	if err != nil {
-		return nil, problemf(ruleBinding, err, "signed record of entry %d is not a canonical decision: %v", e.Seq, err)
-	}
-	if err := checkPayloadBinding(e, rec.Signer, d.Signer, d.Catalog, d.PrevHead, identity); err != nil {
-		return nil, err
-	}
-	if d.Actor != e.Actor {
-		return nil, problemf(ruleBinding, nil, "signed record of entry %d names actor %s but the entry's actor is %s", e.Seq, quote(d.Actor), quote(e.Actor))
-	}
-	if k, ok := detailField(e.Detail, fieldKind); !ok || k != string(d.Kind) {
-		return nil, problemf(ruleBinding, nil, "audit entry %d says %s=%s but its signed decision is a %s", e.Seq, fieldKind, quote(k), d.Kind)
-	}
-	if state.Current == nil {
-		return nil, problemf(ruleDecision, trust.ErrNoList, "audit entry %d is a %s but no trust list is in force at that entry; a signed record has no list to be verified against", e.Seq, e.Event)
-	}
-	if err := state.Current.Authorize(rec.Signer, e.Actor); err != nil {
-		if name, ok := state.Current.Lookup(rec.Signer); ok {
-			return nil, problemf(ruleDecision, err, "signed record of entry %d: signer %s belongs to %s but the entry and payload name %s", e.Seq, rec.Signer, quote(name), quote(e.Actor))
-		}
-		return nil, problemf(ruleDecision, err, "signed record of entry %d: signer %s is not in trust list v%d in force at that entry", e.Seq, rec.Signer, state.Current.Version)
-	}
-	return &signedOutcome{kind: d.Kind, subject: e.Subject, actor: e.Actor, ts: e.TS, digest: d.Digest}, nil
 }
