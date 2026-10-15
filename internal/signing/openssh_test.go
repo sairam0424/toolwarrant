@@ -2,7 +2,6 @@ package signing
 
 import (
 	"crypto/elliptic"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,8 +164,5 @@ func TestOpenSSH_SignatureVerifiesWithSshKeygenAndTheReverse(t *testing.T) {
 	}
 	if _, err := Verify(payload, theirs, NamespaceDecision, Fingerprint(k.Public)); err != nil {
 		t.Errorf("Verify of ssh-keygen's signature after our own: %v", err)
-	}
-	if errors.Is(err, ErrSignature) {
-		t.Error("unreachable")
 	}
 }
