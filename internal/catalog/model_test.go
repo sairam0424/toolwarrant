@@ -63,28 +63,58 @@ type model struct {
 	variant   map[string]string
 }
 
+// modelRuns counts every model built, across shards and runs of the test, and
+// names each store file uniquely; checkShardRuns compares it with the checks
+// the shards ran.
 var modelRuns atomic.Int64
 
+// TestModel_StoreFollowsTheLifecycleModel runs the property in modelShards
+// parallel rapid runs that together perform rapid's check count (100 by
+// default, 20 under -short, the same as one rapid.Check did); see
+// model_shards_test.go for why the count is split through rapid's flag and
+// why this test stays serial while its shards run in parallel.
 func TestModel_StoreFollowsTheLifecycleModel(t *testing.T) {
-	dir := t.TempDir()
-	stats := map[string]int{}
-	defer func() { t.Logf("model coverage: %v", stats) }()
-	rapid.Check(t, func(rt *rapid.T) {
-		m := newModel(rt, filepath.Join(dir, fmt.Sprintf("m%d.db", modelRuns.Add(1))), stats)
-		steps := rapid.IntRange(1, 40).Draw(rt, "steps")
-		for i := 0; i < steps; i++ {
-			m.step(rapid.SampledFrom(modelActions).Draw(rt, "action"))
-			m.check()
-		}
-		if _, err := m.s.VerifyAudit(bg); err != nil {
-			rt.Fatalf("VerifyAudit: %v", err)
-		}
-		// Whatever the history, a catalog the Store wrote agrees with its log
-		// on every column Integrity cross-checks (D13).
-		if rep, err := m.s.Integrity(bg); err != nil || len(rep.Problems) != 0 {
-			rt.Fatalf("Integrity = %+v, %v; want a clean report", rep, err)
+	plan := planShards(t)
+	built := modelRuns.Load()
+	runs := make([]int, plan.shards)
+	stats := make([]map[string]int, plan.shards)
+	restore := setChecks(t, plan.perShard)
+	t.Run("shards", func(t *testing.T) {
+		for i := range plan.shards {
+			stats[i] = map[string]int{}
+			t.Run(fmt.Sprintf("shard%d", i), func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				rapid.Check(t, func(rt *rapid.T) {
+					runs[i]++
+					checkModelOnce(rt, dir, stats[i])
+				})
+			})
 		}
 	})
+	restore()
+	t.Logf("model coverage: %v", mergeStats(stats))
+	checkShardRuns(t, plan, runs, modelRuns.Load()-built)
+}
+
+// checkModelOnce is one check of the property: a fresh store under dir, a
+// random number of random steps each compared with the model, then the whole
+// log verified and the integrity report clean.
+func checkModelOnce(rt *rapid.T, dir string, stats map[string]int) {
+	m := newModel(rt, filepath.Join(dir, fmt.Sprintf("m%d.db", modelRuns.Add(1))), stats)
+	steps := rapid.IntRange(1, 40).Draw(rt, "steps")
+	for i := 0; i < steps; i++ {
+		m.step(rapid.SampledFrom(modelActions).Draw(rt, "action"))
+		m.check()
+	}
+	if _, err := m.s.VerifyAudit(bg); err != nil {
+		rt.Fatalf("VerifyAudit: %v", err)
+	}
+	// Whatever the history, a catalog the Store wrote agrees with its log
+	// on every column Integrity cross-checks (D13).
+	if rep, err := m.s.Integrity(bg); err != nil || len(rep.Problems) != 0 {
+		rt.Fatalf("Integrity = %+v, %v; want a clean report", rep, err)
+	}
 }
 
 func newModel(rt *rapid.T, path string, stats map[string]int) *model {
