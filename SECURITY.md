@@ -430,7 +430,9 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   is the `notices` job of the CI workflow. `pgregory.net/rapid` (MPL-2.0) is
   linked into tests only.
 - gitleaks runs as the `gitleaks` job of the CI workflow over the whole
-  history; a secret that was ever committed is treated as compromised.
+  history; a secret that was ever committed is treated as compromised. Known false
+  positives (test fixtures that only look like a key) are listed by
+  fingerprint in `.gitleaksignore`, each with the reason beside it.
 - The `scorecard` workflow ([.github/workflows/scorecard.yml](.github/workflows/scorecard.yml))
   runs the OpenSSF Scorecard checks on every push to `main` and weekly,
   publishes the results for this public repository to the Scorecard API
