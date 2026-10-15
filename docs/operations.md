@@ -270,7 +270,19 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   log line).
 - Interpretation. `mismatched` on a tool you just approved is the gateway
   re-serialisation case (limit L2), not drift; the canary reports such a tool
-  as MISSING. `unauthenticated` above zero with a secret configured means the
+  as MISSING. Each mismatched tool also gets one `digest mismatch` log line
+  with the quoted `tool` name, the `approved` digest and the `live` digest the
+  served definition hashes to (64 hex digits each, never the definition), the
+  first ten of a page in page order, with the count in the `mismatched` field
+  of the `tools/list filtered` line. The field names are the `approved:` and
+  `live:` rows of `show`: run `crawl SERVER`, then `show SERVER TOOL` lists the
+  same digest as pending when the upstream serves that definition to the
+  crawler too, and `diff SERVER TOOL --to LIVE` renders what changed against
+  the approved version; a live digest no crawl records is the gateway's
+  re-serialisation (L2) or an upstream serving the crawler another definition
+  than the gateway (L4), since the crawler reads the upstream itself
+  (`TestFilter_DigestMismatchLogsTheLiveDigest`). `unauthenticated` above
+  zero with a secret configured means the
   gateway is not sending it, or is sending another one: every such hook was
   denied. `throttled` means more than 32 hooks were in flight; the surplus was
   denied, never queued. `wrong backend` means the route sends hooks about
@@ -431,7 +443,8 @@ Verdicts, one line per tool or per check:
   the approved digest, but the gateway does not serve it. Either the allow
   rule in the gateway file is stale (run `emit` again) or the gateway
   re-serialises the definition before the hook (limit L2); the processor's
-  `digest mismatch` log line and `mismatched` counter tell the two apart.
+  `digest mismatch` log line and `mismatched` counter tell the two apart, and
+  the line's `live` digest is one no crawl records when it is L2 (or L4).
   Scenario L printed `MISSING vendor_tool` for the re-serialised tool. Which
   key paths the pinned gateway drops, keeps and adds is the golden
   `e2e/testdata/gateway_tool_keys.json` (dropped: unknown top-level keys,

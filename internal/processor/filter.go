@@ -12,11 +12,21 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/strictjson"
 )
 
+// mismatch is one approved, enabled tool hidden because the definition the
+// upstream serves hashes to another digest than the approved one. Both digests
+// are kept for the log line: 64 hex digits each, so the line can name what the
+// upstream serves without carrying a byte of the definition (D21 (f)).
+type mismatch struct {
+	name     string
+	approved string
+	live     string
+}
+
 // hiddenReport says why the catalog tools of one page were hidden. Tools the
 // catalog has never heard of are hidden too but not reported here: there is
 // nothing to say about them, and a hostile upstream can send any number.
 type hiddenReport struct {
-	mismatched []string // approved and enabled, but the live definition differs
+	mismatched []mismatch // approved and enabled, but the live definition differs
 	unapproved int
 	oversized  int
 	unverified int // the live definition is the approved one, but the latest crawl could not verify it
@@ -229,7 +239,7 @@ func (f *listFilter) judgeListed(name string, policy catalog.ToolPolicy, digest 
 	case !f.cur.snap.Serves(name, digest):
 		if f.cur.snap.Serves(name, policy.Approved) {
 			// It would be served if the upstream served what was approved.
-			f.report.mismatched = append(f.report.mismatched, name)
+			f.report.mismatched = append(f.report.mismatched, mismatch{name: name, approved: policy.Approved, live: digest})
 		} else {
 			f.report.unapproved++
 		}

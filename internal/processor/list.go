@@ -117,20 +117,40 @@ func (s *Server) countServed(page filtered) {
 }
 
 // logList reports one served page: at Info when something was hidden, at
-// Debug otherwise, preceded by one Info line naming the tools hidden for a
-// digest mismatch, which is the case an owner must act on (drift, or the
-// re-serialisation limit in the package comment). Names are quoted and capped;
-// no definition is ever logged.
+// Debug otherwise, preceded by the digest mismatch lines (logMismatches),
+// which name the case an owner must act on (drift, or the re-serialisation
+// limit in the package comment). Names are quoted and capped; no definition
+// is ever logged. The summary line counts the mismatched tools next to the
+// other hidden categories, so the count is on one line however many mismatch
+// lines the cap left out.
 func (s *Server) logList(ctx context.Context, page filtered) {
-	if n := len(page.report.mismatched); n > 0 {
-		s.log.InfoContext(ctx, "digest mismatch",
-			"server", s.server, "tools", n, "names", quoteNames(page.report.mismatched))
-	}
+	s.logMismatches(ctx, page.report.mismatched)
 	level := slog.LevelDebug
 	if len(page.hidden) > 0 {
 		level = slog.LevelInfo
 	}
 	s.log.Log(ctx, level, "tools/list filtered",
 		"server", s.server, "hidden", len(page.hidden), "hidden_tools", quoteNames(page.hidden),
-		"unapproved", page.report.unapproved, "oversized", page.report.oversized, "unverified", page.report.unverified)
+		"mismatched", len(page.report.mismatched), "unapproved", page.report.unapproved,
+		"oversized", page.report.oversized, "unverified", page.report.unverified)
+}
+
+// logMismatches writes one Info line per tool hidden for a digest mismatch, up
+// to maxLoggedNames per page as for every list of names. Each line carries
+// the quoted name, the approved digest and the live one, the digest the
+// upstream's definition hashes to right now: 64 hex digits, so the line says
+// what the upstream serves without logging a byte of it. The field names are
+// the rows of `toolwarrant show` (`approved:`, `live:`), and the live digest
+// is what `toolwarrant diff SERVER TOOL --to LIVE` takes once a crawl has
+// recorded the same definition as pending (D21 (f)). The count of mismatched
+// tools beyond the cap is on the page summary line.
+func (s *Server) logMismatches(ctx context.Context, mismatched []mismatch) {
+	shown := mismatched
+	if len(shown) > maxLoggedNames {
+		shown = shown[:maxLoggedNames]
+	}
+	for _, m := range shown {
+		s.log.InfoContext(ctx, "digest mismatch",
+			"server", s.server, "tool", quoteName(m.name), "approved", m.approved, "live", m.live)
+	}
 }
