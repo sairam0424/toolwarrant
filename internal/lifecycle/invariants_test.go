@@ -77,6 +77,7 @@ func stepViolations(rec stepRecord) []string {
 	out = append(out, shapeViolations(rec.res.Tool)...)
 	out = append(out, edgeViolations(rec)...)
 	out = append(out, crawlViolations(rec)...)
+	out = append(out, decisionViolations(rec)...)
 	out = append(out, serveViolations(rec.res.Tool)...)
 	out = append(out, effectViolations(rec)...)
 	out = append(out, eventViolations(rec)...)
@@ -293,6 +294,21 @@ func crawlViolations(rec stepRecord) []string {
 		return append(out, presentCrawlViolations(c, before, after)...)
 	}
 	return append(out, missingCrawlViolations(rec.pol, before, after)...)
+}
+
+// decisionViolations is the decision half of rule 5 of the v0.4 plan read the
+// other way: every step a person's command takes is a transition the exported
+// DecisionMayMove admits, so the table the catalog's walk binds a signed
+// decision's entries to cannot be narrower than the machine
+// (TestDecisionMayMove_EqualsTheInvariantsTable pins that it is not wider).
+func decisionViolations(rec stepRecord) []string {
+	if _, isCrawl := rec.cmd.(lc.ObserveCrawl); isCrawl {
+		return nil
+	}
+	if !lc.DecisionMayMove(rec.cmd, rec.before.State, rec.res.Tool.State) {
+		return []string{fmt.Sprintf("%T moved %s -> %s, which DecisionMayMove forbids", rec.cmd, rec.before.State, rec.res.Tool.State)}
+	}
+	return nil
 }
 
 // unusableCrawlViolations: "LastSeen = UnusableDigest, MissingCrawls = 0,

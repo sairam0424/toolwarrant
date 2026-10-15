@@ -5,6 +5,7 @@ package lifecycle_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	lc "github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -124,6 +125,36 @@ func TestMeta_InvariantCheckerCatchesPlantedViolations(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(stepViolations(tc.rec)) == 0 {
 				t.Errorf("planted violation was not caught: %+v", tc.rec.res.Tool)
+			}
+		})
+	}
+}
+
+// A planted decision that moves a tool along a transition its command cannot
+// make is caught by the decision table itself, not only by the effect rules:
+// a Disable that leaves the tool enabled, an Enable from an enabled tool and
+// an Approve that lands on disabled are each named with DecisionMayMove.
+func TestMeta_DecisionTableCatchesAMoveOutsideIt(t *testing.T) {
+	plain := plainPolicy()
+	cases := []struct {
+		name string
+		rec  stepRecord
+	}{
+		{"disable leaves the tool enabled", plantedRecord(enabledTool(dA), lc.Disable{Actor: bob}, plain, enabledTool(dA), lc.Event{Kind: lc.EvDisabled})},
+		{"enable from an enabled tool", plantedRecord(enabledTool(dA), lc.Enable{Actor: bob}, plain, enabledTool(dA), lc.Event{Kind: lc.EvEnabled})},
+		{"approve lands on disabled", plantedRecord(pendingReviewTool(dA, alice), lc.Approve{Digest: dA, Actor: bob}, plain,
+			toolOf(lc.Disabled, dA, dA, 0, ver(dA, lc.VersionApproved, alice, true)), lc.Event{Kind: lc.EvApproved, Digest: dA})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			found := false
+			for _, v := range stepViolations(tc.rec) {
+				if strings.Contains(v, "DecisionMayMove forbids") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the decision table did not name the move: %v", stepViolations(tc.rec))
 			}
 		})
 	}
