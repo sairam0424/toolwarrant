@@ -13,6 +13,7 @@ import (
 )
 
 func TestRecordCrawl_StoresVersionsImmutablyWithCatalogComputedDigests(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	raws := [][]byte{
@@ -58,6 +59,7 @@ func TestRecordCrawl_StoresVersionsImmutablyWithCatalogComputedDigests(t *testin
 }
 
 func TestRecordCrawl_PreviouslySeenAndRejectedDigests(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	dA, dB := digestOf(t, "echo", "A"), digestOf(t, "echo", "B")
@@ -102,6 +104,7 @@ func TestRecordCrawl_PreviouslySeenAndRejectedDigests(t *testing.T) {
 }
 
 func TestRecordCrawl_UnknownServer(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	gen := mustGeneration(t, s)
 	for _, name := range []string{"ghost", "", "Alpha'; --"} {
@@ -115,6 +118,7 @@ func TestRecordCrawl_UnknownServer(t *testing.T) {
 }
 
 func TestRecordCrawl_ManyToolsInOneTransaction(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	const n = 400
@@ -134,6 +138,7 @@ func TestRecordCrawl_ManyToolsInOneTransaction(t *testing.T) {
 }
 
 func TestRecordCrawl_StampsUTCNanosecondTimes(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	fixed := time.Date(2030, 1, 2, 3, 4, 5, 678901234, time.FixedZone("x", 3600))
 	s.now = func() time.Time { return fixed }
@@ -152,6 +157,7 @@ func TestRecordCrawl_StampsUTCNanosecondTimes(t *testing.T) {
 }
 
 func TestClassify(t *testing.T) {
+	t.Parallel()
 	ev := func(kinds ...lifecycle.EventKind) []lifecycle.Event {
 		out := make([]lifecycle.Event, len(kinds))
 		for i, k := range kinds {
@@ -198,6 +204,7 @@ func TestClassify(t *testing.T) {
 // The lifecycle is a separate package. If it ever returns something the store
 // cannot persist faithfully, the store must fail the transaction, not guess.
 func TestSave_RefusesInconsistentLifecycleResults(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -269,6 +276,7 @@ func TestSave_RefusesInconsistentLifecycleResults(t *testing.T) {
 }
 
 func TestRecordCrawl_CancelledContext(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	ctx, cancel := context.WithCancel(bg)
@@ -282,6 +290,7 @@ func TestRecordCrawl_CancelledContext(t *testing.T) {
 }
 
 func TestRecordCrawl_DoesNotModifyItsInput(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	in := CrawlInput{Server: "alpha", Complete: true, Error: "x", Tools: []CrawledTool{

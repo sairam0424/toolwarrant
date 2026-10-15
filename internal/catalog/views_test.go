@@ -11,6 +11,7 @@ import (
 )
 
 func TestViews_ToolsVersionsAndOrdering(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "beta")
 	mustAddServer(t, s, "alpha")
@@ -61,6 +62,7 @@ func TestViews_ToolsVersionsAndOrdering(t *testing.T) {
 }
 
 func TestSnapshotAndApproved_AcrossServers(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	if _, err := s.Snapshot(bg, "ghost"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Snapshot(ghost) = %v", err)

@@ -28,6 +28,7 @@ func fingerprint(t *testing.T, s *Store, path string) string {
 }
 
 func TestAtomicity_FailureMidTransactionLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	db := rawDB(t, path)
 	mustAddServer(t, s, "alpha")
@@ -116,6 +117,7 @@ func TestAtomicity_FailureMidTransactionLeavesNothingBehind(t *testing.T) {
 }
 
 func TestIntegrity_TamperedCanonicalFormIsCaughtBeforeItIsTrusted(t *testing.T) {
+	t.Parallel()
 	s, path := seededStore(t)
 	db := rawDB(t, path)
 	if err := s.Approve(bg, "alpha", "sum", digestOf(t, "sum", "v1"), bob); err != nil {
@@ -149,6 +151,7 @@ func TestIntegrity_TamperedCanonicalFormIsCaughtBeforeItIsTrusted(t *testing.T) 
 }
 
 func TestIntegrity_InconsistentRowsAreReportedNotServed(t *testing.T) {
+	t.Parallel()
 	setup := func(t *testing.T) (*Store, string) {
 		s, path := newStoreAt(t, defaultPolicyForTests())
 		mustAddServer(t, s, "alpha")
@@ -255,6 +258,7 @@ func TestIntegrity_InconsistentRowsAreReportedNotServed(t *testing.T) {
 }
 
 func TestSchema_ConstraintsHoldAgainstDirectSQL(t *testing.T) {
+	t.Parallel()
 	_, path := seededStore(t)
 	db := rawDB(t, path)
 	echoID := mustCount(t, db, `SELECT id FROM tools WHERE name = 'echo'`)

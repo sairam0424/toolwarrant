@@ -12,6 +12,7 @@ import (
 // version": the BEFORE INSERT guard mirrors the partial indexes, so REPLACE
 // never reaches conflict resolution, with or without foreign keys.
 func TestTriggers_ReplaceViaPartialIndexesIsRefused(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -52,6 +53,7 @@ func TestTriggers_ReplaceViaPartialIndexesIsRefused(t *testing.T) {
 // the guards compare values, so every alias of the rowid is caught, on every
 // history table.
 func TestTriggers_RowidAliasUpdatesAreRefused(t *testing.T) {
+	t.Parallel()
 	s, path := seededStore(t)
 	if err := s.Enable(bg, "alpha", "echo", bob); err != nil {
 		t.Fatal(err)
@@ -81,6 +83,7 @@ func TestTriggers_RowidAliasUpdatesAreRefused(t *testing.T) {
 // Reviewers' "a dangling approved pointer is invisible to readers": every read
 // path that hands out an approval reports it as corrupt.
 func TestTriggers_DanglingApprovedPointerIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -127,6 +130,7 @@ func rewriteDigestAndHashSeen(t *testing.T, db *sql.DB, digest string, canonical
 // rewritten definition behind an intact digest is never exported, while the
 // snapshot keeps serving the anchored digest that the rewrite cannot change.
 func TestSnapshot_AnchorsTheDigestAndApprovedCatchesTamperedBytes(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "good"))

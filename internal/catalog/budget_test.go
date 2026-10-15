@@ -16,6 +16,7 @@ import (
 // MaxProposalsPerDecision versions between decisions; past that a new digest
 // marks it unusable and stores nothing, and a decision resets the budget.
 func TestRecordCrawl_ProposalBudgetCapsVersions(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	variant := func(i int) string { return fmt.Sprintf("v%03d", i) }
@@ -73,6 +74,7 @@ func TestRecordCrawl_ProposalBudgetCapsVersions(t *testing.T) {
 // A reject resets the budget as well, and an unknown digest beyond the budget
 // never becomes a version even while the tool is disabled.
 func TestRecordCrawl_RejectResetsTheBudget(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	variant := func(i int) string { return fmt.Sprintf("r%03d", i) }
@@ -170,6 +172,7 @@ func TestRecordCrawl_LargeCrawlDoesNotBlockADecision(t *testing.T) {
 // upstream could cycle garbage and a revert to grow the file); the explicit
 // human decision ResetProposalBudget is the remedy that is always available.
 func TestReview_BudgetDeadlockAfterRevertLeavesNoDecisionToResetIt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "approved"))
@@ -249,6 +252,7 @@ func TestReview_BudgetDeadlockAfterRevertLeavesNoDecisionToResetIt(t *testing.T)
 // The reset is a decision: a named person only, never a no-op, never on a
 // read-only store, and only for a tool that exists.
 func TestResetProposalBudget_Refusals(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))

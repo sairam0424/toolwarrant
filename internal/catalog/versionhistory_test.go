@@ -78,6 +78,7 @@ func twoApprovedVersions(t *testing.T, s *Store) (string, string) {
 // second person; now every decision and Versions refuse the column, and the
 // restored column makes the decision path answer as the lifecycle does.
 func TestApprove_RejectedVersionFlippedToPendingIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -110,6 +111,7 @@ func TestApprove_RejectedVersionFlippedToPendingIsCorrupt(t *testing.T) {
 // approved before are each ErrCorrupt on the decision that would act on them
 // and on Versions, whatever the approvals table says.
 func TestDecisions_VersionColumnsMustMatchTheVerifiedChain(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		edit   string
 		target int // 1 or 2: the version the edit and the decision concern
@@ -168,6 +170,7 @@ func TestDecisions_VersionColumnsMustMatchTheVerifiedChain(t *testing.T) {
 // every decision with its cause named (D17 b, g), Integrity reports it, and
 // once it is removed the rollback is refused as it was before the forgery.
 func TestRollback_TargetForgedWithAGhostApprovalsRowIsCorrupt(t *testing.T) {
+	t.Parallel()
 	for _, ghostID := range []int64{-2, -1} {
 		t.Run("ghost approvals row id "+itoa(ghostID), func(t *testing.T) { rollbackForgery(t, ghostID) })
 	}

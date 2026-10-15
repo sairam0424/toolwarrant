@@ -11,6 +11,7 @@ import (
 // D7 regression (reviewers' "system actors may approve"): every decision needs
 // a person; the crawler identity is refused before anything is read.
 func TestDecisions_RequireAHumanActor(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), alice); err != nil {
@@ -47,6 +48,7 @@ func TestDecisions_RequireAHumanActor(t *testing.T) {
 // Reviewers' "Alice approves alice's crawl": names are normalised, so case and
 // compatibility variants are one identity, and that identity is what is stored.
 func TestActors_AreNormalisedBeforeStorageAndComparison(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), Actor{Name: "Alice", Type: ActorHuman}); err != nil {
@@ -86,6 +88,7 @@ func TestActors_AreNormalisedBeforeStorageAndComparison(t *testing.T) {
 // Reviewers' "proposed_by overwritten by a re-proposal": the whole proposer
 // history is stored, survives a reopen, and every proposer is refused.
 func TestProposers_ArePersistedAndEveryOneIsRefused(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	dA := digestOf(t, "echo", "A")
@@ -150,6 +153,7 @@ func TestProposers_ArePersistedAndEveryOneIsRefused(t *testing.T) {
 
 // D9: pausing a server stops crawls and serving while decisions keep working.
 func TestPauseAndResumeServer(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustAddServer(t, s, "beta")

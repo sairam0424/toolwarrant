@@ -15,6 +15,7 @@ import (
 // operations guide told the operator to run list against a suspect file. The
 // views now apply the serving path's evidence and return ErrCorrupt.
 func TestTools_ForgedApprovedPointerIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("sum", "v1"))
@@ -55,6 +56,7 @@ func TestTools_ForgedApprovedPointerIsCorrupt(t *testing.T) {
 // Versions, which hashes every version it hands out
 // (TestVersions_TamperedBytesAreCaughtAtOnce).
 func TestTools_ApplyTheServingPathEvidence(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		tamper func(t *testing.T, path, d string)
 		want   string

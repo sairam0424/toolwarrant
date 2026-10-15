@@ -117,6 +117,7 @@ func freshOpensRefuse(t *testing.T, path string, seq int64) {
 // crawl path, a fresh Store refuses at open because the chain it walks is
 // broken at the successor, and Integrity names the break.
 func TestSnapshot_InPlaceRewriteOfTheApprovalEntryBelowTheHeadIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "benign"))
@@ -186,6 +187,7 @@ func TestSnapshot_InPlaceRewriteOfTheApprovalEntryBelowTheHeadIsCorrupt(t *testi
 // at the entry that does not re-seal, and the head the operator recorded is
 // still a hash in the log, so only the chain shows it.
 func TestSnapshot_InPlaceEditOfAfterHashUnderAWarmMemoryIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "benign"))
@@ -233,6 +235,7 @@ func TestSnapshot_InPlaceEditOfAfterHashUnderAWarmMemoryIsCorrupt(t *testing.T) 
 // the head the operator recorded disagrees: the pin-bootstrap limit D15 (n)
 // states, recorded here as it is.
 func TestOpen_RewrittenHeadEntryIsCaughtOnlyByThePinAndTheRecordedHead(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "benign"))

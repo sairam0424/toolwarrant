@@ -11,6 +11,7 @@ import (
 // assigned, one audit entry per change, and a re-emit reads it back from here
 // and never from the file at --out.
 func TestSetProcessorAddr_RecordsTheAddressAndTheEntry(t *testing.T) {
+	t.Parallel()
 	s, _ := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustAddServer(t, s, "beta")
@@ -82,6 +83,7 @@ func TestSetProcessorAddr_RecordsTheAddressAndTheEntry(t *testing.T) {
 // rewritten address, and an address on a server the log never gave one, are
 // both reported, and a pause or resume does not disturb the comparison.
 func TestIntegrity_ProcessorAddrRewrittenIsReported(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustAddServer(t, s, "beta")

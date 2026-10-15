@@ -16,6 +16,7 @@ import (
 // append) cannot silence the two-person rule nor fake a proposer: the decision
 // path compares the table with the verified version.proposed entries.
 func TestApprove_GhostProposerAppendedWithPlainSQLIsRefused(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	if _, err := s.RecordCrawl(bg, crawlOf(tool("echo", "v1")), alice); err != nil {
@@ -39,6 +40,7 @@ func TestApprove_GhostProposerAppendedWithPlainSQLIsRefused(t *testing.T) {
 // A ghost approvals row with a positive id becomes the newest decision and
 // breaks the current approval on every path; it cannot approve anything.
 func TestSnapshot_GhostApprovalsRowWithAPositiveIDBreaksTheCurrentApproval(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	mustCrawl(t, s, "alpha", tool("echo", "v2"))
@@ -59,6 +61,7 @@ func TestSnapshot_GhostApprovalsRowWithAPositiveIDBreaksTheCurrentApproval(t *te
 // Swapping two tools' names on the mutable tools table is caught by the chain
 // anchor: the newest approval entry about the subject names the other digest.
 func TestSnapshot_SwappingToolNamesIsCaughtByTheAnchor(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("wipe", "v1"))

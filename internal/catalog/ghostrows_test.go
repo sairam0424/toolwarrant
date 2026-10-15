@@ -38,6 +38,7 @@ const ghostVersionInsert = `INSERT INTO tool_versions (id, tool_id, version_no, 
 // The positive-id guards refuse a row at id 0 or below from plain SQL and name
 // the rule; the Store's own inserts, which supply no id, pass them.
 func TestGuards_RowsBelowIdOneAreRefusedByThePositiveIdGuards(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	mustCrawl(t, s, "alpha", tool("echo", "v2"))
@@ -68,6 +69,7 @@ func TestGuards_RowsBelowIdOneAreRefusedByThePositiveIdGuards(t *testing.T) {
 // Disable included, and every read refuse the file naming the row below id 1,
 // Integrity counts it, and removing it restores service.
 func TestDecisions_GhostApprovalsRowIsNamedNotMistakenForAReplace(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d1 := approvedEcho(t, s)
 	mustCrawl(t, s, "alpha", tool("echo", "v2"))
@@ -111,6 +113,7 @@ func TestDecisions_GhostApprovalsRowIsNamedNotMistakenForAReplace(t *testing.T) 
 // The same for a tool_versions row at id -1, which made the next crawl that
 // stores a version fail under tool_versions_no_replace.
 func TestRecordCrawl_GhostVersionRowIsNamedNotMistakenForAReplace(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	db := rawDB(t, path)

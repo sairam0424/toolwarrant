@@ -28,6 +28,7 @@ func seededStore(t *testing.T) (*Store, string) {
 }
 
 func TestVerifyAudit_EmptyAndPopulated(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	sum, err := s.VerifyAudit(bg)
 	if err != nil || sum.Entries != 0 || sum.Head != audit.Genesis {
@@ -61,6 +62,7 @@ func TestVerifyAudit_EmptyAndPopulated(t *testing.T) {
 }
 
 func TestAuditEntries_PagingAndLimits(t *testing.T) {
+	t.Parallel()
 	s, _ := seededStore(t)
 	all, _ := s.AuditEntries(bg, 0, 0)
 	page, err := s.AuditEntries(bg, 2, 3)
@@ -78,6 +80,7 @@ func TestAuditEntries_PagingAndLimits(t *testing.T) {
 }
 
 func TestVerifyAudit_PagesThroughLargeLogs(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("writes about 5000 audit entries")
 	}
@@ -107,6 +110,7 @@ func brokenAt(t *testing.T, err error) *audit.BrokenError {
 }
 
 func TestVerifyAudit_DetectsEditingWithTheTriggerDropped(t *testing.T) {
+	t.Parallel()
 	s, path := seededStore(t)
 	db := rawDB(t, path)
 
@@ -118,6 +122,7 @@ func TestVerifyAudit_DetectsEditingWithTheTriggerDropped(t *testing.T) {
 }
 
 func TestVerifyAudit_DetectsDeletionAndReordering(t *testing.T) {
+	t.Parallel()
 	s, path := seededStore(t)
 	db := rawDB(t, path)
 	mustExec(t, db, `DROP TRIGGER audit_log_no_delete`)
@@ -128,6 +133,7 @@ func TestVerifyAudit_DetectsDeletionAndReordering(t *testing.T) {
 }
 
 func TestVerifyAudit_DetectsRewrittenLinks(t *testing.T) {
+	t.Parallel()
 	s, path := seededStore(t)
 	db := rawDB(t, path)
 	mustExec(t, db, `DROP TRIGGER audit_log_no_update`)
@@ -138,6 +144,7 @@ func TestVerifyAudit_DetectsRewrittenLinks(t *testing.T) {
 }
 
 func TestVerifyAudit_ChainAloneCannotSeeTruncation(t *testing.T) {
+	t.Parallel()
 	s, path := seededStore(t)
 	before, err := s.VerifyAudit(bg)
 	if err != nil {
@@ -165,6 +172,7 @@ func verifyErr(s *Store) error {
 const versionInsert = `INSERT OR REPLACE INTO tool_versions (tool_id, version_no, digest, digest_profile, canonical, raw, status, proposed_by, ever_approved, first_seen_at, crawl_id)`
 
 func TestTriggers_RefuseEditsToHistoryThroughOrdinarySQL(t *testing.T) {
+	t.Parallel()
 	_, path := seededStore(t)
 	db := rawDB(t, path)
 	insertAudit := func(seq int) string {
@@ -234,6 +242,7 @@ func TestTriggers_RefuseEditsToHistoryThroughOrdinarySQL(t *testing.T) {
 }
 
 func TestTriggers_StoreOperationsStillWork(t *testing.T) {
+	t.Parallel()
 	// The guards must not get in the way of the store's own writes: a long mixed
 	// history goes through with the triggers in place.
 	s, _ := seededStore(t)

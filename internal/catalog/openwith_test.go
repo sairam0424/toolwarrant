@@ -13,6 +13,7 @@ import (
 // Reviewers' "the processor needs write access": a read-only open serves every
 // read and refuses every write, and sees what a writer commits.
 func TestOpenWith_ReadOnly(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	writer := openStore(t, path, lifecycle.DefaultPolicy())
 	mustAddServer(t, writer, "alpha")
@@ -82,6 +83,7 @@ func TestOpenWith_ReadOnly(t *testing.T) {
 // Review finding (low): a forensic open of a missing path created an empty
 // 0600 file before failing. Only an init-style open may create a file.
 func TestOpenWith_ReadOnlyAndMustExistRefuseAMissingFile(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	for name, opts := range map[string]OpenOptions{
 		"read-only":                {ReadOnly: true},
@@ -116,6 +118,7 @@ func TestOpenWith_ReadOnlyAndMustExistRefuseAMissingFile(t *testing.T) {
 // is refused unless the operator says it is meant to be shared, a fresh file
 // and its WAL and SHM files are private, and a symbolic link is not followed.
 func TestOpenWith_FileModes(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits")
 	}

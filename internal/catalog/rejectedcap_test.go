@@ -25,6 +25,7 @@ func rejectedNames(generation, n int) []UnusableTool {
 }
 
 func TestRecordCrawl_RejectedEntriesStopAtTheCap(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -80,6 +81,7 @@ func TestRecordCrawl_RejectedEntriesStopAtTheCap(t *testing.T) {
 
 // The constant is pinned: a tenth of the per-crawl cap on entries.
 func TestRecordCrawl_RejectedCapConstant(t *testing.T) {
+	t.Parallel()
 	if MaxRejectedPerCrawl != 1000 || MaxRejectedPerCrawl*10 != MaxToolsPerCrawl {
 		t.Errorf("MaxRejectedPerCrawl = %d, want 1000 (a tenth of MaxToolsPerCrawl %d)", MaxRejectedPerCrawl, MaxToolsPerCrawl)
 	}

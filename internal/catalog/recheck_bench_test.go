@@ -109,6 +109,7 @@ func benchSnapshot(b *testing.B, s *Store, n int) {
 // so the reload hashes twice the tool count. A rewrite of a definition's bytes
 // changes neither count, because the reload never reads them.
 func TestBenchmarkSnapshotHashesOnlyAuditEntries(t *testing.T) {
+	t.Parallel()
 	const n = 8
 	s, path := newStoreAt(t, benchPolicy())
 	approvedServer(t, s, n)

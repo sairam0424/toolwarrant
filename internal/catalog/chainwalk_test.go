@@ -75,6 +75,7 @@ func appendRawEntries(tb testing.TB, db *sql.DB, n int) audit.Entry {
 // in place deep in a later page refuses a fresh read-only and read-write open
 // while a forensic open still verifies, lists and inspects.
 func TestOpen_VerifiesTheWholeChainAndPagesThroughIt(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
 	_ = s.Close()
@@ -142,6 +143,7 @@ func TestOpen_VerifiesTheWholeChainAndPagesThroughIt(t *testing.T) {
 // file, so a writer whose chain was edited behind its back appends nothing to
 // it, and the entries it does append chain from the verified head.
 func TestInTx_RefusesToAppendAfterTheChainWasEdited(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -180,6 +182,7 @@ func TestInTx_RefusesToAppendAfterTheChainWasEdited(t *testing.T) {
 // in-place edit with the hash column kept, a link broken by an entry re-sealed
 // in place, and a gap left by a deleted entry.
 func TestIntegrity_ReportsEveryChainBreak(t *testing.T) {
+	t.Parallel()
 	t.Run("seal and link", func(t *testing.T) {
 		s, path := seededStore(t)
 		db := rawDB(t, path)

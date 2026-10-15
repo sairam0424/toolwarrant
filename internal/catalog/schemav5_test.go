@@ -18,6 +18,7 @@ import (
 // is what docs/operations.md promises for a file another build wrote
 // (eighth review).
 func TestOpen_RefusesAPreReleaseSchemaFileUntouched(t *testing.T) {
+	t.Parallel()
 	path := dbPath(t)
 	s := openStore(t, path, lifecycle.DefaultPolicy())
 	approvedEcho(t, s)
@@ -81,6 +82,7 @@ func fileDigest(t *testing.T, path string) string {
 // audit log (eighth review). The released-older branch is reachable only
 // through the parameters until such a schema exists.
 func TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		version, first, current int
 		want, wantNot           string

@@ -38,6 +38,7 @@ const (
 // is caught. The DSN of all four connection kinds is checked as well, since
 // the immutable kind opens only a file that is no longer in WAL mode.
 func TestOpen_EveryPooledConnectionIsSynchronousFullWithForeignKeysInWAL(t *testing.T) {
+	t.Parallel()
 	rw, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, rw, "alpha")
 	mustCrawl(t, rw, "alpha", tool("echo", "v1"))
@@ -195,6 +196,7 @@ func anchorQueries() []anchorQuery {
 // snapshot's one-pass form must also join its materialised range read to the
 // tool rows through an automatic index, never by scanning it per tool row.
 func TestAnchorQueries_StayOnTheAuditLogBySubjectIndex(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))

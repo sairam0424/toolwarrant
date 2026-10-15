@@ -38,6 +38,7 @@ func anchoredServers(t *testing.T) (*Store, string) {
 // recorded head, so Integrity is no longer the only control that sees it. The
 // URL is never printed.
 func TestServers_ColumnsAreAnchoredToTheVerifiedChain(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		update string
 		server string
@@ -107,6 +108,7 @@ func TestServers_ColumnsAreAnchoredToTheVerifiedChain(t *testing.T) {
 // the chain backs it, not with the column: a column rewritten to the address
 // emit is about to assign is ErrCorrupt, not a quiet no-op without an entry.
 func TestSetProcessorAddr_ForgedColumnEqualToTheNewAddressIsCorrupt(t *testing.T) {
+	t.Parallel()
 	s, path := anchoredServers(t)
 	db := rawDB(t, path)
 	mustExec(t, db, `UPDATE servers SET processor_addr = '127.0.0.1:9999' WHERE name = 'alpha'`)
@@ -131,6 +133,7 @@ func TestSetProcessorAddr_ForgedColumnEqualToTheNewAddressIsCorrupt(t *testing.T
 // catalog identity in meta is ErrReplaced and a dropped guard is ErrCorrupt,
 // where both views used to answer.
 func TestServers_RunTheFileCheckLikeEveryOtherView(t *testing.T) {
+	t.Parallel()
 	s, path := anchoredServers(t)
 	db := rawDB(t, path)
 	mustExec(t, db, `UPDATE meta SET value = 'ffffffffffffffffffffffffffffffff' WHERE key = 'identity'`)
@@ -160,6 +163,7 @@ func TestServers_RunTheFileCheckLikeEveryOtherView(t *testing.T) {
 // rewriting the row to match does not pass: the row still disagrees with the
 // first entry, and Integrity names the second (eighth review).
 func TestServers_ASecondServerAddedEntryIsNotTheAnchor(t *testing.T) {
+	t.Parallel()
 	s, path := anchoredServers(t)
 	recorded, err := s.VerifyAudit(bg)
 	if err != nil {

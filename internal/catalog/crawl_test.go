@@ -10,6 +10,7 @@ import (
 )
 
 func TestRecordCrawl_FirstCrawlDiscoversAndNeverApproves(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 
@@ -58,6 +59,7 @@ func TestRecordCrawl_FirstCrawlDiscoversAndNeverApproves(t *testing.T) {
 }
 
 func TestRecordCrawl_RecrawlOfSameDefinitionIsUnchanged(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -76,6 +78,7 @@ func TestRecordCrawl_RecrawlOfSameDefinitionIsUnchanged(t *testing.T) {
 }
 
 func TestRecordCrawl_DriftRevertAndStrictMode(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	d1, d2 := digestOf(t, "echo", "v1"), digestOf(t, "echo", "v2")
@@ -117,6 +120,7 @@ func TestRecordCrawl_DriftRevertAndStrictMode(t *testing.T) {
 }
 
 func TestRecordCrawl_MissingDeprecatedAndReappeared(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	da := digestOf(t, "a", "v1")
@@ -166,6 +170,7 @@ func TestRecordCrawl_MissingDeprecatedAndReappeared(t *testing.T) {
 // A tool that comes back after a missed crawl is "returned" (D5: the flip
 // from denied to served gets its own event and its own report line).
 func TestRecordCrawl_ReturnAfterMissIsReportedAndAudited(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	dA := digestOf(t, "echo", "A")
@@ -189,6 +194,7 @@ func TestRecordCrawl_ReturnAfterMissIsReportedAndAudited(t *testing.T) {
 }
 
 func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	db := rawDB(t, path)
 	mustAddServer(t, s, "alpha")
@@ -273,6 +279,7 @@ func TestRecordCrawl_IncompleteCrawlChangesNoTool(t *testing.T) {
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func TestRecordCrawl_ProposerCannotApproveOwnCrawl(t *testing.T) {
+	t.Parallel()
 	t.Run("default policy", func(t *testing.T) {
 		s := newStore(t)
 		mustAddServer(t, s, "alpha")
@@ -306,6 +313,7 @@ func TestRecordCrawl_ProposerCannotApproveOwnCrawl(t *testing.T) {
 // D1: _meta is part of the digest (hosts act on it), so a changed _meta is a
 // new definition that needs its own approval.
 func TestRecordCrawl_ChangedMetaIsANewDefinition(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	withMeta := func(id string) CrawledTool {

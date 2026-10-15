@@ -13,6 +13,7 @@ import (
 // tool with a hostile name is quarantined on its own; the crawl is recorded
 // and every other tool is observed, so LastSeen follows the upstream.
 func TestRecordCrawl_PoisonNameIsQuarantined(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	dA, dChanged := digestOf(t, "echo", "A"), digestOf(t, "echo", "CHANGED")
@@ -70,6 +71,7 @@ func TestRecordCrawl_PoisonNameIsQuarantined(t *testing.T) {
 // A known tool the crawler found unusable is marked, hidden and audited; an
 // unknown one is rejected without a row.
 func TestRecordCrawl_UnusableObservations(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, defaultPolicyForTests())
 	mustAddServer(t, s, "alpha")
 	dA := digestOf(t, "echo", "A")
@@ -138,6 +140,7 @@ func TestRecordCrawl_UnusableObservations(t *testing.T) {
 // Definitions the catalog itself refuses are quarantined with a class, whether
 // the crawler vetted them or not.
 func TestRecordCrawl_RefusedDefinitionsAreQuarantinedByClass(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("known", "v1"))
@@ -213,6 +216,7 @@ func changeOf(rep CrawlReport, name string) ToolChange {
 // Every copy of a repeated name is unusable (D3): a known tool is marked, an
 // unknown name is rejected once.
 func TestRecordCrawl_DuplicateNamesAreUnusable(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("dup", "v1"))
@@ -247,6 +251,7 @@ func mustCrawlInput(t *testing.T, s *Store, in CrawlInput) CrawlReport {
 // Look-alikes of a name (reviewers' finding) are rejected, so an approver can
 // never be shown two tools that render alike.
 func TestRecordCrawl_LookAlikeNamesAreRejected(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	variants := []string{
@@ -274,6 +279,7 @@ func TestRecordCrawl_LookAlikeNamesAreRejected(t *testing.T) {
 // What the crawler says about an unusable tool is bounded and sanitised, and
 // a reason that is not a class token becomes the generic class.
 func TestRecordCrawl_CrawlerDetailsAreBounded(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	hostile := strings.Repeat("x", 2*maxDetailBytes) + cp(rlo) + "\x00"

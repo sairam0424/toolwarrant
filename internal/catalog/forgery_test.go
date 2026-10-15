@@ -49,6 +49,7 @@ func problemMentioning(t *testing.T, rep IntegrityReport, fragments ...string) {
 // stayed green. Now the serving path needs the approvals row, and Integrity
 // names the forgery.
 func TestReview_RawSQLApprovalForgeryIsServedBySnapshot(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -101,6 +102,7 @@ func TestReview_RawSQLApprovalForgeryIsServedBySnapshot(t *testing.T) {
 // call-time evidence (D9) claim the upstream serves the approved digest.
 // Integrity compares the column with what the latest crawl event recorded.
 func TestReview_RawSQLCanRewriteLastSeen(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -130,6 +132,7 @@ func TestReview_RawSQLCanRewriteLastSeen(t *testing.T) {
 // Approved and audit verify. Now the stored DDL is compared, and Integrity
 // also compares the approved digest with the version.approved entry.
 func TestReview_NeuteredGuardTriggerPassesVerifyGuardsAndConsistentRewriteIsServed(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "benign"))
@@ -188,6 +191,7 @@ func TestReview_NeuteredGuardTriggerPassesVerifyGuardsAndConsistentRewriteIsServ
 // approvals row and no version.approved entry verified clean. VerifyAudit
 // still checks the chain only, by design; Integrity is the fuller check.
 func TestReview_VerifyAuditNeverLooksAtApprovalsOrTools(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
@@ -210,6 +214,7 @@ func TestReview_VerifyAuditNeverLooksAtApprovalsOrTools(t *testing.T) {
 // so the export path's check was satisfied too. No audit entry records the
 // decision, and Integrity matches every approvals row against the log.
 func TestReview_ForgedApprovalsRowSatisfiesTheExportPathToo(t *testing.T) {
+	t.Parallel()
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", tool("echo", "v1"))
