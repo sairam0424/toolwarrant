@@ -42,6 +42,9 @@ const (
 	maxNameBytes   = 256
 	truncationMark = "..."
 	// maxLoggedNames caps the names listed in one log line.
+// The same cap bounds the per-tool `digest mismatch` lines written for one
+// tools/list page (logMismatches in list.go), in page order; the summary
+// line's mismatched= count carries the full number.
 	maxLoggedNames = 10
 	// maxErrBytes caps an error message in a log line.
 	maxErrBytes = 512
