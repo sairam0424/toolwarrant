@@ -78,25 +78,34 @@ func fileDigest(t *testing.T, path string) string {
 }
 
 // The refusal advises deletion only for a schema below the first released one;
-// a file written by a released build is named with the migration a read-write
-// open runs (D22 g: the first bump after v0.1.0 carried one, as the eighth
+// a file written by a released build is named with the fix this build knows
+// (D22 g: the first bump after v0.1.0 carried a migration, as the eighth
 // review promised), so no message ever tells an operator to destroy an audit
-// log. The branches are reached through the parameters so that each can be
-// pinned on its own.
+// log. The schema the build migrates is told to back the file up and run init,
+// and that every command but serve, audit verify and audit list migrates too;
+// a released schema below the one the build migrates (reachable at the next
+// bump, when migratableFrom moves to 7 and a v6 file is refused by a
+// read-write open as well) is told to read the file with a build of its own
+// schema or migrate it release by release, never to run the command that just
+// refused it. The branches are reached through the parameters so that each
+// can be pinned on its own, before the schema it describes exists.
 func TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas(t *testing.T) {
 	t.Parallel()
+	const migrate = `back the file up, then run "toolwarrant init" with this build to migrate it in place`
 	cases := map[string]struct {
-		version, first, current int
-		want, wantNot           string
+		version, first, migratable, current int
+		want, wantNot                       string
 	}{
-		"unreleased build":     {5, 6, 6, "delete the file and run init again", "do not delete"},
-		"released older build": {6, 6, 7, `this build uses 7; run "toolwarrant init" with this build, or any writing command, to migrate it in place`, "delete"},
-		"newer build":          {99, 6, 6, "this build supports 6", "delete"},
-		"zero":                 {0, 6, 6, "this build supports 6", "delete"},
+		"unreleased build":              {5, 6, 6, 6, "delete the file and run init again", "do not delete"},
+		"released, the migration":       {6, 6, 6, 7, "this build uses 7; " + migrate, "delete"},
+		"released, below the migration": {6, 6, 7, 8, "this build uses 8 and migrates schema 7 only; do not delete it: read it with a build of schema 6, or migrate it with each release in turn", `run "toolwarrant init"`},
+		"released, the next migration":  {7, 6, 7, 8, "this build uses 8; " + migrate, "delete"},
+		"newer build":                   {99, 6, 6, 6, "this build supports 6", "delete"},
+		"zero":                          {0, 6, 6, 6, "this build supports 6", "delete"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := schemaMessage(tc.version, tc.first, tc.current)
+			err := schemaMessage(tc.version, tc.first, tc.migratable, tc.current)
 			if !errors.Is(err, ErrSchema) {
 				t.Fatalf("schemaMessage = %v, want ErrSchema", err)
 			}
@@ -105,6 +114,16 @@ func TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), tc.wantNot) {
 				t.Errorf("message %q must not say %q", err, tc.wantNot)
+			}
+			if tc.version >= tc.first && strings.Contains(err.Error(), "delete the file") {
+				t.Errorf("message %q advises deleting a released catalog", err)
+			}
+			if tc.version == tc.migratable && tc.version < tc.current {
+				for _, want := range []string{"every command but serve, audit verify and audit list", "list and show included", "never migrate"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("message %q does not say %q", err, want)
+					}
+				}
 			}
 		})
 	}

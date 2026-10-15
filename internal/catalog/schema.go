@@ -123,20 +123,29 @@ func readUserVersion(ctx context.Context, q queryer) (int, error) {
 
 // schemaError explains a user_version this build cannot use.
 func schemaError(version int) error {
-	return schemaMessage(version, firstReleasedSchema, schemaVersion)
+	return schemaMessage(version, firstReleasedSchema, migratableFrom, schemaVersion)
 }
 
 // schemaMessage is schemaError with the boundaries as parameters, so that
-// each branch can be tested on its own. A released older schema is named with
-// the fix this build knows, the in-place migration a read-write open runs
-// (D22 g): the message is what a read-only open (serve) and a forensic open
-// (audit verify, audit list) of such a file print, since neither may write.
-func schemaMessage(version, first, current int) error {
+// each branch can be tested on its own and pinned before the schema it
+// describes exists. A released older schema is named with the fix this build
+// knows and never with the delete advice: the schema at migratable gets the
+// in-place migration a read-write open runs (D22 g), and since every command
+// but serve, audit verify and audit list opens the file read-write (list and
+// show included), the message says to back the file up before running any of
+// them; a released schema below migratable has no migration in this build, so
+// the operator reads it with a build of its own schema or migrates it with
+// each release in turn, and is not told to run the command that just refused
+// the file. The message is what a read-only open (serve) and a forensic open
+// (audit verify, audit list) print, since neither may write.
+func schemaMessage(version, first, migratable, current int) error {
 	switch {
 	case version > 0 && version < first:
 		return fmt.Errorf("%w: database is schema version %d from an unreleased build and this build uses %d; there is no migration: delete the file and run init again", ErrSchema, version, current)
+	case version == migratable && version < current:
+		return fmt.Errorf("%w: database is schema version %d, written by a released build, and this build uses %d; back the file up, then run \"toolwarrant init\" with this build to migrate it in place (one table and its guards are added, nothing is rewritten); every command but serve, audit verify and audit list opens the file read-write and migrates it the same way, list and show included, so take the backup before running any of them; serve, audit verify and audit list never migrate", ErrSchema, version, current)
 	case version >= first && version < current:
-		return fmt.Errorf("%w: database is schema version %d, written by a released build, and this build uses %d; run \"toolwarrant init\" with this build, or any writing command, to migrate it in place (one table and its guards are added, nothing is rewritten; back the file up first); a read-only open does not migrate", ErrSchema, version, current)
+		return fmt.Errorf("%w: database is schema version %d, written by a released build, and this build uses %d and migrates schema %d only; do not delete it: read it with a build of schema %d, or migrate it with each release in turn", ErrSchema, version, current, migratable, version)
 	}
 	return fmt.Errorf("%w: database is version %d, this build supports %d", ErrSchema, version, current)
 }

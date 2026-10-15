@@ -103,11 +103,13 @@ release:
     ExtMCP wire format and configuration schema) and writes catalog schema
     v7; a catalog from an earlier build is migrated in place when it is schema v6 (v0.1.0 to v0.3.x) and refused otherwise.
     To migrate: stop the processors, back the file up and record its audit head
-    with the build that wrote it, then run init (or any writing command) with
-    this build, which adds one table and its guards and rewrites nothing, so
-    the head is unchanged; then start the processors. A v0.3.x build refuses
-    the migrated file as written by a newer build, and a read-only open
-    (serve, audit verify, audit list) never migrates. A file from an
+    with the build that wrote it, then run init with this build, which adds
+    one table and its guards and rewrites nothing, so the head is unchanged;
+    then start the processors. Every command but serve, audit verify and
+    audit list opens the file read-write and migrates it the same way, list
+    and show included, so take the backup before running any of them with this
+    build; serve, audit verify and audit list never migrate. A v0.3.x build
+    refuses the migrated file as written by a newer build. A file from an
     unreleased build (schema v2 to v5) is refused and must be re-initialised
     (docs/operations.md, Recovering from ErrCorrupt and ErrSchema).
     Verify the checksums file before running a binary:

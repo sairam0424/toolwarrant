@@ -71,7 +71,9 @@ func TestMigrate_ReadOnlyAndForensicOpensOfAV6FileNameTheMigrationAndWriteNothin
 			t.Fatalf("%s open of a version 6 file = %v, want ErrSchema", name, err)
 		}
 		for _, want := range []string{"schema version 6, written by a released build", "this build uses 7",
-			`run "toolwarrant init" with this build`, "nothing is rewritten; back the file up first", "a read-only open does not migrate"} {
+			`back the file up, then run "toolwarrant init" with this build to migrate it in place`, "nothing is rewritten",
+			"every command but serve, audit verify and audit list opens the file read-write and migrates it the same way, list and show included",
+			"serve, audit verify and audit list never migrate"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s open error %q does not say %q", name, err, want)
 			}

@@ -1304,15 +1304,20 @@ says whether it came from an unreleased build (delete it and run init again)
 or from a release (migrate it in place with this build as the message says,
 or read it with a build of that schema; never delete it)".
 
-A v6 file is migrated in place, and only by a read-write open: `init`, every
-decision, `crawl`, `emit` and `export` migrate it; `serve` (a read-only
-open), `audit verify` and `audit list` (forensic opens) never write and
-return `database is schema version 6, written by a released build, and this
-build uses 7; run "toolwarrant init" with this build, or any writing command,
-to migrate it in place (one table and its guards are added, nothing is
-rewritten; back the file up first); a read-only open does not migrate`,
-leaving the file byte for byte as it was; a processor started on a v6 file
-exits 1 with that message. The migration adds the table and its guards in
+A v6 file is migrated in place by the first read-write open, and every
+command but three opens the file read-write: `init`, every decision, `crawl`,
+`emit`, `export`, `verify-gateway`, `server list` and the views `list`, `show`
+and `diff` all migrate a v6 file on their first run with the new binary, so
+take the backup before running any of them. Only `serve` (a read-only open),
+`audit verify` and `audit list` (forensic opens) never write; they return
+`database is schema version 6, written by a released build, and this build
+uses 7; back the file up, then run "toolwarrant init" with this build to
+migrate it in place (one table and its guards are added, nothing is
+rewritten); every command but serve, audit verify and audit list opens the
+file read-write and migrates it the same way, list and show included, so take
+the backup before running any of them; serve, audit verify and audit list
+never migrate`, leaving the file byte for byte as it was; a processor started
+on a v6 file exits 1 with that message. The migration adds the table and its guards in
 the one transaction `Open` already holds and reads or rewrites no row of any
 other table, so the audit head of a migrated file is the head it had, every
 approval is served as before, and a crash in the middle leaves a v6 file
@@ -1321,9 +1326,10 @@ at once migrate it once (the second waits on the lock and finds v7). A v6
 file that already holds an object named `signed_records` or like one of its
 guards was edited outside toolwarrant and is refused as `ErrCorrupt` with
 nothing written. Procedure: stop every processor of the file; back the file
-up and record its `audit verify` head with the build that wrote it; run
-`toolwarrant init` (or any writing command) with the new binary, which
-prints the path as on any existing file; run `audit verify` with the new
+up and record its `audit verify` head with the build that wrote it (not with
+the new one: its `audit verify` refuses a v6 file, and its `list` would
+migrate it before the backup exists); run `toolwarrant init` with the new
+binary, which prints the path as on any existing file; run `audit verify` with the new
 binary and compare the head with the one you recorded; start the processors
 again. A v0.3.x binary then refuses the migrated file with its own message
 ("database is version 7, this build supports 6"), so every host that opens
