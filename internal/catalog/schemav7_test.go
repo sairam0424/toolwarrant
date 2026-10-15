@@ -28,9 +28,10 @@ const sampleFingerprint = "SHA256:0000000000000000000000000000000000000000000"
 // be updated (any column, the seq, or a rowid alias), deleted or replaced, a
 // row of no audit entry is refused by the foreign key, a row below seq 1 is
 // refused by the positive-id guard, and a well-formed row planted under an
-// entry that carries no signed record is inert on the serving path (the walk
-// reads rows for the signed entries only; Integrity names it as an orphan).
-// What a row planted under a dropped guard does is
+// entry that carries no signed record is refused by the walk where it meets
+// the entry, so the next read of the Store names the row (D22 c;
+// TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone has every
+// reader and Integrity). What a row planted under a dropped guard does is
 // TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity.
 func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *testing.T) {
 	t.Parallel()
@@ -61,10 +62,15 @@ func TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows(t *test
 	if n := mustCount(t, db, `SELECT COUNT(*) FROM signed_records`); n != 1 {
 		t.Fatalf("%d rows after the refused statements, want the planted one", n)
 	}
-	if _, err := s.Snapshot(bg, "alpha"); err != nil {
-		t.Fatalf("Snapshot with an inert planted row: %v", err)
+	_, err := s.Snapshot(bg, "alpha")
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), orphanRowUnderServerAdded) {
+		t.Errorf("Snapshot with a planted row under an unsigned entry = %v, want ErrCorrupt saying %q", err, orphanRowUnderServerAdded)
 	}
 }
+
+// orphanRowUnderServerAdded is the sentence the walk and Integrity say about a
+// row planted at seq 1 of a catalog whose first entry is the server.added.
+const orphanRowUnderServerAdded = `signed_records row 1 belongs to audit entry 1, a "server.added", which carries no signed record; the row was inserted by hand`
 
 // A row planted under a dropped positive-id guard is a ghost row like one in
 // any history table: Snapshot and a write refuse the file naming the table,
@@ -143,14 +149,15 @@ func TestSchema_SignedRecordsRefusesOversizedRows(t *testing.T) {
 		t.Errorf("a row at both bounds was not stored as given")
 	}
 	// The row sits under the server.added entry, which carries no signed
-	// record: the serving path never reads it, and since the trust-list round
-	// Integrity names it as an orphan (D22 c).
-	if _, err := s.Snapshot(bg, "alpha"); err != nil {
-		t.Errorf("Snapshot with a planted row under an unsigned entry = %v", err)
+	// record: since the trust-list round the walk refuses it where it meets
+	// the entry and Integrity names it as an orphan (D22 c).
+	_, err := s.Snapshot(bg, "alpha")
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), orphanRowUnderServerAdded) {
+		t.Errorf("Snapshot with a planted row under an unsigned entry = %v, want ErrCorrupt saying %q", err, orphanRowUnderServerAdded)
 	}
 	rep := mustIntegrity(t, s)
 	if rep.SignedRecordsOrphaned != 1 || len(rep.Problems) != 1 {
 		t.Errorf("Integrity = %+v, want exactly the orphan row", rep)
 	}
-	problemMentioning(t, rep, `signed_records row 1 belongs to audit entry 1, a "server.added", which carries no signed record`)
+	problemMentioning(t, rep, orphanRowUnderServerAdded)
 }

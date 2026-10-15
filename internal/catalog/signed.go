@@ -19,10 +19,13 @@ import (
 // chain, commits to the exact record: a row swapped under an entry no longer
 // matches the token the chain verified, which is what the fourth and fifth
 // reviews taught about every table the chain does not cover. The rows are
-// read by primary key and only for the entries of a walked page, so a
-// crawl-only reload reads none (TestAnchorQueries_StayOnTheAuditLogBySubjectIndex
-// pins the plan, TestReload_ANewTrustListEntersTheStateOnTheSuffixWalk the
-// count).
+// read by primary key and only for the entries of a walked page, and the
+// seqs of the rows within a page's range by one primary-key range seek, so a
+// row under an entry that carries no record is refused where the walk meets
+// the entry and a crawl-only reload reads no record
+// (TestAnchorQueries_StayOnTheAuditLogBySubjectIndex pins both plans,
+// TestReload_ANewTrustListEntersTheStateOnTheSuffixWalk the count,
+// TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone the refusal).
 
 // The signed events and the detail fields their entries carry. The trust
 // events spell what internal/trust folds (trust.Kind(e.Event) is the kind);
@@ -51,6 +54,10 @@ const (
 	// placeholders and the closing parenthesis.
 	signedRecordsSelect   = `SELECT ` + signedRecordCols + ` FROM signed_records WHERE seq IN (`
 	insertSignedRecordSQL = `INSERT INTO signed_records (` + signedRecordCols + `) VALUES (?, ?, ?, ?)`
+	// signedSeqsInRange reads, by a primary-key range seek, the seqs of the
+	// rows within a walked page, so that a row under an entry that carries no
+	// signed record is refused (checkOrphanRows).
+	signedSeqsInRange = `SELECT seq FROM signed_records WHERE seq >= ? AND seq <= ? ORDER BY seq`
 )
 
 // SignedRecord is one signed record as audit list --json shows it: the exact
@@ -128,6 +135,61 @@ func readSignedChunk(ctx context.Context, q queryer, seqs []int64, out map[int64
 		return fmt.Errorf("catalog: read signed records: %w", err)
 	}
 	return nil
+}
+
+// checkOrphanRows requires every signed_records row within the seq range of
+// a verified page to sit at the seq of a signed entry of that page: the
+// catalog writes a row only together with a signed entry, so a row under any
+// other entry was inserted by hand, and the walk refuses it where it meets
+// the entry (errOrphanRecord; Integrity prints the same sentence and counts
+// SignedRecordsOrphaned). One primary-key range seek per walked page, so a
+// reload that walks no page reads nothing. A row at a seq above the head can
+// only be written with the foreign key off and belongs to no page until an
+// entry arrives at its seq, where this check or the Store's own insert (the
+// primary key) refuses it; Integrity names it at once (checkOrphanRecords).
+func checkOrphanRows(ctx context.Context, q queryer, page []audit.Entry) error {
+	if len(page) == 0 {
+		return nil
+	}
+	rows, err := q.QueryContext(ctx, signedSeqsInRange, page[0].Seq, page[len(page)-1].Seq)
+	if err != nil {
+		return fmt.Errorf("catalog: read signed records: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return fmt.Errorf("catalog: read signed records: %w", err)
+		}
+		e, ok := entryAt(page, seq)
+		if !ok {
+			return problemf(ruleBinding, nil, "signed_records row %d lies in the range of a verified page but at the seq of none of its entries; the row was inserted by hand", seq)
+		}
+		if !isSignedEvent(e.Event) {
+			return errOrphanRecord(seq, e.Event)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("catalog: read signed records: %w", err)
+	}
+	return nil
+}
+
+// entryAt returns the entry of a verified page at seq. audit.VerifyFrom
+// accepted the page, so its seqs are contiguous and the entry is seq minus
+// the first seq away; the index is checked all the same.
+func entryAt(page []audit.Entry, seq int64) (audit.Entry, bool) {
+	i := seq - page[0].Seq
+	if i < 0 || i >= int64(len(page)) || page[i].Seq != seq {
+		return audit.Entry{}, false
+	}
+	return page[i], true
+}
+
+// errOrphanRecord is the refusal of a signed_records row at the seq of an
+// entry that carries no signed record, as the walk and Integrity both word it.
+func errOrphanRecord(seq int64, event string) error {
+	return problemf(ruleBinding, nil, "signed_records row %d belongs to audit entry %d, a %s, which carries no signed record; the row was inserted by hand", seq, seq, quote(event))
 }
 
 // insertSignedRecord stores one record at the seq of the entry that carries

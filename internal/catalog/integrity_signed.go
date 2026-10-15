@@ -177,7 +177,7 @@ func (c *integrityCheck) reportOrphanRecord(seq int64) error {
 	case err != nil:
 		return fmt.Errorf("catalog: read audit entry %d: %w", seq, err)
 	default:
-		c.problem("signed_records row %d belongs to audit entry %d, a %s, which carries no signed record; the row was inserted by hand", seq, seq, quote(event))
+		c.problem("%s", errOrphanRecord(seq, event).Error())
 	}
 	return nil
 }

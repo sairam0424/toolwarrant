@@ -207,23 +207,29 @@ func TestAnchorQueries_StayOnTheAuditLogBySubjectIndex(t *testing.T) {
 	checkSignedRecordsPlan(t, s)
 }
 
-// planSignedByKey is how the walk's read of the signed records must reach the
-// table: by its INTEGER PRIMARY KEY, one seek per entry of the page, never a
-// scan (D22 c; the rows are read only for the signed entries of a walked
-// page, so a crawl-only reload reads none).
+// planSignedByKey is how the walk's two reads of the signed records must reach
+// the table: by its INTEGER PRIMARY KEY, one seek per signed entry of the page
+// for the rows and one range seek per page for the seqs, never a scan (D22 c;
+// a reload that walks no page reads nothing).
 const planSignedByKey = "SEARCH signed_records USING INTEGER PRIMARY KEY"
 
 // checkSignedRecordsPlan runs EXPLAIN QUERY PLAN over readSignedRecords's
-// statement for a two-seq chunk and requires the primary-key seek.
+// statement for a two-seq chunk and over checkOrphanRows's range read, and
+// requires the primary-key seek of each.
 func checkSignedRecordsPlan(t *testing.T, s *Store) {
 	t.Helper()
-	plan := explain(t, s, signedRecordsSelect+placeholders(2)+`)`)
-	if !slices.ContainsFunc(plan, func(line string) bool { return strings.HasPrefix(line, planSignedByKey) }) {
-		t.Errorf("readSignedRecords: no plan line starts with %q; the full plan:\n%s", planSignedByKey, strings.Join(plan, "\n"))
-	}
-	for _, line := range plan {
-		if strings.HasPrefix(line, "SCAN ") {
-			t.Errorf("readSignedRecords: the plan scans a table: %q", line)
+	for name, sql := range map[string]string{
+		"readSignedRecords": signedRecordsSelect + placeholders(2) + `)`,
+		"checkOrphanRows":   signedSeqsInRange,
+	} {
+		plan := explain(t, s, sql)
+		if !slices.ContainsFunc(plan, func(line string) bool { return strings.HasPrefix(line, planSignedByKey) }) {
+			t.Errorf("%s: no plan line starts with %q; the full plan:\n%s", name, planSignedByKey, strings.Join(plan, "\n"))
+		}
+		for _, line := range plan {
+			if strings.HasPrefix(line, "SCAN ") {
+				t.Errorf("%s: the plan scans a table: %q", name, line)
+			}
 		}
 	}
 }

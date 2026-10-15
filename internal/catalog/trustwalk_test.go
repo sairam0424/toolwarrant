@@ -220,6 +220,63 @@ func TestWalk_RefusesASwappedSignedRecordBecauseTheTokenDisagrees(t *testing.T) 
 	problemMentioning(t, rep, sentence, fmt.Sprintf("the signed record of audit entry %d was replaced", b))
 }
 
+// A signed_records row copied under the seq of an entry that carries no signed
+// record (the plan's break-check "copy a row under a new seq") is refused by
+// the walk at the page that holds the entry, naming the row and the entry: the
+// long-lived read-only Store and the writer on their next read (the row sits
+// in the suffix neither has walked), every fresh open at open, a forensic
+// open on its first view; the pin stays below the page. VerifyAudit passes
+// (the chain is intact) and Integrity counts the row as an orphan with the
+// same sentence. The row's own bytes are never read for this: one primary-key
+// range seek of seqs per walked page.
+func TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone(t *testing.T) {
+	t.Parallel()
+	s, path, _, _ := trustedCatalog(t)
+	ro, err := OpenWith(path, OpenOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ro.Close() }()
+	mustSnapshot(t, ro, "alpha")
+	below := len(rawEntries(t, rawDB(t, path)))
+	mustCrawl(t, s, "alpha", tool("echo", "v2"), tool("sum", "v1"))
+	db := rawDB(t, path)
+	entries := rawEntries(t, db)
+	target := entries[len(entries)-1]
+	if len(entries) == below || isSignedEvent(target.Event) {
+		t.Fatalf("test setup: %d entries after %d, the newest a %s; want an unsigned entry appended past both pins", len(entries), below, target.Event)
+	}
+	rotated := entryOf(t, s, evTrustRotated) // the writer's checked read advances its pin, but not past the new entries
+	rows, err := readSignedRecords(bg, db, []int64{rotated.Seq})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("read the rotation's row: %d, %v", len(rows), err)
+	}
+	rec := rows[rotated.Seq]
+	mustExec(t, db, insertSignedRecordSQL, target.Seq, rec.Payload, rec.Signer, rec.Signature)
+	mustExec(t, db, `UPDATE meta SET value = value + 1 WHERE key = 'generation'`)
+	sentence := errOrphanRecord(target.Seq, target.Event).Error()
+
+	_, err = ro.Snapshot(bg, "alpha")
+	wantCorruptNaming(t, "the long-lived read-only Store's Snapshot", err, sentence)
+	if pin := ro.loadPin(); pin.seq >= target.Seq {
+		t.Errorf("the pin advanced to %d past the refused page holding %d", pin.seq, target.Seq)
+	}
+	_, err = s.Snapshot(bg, "alpha")
+	wantCorruptNaming(t, "the writer's Snapshot", err, sentence)
+	opensRefuseNaming(t, path, sentence)
+	f := forensicOpen(t, path, "")
+	if _, err := f.VerifyAudit(bg); err != nil {
+		t.Errorf("VerifyAudit = %v; the chain is intact, the row is what the walk refuses", err)
+	}
+	rep := mustIntegrity(t, f)
+	if rep.SignedRecordsOrphaned != 1 || rep.SignedRecordsInvalid != 0 || rep.TrustListsInvalid != 0 || rep.ChainBreaks != 0 {
+		t.Errorf("Integrity = %+v, want exactly one orphan row", rep)
+	}
+	problemMentioning(t, rep, sentence)
+	_, err = f.Tools(bg, "")
+	wantCorruptNaming(t, "forensic Tools", err, sentence)
+}
+
 // A bootstrap copied from another catalog, byte for byte with its signature,
 // is refused by the catalog it was not made for: the identity is inside the
 // signed bytes, so a staging list cannot be replayed into production even

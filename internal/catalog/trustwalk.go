@@ -17,7 +17,8 @@ import (
 // whose signer is the entry's signer token, the signature verifies under the
 // kind's namespace, the payload is the canonical form of the kind's type and
 // names this catalog, the entry's own prev_hash as its prev_head and the
-// record's signer, and the entry is a person's. Rule 3, the trust list: a
+// record's signer, the entry is a person's, and no row sits at the seq of an
+// entry that carries no record (checkOrphanRows). Rule 3, the trust list: a
 // bootstrap once and only before any rotation, the version exactly one above
 // the list in force, the signer in both lists (the bootstrap signed by a key
 // of its own list and by the pinned root when one is given), the entry's
@@ -115,9 +116,24 @@ type pageOutcome struct {
 
 // verifySignedPage verifies every signed entry of one page in seq order
 // against the trust list in force as tm holds it, reading the rows by primary
-// key once for the page, and returns the memory after the page. The first
-// refusal ends the page as ErrCorrupt with its sentence.
+// key once for the page, then requires every row within the page's seq range
+// to belong to one of those entries (checkOrphanRows), and returns the memory
+// after the page. The first refusal ends the page as ErrCorrupt with its
+// sentence.
 func verifySignedPage(ctx context.Context, q queryer, page []audit.Entry, tm trustMemory, identity, pinnedRoot string) (pageOutcome, error) {
+	out, err := verifySignedEntries(ctx, q, page, tm, identity, pinnedRoot)
+	if err != nil {
+		return pageOutcome{}, err
+	}
+	if err := checkOrphanRows(ctx, q, page); err != nil {
+		return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
+	}
+	return out, nil
+}
+
+// verifySignedEntries is the per-entry half of verifySignedPage: rule 1, the
+// signature, then rule 3 or rule 4 for each signed entry of the page.
+func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, tm trustMemory, identity, pinnedRoot string) (pageOutcome, error) {
 	out := pageOutcome{trust: tm}
 	seqs := signedSeqs(page)
 	if len(seqs) == 0 {
