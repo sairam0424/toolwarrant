@@ -289,13 +289,21 @@ func TestSchema_ConstraintsHoldAgainstDirectSQL(t *testing.T) {
 		"server with a duplicate name":   `INSERT INTO servers (name, url, owner_group, allow_private, paused, created_at) VALUES ('alpha', 'https://x', '', 0, 0, 't')`,
 		"server with bad private flag":   `INSERT INTO servers (name, url, owner_group, allow_private, paused, created_at) VALUES ('zzz', 'https://x', '', 2, 0, 't')`,
 		"server with bad paused flag":    `INSERT INTO servers (name, url, owner_group, allow_private, paused, created_at) VALUES ('zzy', 'https://x', '', 0, 2, 't')`,
+		// The signed_records bounds (schemav7.go; TestSchema_SignedRecordsRefusesOversizedRows has the full table).
+		"signed record with empty payload":       `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (1, x'', 'SHA256:a', x'00')`,
+		"signed record with oversized payload":   `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (1, zeroblob(65537), 'SHA256:a', x'00')`,
+		"signed record with oversized signature": `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (1, x'7b7d', 'SHA256:a', zeroblob(4097))`,
+		"signed record with another fingerprint": `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (1, x'7b7d', 'MD5:a', x'00')`,
+		"signed record of a missing audit entry": `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (999999, x'7b7d', 'SHA256:a', x'00')`,
 	} {
 		if _, err := db.ExecContext(bg, stmt); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
 	}
 	// A version that breaks no rule does go in, so the refusals above are the
-	// constraints' doing; and the unusable marker is a legal last_seen value.
+	// constraints' doing; the unusable marker is a legal last_seen value; and
+	// a signed record within its bounds about an existing entry goes in.
 	mustExec(t, db, newVersion(20, strings.Repeat("7", 64), "superseded"))
 	mustExec(t, db, `UPDATE tools SET last_seen_digest = 'unusable' WHERE name = 'sum'`)
+	mustExec(t, db, `INSERT INTO signed_records (seq, payload, signer_fingerprint, signature) VALUES (1, x'7b7d', 'SHA256:a', x'00')`)
 }

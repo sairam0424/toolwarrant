@@ -23,7 +23,7 @@ const (
 	adviceReadOnly     = "the database was opened read-only, so nothing can be changed through it"
 	advicePaused       = "the server is paused; run \"" + programName + " server resume NAME\" before crawling it again"
 	adviceHuman        = "only a named person decides; pass --as with your own name"
-	adviceSchema       = "the file was written by another schema version; the message says whether it came from an unreleased build (delete it and run init again) or from a release (read it with a build of that schema, never delete it)"
+	adviceSchema       = "the file was written by another schema version; the message says whether it came from an unreleased build (delete it and run init again) or from a release (migrate it in place with this build as the message says, or read it with a build of that schema; never delete it)"
 	adviceCorrupt      = "do not serve from this database, restore it from a backup"
 	adviceInterrupted  = "interrupted"
 )

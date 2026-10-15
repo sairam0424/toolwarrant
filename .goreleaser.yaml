@@ -101,10 +101,23 @@ release:
   header: |
     toolwarrant {{ .Version }} is tested against agentgateway v1.6.0 (pinned
     ExtMCP wire format and configuration schema) and writes catalog schema
-    v6; a catalog from an earlier build is refused and must be re-initialised:
-    stop the processors, back up the old file and record its audit head with the
-    build that wrote it, keep the git export, then init, register, crawl and
-    approve again (docs/operations.md, Recovering from ErrCorrupt and ErrSchema).
+    v7; a catalog from an earlier build is migrated in place when it is schema v6 (v0.1.0 to v0.3.x) and refused otherwise.
+    To migrate: stop the processors, back the file up and record its audit head
+    with the build that wrote it, then run init with this build, which adds
+    one table and its guards and rewrites nothing, so the head is unchanged;
+    then start the processors. Every command but serve, audit verify and
+    audit list opens the file read-write and migrates it the same way, list
+    and show included, so take the backup before running any of them with this
+    build; serve, audit verify and audit list never migrate. A v0.3.x build
+    refuses the migrated file as written by a newer build, and a v0.3.x
+    processor left running on it keeps serving until the first write with
+    this build moves the generation, then denies every hook with "unexpected
+    table signed_records ... the file was edited outside toolwarrant": that is
+    the migration, not a tamper; restart it with this build, do not restore a
+    backup. A v6 file this build refuses as corrupt before migrating it is
+    inspected with a v0.3.x binary, so keep one. A file from an
+    unreleased build (schema v2 to v5) is refused and must be re-initialised
+    (docs/operations.md, Recovering from ErrCorrupt and ErrSchema).
     Verify the checksums file before running a binary:
     docs/operations.md, section Releasing.
   footer: |

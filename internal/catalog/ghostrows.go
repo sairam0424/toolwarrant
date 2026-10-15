@@ -25,20 +25,24 @@ import (
 // inTx), so a row planted under a dropped and re-created guard fails closed
 // with its cause named instead of hiding from the ranking rules or blocking
 // inserts under the no-replace guards' message. Integrity reports every such
-// row (IntegrityReport.GhostRows, and ChainBreaks for the log).
+// row (IntegrityReport.GhostRows, and ChainBreaks for the log). The
+// signed_records table of schema version 7 is keyed by the seq of the audit
+// entry it belongs to, so a row below seq 1 there is a row of no entry at
+// all, and it is refused and reported like the others (D22 g).
 
 // ghostRowsQuery asks whether any history table holds a row below id 1. Each
 // EXISTS is one seek on the rowid b-tree (rowid < 1), so the check costs
 // nothing a read would notice.
 const ghostRowsQuery = `SELECT EXISTS (SELECT 1 FROM approvals WHERE id < 1),
 	EXISTS (SELECT 1 FROM tool_versions WHERE id < 1),
-	EXISTS (SELECT 1 FROM audit_log WHERE seq < 1)`
+	EXISTS (SELECT 1 FROM audit_log WHERE seq < 1),
+	EXISTS (SELECT 1 FROM signed_records WHERE seq < 1)`
 
-// checkGhostRows is ErrCorrupt when approvals, tool_versions or audit_log holds
-// a row whose id or seq is below 1.
+// checkGhostRows is ErrCorrupt when approvals, tool_versions, audit_log or
+// signed_records holds a row whose id or seq is below 1.
 func checkGhostRows(ctx context.Context, q queryer) error {
-	var approvals, versions, entries int
-	if err := q.QueryRowContext(ctx, ghostRowsQuery).Scan(&approvals, &versions, &entries); err != nil {
+	var approvals, versions, entries, records int
+	if err := q.QueryRowContext(ctx, ghostRowsQuery).Scan(&approvals, &versions, &entries, &records); err != nil {
 		return fmt.Errorf("catalog: look for rows below id 1: %w", err)
 	}
 	switch {
@@ -48,6 +52,8 @@ func checkGhostRows(ctx context.Context, q queryer) error {
 		return errGhostRow("tool_versions", "id")
 	case entries == 1:
 		return errGhostRow("audit_log", "seq")
+	case records == 1:
+		return errGhostRow(signedRecordsTable, "seq")
 	}
 	return nil
 }
