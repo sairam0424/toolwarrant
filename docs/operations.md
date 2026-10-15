@@ -1948,7 +1948,17 @@ without the `v`, the heading for that version exists
 (`TestReleaseGuards_refuseAVersionWithoutADatedChangelogEntry`). The guards
 are `make release-guards` on their own, and
 `TestReleaseGuards_runFirstInReleaseCheck` pins that `release-check` runs them
-first.
+first. After the guards, `make release-schema-line` (run by `release-check`
+before `goreleaser check`) reads the header of `.goreleaser.yaml` and refuses
+a release whose notes name another catalog schema version than
+`internal/catalog/schema.go` writes; since the version 7 round the header
+line reads `v7; a catalog from an earlier build is migrated in place when it
+is schema v6 (v0.1.0 to v0.3.x) and refused otherwise`, followed by the
+migration procedure, and
+`TestReleaseGuards_schemaLineNamesTheMigration` pins the number and that
+sentence, so the release notes name schema v7 and the migration an operator
+with a v0.1.0 to v0.3.x catalog has to run (Recovering from ErrCorrupt and
+ErrSchema).
 
 Then push `main`, let the `ci` workflow pass, tag `vX.Y.Z` on that commit and
 push the tag. The `release` workflow's gate refuses a tag whose commit has no

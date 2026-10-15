@@ -10,7 +10,12 @@
 // The tests copy the Makefile, go.mod and CHANGELOG.md into a scratch directory
 // and run make there, so the tree is never edited and goreleaser is not needed;
 // each refusal is pinned by the message the guard prints, so a guard failing
-// for another reason is not mistaken for the right one.
+// for another reason is not mistaken for the right one. One more test runs
+// the release-schema-line target the same way, on copies of .goreleaser.yaml
+// and internal/catalog/schema.go: the release notes header must name the
+// schema version the code writes and say that a schema v6 file is migrated
+// in place (D22 g), since that sentence is what an operator with an older
+// catalog acts on.
 //
 // The package also holds the tests of scripts/release-notes.sh, the release
 // workflow's notes step (decision D20 (d)): a final tag takes its own dated
