@@ -13,6 +13,10 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- README.md (quickstart step 7 and known limit L17), SECURITY.md (the hardening checklist's deployment-requirement and canary items and the gateway-pin paragraph), docs/operations.md ("Deployment requirements", "Running the canary", the verdict list and item 1 of "Moving the gateway pin"), docs/threat-model.md (row 25, L17 and their notes) and docs/decisions.md (a dated correction appended to D18) no longer say that agentgateway v1.6.0 answers the canary's probe with HTTP 202 on every check or tell the quickstart's reader to expect UNHOOKED-CALLS and then pass `--expect-unhooked`: the gateway forwards the id-less `tools/call` to the upstream without the hook in every observed case (L17 stands; the processor counts no probe) and relays the upstream's answer, so the status the canary reports is the upstream's; an upstream that accepts the call as a notification answers 202 (UNHOOKED-CALLS, or `KNOWN-LIMIT` under `--expect-unhooked`), which the end-to-end harness's hostile upstream of `e2e/hostile_test.go` does, and an upstream that refuses a request without an id answers 400, which the quickstart's `cmd/mockupstream` (go-sdk) does and the OK line names as `the id-less tools/call was not accepted as a notification (HTTP 400, by the gateway or by the upstream)`; `--expect-unhooked` is for deployments whose upstream answers 202 and reports `PROBE-CHANGED` against a 400 upstream by design (decision D18), so the quickstart no longer passes it (observed 2026-10-15 with the published v0.3.0 binary; documents only, no code changed; `O_UnhookedCallProbe` of `TestEndToEnd`, `TestExpectUnhookedTurnsThe202IntoAKnownLimitLine`, `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`).
+
 ## [0.3.0] - 2026-10-15
 
 ### Added

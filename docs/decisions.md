@@ -2070,7 +2070,53 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   (KNOWN-LIMIT L17)`, exited 0, and the hostile upstream's request log gained
   one probe request. Each of the three new tests fails on the code before this
   decision with `flag provided but not defined: -expect-unhooked`, exit 2.
-
+- Correction (2026-10-15). The context above and the documents D18 rewrote
+  said that agentgateway v1.6.0 answers the probe with HTTP 202 on every check
+  and told the quickstart's reader to expect UNHOOKED-CALLS and then pass
+  `--expect-unhooked`. That was observed against the end-to-end harness's
+  hostile upstream (`e2e/hostile_test.go`), which accepts an id-less request as
+  a notification, not against the quickstart's own `cmd/mockupstream`. On
+  2026-10-15 three independent verifiers ran the published v0.3.0 darwin/arm64
+  binary against agentgateway v1.6.0 with `cmd/mockupstream` (go-sdk) as the
+  upstream, as README step 7 instructs: `verify-gateway --admin` without
+  `--expect-unhooked` printed `OK: the gateway serves 2 tool(s), 2 approved
+  and current; live configuration matches the emitted file; the id-less
+  tools/call was not accepted as a notification (HTTP 400, by the gateway or
+  by the upstream)` and exited 0; with `--expect-unhooked` it printed
+  `PROBE-CHANGED mock: the gateway no longer answers the probe with 202 (the
+  id-less tools/call came back HTTP 400); the pin moved or the gateway changed
+  under it; re-qualify (L7) and drop --expect-unhooked once the probe's answer
+  is understood` and exited 1; an id-less `tools/call` sent by hand to the
+  gateway route and directly to the mock both returned HTTP 400 with the body
+  `invalid request: missing id for "tools/call"`; the gateway's log carried
+  `error="mcp: upstream error: 400 Bad Request"`; and the processor's stats at
+  SIGTERM read `calls allowed=2 denied=2 (stale=0)`, the id-bearing calls and
+  none of the seven id-less probes. So the gateway forwarded every probe to the
+  upstream without the hook (L17 stands) and relayed the upstream's refusal:
+  the HTTP status the canary reports is the upstream's answer, 202 from an
+  upstream that accepts the call as a notification (UNHOOKED-CALLS, or
+  KNOWN-LIMIT under the flag) and 400 from one that refuses a request without
+  an id (the clause of the OK line that attributes the refusal to nobody,
+  D17). The design already covered both answers: `classifyProbe` (D13 to D17)
+  reports the 202 and the bare 400 as it did, and decision (c) above makes a
+  non-202 answer PROBE-CHANGED under the flag by design, which is what the mock
+  produced. The flag is therefore for deployments whose upstream answers 202;
+  the quickstart must not pass it. README step 7 and L17, SECURITY.md (the
+  hardening checklist and the pin paragraph), [operations.md](operations.md)
+  ("Deployment requirements", "Running the canary", the verdict list, item 1 of
+  "Moving the gateway pin") and [threat-model.md](threat-model.md) (row 25, L17
+  and their notes) were corrected on 2026-10-15 to state this; no code, test or
+  flag changed (e2e scenario O, `O_UnhookedCallProbe` of `TestEndToEnd`, and
+  cmd `TestExpectUnhookedFailsWhenTheGatewayStopsForwarding`, which drives the
+  go-sdk upstream's bare 400 to PROBE-CHANGED, already pin both answers).
+  The same unqualified claim stands as history in D13 (h) ("On the pinned
+  gateway, which answers 202"), in the D13 round summary ("the probe still
+  fails every check"), in D17 ("answers 202 before forwarding") and in the
+  D13 (h) entry of seam/RESULTS.md; this correction supersedes each of them,
+  and none is rewritten. The canary's own help text for --no-probe and
+  --expect-unhooked in cmd/toolwarrant/verify.go still attributes the 202 to
+  the gateway and recommends the flag; a follow-up change brings those two
+  strings in line with this correction.
 ## D19. TLS and client certificates on the processor link
 
 - Context. The link between the gateway and a processor was plain `host:port`
