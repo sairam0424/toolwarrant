@@ -71,8 +71,19 @@ func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
 	// Versions 3, 4 and 5 are the previous unreleased builds (D13(i): the audit
 	// detail format gained fields; D14(k): the catalog identity, the processor
 	// address column and the new guards; D17(b): the positive-id guards); each
-	// is refused like every other.
-	for name, version := range map[string]int{"newer": 99, "older unreleased": 1, "third round": 3, "fourth round": 4, "fifth round": 5, "negative": -3} {
+	// is refused with the re-initialise advice, like 1. Versions 8 and 99 were
+	// written by newer builds. Version 6, the first released schema, is the
+	// one a read-write open migrates (D22 g; schemav6_test.go has the
+	// migration tests), so a read-only open of it names the migration and a
+	// read-write open succeeds.
+	const reinit, newer = "delete the file and run init again", "this build supports 7"
+	for name, tc := range map[string]struct {
+		version int
+		want    string
+	}{
+		"newer": {99, newer}, "next": {8, newer}, "negative": {-3, newer},
+		"older unreleased": {1, reinit}, "third round": {3, reinit}, "fourth round": {4, reinit}, "fifth round": {5, reinit},
+	} {
 		t.Run(name, func(t *testing.T) {
 			path := dbPath(t)
 			s, err := Open(path, lifecycle.DefaultPolicy())
@@ -80,19 +91,43 @@ func TestOpen_RefusesOtherSchemaVersions(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = s.Close()
-			mustExec(t, rawDB(t, path), `PRAGMA user_version = `+itoa(int64(version)))
-			_, err = Open(path, lifecycle.DefaultPolicy())
-			if !errors.Is(err, ErrSchema) {
-				t.Fatalf("Open on a version %d database: %v, want ErrSchema", version, err)
-			}
-			if version > 0 && version < schemaVersion && !strings.Contains(err.Error(), "delete the file and run init again") {
-				t.Errorf("an older database must tell the operator to re-initialise: %v", err)
-			}
-			if _, err := OpenWith(path, OpenOptions{ReadOnly: true}); !errors.Is(err, ErrSchema) {
-				t.Errorf("read-only open on a version %d database: %v, want ErrSchema", version, err)
+			mustExec(t, rawDB(t, path), `PRAGMA user_version = `+itoa(int64(tc.version)))
+			for mode, opts := range map[string]OpenOptions{"read-write": {Policy: lifecycle.DefaultPolicy()}, "read-only": {ReadOnly: true}} {
+				_, err := OpenWith(path, opts)
+				if !errors.Is(err, ErrSchema) {
+					t.Fatalf("%s open on a version %d database: %v, want ErrSchema", mode, tc.version, err)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("%s open on a version %d database: %v, want %q", mode, tc.version, err, tc.want)
+				}
 			}
 		})
 	}
+	t.Run("released v6 migrates on a read-write open", func(t *testing.T) {
+		path := dbPath(t)
+		s, err := Open(path, lifecycle.DefaultPolicy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Close()
+		db := rawDB(t, path)
+		for _, stmt := range []string{`DROP TRIGGER signed_records_no_update`, `DROP TRIGGER signed_records_no_delete`,
+			`DROP TRIGGER signed_records_no_replace`, `DROP TRIGGER signed_records_positive_id`, `DROP TABLE signed_records`,
+			`PRAGMA user_version = 6`} {
+			mustExec(t, db, stmt)
+		}
+		_, err = OpenWith(path, OpenOptions{ReadOnly: true})
+		if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), `run "toolwarrant init" with this build`) {
+			t.Fatalf("read-only open on a version 6 database: %v, want ErrSchema naming the migration", err)
+		}
+		migrated := openStore(t, path, lifecycle.DefaultPolicy())
+		if v := mustCount(t, db, `PRAGMA user_version`); v != schemaVersion {
+			t.Errorf("user_version after the read-write open = %d, want %d", v, schemaVersion)
+		}
+		if g := mustGeneration(t, migrated); g != 0 {
+			t.Errorf("generation after the migration = %d, want 0 (nothing but the schema changed)", g)
+		}
+	})
 }
 
 // makePrivate gives a file the raw SQLite handle created the owner-only mode

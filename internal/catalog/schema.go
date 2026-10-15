@@ -10,14 +10,15 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version. A database with another
-// number is refused: a higher one was written by a newer build; a lower one
-// below firstReleasedSchema was written by an unreleased build, for which
-// there is no migration, so the operator deletes the file and runs init
-// again; a lower one at or above firstReleasedSchema was written by a
-// released build and holds approvals and an audit log an operator must keep,
-// so the message names the build that reads it and never advises deletion
-// (eighth review; the first bump after v0.1.0 carries a migration or that
-// message, never the delete advice).
+// number is refused or migrated: a higher one was written by a newer build
+// and is refused; a lower one below firstReleasedSchema was written by an
+// unreleased build, for which there is no migration, so the operator deletes
+// the file and runs init again; a lower one at or above firstReleasedSchema
+// was written by a released build and holds approvals and an audit log an
+// operator must keep, so a read-write open migrates it in place when it is
+// migratableFrom (D22 g) and every other open returns a message that names
+// the migration; deletion is never advised for a released schema (eighth
+// review).
 //
 // Version 2 added digest_profile and proposals_since_decision, the
 // tool_version_proposers table, servers.paused and the unusable marker.
@@ -42,16 +43,38 @@ import (
 // every later insert, and a row at id -2 was never the newest decision). A
 // changed guard text means a version 5 file would be refused as redefined, so
 // the number moves and the file is refused with the usual advice instead.
-const schemaVersion = 6
+// Version 7 (D22 g) added the signed_records table (one row per signed audit
+// entry: the signed bytes, the signer's fingerprint and the sshsig blob,
+// which the trust-list and signed-decision rounds write and bind to the
+// chain through the sigref token of the owning entry) and its four guards
+// signed_records_no_update, signed_records_no_delete,
+// signed_records_no_replace and signed_records_positive_id (schemav7.go). It
+// is the first bump after the first released schema, so it carries the
+// migration the eighth review promised: a version 6 file is migrated in
+// place on a read-write open (migrateV6ToV7, inside the one immediate
+// transaction migrate holds), which adds the table and the guards and
+// rewrites nothing, so the audit head of a migrated file is the head it had;
+// a read-only or forensic open of a version 6 file returns ErrSchema naming
+// the migration and never writes.
+const schemaVersion = 7
 
 // firstReleasedSchema is the schema of the first tagged release (v0.1.0). Every
 // version below it belongs to an unreleased build and may be deleted; every
 // version from it on belongs to a release and must not be.
 const firstReleasedSchema = 6
 
-// migrate creates the schema in an empty database, or checks that an existing
-// one is ours. It runs in one immediate transaction, so two processes opening
-// a fresh file at the same time cannot both create it.
+// migratableFrom is the one earlier released schema this build migrates in
+// place (migrateV6ToV7). It is at least firstReleasedSchema: an unreleased
+// schema has no migration, and a file at migratableFrom is never refused by
+// a read-write open.
+const migratableFrom = 6
+
+// migrate creates the schema in an empty database, migrates a database at
+// migratableFrom to schemaVersion, or checks that an existing one is ours. It
+// runs in one immediate transaction, so two processes opening a fresh file
+// at the same time cannot both create it, and two opening a migratable file
+// at the same time migrate it once: the second waits on the lock and then
+// reads the version the first wrote.
 func migrate(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -64,6 +87,16 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}
 	switch version {
 	case schemaVersion:
+		if err := checkOurs(ctx, tx, true); err != nil {
+			return err
+		}
+	case migratableFrom:
+		// The migrated schema is then checked exactly as a file written at
+		// this version is, so a guard a version 6 file had lost is still
+		// corruption and nothing commits.
+		if err := migrateV6ToV7(ctx, tx); err != nil {
+			return err
+		}
 		if err := checkOurs(ctx, tx, true); err != nil {
 			return err
 		}
@@ -93,15 +126,17 @@ func schemaError(version int) error {
 	return schemaMessage(version, firstReleasedSchema, schemaVersion)
 }
 
-// schemaMessage is schemaError with the boundaries as parameters, so the
-// branch for a released older schema can be tested before such a schema
-// exists.
+// schemaMessage is schemaError with the boundaries as parameters, so that
+// each branch can be tested on its own. A released older schema is named with
+// the fix this build knows, the in-place migration a read-write open runs
+// (D22 g): the message is what a read-only open (serve) and a forensic open
+// (audit verify, audit list) of such a file print, since neither may write.
 func schemaMessage(version, first, current int) error {
 	switch {
 	case version > 0 && version < first:
 		return fmt.Errorf("%w: database is schema version %d from an unreleased build and this build uses %d; there is no migration: delete the file and run init again", ErrSchema, version, current)
 	case version >= first && version < current:
-		return fmt.Errorf("%w: database is schema version %d, written by a released build, and this build uses %d; do not delete it: read it with a build of schema %d or migrate it as that build's release notes say", ErrSchema, version, current, version)
+		return fmt.Errorf("%w: database is schema version %d, written by a released build, and this build uses %d; run \"toolwarrant init\" with this build, or any writing command, to migrate it in place (one table and its guards are added, nothing is rewritten; back the file up first); a read-only open does not migrate", ErrSchema, version, current)
 	}
 	return fmt.Errorf("%w: database is version %d, this build supports %d", ErrSchema, version, current)
 }
@@ -283,5 +318,9 @@ func historyTables() []string {
 			prev_hash  TEXT NOT NULL,
 			hash       TEXT NOT NULL
 		)`,
+		// The signed records of version 7 (schemav7.go): one row per signed
+		// audit entry, keyed by its seq, which the migration of a version 6
+		// file adds last, as this list does.
+		signedRecordsDDL(),
 	}
 }

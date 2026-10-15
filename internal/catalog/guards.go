@@ -58,8 +58,11 @@ func guardIndexStatements() []string {
 // BEFORE guard on NEW.id < 1 would refuse every insert the Store makes, while
 // an AFTER trigger sees the id the row got and RAISE(ABORT) there backs the
 // row out again (D17 b, g; see ghostrows.go for what a row below id 1 did).
+// The four guards of signed_records (schemav7.go, D22 g) come last, which is
+// also where the migration of a version 6 file creates them, so a fresh file
+// and a migrated one list the same objects in the same order.
 func guardStatements() []string {
-	return []string{
+	stmts := []string{
 		triggerAbort("audit_log_no_update", "BEFORE UPDATE ON audit_log", "", "audit_log is append-only"),
 		triggerAbort("audit_log_no_delete", "BEFORE DELETE ON audit_log", "", "audit_log is append-only"),
 		triggerAbort("audit_log_sequential", "BEFORE INSERT ON audit_log",
@@ -95,6 +98,7 @@ func guardStatements() []string {
 		// with a fresh proposer history (D14), so a delete is an edit of history.
 		triggerAbort("tools_no_delete", "BEFORE DELETE ON tools", "", "tools are never deleted"),
 	}
+	return append(stmts, signedRecordsGuards()...)
 }
 
 // changedAny builds a WHEN condition that is true when any listed column of

@@ -1289,28 +1289,64 @@ Procedure:
 4. Keep the corrupt file for investigation; it opens only in forensic mode.
 
 `catalog: unsupported schema version` (`ErrSchema`) means the file was not
-written by this build: an older unreleased schema (v2, v3, v4 or v5), a newer
-build, or another application's SQLite file ("not a toolwarrant database",
-"the file holds another application's tables"). This build writes schema v6
-(D17: the positive-id guards `approvals_positive_id` and
-`tool_versions_positive_id`, which refuse a row with an id below 1, join the
-guard set, and a file without them would otherwise be refused as redefined;
-D14 had moved it to v5 for the processor address column, the catalog identity
-in `meta` and the no-delete guards, and D13 to v4 for the audit detail
-fields). The CLI
-adds "the file was written by another schema version; the message says whether
-it came from an unreleased build (delete it and run init again) or from a
-release (read it with a build of that schema, never delete it)". Schema v6 is
-the first released schema: a file below it belongs to an unreleased build and
-is deleted, and the first bump after v0.1.0 will name the build that reads a
-v6 file or carry a migration; it will never advise deleting a released
-catalog (catalog `TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`).
-For a pre-release file: stop every processor of the file, back it up, delete it,
-run `init`, register the servers again, crawl, re-approve from your git export
-or from the backup read with a build of the matching schema, and start the
-processors again; a processor left running on the old handle denies every hook
-once the file is replaced (D14). A foreign file is left untouched; point
-`--db` at the right path.
+written by this build: schema v6, the first released schema (v0.1.0 to
+v0.3.x), which this build migrates; an older unreleased schema (v2, v3, v4 or
+v5); a newer build; or another application's SQLite file ("not a toolwarrant
+database", "the file holds another application's tables"). This build writes
+schema v7 (D22 (g): the `signed_records` table, one row per signed audit
+entry, and its four guards `signed_records_no_update`,
+`signed_records_no_delete`, `signed_records_no_replace` and
+`signed_records_positive_id`; D17 had moved it to v6 for the positive-id
+guards, D14 to v5 for the processor address column, the catalog identity in
+`meta` and the no-delete guards, and D13 to v4 for the audit detail fields).
+The CLI adds "the file was written by another schema version; the message
+says whether it came from an unreleased build (delete it and run init again)
+or from a release (migrate it in place with this build as the message says,
+or read it with a build of that schema; never delete it)".
+
+A v6 file is migrated in place, and only by a read-write open: `init`, every
+decision, `crawl`, `emit` and `export` migrate it; `serve` (a read-only
+open), `audit verify` and `audit list` (forensic opens) never write and
+return `database is schema version 6, written by a released build, and this
+build uses 7; run "toolwarrant init" with this build, or any writing command,
+to migrate it in place (one table and its guards are added, nothing is
+rewritten; back the file up first); a read-only open does not migrate`,
+leaving the file byte for byte as it was; a processor started on a v6 file
+exits 1 with that message. The migration adds the table and its guards in
+the one transaction `Open` already holds and reads or rewrites no row of any
+other table, so the audit head of a migrated file is the head it had, every
+approval is served as before, and a crash in the middle leaves a v6 file
+that migrates on the next read-write open; two processes opening a v6 file
+at once migrate it once (the second waits on the lock and finds v7). A v6
+file that already holds an object named `signed_records` or like one of its
+guards was edited outside toolwarrant and is refused as `ErrCorrupt` with
+nothing written. Procedure: stop every processor of the file; back the file
+up and record its `audit verify` head with the build that wrote it; run
+`toolwarrant init` (or any writing command) with the new binary, which
+prints the path as on any existing file; run `audit verify` with the new
+binary and compare the head with the one you recorded; start the processors
+again. A v0.3.x binary then refuses the migrated file with its own message
+("database is version 7, this build supports 6"), so every host that opens
+the file moves to the new build together (catalog
+`TestMigrate_V6FileIsMigratedInPlaceAndKeepsEveryRowAndTheHead`,
+`TestMigrate_ReadOnlyAndForensicOpensOfAV6FileNameTheMigrationAndWriteNothing`,
+`TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce`,
+`TestMigrate_RefusesAV6FileThatAlreadyHoldsAForeignSignedRecordsTable`;
+proven by hand on 2026-10-15 against a catalog the published v0.3.0 binary
+wrote: the read-only and forensic opens left the file's SHA-256 unchanged,
+`init` migrated it to `user_version` 7 with the same `audit verify` head, and
+the v0.3.0 binary then refused it).
+
+Schema v6 was the first released schema: a file below it belongs to an
+unreleased build and is deleted, and no message ever advises deleting a
+released catalog (catalog
+`TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`,
+`TestOpen_RefusesOtherSchemaVersions`). For a pre-release file: stop every
+processor of the file, back it up, delete it, run `init`, register the servers
+again, crawl, re-approve from your git export or from the backup read with a
+build of the matching schema, and start the processors again; a processor
+left running on the old handle denies every hook once the file is replaced
+(D14). A foreign file is left untouched; point `--db` at the right path.
 
 `catalog: the store is read-only` from a decision means the command opened the
 database read-only (the processor's mode); the CLI adds "the database was

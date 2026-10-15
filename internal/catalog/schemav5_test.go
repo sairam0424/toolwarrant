@@ -11,12 +11,13 @@ import (
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
-// A file from the last pre-release schema is the v6 DDL without the two
-// positive-id guards and user_version 5. Every open mode refuses it with the
-// re-initialise advice, before any guard comparison (so it is never mistaken
-// for a corrupt v6 file missing a trigger) and without writing to it, which
-// is what docs/operations.md promises for a file another build wrote
-// (eighth review).
+// A file from the last pre-release schema is the live DDL without the two
+// positive-id guards and user_version 5 (the version 7 objects the live DDL
+// also holds do not matter: the version is read before any guard comparison).
+// Every open mode refuses it with the re-initialise advice, before any guard
+// comparison (so it is never mistaken for a corrupt file missing a trigger)
+// and without writing to it, which is what docs/operations.md promises for a
+// file another build wrote (eighth review).
 func TestOpen_RefusesAPreReleaseSchemaFileUntouched(t *testing.T) {
 	t.Parallel()
 	path := dbPath(t)
@@ -41,7 +42,7 @@ func TestOpen_RefusesAPreReleaseSchemaFileUntouched(t *testing.T) {
 		if !errors.Is(err, ErrSchema) {
 			t.Fatalf("%s open of a v5 file = %v, want ErrSchema", name, err)
 		}
-		for _, want := range []string{"schema version 5 from an unreleased build", "this build uses 6", "delete the file and run init again"} {
+		for _, want := range []string{"schema version 5 from an unreleased build", "this build uses 7", "delete the file and run init again"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s open error %q does not say %q", name, err, want)
 			}
@@ -77,10 +78,11 @@ func fileDigest(t *testing.T, path string) string {
 }
 
 // The refusal advises deletion only for a schema below the first released one;
-// a file written by a released build names the build that reads it instead,
-// so the first bump after v0.1.0 can never tell an operator to destroy an
-// audit log (eighth review). The released-older branch is reachable only
-// through the parameters until such a schema exists.
+// a file written by a released build is named with the migration a read-write
+// open runs (D22 g: the first bump after v0.1.0 carried one, as the eighth
+// review promised), so no message ever tells an operator to destroy an audit
+// log. The branches are reached through the parameters so that each can be
+// pinned on its own.
 func TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct {
@@ -88,7 +90,7 @@ func TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas(t *testing.T) {
 		want, wantNot           string
 	}{
 		"unreleased build":     {5, 6, 6, "delete the file and run init again", "do not delete"},
-		"released older build": {6, 6, 7, "do not delete it: read it with a build of schema 6", "delete the file"},
+		"released older build": {6, 6, 7, `this build uses 7; run "toolwarrant init" with this build, or any writing command, to migrate it in place`, "delete"},
 		"newer build":          {99, 6, 6, "this build supports 6", "delete"},
 		"zero":                 {0, 6, 6, "this build supports 6", "delete"},
 	}
