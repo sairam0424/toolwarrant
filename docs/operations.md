@@ -2086,7 +2086,15 @@ only for a public repository on the free plan):
   runs the short race suite ten times through gotestsum with no reruns, writes
   the tests slower than one second and every failure with its count of failing
   runs to the step summary and uploads the gotestsum json as an artifact; it
-  is not a required check and no ruleset references it.
+  is not a required check and no ruleset references it. The two code-scanning
+  workflows are `.github/workflows/scorecard.yml` (on every push to `main`,
+  weekly on Monday 04:23 UTC and on dispatch, its job `OpenSSF Scorecard` runs
+  ossf/scorecard-action, publishes the results for this public repository and
+  uploads the SARIF to code scanning) and `.github/workflows/codeql.yml` (on
+  every pull request to `main`, every push to `main` and weekly on Monday
+  05:41 UTC, its job `CodeQL: go` analyses the Go code in build mode autobuild
+  and uploads the analysis under the category `/language:go`); neither is a
+  required check and no ruleset references them.
 - Security: private vulnerability reporting on; secret scanning on with push
   protection; Dependabot alerts on, with weekly version updates for the GitHub
   Actions and the Go modules from `.github/dependabot.yml`; Dependabot

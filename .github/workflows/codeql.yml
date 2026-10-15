@@ -1,0 +1,75 @@
+# toolwarrant CodeQL analysis.
+#
+# Why this file exists: SECURITY.md says that CodeQL runs on every pull
+# request; this workflow is what makes that sentence true. github/codeql-action
+# creates a CodeQL database of the Go code in build mode autobuild (the module
+# sits at the repository root, so the autobuilder's go build sees it; the e2e
+# package is behind the e2e build tag and is not analysed), runs the default
+# security queries and uploads the SARIF to code scanning under the category
+# /language:go, the analysis category code scanning files this upload under:
+# the SARIF tool name (CodeQL) already separates it from the Scorecard upload
+# of scorecard.yml; the category separates analyses of the same tool, such as
+# a later second language. The
+# repository has no default code scanning setup (the code-scanning/
+# default-setup API answered not-configured on 2026-10-15); GitHub refuses an
+# advanced configuration like this one while the default setup is on, so the
+# two are never both enabled. It is not a required check, no ruleset
+# references it, and ci.yml stays the gate for every pull request.
+#
+# actions/setup-go runs before init: on Linux the init step records the path
+# of the go binary (and wraps a statically linked one in a shell script the
+# tracer can follow) and the analyze step warns when another go is on PATH by
+# then, so a toolchain installed after init would not be the one CodeQL
+# traces. setup-go reads the version from go.mod as the ci jobs do, so the
+# traced build compiles with the pinned toolchain and no toolchain switch
+# happens inside it. GOFLAGS=-mod=readonly is set on the analyze step, where
+# the build runs (the CodeQL CLI runs the traced Go build inside the analyze
+# step, with database trace-command --use-build-mode, before it finalizes the
+# database created in build mode autobuild), and not on the workflow: the init
+# step warns that GOFLAGS in its environment is deprecated.
+#
+# Action pins as in ci.yml: every action is pinned by the commit SHA its
+# release tag resolved to on the day the line was written (gh api on the tag,
+# followed through the tag object where the tag is annotated); the tag is the
+# trailing comment, in the bare form Dependabot rewrites. scorecard.yml pins
+# github/codeql-action/upload-sarif at the same commit.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 5 * * 1" # Monday 05:41 UTC, once a week
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: "CodeQL: go"
+    runs-on: ubuntu-latest
+    # The three permissions GitHub's CodeQL starter workflow carries; a
+    # permissions block zeroes everything it does not name.
+    permissions:
+      security-events: write # analyze uploads the SARIF to code scanning
+      contents: read
+      actions: read # the action reads this run through the Actions API
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # the token stays out of .git/config, where the checked-out code could read it
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: go
+          build-mode: autobuild
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        env:
+          GOFLAGS: -mod=readonly # every go command of this repository runs read-only; the build runs in this step
+        with:
+          category: "/language:go"

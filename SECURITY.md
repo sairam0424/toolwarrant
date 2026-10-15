@@ -431,6 +431,13 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   linked into tests only.
 - gitleaks runs as the `gitleaks` job of the CI workflow over the whole
   history; a secret that was ever committed is treated as compromised.
+- The `scorecard` workflow ([.github/workflows/scorecard.yml](.github/workflows/scorecard.yml))
+  runs the OpenSSF Scorecard checks on every push to `main` and weekly,
+  publishes the results for this public repository to the Scorecard API
+  (`publish_results: true`) and uploads them to code scanning, and the
+  `codeql` workflow ([.github/workflows/codeql.yml](.github/workflows/codeql.yml))
+  runs CodeQL's Go analysis on every pull request to `main`, every push to
+  `main` and weekly; neither is a required check.
 - The ExtMCP stubs in `internal/extmcpv1` are regenerated only by
   `scripts/gen-proto.sh`, which refuses any protoc, protoc-gen-go or
   protoc-gen-go-grpc version other than the ones recorded in the generated

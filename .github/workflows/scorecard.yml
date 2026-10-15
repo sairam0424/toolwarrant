@@ -1,0 +1,68 @@
+# toolwarrant OpenSSF Scorecard.
+#
+# Why this file exists: SECURITY.md says that the OpenSSF Scorecard checks run
+# on this repository and that their results are published; this workflow is
+# what makes that sentence true. ossf/scorecard-action runs the Scorecard
+# checks (pinned actions, token permissions, branch rules, signed releases,
+# dependency updates and the rest) against the repository as GitHub sees it
+# and writes them as SARIF; with publish_results: true it signs the upload to
+# the Scorecard API with this job's OIDC token (id-token: write), so that
+# api.scorecard.dev answers for this repository and a badge can point at the
+# latest run. The action publishes for a public repository only and refuses
+# to run on any branch but the default one. upload-sarif puts the same file
+# on the code scanning tab (security-events: write). It is not a required
+# check, no ruleset references it, and ci.yml stays the gate for every pull
+# request.
+#
+# The action's README restricts a publishing workflow, and the API rejects an
+# upload from one that breaks the rules: no workflow-level env or defaults, no
+# workflow-level write permission, id-token: write on this job alone, no
+# job-level env, containers or services, an Ubuntu hosted runner, and only
+# steps from its approved list (actions/checkout, actions/upload-artifact,
+# github/codeql-action/upload-sarif, ossf/scorecard-action,
+# step-security/harden-runner). A run: step here would fail the job; keep this
+# file to those steps.
+#
+# GitHub pauses a schedule after sixty days without a commit; workflow_dispatch
+# runs the job by hand at any time (the README calls that trigger experimental;
+# the action treats a dispatch from main like a push to it).
+#
+# Action pins as in ci.yml: every action is pinned by the commit SHA its
+# release tag resolved to on the day the line was written (gh api on the tag,
+# followed through the tag object where the tag is annotated); the tag is the
+# trailing comment, in the bare form Dependabot rewrites. upload-sarif is the
+# commit codeql.yml pins github/codeql-action at.
+name: scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1" # Monday 04:23 UTC, once a week
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    name: OpenSSF Scorecard
+    runs-on: ubuntu-latest
+    # The three permissions the action's README documents for a job that
+    # publishes; a permissions block zeroes everything it does not name.
+    permissions:
+      security-events: write # upload-sarif writes the results to code scanning
+      id-token: write # the OIDC token publish_results signs the upload to the Scorecard API with
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # the token stays out of .git/config, where the checked-out code could read it
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: results.sarif
