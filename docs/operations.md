@@ -1477,12 +1477,21 @@ toolwarrant` (`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the
 crawler and a person, the confessing entry and the four lying ones;
 `TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes`, whose drawn
 histories never trip either rule and whose remembered state is the row's;
-`TestCrawlMayMove_EqualsTheInvariantsTable`). Every state half and event name
-the sentences of these rules read from the entry (the binding's, the
-continuity rule's and the crawl guard's) is printed with Go's `strconv.Quote`,
-as the shape rule's state sentence and the state anchor's sentence print
-theirs, so a control character planted in a state field or an event name
-reaches the terminal escaped (`\x1b`), never raw
+`TestCrawlMayMove_EqualsTheInvariantsTable`). Every state half, and every
+event name that was not first matched against a known event, that the
+sentences of these rules read from the entry is printed with Go's
+`strconv.Quote`, as the shape rule's state sentence and the state anchor's
+sentence print theirs: the six sentences that quote are the crawl guard's
+(its from half, to half and event), the continuity rule's three (the from
+half, and the half the newest entry left) and the binding's content sentence
+(from, to and event) and kind sentence (whose event reaches it unmatched), so
+a control character planted in a state field or an event name reaches the
+terminal escaped (`\x1b`), never raw. The sentences whose event name was
+first matched against a known event before it is printed (the
+unsigned-decision sentence, the digest sentence, the paused-flag sentence,
+the shape rule's once and ended sentences and the no-trust-list sentence)
+print it bare, the match having proved the value, and the `discovered` of
+the continuity rule's first-entry sentence is the rule's own constant
 (`TestWalk_RefusalSentencesQuoteHostileStateHalves`). A `tool.budget_reset` is a
 state-bearing entry to the state anchor as it is to Integrity, so the two
 name the same entry when a column is edited after a budget reset
