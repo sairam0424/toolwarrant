@@ -13,13 +13,10 @@ import (
 
 // What audit verify and audit list say about the signed records (D22 (h)).
 // The names repeat the catalog's: the three events whose entry carries a
-// record and the subject of a trust entry, which the catalog does not export
-// and the listing must recognise to ask for the records of exactly those
-// entries.
-const (
-	eventDecisionSigned = "decision.signed"
-	trustSubject        = "@trust"
-)
+// record, which the catalog does not export and the listing must recognise to
+// ask for the records of exactly those entries (trust show asks the catalog
+// for the trust entries themselves, Store.TrustEntries).
+const eventDecisionSigned = "decision.signed"
 
 // isTrustEvent reports whether an entry of this event is a trust list.
 func isTrustEvent(event string) bool {

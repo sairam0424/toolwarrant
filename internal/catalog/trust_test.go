@@ -251,3 +251,36 @@ func TestSetTrust_RequiresAHumanActor(t *testing.T) {
 		t.Errorf("SetTrust on a read-only Store = %v, want ErrReadOnly", err)
 	}
 }
+
+// TrustEntries lists the bootstrap and every rotation in sequence order and
+// nothing else, through the subject index (the plan is pinned by
+// TestAnchorQueries_StayOnTheAuditLogBySubjectIndex); before the bootstrap it
+// is empty.
+func TestTrustEntries_ListsTheBootstrapAndEveryRotationInOrder(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	approvedEcho(t, s)
+	if entries, err := s.TrustEntries(bg); err != nil || len(entries) != 0 {
+		t.Fatalf("TrustEntries before the bootstrap = %v, %v; want none", entries, err)
+	}
+	alice, bob := newOperator(t, "alice"), newOperator(t, "bob")
+	bootstrap := mustSetTrust(t, s, 1, alice, alice)
+	mustCrawl(t, s, "alpha", tool("echo", "v1"), tool("sum", "v1"))
+	rotation := mustSetTrust(t, s, 2, alice, alice, bob)
+	mustCrawl(t, s, "alpha", tool("echo", "v1"))
+	entries, err := s.TrustEntries(bg)
+	if err != nil {
+		t.Fatalf("TrustEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("TrustEntries returned %d entries, want the bootstrap and the rotation: %+v", len(entries), entries)
+	}
+	if entries[0].Seq != bootstrap.Seq || entries[0].Event != evTrustBootstrap || entries[1].Seq != rotation.Seq || entries[1].Event != evTrustRotated {
+		t.Errorf("TrustEntries = %+v, want seq %d %s then seq %d %s", entries, bootstrap.Seq, evTrustBootstrap, rotation.Seq, evTrustRotated)
+	}
+	for _, e := range entries {
+		if e.Subject != trustSubject {
+			t.Errorf("entry %d is about %q, want %q", e.Seq, e.Subject, trustSubject)
+		}
+	}
+}

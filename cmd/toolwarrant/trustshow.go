@@ -137,24 +137,22 @@ func keyType(key string) string {
 }
 
 // signerSince finds, for every key of the list in force, the trust entry that
-// first named it: the trust entries are read from the log (there are as many
-// as the list has had versions), their records through the checked read
-// behind audit list --json, and each list parsed. The map is empty without a
-// list.
+// first named it: the trust entries are read through the catalog's subject
+// index (Store.TrustEntries: as many as the list has had versions, however
+// long the log), their records through the checked read behind audit list
+// --json, and each list parsed. The map is empty without a list.
 func signerSince(a *app, store *catalog.Store, view catalog.TrustView) (map[string]int64, error) {
 	since := map[string]int64{}
 	if !view.InForce() {
 		return since, nil
 	}
-	entries, err := store.AuditEntries(a.ctx, 0, 0)
+	entries, err := store.TrustEntries(a.ctx)
 	if err != nil {
 		return nil, err
 	}
-	var seqs []int64
+	seqs := make([]int64, 0, len(entries))
 	for _, e := range entries {
-		if e.Subject == trustSubject && isTrustEvent(e.Event) {
-			seqs = append(seqs, e.Seq)
-		}
+		seqs = append(seqs, e.Seq)
 	}
 	records, err := store.SignedRecords(a.ctx, seqs)
 	if err != nil {
