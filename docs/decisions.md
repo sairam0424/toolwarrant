@@ -3604,7 +3604,8 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   the CLI's older refusal sites that pre-escape a value `describe()` escapes
   again (`paths.go`, `export.go`, `exportverify.go`, `servetls.go`,
   `emitout.go`, `emitvalidate.go`, `emitports.go`, `global.go`,
-  `liveconfig.go`, `audit.go`; decision 34; done on 2026-10-16, right after
+  `liveconfig.go`, `audit.go`, and `livetls.go`, which the review of the pass
+  found behind `cell()`; decision 34; done on 2026-10-16, right after
   the release: those sites now embed the value as given and `describe()`
   escapes the sentence once, which `TestRefusalsEscapeHostileValuesOnce` pins
   as one `\u{001B}` per hostile value).
