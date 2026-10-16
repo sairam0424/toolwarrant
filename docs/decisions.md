@@ -4507,7 +4507,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   32.6 ms for the whole CLI run, the key resolution, the `SigningState` read,
   the review, the Ed25519 signature and `Decide`'s transaction included.
   mock's processor restarted under `--trust-root` on a log of 72 entries (the
-  bootstrap, three rotations, seven decision records and the entries they
+  bootstrap, three rotations, eight decision records and the entries they
   produced among them) was listening 45.4 ms after its start, the open-time
   walk having verified every signed record, and served add and echo 50.9 ms
   after its start; its line read `signed decisions: enforced from entry 48
