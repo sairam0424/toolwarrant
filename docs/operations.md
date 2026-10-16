@@ -1435,17 +1435,18 @@ discovered; the entry was appended outside toolwarrant`); the third review of
 this round sealed a stateless tool entry after a signed disable and re-enabled
 the tool with the lie after it on every path
 (`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the stateless probes
-and the tool the chain holds no entry about). The shape rule, the second belt on
-the token: every entry naming `signed=K` carries the `state=A->B` and the
+and the tool the chain holds no entry about). The shape rule, the second belt
+on the token: every entry naming `signed=K` carries the `state=A->B` and the
 `after_hash` of the first entry that named it, no event of one decision
 appears twice, and nothing follows the decision's own event
 (`version.approved`, `tool.disabled` and the six others), which every command
 writes last, so the transaction open at the head cannot be extended under its
 token once that event is written: `audit entry N names signed=K and says
-state=A->B but the first entry of that transaction (seq F) says state=C->D;
-the entries of one decision record one transition`, `audit entry N names
-signed=K and records after_hash D but the first entry of that transaction
-(seq F) records E; the entries of one decision record one approved digest`,
+state="A->B" but the first entry of that transaction (seq F) says
+state="C->D"; the entries of one decision record one transition`, `audit
+entry N names signed=K and records after_hash D but the first entry of that
+transaction (seq F) records E; the entries of one decision record one approved
+digest`,
 `audit entry N is a second tool.disabled of digest none under signed=K (entry
 F wrote the first); a decision writes each of its events once`, `audit entry
 N names signed=K but that transaction ended with its version.approved (seq
@@ -1456,6 +1457,7 @@ approve at the head, a second `version.approved` naming another digest and a
 with her transition and `after_hash`, and the walk accepted them as entries
 of her decision)
 (`TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry`, the history probes;
+`TestWalk_TheShapeRuleSentencesAreFixed`, the four sentences byte for byte;
 `TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`). The
 crawl-transition guard, in one sentence: an entry about a tool that no
 decision signed may move the tool's state only along a transition a crawl
