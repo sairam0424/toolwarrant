@@ -865,11 +865,16 @@ decisions and M trust lists verified; trust list vK in force (alice
 SHA256:..., bob SHA256:...); root SHA256:... at entry B; U entries before the
 bootstrap are unsigned history vouched for by alice`, and, when an approval in
 service was made before the bootstrap, `unsigned approvals in service: N
-(approved before the cut-over at entry B; re-approve them to sign them):
-server/tool, ...`; such an approval stands by chain anchoring alone, as in
-v0.3, and leaves the list once the tool is re-approved with a signed decision
-(disable, enable, approve, each signed, since an approval in force cannot be
-approved again). Without a list: `signed records: none; the catalog has no
+(approved before the cut-over at entry B; to sign one, disable, enable and
+approve it, each signed): server/tool, ...`, the tools sorted and joined with
+a comma and a space; such an approval stands by chain anchoring alone, as in
+v0.3, and leaves the list once the tool is approved again with a signed
+decision, which is those three signed steps and not one: a signed `approve`
+of a tool whose approval is in force is refused with `cannot approve in state
+enabled`, so `disable` it (signed; the tool is `pending_review` and not
+served from here to the approve), `enable` it (signed; the approved digest is
+pending again) and `approve` that digest (signed), eight audit entries in
+all. Without a list: `signed records: none; the catalog has no
 trust list (L13 open); run "toolwarrant trust init"`. A signed record the walk
 refuses is one `integrity problem:` line with the walk's sentence, as every
 other finding, and the summary is withheld
@@ -1702,23 +1707,36 @@ ssh-ed25519 AAAA...`). Without a list it prints `no trust list; decisions are
 attributed by name only (L13); run "toolwarrant trust init"` and exits 0
 (`TestTrustShowPrintsTheListTheAllowedSignersFileAndJSON`).
 
-Verifying a decision with stock OpenSSH. Take the record from `audit list
---json` and the allowed_signers file from `trust show`:
+Verifying a decision with stock OpenSSH. Take the listing from `audit list
+--json` once, select the record of one entry with jq, and take the
+allowed_signers file from `trust show`:
 
 ```sh
 toolwarrant trust show --allowed-signers > allowed_signers
-toolwarrant audit list --json | jq -r '.[] | select(.event == "decision.signed") | .signed.payload' | tail -1 | base64 -d > payload
-toolwarrant audit list --json | jq -r '.[] | select(.event == "decision.signed") | .signed.signature' | tail -1 > decision.sig
+toolwarrant audit list --json > entries.json
+jq -r 'last(.[] | select(.event == "decision.signed")) | .signed.payload' entries.json | base64 -d > payload
+jq -r 'last(.[] | select(.event == "decision.signed")) | .signed.signature' entries.json > decision.sig
 ssh-keygen -Y verify -f allowed_signers -I alice -n decision@toolwarrant.invalid -s decision.sig < payload
 ssh-keygen -Y check-novalidate -n decision@toolwarrant.invalid -s decision.sig < payload
 ```
 
-`-Y verify` prints `Good "decision@toolwarrant.invalid" signature for alice
-with ED25519 key SHA256:...` when the signature over exactly those bytes was
-made by a key the file lists for that principal under that namespace;
-`-Y check-novalidate` checks the signature against the key inside it without
-the file. A trust list is verified the same way with `-n
-trust@toolwarrant.invalid` (the sub-step of
+The `signature` field is the whole armored block, `-----BEGIN SSH
+SIGNATURE-----` to `-----END SSH SIGNATURE-----`, eight lines for an Ed25519
+key, so the record is selected whole, never cut with a line tool: `last(...)`
+takes the newest decision, and `select(.seq == N)` in its place takes entry
+N, the `audit entry N` that `show` prints after `signed with` for the tool's
+approval. A `| tail -1` on the field, which the v0.4.0 guide had, keeps the
+`END` line alone and `ssh-keygen` answers `Couldn't parse signature: missing
+header` (found by the post-publish verification of 2026-10-16; the recipe
+above, run that day against a catalog the build wrote, printed `Good
+"decision@toolwarrant.invalid" signature for alice with ED25519 key
+SHA256:...` for the decision and `Good "trust@toolwarrant.invalid" signature
+for alice ...` for the bootstrap). `-Y verify` prints that `Good` line when
+the signature over exactly those bytes was made by a key the file lists for
+that principal under that namespace; `-Y check-novalidate` checks the
+signature against the key inside it without the file. A trust list is
+verified the same way, selecting `.event == "trust.bootstrap"` or
+`"trust.rotated"` and passing `-n trust@toolwarrant.invalid` (the sub-step of
 `TestTrustShowPrintsTheListTheAllowedSignersFileAndJSON` runs both forms and
 the `-n git` negative against the host's ssh-keygen).
 
@@ -1906,8 +1924,12 @@ migrate it in place (one table and its guards are added, nothing is
 rewritten); every command but serve, audit verify and audit list opens the
 file read-write and migrates it the same way, list and show included, so take
 the backup before running any of them; serve, audit verify and audit list
-never migrate`, leaving the file byte for byte as it was; a processor started
-on a v6 file exits 1 with that message. The migration adds the table and its
+never migrate`, leaving the database file byte for byte as it was (every
+open, these three included, creates the SQLite `-wal` and `-shm` sidecars
+beside the file when they are missing, and a read-write close may remove
+them again, so the directory changes while the `.db` does not); a processor
+started on a v6 file exits 1 with that message. The migration adds the table
+and its
 guards in the one transaction `Open` already holds and reads or rewrites no
 row of any other table, so the audit head of a migrated file is the head it
 had, every approval is served as before, and a crash in the middle leaves a
@@ -1925,12 +1947,19 @@ SQL, no row below seq 1, and a row planted under a dropped guard is a ghost
 row that every read and write refuses and `Integrity` counts
 (`TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows`,
 `TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity`). Procedure:
-stop every processor of the file; back the file up and record its `audit
-verify` head with the build that wrote it (not with the new one: its `audit
-verify` refuses a v6 file, and its `list` would migrate it before the backup
-exists); run `toolwarrant init` with the new binary, which prints the path as
-on any existing file; run `audit verify` with the new binary and compare the
-head with the one you recorded; start the processors again. A v0.3.x binary
+stop every processor of the file and every other process that has it open,
+so that the `-wal` sidecar beside it is empty (SQLite keeps pages not yet in
+the database there, and a copy of the `.db` alone is a complete backup only
+while the `-wal` is empty; copy the `-wal` and `-shm` with it when in doubt);
+back the file up and record its `audit verify` head with the build that
+wrote it (not with the new one: its `audit verify` refuses a v6 file, and its
+`list` would migrate it before the backup exists); run `toolwarrant init`
+with the new binary, which prints the path as on any existing file; run
+`audit verify` with the new binary and compare the head with the one you
+recorded, right then and before `emit` or any decision, since `emit` is a
+write too: it records a `server.processor_set` audit entry for every
+processor address that is new or changed, so a head compared after it
+differs for that reason alone; start the processors again. A v0.3.x binary
 then refuses the migrated file with its own message ("database is version 7,
 this build supports 6"), so every host that opens the file moves to the new
 build together. A v0.3.x processor the stop missed
@@ -2688,7 +2717,10 @@ platform and compare it with the archive. The build is reproducible (CGO
 disabled, `-trimpath`, no date in the link flags, archive timestamps taken
 from the commit), so a clean clone at the tag built with the toolchain
 `go.mod` names gives the archive's binary byte for byte; the checkout must be
-clean, since the version control state is a build input:
+a clean `git clone` checked out at the tag, not a `git archive` export or a
+source tarball, since the binaries embed `vcs.revision`, `vcs.time`,
+`vcs.modified` and the module version, which the go command reads from
+`.git`, so a tree without `.git` or with local changes gives another binary:
 
 ```sh
 git clone --branch vX.Y.Z https://github.com/sairam0424/toolwarrant.git && cd toolwarrant
