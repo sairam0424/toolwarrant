@@ -139,7 +139,7 @@ func bindingForgeries() []trustForgery {
 				return appendSigned(t, db, entry(alice.actor(), good), rec)
 			},
 			func(seq int64, alice, bob operator) string {
-				return fmt.Sprintf("signed record of entry %d: the signature by %s does not verify over the stored payload", seq, alice.fp())
+				return fmt.Sprintf("signed record of entry %d: the signature by %s does not verify over the stored payload", seq, quote(alice.fp()))
 			}},
 	}
 }

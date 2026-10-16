@@ -24,14 +24,14 @@ import (
 
 // crawlSentence is rule 6's sentence for a transition no crawl makes.
 func crawlSentence(seq int64, subject string, from, to lifecycle.State, event string) string {
-	return fmt.Sprintf("audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", seq, quote(subject), from, to, event)
+	return fmt.Sprintf("audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", seq, quote(subject), quote(string(from)), quote(string(to)), quote(event))
 }
 
 // continuitySentence is the continuity rule's sentence: the entry says the
 // tool moves from `from`, but the newest entry about it (seq newest) left it
 // in `left`.
 func continuitySentence(seq int64, subject string, from lifecycle.State, newest int64, left lifecycle.State) string {
-	return fmt.Sprintf("audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) left it %s; the entry was appended outside toolwarrant", seq, quote(subject), from, newest, left)
+	return fmt.Sprintf("audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) left it %s; the entry was appended outside toolwarrant", seq, quote(subject), quote(string(from)), newest, quote(string(left)))
 }
 
 // crawlShaped is a sealed entry about alpha/echo under a crawl's event by by,
@@ -110,13 +110,13 @@ func statelessSentence(seq int64, subject string) string {
 // noTransitionSentence is the continuity rule's sentence when the newest
 // entry about the tool (seq newest) recorded no transition.
 func noTransitionSentence(seq int64, subject string, from lifecycle.State, newest int64) string {
-	return fmt.Sprintf("audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) records no transition; the entry was appended outside toolwarrant", seq, quote(subject), from, newest)
+	return fmt.Sprintf("audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) records no transition; the entry was appended outside toolwarrant", seq, quote(subject), quote(string(from)), newest)
 }
 
 // noEarlierEntrySentence is the continuity rule's sentence for a tool the
 // chain holds no entry about whose first entry does not start from discovered.
 func noEarlierEntrySentence(seq int64, subject string, from lifecycle.State) string {
-	return fmt.Sprintf("audit entry %d says tool %s moves from %s but no earlier entry is about the tool, and the first entry about a tool starts from discovered; the entry was appended outside toolwarrant", seq, quote(subject), from)
+	return fmt.Sprintf("audit entry %d says tool %s moves from %s but no earlier entry is about the tool, and the first entry about a tool starts from discovered; the entry was appended outside toolwarrant", seq, quote(subject), quote(string(from)))
 }
 
 // lyingRevert is the lie of the review: a sealed tool.reverted by the crawler

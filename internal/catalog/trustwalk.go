@@ -222,13 +222,17 @@ type signedResult struct {
 // checkSignedEntry applies rule 1 to one signed entry and its row, verifies
 // the signature under the kind's namespace, then rule 3 or rule 4 by kind.
 // On refusal the returned memory is tm unchanged, so Integrity keeps the list
-// in force past a refused record.
+// in force past a refused record. Until signing.Verify has pinned rec.Signer
+// to the fingerprint of the key that signed, the signer is whatever the row
+// holds, so the sentences before that point (checkRecordBinding's and the
+// signature's) print it through quote; the sentences after it print a
+// fingerprint the signature proved.
 func checkSignedEntry(e audit.Entry, rec signing.Record, tm trustMemory, identity, pinnedRoot string) (signedResult, error) {
 	if err := checkRecordBinding(e, rec); err != nil {
 		return signedResult{trust: tm}, err
 	}
 	if _, err := signing.Verify(rec.Payload, rec.Signature, namespaceOf(e.Event), rec.Signer); err != nil {
-		return signedResult{trust: tm}, problemf(ruleBinding, err, "signed record of entry %d: the signature by %s does not verify over the stored payload; the record was rewritten: %v", e.Seq, rec.Signer, err)
+		return signedResult{trust: tm}, problemf(ruleBinding, err, "signed record of entry %d: the signature by %s does not verify over the stored payload; the record was rewritten: %v", e.Seq, quote(rec.Signer), err)
 	}
 	switch e.Event {
 	case evTrustBootstrap, evTrustRotated:
@@ -243,7 +247,9 @@ func checkSignedEntry(e audit.Entry, rec signing.Record, tm trustMemory, identit
 
 // checkRecordBinding is the part of rule 1 that needs no cryptography: the
 // entry's sigref token is the digest of the row, its signer token is the
-// row's signer, and the entry is a person's.
+// row's signer, and the entry is a person's. It runs before the signature is
+// verified, so both signers it prints are bytes the file holds and go through
+// quote.
 func checkRecordBinding(e audit.Entry, rec signing.Record) error {
 	token, ok := detailField(e.Detail, fieldSigref)
 	if !ok {
@@ -253,7 +259,7 @@ func checkRecordBinding(e audit.Entry, rec signing.Record) error {
 		return problemf(ruleBinding, nil, "the signed record of audit entry %d was replaced: its digest is not the %s token the entry carries", e.Seq, fieldSigref)
 	}
 	if signer, ok := detailField(e.Detail, fieldSigner); !ok || signer != rec.Signer {
-		return problemf(ruleBinding, nil, "audit entry %d names signer %s but its signed record was made with %s", e.Seq, quote(signer), rec.Signer)
+		return problemf(ruleBinding, nil, "audit entry %d names signer %s but its signed record was made with %s", e.Seq, quote(signer), quote(rec.Signer))
 	}
 	if e.ActorType != string(ActorHuman) {
 		return problemf(ruleBinding, nil, "audit entry %d is a %s by %s, a %s actor; only a person signs", e.Seq, e.Event, quote(e.Actor), quote(e.ActorType))

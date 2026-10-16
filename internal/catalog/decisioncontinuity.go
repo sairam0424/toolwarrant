@@ -118,17 +118,17 @@ func checkContinuity(e audit.Entry, f stateField, w decisionWalk, rule signedRul
 			return nil
 		}
 		return problemf(rule, nil, "audit entry %d says tool %s moves from %s but no earlier entry is about the tool, and the first entry about a tool starts from %s; the entry was appended outside toolwarrant",
-			e.Seq, quote(e.Subject), f.from, lifecycle.Discovered)
+			e.Seq, quote(e.Subject), quote(string(f.from)), lifecycle.Discovered)
 	}
 	if last.to == "" {
 		return problemf(rule, nil, "audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) records no transition; the entry was appended outside toolwarrant",
-			e.Seq, quote(e.Subject), f.from, last.seq)
+			e.Seq, quote(e.Subject), quote(string(f.from)), last.seq)
 	}
 	if f.from == last.to || last.isSibling(e.TS, f) {
 		return nil
 	}
 	return problemf(rule, nil, "audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) left it %s; the entry was appended outside toolwarrant",
-		e.Seq, quote(e.Subject), f.from, last.seq, last.to)
+		e.Seq, quote(e.Subject), quote(string(f.from)), last.seq, quote(string(last.to)))
 }
 
 // isSibling reports whether an entry at ts recording f belongs to the same
