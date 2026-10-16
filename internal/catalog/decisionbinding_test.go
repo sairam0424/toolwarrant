@@ -78,7 +78,7 @@ func serverEntry(event, detail string, ts string) audit.Entry {
 // noSuchMove is the sentence of a tool entry whose transition the kind cannot
 // make.
 func noSuchMove(seq int64, event string, n int64, kind signing.Kind) string {
-	return fmt.Sprintf(`audit entry %d moves tool "alpha/echo" from disabled to enabled under event %s but names signed=%d, a decision of kind %s, which makes no such move; the entry was appended outside toolwarrant`, seq, event, n, kind)
+	return fmt.Sprintf(`audit entry %d moves tool "alpha/echo" from "disabled" to "enabled" under event %s but names signed=%d, a decision of kind %s, which makes no such move; the entry was appended outside toolwarrant`, seq, quote(event), n, kind)
 }
 
 const (
@@ -138,7 +138,7 @@ func tokenProbes(t *testing.T) []bindingProbe {
 					from: lifecycle.Enabled, to: lifecycle.Enabled, lastSeen: d, note: signedNote(n), ts: ts}.entry()
 			}, "",
 			func(seq, n int64, ts string) string {
-				return fmt.Sprintf("audit entry %d is a tool.enabled but names signed=%d, a decision of kind approve, which writes no such entry", seq, n)
+				return fmt.Sprintf(`audit entry %d is a "tool.enabled" but names signed=%d, a decision of kind approve, which writes no such entry`, seq, n)
 			}},
 		{"a digest that was not decided", approveSum, false,
 			func(n int64, ts string) audit.Entry {

@@ -50,11 +50,15 @@ import (
 // then stand by chain anchoring alone, and the legacy residual is stated; the
 // memory of every tool's state is kept from the genesis all the same. Every
 // failure is ErrCorrupt with a fixed sentence naming the entry; the walk stops
-// at the first and records nothing of its page. The anchor pass applies the
-// binding of rule 5 to every entry it anchors (chainMemory.requireSigned,
-// decisionbind.go) with two token parses (the signed= token, then the state
-// field or the paused flag) and one map lookup, reads no bytes, and leaves
-// the continuity and shape rules to the walk that recorded the entry.
+// at the first and records nothing of its page. Every value a sentence reads
+// from the entry (a state half, an event name) is printed through quote: the
+// bytes were chosen by whoever wrote the entry, and the sentence ends in a
+// terminal or a log (CLAUDE.md, strconv.Quote in logs). The anchor pass
+// applies the binding of rule 5 to every entry it anchors
+// (chainMemory.requireSigned, decisionbind.go) with two token parses (the
+// signed= token, then the state field or the paused flag) and one map lookup,
+// reads no bytes, and leaves the continuity and shape rules to the walk that
+// recorded the entry.
 
 // isHumanOnlyEvent reports whether only a human command writes this event:
 // the eight events of the eight decisions (O-16). Every other lifecycle event
@@ -267,7 +271,7 @@ func checkCrawlTransition(e audit.Entry, f stateField) error {
 		return f.notATransition(e, ruleCrawl)
 	}
 	if !lifecycle.CrawlMayMove(f.from, f.to) {
-		return problemf(ruleCrawl, nil, "audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), f.from, f.to, e.Event)
+		return problemf(ruleCrawl, nil, "audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), quote(string(f.from)), quote(string(f.to)), quote(e.Event))
 	}
 	return nil
 }

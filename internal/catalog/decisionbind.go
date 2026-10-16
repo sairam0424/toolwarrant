@@ -27,7 +27,7 @@ func bindOutcome(e audit.Entry, n int64, o signedOutcome) error {
 			e.Seq, fieldSigned, n, quote(o.subject), quote(o.actor), o.ts, quote(e.Subject), quote(e.Actor), e.TS)
 	}
 	if !kindWrites(o.kind, e.Event) {
-		return problemf(ruleSignedBinding, nil, "audit entry %d is a %s but names %s=%d, a decision of kind %s, which writes no such entry", e.Seq, e.Event, fieldSigned, n, o.kind)
+		return problemf(ruleSignedBinding, nil, "audit entry %d is a %s but names %s=%d, a decision of kind %s, which writes no such entry", e.Seq, quote(e.Event), fieldSigned, n, o.kind)
 	}
 	recorded, decides := eventDigest(e)
 	if decides && recorded != o.digest {
@@ -56,7 +56,7 @@ func bindContent(e audit.Entry, n int64, o signedOutcome) error {
 		return problemf(ruleSignedBinding, nil, "audit entry %d about %s carries a %s field %s that is not a transition", e.Seq, quote(e.Subject), fieldState, quote(state))
 	}
 	if !kindMayMove(o.kind, lifecycle.State(from), lifecycle.State(to)) {
-		return problemf(ruleSignedBinding, nil, "audit entry %d moves tool %s from %s to %s under event %s but names %s=%d, a decision of kind %s, which makes no such move; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), from, to, e.Event, fieldSigned, n, o.kind)
+		return problemf(ruleSignedBinding, nil, "audit entry %d moves tool %s from %s to %s under event %s but names %s=%d, a decision of kind %s, which makes no such move; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), quote(from), quote(to), quote(e.Event), fieldSigned, n, o.kind)
 	}
 	return nil
 }
