@@ -28,18 +28,25 @@ import (
 // transition at its time. The transaction-shape rule (checkTransactionShape,
 // openTxn) is the second belt on the token: every entry naming signed=N
 // carries the state=A->B and the after_hash of the first entry that named it,
-// and writes each (event, digest) pair once (a crawl's reappearance writes two
+// writes each (event, digest) pair once (a crawl's reappearance writes two
 // version.superseded of two digests in one operation; a decision never
-// repeats a pair). Both rules run in the walk only; the anchor pass
-// (requireSigned) is unchanged, so the serving path still reads no bytes and
-// parses two tokens per anchored entry. Before the bootstrap the memory is
-// kept and nothing is refused (O-12). A tool whose newest entry carries no
-// transition is refused, not skipped (the third review of PR 7.5): no build of
-// toolwarrant ever wrote a tool entry without one, so such an entry was
-// appended by hand before the bootstrap (after it, checkCrawlTransition
-// refuses the entry itself), and a skip would have let the entry after it
-// claim any start; a tool the chain holds no entry about is created in
-// discovered (insertTool), so its first entry must start there.
+// repeats a pair), and comes before the decision's own event, the human-only
+// event of its kind, which every command writes last (the lifecycle appends
+// it after the superseded and proposed events it causes, and the transaction
+// writes nothing after auditTool), so the transaction open at the head cannot
+// be extended under its token once that event is written (the third review:
+// a second version.approved with another digest token, or a version.superseded
+// of the approved or of a third digest, at alice's time with her after_hash,
+// was accepted as log pollution under her signature). Both rules run in the
+// walk only; the anchor pass (requireSigned) is unchanged, so the serving path
+// still reads no bytes and parses two tokens per anchored entry. Before the
+// bootstrap the memory is kept and nothing is refused (O-12). A tool whose
+// newest entry carries no transition is refused, not skipped (the third
+// review of PR 7.5): no build of toolwarrant ever wrote a tool entry without
+// one, so such an entry was appended by hand before the bootstrap (after it,
+// checkCrawlTransition refuses the entry itself), and a skip would have let
+// the entry after it claim any start; a tool the chain holds no entry about is
+// created in discovered (insertTool), so its first entry must start there.
 
 // toolLast is what the newest entry about a tool left: the entry's seq and
 // time and the transition its state field records, from and to both empty
@@ -165,9 +172,10 @@ func (o openTxn) extend(e audit.Entry) openTxn {
 }
 
 // checkTransactionShape holds one entry naming signed=o.seq to the shape of
-// its transaction: no (event, digest) pair twice, and the state field and the
+// its transaction: no (event, digest) pair twice, the state field and the
 // after_hash of the first entry that named the token, because auditTool
-// writes the whole operation's before and after on every event.
+// writes the whole operation's before and after on every event, and nothing
+// after the decision's own event, which every command writes last.
 func checkTransactionShape(e audit.Entry, o openTxn) error {
 	digest, _ := detailField(e.Detail, fieldDigest)
 	for _, ev := range o.events {
@@ -187,7 +195,26 @@ func checkTransactionShape(e audit.Entry, o openTxn) error {
 		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d and records after_hash %s but the first entry of that transaction (seq %d) records %s; the entries of one decision record one approved digest",
 			e.Seq, fieldSigned, o.seq, shownDigest(e.AfterHash), o.first, shownDigest(o.after))
 	}
+	if own, ok := o.ownEvent(); ok {
+		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d but that transaction ended with its %s (seq %d), the last entry a decision writes; the entry was appended outside toolwarrant",
+			e.Seq, fieldSigned, o.seq, own.event, own.seq)
+	}
 	return nil
+}
+
+// ownEvent returns the entry of the decision's own event, the human-only
+// event of its kind (isHumanOnlyEvent), when the transaction has written it:
+// approve writes version.approved after the version.superseded it causes,
+// enable writes tool.enabled after its version.superseded and
+// version.proposed, and so for every kind, so the entry is the last one of
+// the transaction.
+func (o openTxn) ownEvent() (txnEvent, bool) {
+	for _, ev := range o.events {
+		if isHumanOnlyEvent(ev.event) {
+			return ev, true
+		}
+	}
+	return txnEvent{}, false
 }
 
 // lookupState returns what the walk recorded as the newest entry about a tool.

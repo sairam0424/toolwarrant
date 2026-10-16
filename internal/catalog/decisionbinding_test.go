@@ -215,6 +215,21 @@ func reapproveEcho(digest string) string {
 	return fmt.Sprintf(`UPDATE tools SET state = 'enabled', approved_version_id = (SELECT v.id FROM tool_versions v WHERE v.tool_id = tools.id AND v.digest = '%s') WHERE name = 'echo'`, digest)
 }
 
+// afterApproveOfSum is a sealed entry about alpha/sum by alice at ts under
+// event, naming digest and the approval's own token, with the transition and
+// the after_hash of the approval's own entry: what the third review appended
+// after alice's signed approve while its transaction was open at the head.
+func afterApproveOfSum(event, digest, approved string, n int64, ts string) audit.Entry {
+	return toolEntry{by: alice, event: event, subject: "alpha/sum", digest: digest, after: approved,
+		from: lifecycle.PendingReview, to: lifecycle.Enabled, lastSeen: approved, note: signedNote(n), ts: ts}.entry()
+}
+
+// endedSentence is the shape rule's sentence for an entry appended after the
+// decision's own event (seq own): the transaction ended there.
+func endedSentence(seq, n int64, event string, own int64) string {
+	return fmt.Sprintf("audit entry %d names signed=%d but that transaction ended with its %s (seq %d), the last entry a decision writes; the entry was appended outside toolwarrant", seq, n, event, own)
+}
+
 // historyProbes are the probes of what the chain said before the entry (the
 // adversarial review of PR 7.5, finding 2, and the shape rule it asked for):
 // the enable's token on a tool.enabled saying disabled->enabled, a move the
@@ -222,13 +237,40 @@ func reapproveEcho(digest string) string {
 // not make (they left echo in pending_review), with the state and the pointer
 // edited to match, which the state anchor would otherwise serve; the budget
 // reset's token on a tool.budget_reset saying enabled->enabled on a disabled
-// tool; and the shape of the transaction: a sibling version.superseded of the
+// tool; the shape of the transaction: a sibling version.superseded of the
 // disable recording another after_hash than the disable's own entry, and a
-// second tool.disabled repeating it.
+// second tool.disabled repeating the first; and the three extensions of the
+// third review, each at alice's time with her transition and after_hash under
+// the token of the approve open at the head, after its version.approved: a
+// second version.approved naming another digest, a version.superseded of the
+// approved digest and one of a third digest.
 func historyProbes(t *testing.T) []bindingProbe {
 	t.Helper()
 	ech, ech2 := digestOf(t, "echo", "v1"), digestOf(t, "echo", "v2")
-	return []bindingProbe{
+	sum, sum2 := pendingSum(t), digestOf(t, "sum", "v2")
+	return append([]bindingProbe{
+		{"an approve token on a second version.approved naming another digest, after the approve's own entry", approveSum, false,
+			func(n int64, ts string) audit.Entry {
+				return afterApproveOfSum(string(lifecycle.EvApproved), sum2, sum, n, ts)
+			}, "",
+			func(seq, n int64, ts string) string {
+				return endedSentence(seq, n, string(lifecycle.EvApproved), n+1)
+			}},
+		{"an approve token on a version.superseded of the approved digest, after the approve's own entry", approveSum, false,
+			func(n int64, ts string) audit.Entry {
+				return afterApproveOfSum(string(lifecycle.EvSuperseded), sum, sum, n, ts)
+			}, "",
+			func(seq, n int64, ts string) string {
+				return endedSentence(seq, n, string(lifecycle.EvApproved), n+1)
+			}},
+		{"an approve token on a version.superseded of a third digest, after the approve's own entry", approveSum, false,
+			func(n int64, ts string) audit.Entry {
+				return afterApproveOfSum(string(lifecycle.EvSuperseded), sum2, sum, n, ts)
+			}, "",
+			func(seq, n int64, ts string) string {
+				return endedSentence(seq, n, string(lifecycle.EvApproved), n+1)
+			}},
+	}, []bindingProbe{
 		{"an enable token on a tool.enabled saying disabled->enabled after a review-policy enable", reviewEnableEcho, false,
 			func(n int64, ts string) audit.Entry {
 				return echoLeavesDisabled(string(lifecycle.EvEnabled), "", ech, ech, n, ts)
@@ -260,7 +302,7 @@ func historyProbes(t *testing.T) []bindingProbe {
 			func(seq, n int64, ts string) string {
 				return fmt.Sprintf("audit entry %d is a second tool.disabled of digest none under signed=%d (entry %d wrote the first); a decision writes each of its events once", seq, n, n+1)
 			}},
-	}
+	}...)
 }
 
 // Rule 5's binding, probed token by token, then content by content, then
@@ -275,7 +317,9 @@ func historyProbes(t *testing.T) []bindingProbe {
 // are the borrowed token that says what the kind could have done: without
 // checkContinuity a sealed tool.enabled saying disabled->enabled naming the
 // open review-policy enable's token, plus the state and the pointer edited,
-// re-served the digest the enable had put under review.
+// re-served the digest the enable had put under review; and without the shape
+// rule's last clause the transaction open at the head gained entries of its
+// own kind under alice's token until the next entry closed it.
 func TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry(t *testing.T) {
 	t.Parallel()
 	probes := append(tokenProbes(t), contentProbes(t)...)

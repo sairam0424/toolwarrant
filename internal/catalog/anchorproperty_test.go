@@ -236,11 +236,23 @@ func drawHistory(rt *rapid.T, e audit.Entry, kind signing.Kind, d drawnContent, 
 	return h
 }
 
+// ownEvent is the human-only event of kind, the one its transaction writes
+// last.
+func ownEvent(kind signing.Kind) string {
+	for _, ev := range probeEvents() {
+		if isHumanOnlyEvent(ev) && kindWrites(kind, ev) {
+			return ev
+		}
+	}
+	return ""
+}
+
 // drawFirst draws the first entry of the open transaction: faithful to the
 // drawn entry (the same state field and after_hash, another event written)
 // unless a mutation draws its transition from the kind's own table, which the
-// decision may not have taken, another after_hash, or the entry's own event
-// and digest among the events already written.
+// decision may not have taken, another after_hash, the entry's own event and
+// digest among the events already written, or the decision's own event among
+// them, which ends the transaction.
 func drawFirst(rt *rapid.T, e audit.Entry, kind signing.Kind, d drawnContent, n int64, other string) openTxn {
 	o := openTxn{seq: n, first: n + 1, state: d.stateField(), after: e.AfterHash,
 		events: []txnEvent{{seq: n + 1, event: string(lifecycle.EvDiscovered), digest: orNoDigest(d.digest)}}}
@@ -254,6 +266,9 @@ func drawFirst(rt *rapid.T, e audit.Entry, kind signing.Kind, d drawnContent, n 
 	if mutate(rt, "repeat") {
 		digest, _ := detailField(e.Detail, fieldDigest)
 		o.events = append(o.events, txnEvent{seq: n + 2, event: e.Event, digest: digest})
+	}
+	if mutate(rt, "ended") {
+		o.events = append(o.events, txnEvent{seq: n + 3, event: ownEvent(kind), digest: orNoDigest(d.digest)})
 	}
 	return o
 }
@@ -277,12 +292,12 @@ func continuityHolds(e audit.Entry, d drawnContent, h drawnHistory) bool {
 }
 
 // shapeHolds is the oracle of checkTransactionShape: no event and digest the
-// transaction wrote already, and the first entry's state field and after_hash
-// when there is one.
+// transaction wrote already, no decision's own event written before the entry,
+// and the first entry's state field and after_hash when there is one.
 func shapeHolds(e audit.Entry, d drawnContent, o openTxn) bool {
 	digest, _ := detailField(e.Detail, fieldDigest)
 	for _, ev := range o.events {
-		if ev.event == e.Event && ev.digest == digest {
+		if (ev.event == e.Event && ev.digest == digest) || isHumanOnlyEvent(ev.event) {
 			return false
 		}
 	}
@@ -300,8 +315,9 @@ func shapeHolds(e audit.Entry, d drawnContent, o openTxn) bool {
 // those only while that transaction is open, only when the entry starts where
 // the newest entry about the tool left it or repeats that entry's transition
 // at its time (the continuity rule), and only when it carries the transition
-// and the after_hash of the transaction's first entry and repeats no event of
-// it (the shape rule). A human-only event without a token is refused after the
+// and the after_hash of the transaction's first entry, repeats no event of it
+// and comes before the decision's own event (the shape rule). A human-only
+// event without a token is refused after the
 // bootstrap and accepted before it; a token-less tool entry is held to the
 // crawl table and to the continuity rule, and one without a state field is
 // refused (the third review: the oracle had encoded the code's skip of such an
