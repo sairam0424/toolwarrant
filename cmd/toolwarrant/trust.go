@@ -41,10 +41,10 @@ func trustCommands() []*command {
 
 // runTrustInit records the bootstrap. The acting person comes from --as or
 // the OS user (there is no list yet to derive them from) and is never the
-// system actor; the list names them with the key that signs it, so the
-// bootstrap is self-signed and its signer is the root every later open may
-// pin. A catalog that already has a list is refused: the list cannot start
-// twice.
+// system actor, refused with a sentence that names this command; the list
+// names them with the key that signs it, so the bootstrap is self-signed and
+// its signer is the root every later open may pin. A catalog that already has
+// a list is refused: the list cannot start twice.
 func runTrustInit(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	expect := fs.String(flagExpect, "", expectHelp)
@@ -55,7 +55,7 @@ func runTrustInit(a *app, c *command, args []string) (err error) {
 	if err := wantArgs(c, pos); err != nil {
 		return err
 	}
-	actor, err := a.decidingActor(c)
+	actor, err := a.humanActor(c, systemActorCannotInitTrust)
 	if err != nil {
 		return err
 	}

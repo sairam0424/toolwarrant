@@ -33,8 +33,12 @@ func isSignedEvent(event string) bool {
 // the signed records say: how many the walk verified, the list in force with
 // its operators, the root and where the signed history starts, and the
 // approvals in service that predate the bootstrap, which stand by chain
-// anchoring alone until re-approved (O-12). Without a list it names L13 and
-// the command that closes it.
+// anchoring alone until signed again (O-12). Signing one is three signed
+// decisions, disable, enable and approve, since an approval in force cannot
+// be approved again (lifecycle: cannot approve in state enabled), so the line
+// names the three steps and not a re-approve that reads as one step
+// (post-v0.4.0 verification, orchestrator decision 45 (d)). Without a list it
+// names L13 and the command that closes it.
 func (a *app) reportTrust(store *catalog.Store, rep catalog.IntegrityReport) error {
 	view, err := store.TrustList(a.ctx)
 	if err != nil {
@@ -51,7 +55,7 @@ func (a *app) reportTrust(store *catalog.Store, rep catalog.IntegrityReport) err
 	a.stdout.printf("signed records ok: %d decisions and %d trust lists verified; trust list v%d in force (%s); root %s at entry %d; %d entries before the bootstrap are unsigned history vouched for by %s\n",
 		view.SignedDecisions, view.Lists, view.Version, signerList(view.Signers), view.Root, view.BootstrapSeq, view.BootstrapSeq-1, cell(vouched))
 	if n := len(rep.LegacyApprovalsInService); n > 0 {
-		a.stdout.printf("unsigned approvals in service: %d (approved before the cut-over at entry %d; re-approve them to sign them): %s\n", n, view.BootstrapSeq, cells(rep.LegacyApprovalsInService))
+		a.stdout.printf("unsigned approvals in service: %d (approved before the cut-over at entry %d; to sign one, disable, enable and approve it, each signed): %s\n", n, view.BootstrapSeq, cellsProse(rep.LegacyApprovalsInService))
 	}
 	return nil
 }

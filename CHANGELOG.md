@@ -13,6 +13,11 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `audit verify`'s line about the approvals made before the trust bootstrap names the three signed steps that sign one, `unsigned approvals in service: N (approved before the cut-over at entry B; to sign one, disable, enable and approve it, each signed): server/tool, ...`, in place of `re-approve them to sign them`, which read as one step while a signed `approve` of a tool whose approval is in force is refused with `cannot approve in state enabled`, and joins the tools with a comma and a space, as docs/operations.md shows them, in place of a bare comma (`TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`).
+- `trust init` run as the system actor (`--as crawler`, or `TOOLWARRANT_ACTOR` naming it) is refused with `the system actor cannot start the trust list; pass --as with your own name`, exit 2, in place of the decision sentence that named approve, reject and the other decisions and not the command that was refused (`TestTrustInitRefusesASecondBootstrapAndTheSystemActor`).
+
 ## [0.4.0] - 2026-10-16
 
 This release writes catalog schema v7. A catalog from an earlier build is migrated in place when it is schema v6 (v0.1.0 to v0.3.x) and refused otherwise: stop the processors, back the file up and record its audit head with the build that wrote it, then run `init` with this build (it adds one table and its guards and rewrites nothing, so the head is unchanged) and start the processors. Every command but `serve`, `audit verify` and `audit list` migrates the file the same way, `list` and `show` included, so take the backup before running any of them with this build; a v0.3.x build refuses the migrated file. Once `trust init` has run, every human decision must be signed by a key the trust list names (D22).

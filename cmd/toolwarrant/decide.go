@@ -25,17 +25,34 @@ type located struct {
 	textdiff.Finding
 }
 
+// The usage errors a command prints when the actor it resolved is the system
+// one. Each names what the command does, since the operator who ran it as the
+// crawler reads the sentence as the fix: the decision sentence on trust init
+// named approve, reject and the other decisions and not the command that was
+// refused (post-v0.4.0 verification, orchestrator decision 45 (e)).
+const (
+	systemActorCannotDecide    = "the system actor cannot approve, reject, disable, enable, roll back, pause or resume; pass --as with your own name"
+	systemActorCannotInitTrust = "the system actor cannot start the trust list; pass --as with your own name"
+)
+
 // decidingActor is actor(false) plus the rule that only a person decides: the
 // system crawler proposes, it never approves, rejects, pauses or resumes. The
 // catalog enforces the same rule (ErrHumanRequired); refusing here turns it
 // into a usage error with the fix in it.
 func (a *app) decidingActor(c *command) (catalog.Actor, error) {
+	return a.humanActor(c, systemActorCannotDecide)
+}
+
+// humanActor is actor(false) plus the rule that the actor is a person;
+// refusal is the usage error's sentence when it is the system actor, naming
+// what that actor cannot do in the words of the command that asked.
+func (a *app) humanActor(c *command, refusal string) (catalog.Actor, error) {
 	actor, err := a.actor(false)
 	if err != nil {
 		return catalog.Actor{}, err
 	}
 	if actor.Type != catalog.ActorHuman {
-		return catalog.Actor{}, &usageError{msg: "the system actor cannot approve, reject, disable, enable, roll back, pause or resume; pass --as with your own name", cmd: c}
+		return catalog.Actor{}, &usageError{msg: refusal, cmd: c}
 	}
 	return actor, nil
 }

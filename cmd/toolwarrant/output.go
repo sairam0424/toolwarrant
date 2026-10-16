@@ -87,6 +87,19 @@ func cell(s string) string {
 
 // cells renders a list of untrusted names as one comma-separated cell.
 func cells(names []string) string {
+	return joinCells(names, ",")
+}
+
+// cellsProse renders a list of untrusted names for a sentence: comma and
+// space separated, as the guide shows the list audit verify prints after the
+// unsigned approvals in service (post-v0.4.0 verification, orchestrator
+// decision 45 (f)); the bare comma of a table cell would read as one name.
+func cellsProse(names []string) string {
+	return joinCells(names, ", ")
+}
+
+// joinCells escapes every name as a cell and joins them with sep.
+func joinCells(names []string, sep string) string {
 	if len(names) == 0 {
 		return emptyCell
 	}
@@ -94,7 +107,7 @@ func cells(names []string) string {
 	for _, n := range names {
 		out = append(out, cell(n))
 	}
-	return strings.Join(out, ",")
+	return strings.Join(out, sep)
 }
 
 // shortDigest shows the first shortDigestLen hex digits of a digest.
