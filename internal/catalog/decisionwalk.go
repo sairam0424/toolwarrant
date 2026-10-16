@@ -43,7 +43,10 @@ import (
 // make (lifecycle.CrawlMayMove), and from the state the chain left it in, so
 // neither a sealed tool.reverted with state=disabled->enabled nor one with
 // state=changed_pending_reapproval->enabled appended without a key re-enables
-// anything. Before the bootstrap nothing is refused (O-12): approvals made
+// anything; a tool entry that records no transition at all is refused as
+// such, since every entry the catalog writes about a tool carries one, so it
+// cannot blank the memory the next entry is checked against (the third
+// review). Before the bootstrap nothing is refused (O-12): approvals made
 // then stand by chain anchoring alone, and the legacy residual is stated; the
 // memory of every tool's state is kept from the genesis all the same. Every
 // failure is ErrCorrupt with a fixed sentence naming the entry; the walk stops
@@ -243,12 +246,21 @@ func checkSignedBinding(e audit.Entry, token string, f stateField, w decisionWal
 }
 
 // checkCrawlTransition is rule 6 for one entry after the bootstrap that
-// carries no token: an entry about a tool (its detail has a state field) moves
-// the state only along a transition a crawl can make; checkContinuity then
-// requires the from half to be where the chain left the tool. An entry with no
-// state field is about a server, a crawl or a rejected name and moves no tool.
+// carries no token: an entry about a tool moves the state only along a
+// transition a crawl can make; checkContinuity then requires the from half to
+// be where the chain left the tool. A tool entry (its detail starts with
+// digest=, as every entry auditTool and the budget reset write) that carries
+// no state field is refused as such: every entry the catalog writes about a
+// tool records its transition, and an entry that records none would otherwise
+// become the newest entry about the tool with nothing for the continuity rule
+// to compare the next entry with (the third review of PR 7.5). An entry with
+// no state field whose detail is not a tool detail is about a server, a crawl
+// or a rejected name and moves no tool.
 func checkCrawlTransition(e audit.Entry, f stateField) error {
 	if !f.present {
+		if isToolDetail(e.Detail) {
+			return problemf(ruleCrawl, nil, "audit entry %d about %s is a tool entry (its detail starts with %s=) but carries no %s field; every entry the catalog writes about a tool records its transition, so the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), fieldDigest, fieldState)
+		}
 		return nil
 	}
 	if !f.transition {

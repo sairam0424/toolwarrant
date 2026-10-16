@@ -33,8 +33,13 @@ import (
 // repeats a pair). Both rules run in the walk only; the anchor pass
 // (requireSigned) is unchanged, so the serving path still reads no bytes and
 // parses two tokens per anchored entry. Before the bootstrap the memory is
-// kept and nothing is refused (O-12); a tool whose newest entry carries no
-// transition, which only a legacy history writes, is not checked.
+// kept and nothing is refused (O-12). A tool whose newest entry carries no
+// transition is refused, not skipped (the third review of PR 7.5): no build of
+// toolwarrant ever wrote a tool entry without one, so such an entry was
+// appended by hand before the bootstrap (after it, checkCrawlTransition
+// refuses the entry itself), and a skip would have let the entry after it
+// claim any start; a tool the chain holds no entry about is created in
+// discovered (insertTool), so its first entry must start there.
 
 // toolLast is what the newest entry about a tool left: the entry's seq and
 // time and the transition its state field records, from and to both empty
@@ -87,8 +92,12 @@ func leftState(e audit.Entry, f stateField) (toolLast, bool) {
 // entry about a tool moves it from the state the newest entry about the tool
 // left it in, unless it is a sibling of that entry (the same transition at the
 // same time, the entries of one operation). An entry without a state field is
-// about no tool; a tool whose newest entry recorded no transition is not
-// checked. rule is the counter Integrity files the refusal under.
+// about no tool. A tool the chain holds no entry about must start from
+// discovered, where insertTool creates every tool; a tool whose newest entry
+// recorded no transition (a stateless tool entry or a state field that is not
+// A->B, both planted before the bootstrap) is refused, since the walk has
+// nothing to check the entry against and the entry would otherwise be free to
+// claim any start. rule is the counter Integrity files the refusal under.
 func checkContinuity(e audit.Entry, f stateField, w decisionWalk, rule signedRule) error {
 	if !f.present {
 		return nil
@@ -97,7 +106,18 @@ func checkContinuity(e audit.Entry, f stateField, w decisionWalk, rule signedRul
 		return f.notATransition(e, rule)
 	}
 	last, ok := w.lastState(e.Subject)
-	if !ok || last.to == "" || f.from == last.to || last.isSibling(e.TS, f) {
+	if !ok {
+		if f.from == lifecycle.Discovered {
+			return nil
+		}
+		return problemf(rule, nil, "audit entry %d says tool %s moves from %s but no earlier entry is about the tool, and the first entry about a tool starts from %s; the entry was appended outside toolwarrant",
+			e.Seq, quote(e.Subject), f.from, lifecycle.Discovered)
+	}
+	if last.to == "" {
+		return problemf(rule, nil, "audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) records no transition; the entry was appended outside toolwarrant",
+			e.Seq, quote(e.Subject), f.from, last.seq)
+	}
+	if f.from == last.to || last.isSibling(e.TS, f) {
 		return nil
 	}
 	return problemf(rule, nil, "audit entry %d says tool %s moves from %s but the newest entry about it (seq %d) left it %s; the entry was appended outside toolwarrant",

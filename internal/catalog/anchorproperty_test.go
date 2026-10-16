@@ -258,13 +258,20 @@ func drawFirst(rt *rapid.T, e audit.Entry, kind signing.Kind, d drawnContent, n 
 	return o
 }
 
-// continuityHolds is the oracle of checkContinuity: an entry about no tool, or
-// one whose subject has no newest entry or none with a transition, is not
-// checked; otherwise it starts where that entry left the tool, or repeats
-// that entry's transition at its time.
+// continuityHolds is the oracle of checkContinuity, written to the rule and
+// not to the code: an entry about no tool is not checked; one whose subject has
+// no newest entry starts from discovered; one whose newest entry recorded no
+// transition is refused; otherwise the entry starts where that entry left the
+// tool, or repeats that entry's transition at its time.
 func continuityHolds(e audit.Entry, d drawnContent, h drawnHistory) bool {
-	if !d.tool || !d.hasField || !h.hasLast || h.last.to == "" {
+	if !d.tool || !d.hasField {
 		return true
+	}
+	if !h.hasLast {
+		return d.from == lifecycle.Discovered
+	}
+	if h.last.to == "" {
+		return false
 	}
 	return d.from == h.last.to || (h.last.ts == e.TS && h.last.from == d.from && h.last.to == d.to)
 }
@@ -296,7 +303,9 @@ func shapeHolds(e audit.Entry, d drawnContent, o openTxn) bool {
 // and the after_hash of the transaction's first entry and repeats no event of
 // it (the shape rule). A human-only event without a token is refused after the
 // bootstrap and accepted before it; a token-less tool entry is held to the
-// crawl table and to the continuity rule.
+// crawl table and to the continuity rule, and one without a state field is
+// refused (the third review: the oracle had encoded the code's skip of such an
+// entry as correct, and the property passed while the forgery was served).
 func TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction(t *testing.T) {
 	t.Parallel()
 	const (
@@ -326,7 +335,7 @@ func TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction(t *tes
 		if got := c.requireSigned(e) == nil; got != wantAnchor {
 			rt.Fatalf("requireSigned(%+v) accepted = %v, want %v (binds %v, content %+v)", e, got, wantAnchor, binds, content)
 		}
-		crawlOK := !content.tool || !content.hasField || lifecycle.CrawlMayMove(content.from, content.to)
+		crawlOK := !content.tool || (content.hasField && lifecycle.CrawlMayMove(content.from, content.to))
 		continuous := continuityHolds(e, content, h)
 		w := decisionWalk{bootstrap: bootstrap, open: h.open, lookup: c.lookupSigned,
 			lastState: func(string) (toolLast, bool) { return h.last, h.hasLast }}

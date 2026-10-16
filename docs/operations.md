@@ -1416,7 +1416,26 @@ other policy, that borrows the token of the enable whose own entries left the
 tool in `pending_review`, and which would otherwise re-serve the digest that
 enable put under review, is `audit entry N says tool "S/T" moves from
 disabled but the newest entry about it (seq M) left it pending_review; the
-entry was appended outside toolwarrant`. The shape rule, the second belt on
+entry was appended outside toolwarrant`. A tool entry that records no
+transition is refused as such: every entry the catalog writes about a tool
+carries `state=A->B`, so an entry whose detail starts with `digest=` and has
+no state field was appended by hand, and accepted it would have become the
+newest entry about the tool with nothing for the rule to compare the next
+entry with (`audit entry N about "S/T" is a tool entry (its detail starts
+with digest=) but carries no state field; every entry the catalog writes
+about a tool records its transition, so the entry was appended outside
+toolwarrant`); an entry about a tool whose newest entry, planted before the
+bootstrap, recorded no transition is refused too (`audit entry N says tool
+"S/T" moves from A but the newest entry about it (seq M) records no
+transition; the entry was appended outside toolwarrant`), and an entry about
+a tool the chain holds no entry for must start from `discovered`, where every
+tool is created (`audit entry N says tool "S/T" moves from A but no earlier
+entry is about the tool, and the first entry about a tool starts from
+discovered; the entry was appended outside toolwarrant`); the third review of
+this round sealed a stateless tool entry after a signed disable and re-enabled
+the tool with the lie after it on every path
+(`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the stateless probes
+and the tool the chain holds no entry about). The shape rule, the second belt on
 the token: every entry naming `signed=K` carries the `state=A->B` and the
 `after_hash` of the first entry that named it, and no event of one decision
 appears twice: `audit entry N names signed=K and says state=A->B but the
