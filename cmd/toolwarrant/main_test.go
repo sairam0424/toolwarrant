@@ -24,6 +24,7 @@ func TestHelpAndVersion(t *testing.T) {
 		"-ssh-key", "-trust-root", "-sign-timeout", "never printed", "approve SERVER TOOL --hash HASH [--accept-suspicious] [--expect-head HEX]", "server pause NAME [--expect-head HEX]")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
+	wantVersionLines(t, out)
 	r := c.run("-h")
 	if r.code != exitOK {
 		t.Fatalf("-h exit %d: %s", r.code, r.stderr)
@@ -219,7 +220,8 @@ func TestRunUsesASignalContext(t *testing.T) {
 // the source default yields to an embedded tag or pseudo-version, which
 // already carries any +dirty marker, but not to the "(devel)" of a go test or
 // go run binary nor to a binary without build information. The command then
-// prints that decision for this very binary in its fixed two-line format.
+// prints that decision for this very binary in its fixed three-line format,
+// the commit line computed from the same build settings the command reads.
 func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
 	t.Parallel()
 	const pseudo = "v0.1.2-0.20261014065709-6ab9e4aad92e"
@@ -243,7 +245,7 @@ func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
 	var out, errb bytes.Buffer
 	none := func(string) string { return "" }
 	code := runCtx(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errb, none)
-	want := programName + " " + displayVersion(version, embeddedModuleVersion()) + "\n" + gatewayVersion + "\n"
+	want := programName + " " + displayVersion(version, embeddedModuleVersion()) + "\n" + gatewayVersion + "\n" + commitLinePrefix + buildCommit(embeddedBuildSettings()) + "\n"
 	if code != exitOK || out.String() != want {
 		t.Fatalf("version: exit %d, out %q, want %q, err %q", code, out.String(), want, errb.String())
 	}

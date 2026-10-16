@@ -147,7 +147,7 @@ func commands() []*command {
 		{name: "export", synopsis: "export --dir DIR [--sign-key PATH] [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git, with the audit head in MANIFEST.json and, with a key, its signature", run: runExport, sub: exportCommands(), self: true},
 		{name: "audit", synopsis: "audit verify|list ...", summary: "verify and read the hash-chained audit log", run: runSub, sub: auditCommands()},
 		{name: "verify-gateway", synopsis: "verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]", summary: "canary: list through the gateway in a fresh session, compare with the catalog, the emitted file and the live configuration, probe for unhooked calls (LEAK, MISSING, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE, PROBE-CHANGED, KNOWN-LIMIT)", run: runVerifyGateway},
-		{name: "version", synopsis: "version", summary: "print the version and the pinned gateway version", run: runVersion},
+		{name: "version", synopsis: "version", summary: "print the version, the pinned gateway version and the commit the binary was built from", run: runVersion},
 		{name: "help", synopsis: "help [COMMAND ...]", summary: "print usage", run: runHelp},
 	}
 }
@@ -218,11 +218,15 @@ func runHelp(a *app, c *command, args []string) error {
 	return target.run(a, target, []string{helpFlag})
 }
 
-// runVersion prints the build version and the gateway release it is pinned to.
-// The version text is escaped like everything else the source did not write.
+// runVersion prints the build version, the gateway release it is pinned to
+// and, on a third line, the commit the binary was built from (buildCommit), so
+// that a deployment is matched to a release and a release to its source
+// without go version -m. The version and commit texts are escaped like
+// everything else the source did not write.
 func runVersion(a *app, _ *command, _ []string) error {
 	v := textdiff.Escape(displayVersion(version, embeddedModuleVersion()))
-	a.stdout.printf("%s %s\n%s\n", programName, v, gatewayVersion)
+	commit := textdiff.Escape(buildCommit(embeddedBuildSettings()))
+	a.stdout.printf("%s %s\n%s\n%s%s\n", programName, v, gatewayVersion, commitLinePrefix, commit)
 	return nil
 }
 

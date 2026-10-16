@@ -568,8 +568,12 @@ The release workflow runs when a `v*` tag is pushed (decision D16).
   record, so the record exists before any user's first download; the record
   for v0.1.0 exists.
 - `toolwarrant version` prints the build version (the tag without its `v`,
-  set at link time) and the pinned gateway version, so a deployment can be
-  matched to a release. A binary built with
+  set at link time), the pinned gateway version and, on a third line, the
+  commit the binary was built from (`commit` and the first twelve characters
+  of the `vcs.revision` the go command stamped, `+dirty` when the checkout
+  was modified, `unknown` when the build carries no stamp; release binaries
+  up to v0.4.0 predate the line), so a deployment can be matched to a
+  release and to its source. A binary built with
   `go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z` has
   no link-time version and falls back to the module version the go command
   embedded, the tag with its `v` (`toolwarrant vX.Y.Z`;

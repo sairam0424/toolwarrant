@@ -13,6 +13,10 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- `toolwarrant version` prints a third line, `commit` and the first twelve characters of the revision the go command stamped into the binary, `+dirty` appended when the checkout had uncommitted changes, and `commit unknown` when the build carries no version-control stamp (a `go install` of the module from the proxy, `go run`, `go test`); a release archive's binary names the tagged commit, which `go version -m` showed in full and the command did not, and the release binaries up to v0.4.0 predate the line (`TestBuildCommit_NamesTheRevisionTheToolchainStamped`, `TestHelpAndVersion`, `TestVersionFallsBackToTheModuleVersion`).
+
 ### Fixed
 
 - `audit verify`'s line about the approvals made before the trust bootstrap names the three signed steps that sign one, `unsigned approvals in service: N (approved before the cut-over at entry B; to sign one, disable, enable and approve it, each signed): server/tool, ...`, in place of `re-approve them to sign them`, which read as one step while a signed `approve` of a tool whose approval is in force is refused with `cannot approve in state enabled`, and joins the tools with a comma and a space, as docs/operations.md shows them, in place of a bare comma (`TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`); docs/threat-model.md (L13) and docs/decisions.md (D22, decision (6)) carry the same three-step advice in place of the one-step `re-approve`.

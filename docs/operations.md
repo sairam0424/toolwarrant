@@ -2685,7 +2685,7 @@ verification commands above with the new version in place of the one shown:
 GOFLAGS= GOPRIVATE= GONOSUMDB= GOSUMDB=sum.golang.org GOPROXY=https://proxy.golang.org,direct \
   GOBIN="$PWD/bin" go install github.com/sairam0424/toolwarrant/cmd/toolwarrant@vX.Y.Z
 go version -m bin/toolwarrant    # the mod line names the module version and its go.sum hash
-bin/toolwarrant version          # toolwarrant vX.Y.Z, then the pinned gateway line
+bin/toolwarrant version          # toolwarrant vX.Y.Z, the pinned gateway line, then commit unknown
 curl -fsS "https://sum.golang.org/lookup/github.com/sairam0424/toolwarrant@vX.Y.Z"
 ```
 
@@ -2709,8 +2709,14 @@ back to the module version the go command embedded and prints
 the decision). A `dev` from a tag after v0.1.1 means the fallback broke: stop
 and find out why. The binaries installed from v0.1.0 and v0.1.1 predate the
 fallback and print `dev`; for those the `mod` line of `go version -m` is what
-names the tag. The record for v0.1.0 exists and lists the same `h1:` hash the
-`mod` line shows.
+names the tag. The third line is `commit unknown` for every such binary: the
+module zip the proxy serves carries no version-control stamp, so the tag
+names the commit, while a release archive's binary, built in the checkout,
+prints the first twelve characters of the tagged commit (`+dirty` would mean
+the release was built from a modified checkout: stop and find out why; cmd
+`TestBuildCommit_NamesTheRevisionTheToolchainStamped`). Release binaries up to
+v0.4.0 predate the commit line and print two lines. The record for v0.1.0
+exists and lists the same `h1:` hash the `mod` line shows.
 
 Then, with the verified archive in the directory you clone into, rebuild one
 platform and compare it with the archive. The build is reproducible (CGO
