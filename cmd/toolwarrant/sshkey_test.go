@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -114,6 +115,36 @@ func TestSigningTimeoutWritesNothing(t *testing.T) {
 	r = l.fail(exitFailure, "--sign-timeout", "200ms", "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub)
 	wantContains(t, "trust add", r.stderr, "signing timed out after 200ms")
 	wantContains(t, "trust show", l.ok("trust", "show"), "trust list v1 (entry ")
+}
+
+// An agent that accepts the connection and never lists its keys (a hung
+// forwarded agent) is named as such once the signing package's bound on the
+// list passes, exit 1 with nothing written, and never reads as this process
+// being interrupted, which is what ^C during a signature prints.
+func TestAnAgentThatNeverAnswersIsNamedAndWritesNothing(t *testing.T) {
+	t.Parallel()
+	l := newSignedLab(t)
+	l.bootstrap(t)
+	before := l.verifiedHead()
+	echo := l.tool("s1", "echo").Pending
+	l.env[envAuthSock] = sigtest.NewSilentAgent(t)
+	want := "ssh-agent at SSH_AUTH_SOCK did not answer the key list within " + signing.AgentTimeout.String() + "; nothing was written"
+	start := time.Now()
+	r := l.fail(exitFailure, "--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
+	t.Logf("approve against the silent agent returned after %v", time.Since(start).Round(time.Millisecond))
+	wantContains(t, "approve", r.stderr, "--ssh-key "+l.alicePub+": "+want, "run ssh-add -l")
+	wantNotContains(t, "approve", r.stderr, adviceInterrupted, "context deadline exceeded")
+	if after := l.verifiedHead(); after != before {
+		t.Errorf("the silent agent moved the head from %s to %s", before, after)
+	}
+	if tv := l.tool("s1", "echo"); tv.Approved != "" {
+		t.Errorf("the approve against the silent agent was written: %+v", tv.toolJSON)
+	}
+	r = l.fail(exitFailure, "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub)
+	wantContains(t, "trust add", r.stderr, want)
+	wantNotContains(t, "trust add", r.stderr, adviceInterrupted)
+	wantContains(t, "trust show", l.ok("trust", "show"), "trust list v1 (entry ")
+	wantNotContains(t, "trust show", l.ok("trust", "show"), "bob")
 }
 
 // Every command of the signed flow, on success and on every refusal, prints

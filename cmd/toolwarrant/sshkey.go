@@ -52,6 +52,14 @@ const (
 // --sign-timeout; nothing was written, since the write follows the signature.
 var errSignTimeout = errors.New("signing timed out")
 
+// errAgentSilent is the refusal when ssh-agent accepted the connection and did
+// not list its keys within signing.AgentTimeout (a hung forwarded agent). The
+// signing package reports its own bound as a context deadline, which is also
+// what this process's own interruption looks like; openRefusal tells them
+// apart by the process's context, as sign does for --sign-timeout, so a hung
+// agent is never printed as "interrupted".
+var errAgentSilent = errors.New("ssh-agent at SSH_AUTH_SOCK did not answer the key list")
+
 // cliSigner is the operator's key for one command: the signing key, its
 // fingerprint (the only name the key has in any output), the bound on one
 // signature and the stream the touch hint goes to.
@@ -90,9 +98,21 @@ func (a *app) optionalSigner(c *command) (*cliSigner, error) {
 	}
 	key, err := src.Open(a.ctx)
 	if err != nil {
-		return nil, fmt.Errorf("--%s %s: %w", flagSSHKey, textdiff.Escape(src.Path), err)
+		return nil, fmt.Errorf("--%s %s: %w", flagSSHKey, textdiff.Escape(src.Path), a.openRefusal(err))
 	}
 	return &cliSigner{key: key, fp: signing.Fingerprint(key.PublicKey()), timeout: a.globals.signTimeout, hint: a.stderr}, nil
+}
+
+// openRefusal names a key that could not be opened. A deadline the signing
+// package hit on its own while this process was not interrupted is the
+// agent's silence on the key list, named as such without the context error,
+// which describe would otherwise print as the operator's own cancellation;
+// every other error passes through.
+func (a *app) openRefusal(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && a.ctx.Err() == nil {
+		return fmt.Errorf("%w within %v; nothing was written; run ssh-add -l to see whether it answers", errAgentSilent, signing.AgentTimeout)
+	}
+	return err
 }
 
 // requireSigner is optionalSigner for the commands that cannot run without a
