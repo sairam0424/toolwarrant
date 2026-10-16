@@ -871,13 +871,13 @@ a comma and a space; such an approval stands by chain anchoring alone, as in
 v0.3, and leaves the list once the tool is approved again with a signed
 decision, which is those three signed steps and not one: a signed `approve`
 of a tool whose approval is in force is refused with `cannot approve in state
-enabled`, so `disable` it (signed; the tool is `pending_review` and not
-served from here to the approve), `enable` it (signed; the approved digest is
-pending again) and `approve` that digest (signed), eight audit entries in
-all. Without a list: `signed records: none; the catalog has no
-trust list (L13 open); run "toolwarrant trust init"`. A signed record the walk
-refuses is one `integrity problem:` line with the walk's sentence, as every
-other finding, and the summary is withheld
+enabled`, so `disable` it (signed; the tool is `disabled` and not served
+from here to the approve), `enable` it (signed; the tool is `pending_review`
+and the approved digest is pending again) and `approve` that digest
+(signed), eight audit entries in all. Without a list: `signed records: none;
+the catalog has no trust list (L13 open); run "toolwarrant trust init"`. A
+signed record the walk refuses is one `integrity problem:` line with the
+walk's sentence, as every other finding, and the summary is withheld
 (`TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`,
 `TestAuditVerifyNamesAForgedSignedRecord`). `audit list --json` gives every
 entry a `signed` field: `{"payload": <base64 of the exact signed bytes>,
