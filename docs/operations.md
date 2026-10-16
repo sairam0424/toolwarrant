@@ -6,7 +6,7 @@ table in `cmd/toolwarrant/main.go` (`toolwarrant help COMMAND` prints them).
 Every behaviour described here is covered by an in-process test of
 `cmd/toolwarrant` or of the package behind the command, and the chain through
 the real gateway by a scenario of the end-to-end test (`e2e/`, `make e2e`,
-scenarios A to R); see [threat-model.md](threat-model.md) for the test names.
+scenarios A to S); see [threat-model.md](threat-model.md) for the test names.
 The fourth round (the fixes after the third review, 2026-10-11, decision D13 in
 [decisions.md](decisions.md)) changed the canary, `crawl --every`, `emit`,
 `audit verify` and the recovery procedures. The fifth round (the fixes after
@@ -1251,8 +1251,11 @@ recorded it, so a rewrite of the log made while no store held a pin (the pin
 limit, D17) has to pass two anchors that now name each other, the recorded
 head and the signed export, instead of two that did not. The signature
 authenticates the export against whoever can write the export directory or its
-repository; it does not authenticate the person who approved (L13), and the
-entries inside the catalog are not signed.
+repository; it does not authenticate the person who approved, which since the
+v0.4 round is the signed decision's job (D22 closed L13 for every decision made
+after the trust bootstrap, the section Signing decisions and managing the
+operator trust list), and the export's own entries carry no signature of the
+approver.
 
 What the tests show: `TestExportSignsTheManifestAndVerifyRoundTrips` exports
 and signs, reads the same head from `audit verify`, verifies with and without
@@ -1275,9 +1278,10 @@ covers the remaining shapes in the export package.
 Since the v0.4 round the catalog can hold a signed, versioned list of the
 people allowed to decide, inside its own audit chain (decision D22 (c); owner
 decisions O-11, O-12, O-14 and O-15 of the v0.4 plan). The `trust` commands
-that write a list arrive with the CLI round of v0.4; this section describes
-the records the catalog holds and the rules every reader applies to them from
-the moment the first list is recorded.
+that write a list are in the section Signing decisions and managing the
+operator trust list below; this section describes the records the catalog
+holds and the rules every reader applies to them from the moment the first
+list is recorded.
 
 What a trust list is. A trust list is a `toolwarrant/trust-list/v1` payload:
 the catalog identity, the audit head it extends (`prev_head`), the signer's
@@ -1596,6 +1600,18 @@ rule lets either key add or remove the other.
 
 The commands of this section are the operator's side of the trust list above
 (decision D22 (h); owner decisions O-13, O-17 and O-18 of the v0.4 plan).
+End-to-end scenario S (`S_SignedDecisions` of `TestEndToEnd`) drives the
+whole flow through the built binary against the real gateway: the refusals
+before the bootstrap, `trust init` through an in-process ssh-agent, a signed
+approve the gateway then serves, the `--as` label held to the key, a second
+operator enrolled and approving with a key file and no agent, disable, enable
+and approve signed, `audit verify`, a wrong `--trust-root`, `audit list
+--json` and stock `ssh-keygen -Y verify`, the rotation that removes and
+re-adds an operator, the two forgeries of this section (an unsigned approval
+appended after the bootstrap, a crawl-shaped entry that leaves disabled) each
+refused by the processor at open and named by `audit verify`, the processor
+refused under a wrong root and served under the recorded one, and
+`--expect-head` against a stale head.
 
 ```sh
 toolwarrant --ssh-key ~/.ssh/id_ed25519.pub trust init

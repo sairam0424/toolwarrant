@@ -21,9 +21,14 @@ import (
 // mock is the only server, because it restarts mock's processor with the two
 // serve ages and waits them out, and a restart after J would reset the
 // wrong-backend count that N reads from that processor at shutdown. Scenario
-// N runs last, after O and P, because it deletes and re-initialises the
-// catalog and stops every processor, and the two canary scenarios need both as
-// they are.
+// S runs right after R, still while mock is the only server, for the same
+// reason: it stops mock's processor for its two forgeries and restarts it
+// under --trust-root, which a restart after J must not do because N reads the
+// wrong-backend count J leaves on that processor; from S on every approve
+// signs through the lab agent and every command and processor carries the
+// recorded root, until N re-initialises the catalog. Scenario N runs last,
+// after O and P, because it deletes and re-initialises the catalog and stops
+// every processor, and the two canary scenarios need both as they are.
 func TestEndToEnd(t *testing.T) {
 	if h.skip != "" {
 		t.Skip(h.skip)
@@ -44,6 +49,7 @@ func TestEndToEnd(t *testing.T) {
 		{"Q_ProcessorTLS", scenarioQ},
 		{"I_LoopbackBind", scenarioI},
 		{"R_StaleCrawlDeniesCalls", scenarioR},
+		{"S_SignedDecisions", scenarioS},
 		{"J_CrossServerAndDuplicatePage", scenarioJ},
 		{"K_CELAloneNeverMatchingRule", scenarioK},
 		{"L_VendorExtensionMismatch", scenarioL},

@@ -40,8 +40,10 @@ type proc struct {
 
 // start launches bin with args, its stdout and stderr going to
 // logs/<name>.<n>.stdout and .stderr, where n counts the starts of that name.
-// The caller registers the cleanup: processes outlive the subtest that
-// started them, so t.Cleanup on the subtest would be wrong here.
+// Its environment is the test's own without the scrubbed variables
+// (scrubbedEnv), then extraEnv, which wins. The caller registers the cleanup:
+// processes outlive the subtest that started them, so t.Cleanup on the
+// subtest would be wrong here.
 func (hh *harness) start(t *testing.T, name string, extraEnv []string, bin string, args ...string) *proc {
 	t.Helper()
 	base := filepath.Join(hh.logDir, fmt.Sprintf("%s.%d", name, hh.procs.nextSeq(name)))
@@ -55,7 +57,7 @@ func (hh *harness) start(t *testing.T, name string, extraEnv []string, bin strin
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = hh.workdir
-	cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.Env = append(scrubbedEnviron(), extraEnv...)
 	cmd.Stdout, cmd.Stderr = outf, errf
 	p := &proc{name: name, cmd: cmd, stdout: outf.Name(), stderr: errf.Name(), done: make(chan struct{})}
 	if err := cmd.Start(); err != nil {

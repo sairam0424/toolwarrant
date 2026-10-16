@@ -10,11 +10,14 @@
 // hand and its running configuration replaced through the admin API, and the
 // catalog deleted and initialised again under the running processors. Every
 // "to be verified by the end-to-end test" statement in README.md and docs/ is
-// covered by a named subtest of TestEndToEnd (scenarios A to R; Q runs right
+// covered by a named subtest of TestEndToEnd (scenarios A to S; Q runs right
 // after H, while mock is the only server, and puts TLS on its processor link;
 // R runs right after I, also while mock is the only server, and restarts its
-// processor with the two serve ages; N runs last because it re-initialises the
-// catalog and stops every processor).
+// processor with the two serve ages; S runs right after R, also while mock is
+// the only server, bootstraps the operator trust list with an in-process
+// ssh-agent, signs every decision from then on, forges two entries with raw
+// SQL and restarts the processor under --trust-root; N runs last because it
+// re-initialises the catalog and stops every processor).
 //
 // The gateway's serving port and its admin, stats and readiness listeners are
 // all ports the test picks at run time and passes through emit (--listen-port,

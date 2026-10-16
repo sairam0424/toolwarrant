@@ -4,8 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.2.x | Yes: fixes land on `main` and ship in the next tag. |
-| 0.1.x | No: fixes are not backported; the newest 0.2.x tag opens a 0.1.x catalog file as it is, since both write schema v6. |
+| 0.4.x | Yes: fixes land on `main` and ship in the next tag. |
+| 0.3.x and older | No: fixes are not backported; the newest tag opens a 0.1.x to 0.3.x catalog file after migrating it in place on the first read-write open (schema v6 to v7, one table and its guards added, nothing rewritten, the audit head unchanged; `TestMigrate_V6FileIsMigratedInPlaceAndKeepsEveryRowAndTheHead`); a 0.3.x or older binary then refuses the migrated file as written by a newer build. |
 
 There is no long-term branch; a fix is a new tag from `main`. A problem found
 in the pinned agentgateway v1.6.0 itself is reported upstream (see below) and
@@ -47,10 +47,25 @@ The trust boundary, in six lines:
 - Every local user of the gateway host reaches the admin API, which hands out
   the loaded configuration and accepts a replacement (known limit L18).
 - The upstream is hostile: everything it sends is attacker-controlled input.
-- Operator names are asserted, not authenticated: `--as` and `TOOLWARRANT_ACTOR`
-  are taken as given beyond the OS account that runs the command, so the
-  per-person rule and the proposer rule hold against the name given (residual
-  risk L13 in the threat model).
+- Operator names on decisions are authenticated by an SSH signature under the
+  catalog's signed trust list once `trust init` has run (decision D22): every
+  approval, rejection, rollback, disable, enable, pause, resume and budget
+  reset made after the trust bootstrap carries an OpenSSH signature by a key
+  the trust list names for that person over the exact decision and the audit
+  head it extends, verified by every open and every reload, and nothing
+  appended without such a key, whatever state it claims a tool was in, can
+  approve, enable, resume or re-enable a tool
+  (`TestDecide_SignedApprovalWritesTheSignedEntryFirstAndTheLifecycleEntriesNameIt`,
+  `TestWalk_RefusesAValidSignatureFromAKeyOutsideTheTrustList`,
+  `TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`); the key is named by
+  path, resolved before the catalog is touched and bounded by `--sign-timeout`,
+  and fingerprints are the only key material any output carries
+  (`TestNoOutputCarriesKeyMaterial`); crawls and `server add` keep `--as` as a
+  label (known limit L20); a catalog that was never bootstrapped is the v0.3
+  boundary, with the name taken as given and a warning on every decision,
+  which `--trust-root` refuses (L13, closed with the residual the threat model
+  states: a rollback of the file while no `Store` holds a pin, threshold 1,
+  an unlocked agent or a readable key file, a removed key's earlier decisions).
 - The gateway's serving port must be reachable only by clients that send a
   JSON-RPC id on every `tools/call` (the official SDKs do) or through an
   enforcement point that refuses id-less `tools/call`; toolwarrant provides
@@ -166,7 +181,7 @@ test or seam result that proves it, is in [docs/threat-model.md](docs/threat-mod
 Its second table lists the residual risks and what an operator can do about
 each. The spike findings F1 to F5 and the design decisions are
 recorded in [seam/RESULTS.md](seam/RESULTS.md) and [docs/decisions.md](docs/decisions.md);
-the design decisions run to D21.
+the design decisions run to D22.
 
 ## Operator hardening checklist
 
@@ -374,6 +389,29 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   command, `list` and `show` included, refuses a file whose guard objects are
   missing or redefined, or that holds a trigger, view or unique index the schema
   did not create.
+- Run `trust init` once per catalog on the upgrade to v0.4, with your SSH key
+  through ssh-agent (`--ssh-key ~/.ssh/id_ed25519.pub`; a FIDO2 key asks for a
+  touch), and enrol a second key per operator under a second name
+  (`alice@backup`, kept offline) the same day: a list whose keys are all lost
+  has no in-file recovery (decision D22 (c) and (h)). Record the trust root
+  fingerprint `trust init` prints together with the audit head, outside the
+  database, and pass it as `--trust-root SHA256:FP` (or
+  `TOOLWARRANT_TRUST_ROOT`) to every processor and to the CLI, `audit verify`
+  and `audit list` included: a catalog without a bootstrap or with another
+  root is refused by every open and named in the report
+  (`TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap`,
+  `TestEveryCommandRefusesACatalogWhoseRootIsNotTheTrustRoot`; end-to-end
+  scenario S restarts the processor under a wrong and under the recorded
+  root). After every upgrade and every `audit verify`, read the `signed
+  records ok` line and the `unsigned approvals in service` count it prints:
+  the approvals made before the bootstrap stand by chain anchoring alone until
+  re-approved with a signed decision, which removes them from the list
+  (`TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`). Record the head
+  every signed decision prints after its own line and compare it with
+  `--expect-head` on the next decision made after the processors were
+  stopped, as you do with `audit verify --expect-head`: the chain with signed
+  heads does not detect a rollback of the file on its own (decision D22, the
+  residual of L13).
 - Keep upstreams unreachable except from the gateway and the control plane
   host. The emitted file binds the gateway's serving port to 127.0.0.1 by
   default (e2e scenario I); a non-loopback `emit --bind-address` is an explicit

@@ -22,7 +22,7 @@ make release-guards                                   # go.mod has no replace or
 make release-check                                    # release-guards and release-schema-line (the release notes name the schema version the code writes), then goreleaser check; the notices script's platform list equals goreleaser's goos x goarch; the checksums are signed as a bundle
 make release-snapshot                                 # goreleaser snapshot into dist/ (gitignored): four archives, SBOMs, checksums; unsigned
 go build -o bin/ ./cmd/...                            # binaries; bin/ is gitignored
-go test -short -race -count=1 -timeout 900s ./...     # skips six tests, named below
+go test -short -race -count=1 -timeout 900s ./...     # skips seven tests, named below
 go test -race -count=1 -run 'TestCheckRequest_DeniesWhatIsNotApproved' ./internal/processor/
 go test -run '^$' -fuzz FuzzCheckResponse -fuzztime 20s ./internal/processor/
 go generate ./internal/extmcpv1                       # regenerate the ExtMCP stubs; refuses other protoc/plugin versions
@@ -33,11 +33,14 @@ scripts/requalify-gateway.sh vX.Y.Z SHA256 [--e2e]   # the L7 checklist against 
 seam/run.sh guarded; seam/day5.sh; seam/day34-paging-latency.sh; seam/day34-sessions.sh; seam/day34-reload.sh
 ```
 
-`-short` skips six tests: the three Unicode walks of `internal/textdiff`
+`-short` skips seven tests: the three Unicode walks of `internal/textdiff`
 (`TestEscape_everyRune`, `TestEscape_coversEveryRuneTheToolNameRuleForbids`,
-`TestNames_noSuspiciousRuneHasAnEmptyName`), two slow catalog tests
+`TestNames_noSuspiciousRuneHasAnEmptyName`), three slow catalog tests
 (`TestVerifyAudit_PagesThroughLargeLogs`,
-`TestRecordCrawl_LargeCrawlDoesNotBlockADecision`) and the processor's gRPC size
+`TestRecordCrawl_LargeCrawlDoesNotBlockADecision` and
+`TestWalk_ContinuityMemoryCrossesThePageBoundary`, which pads the log to the
+walk's page size so a signed disable ends the first page and the lying
+crawl-shaped entry starts the second, D22 (d)) and the processor's gRPC size
 test (`TestServe_AcceptsAPageOverGRPCsDefaultLimit`); the CI `test-full` job
 runs those three packages without `-short`.
 
@@ -89,10 +92,10 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CO
 - `internal/testcert`: test-only certificate material (an ECDSA CA, a server certificate with the DNS SAN `toolwarrant-processor` and the loopback IP SANs, client certificates), generated when a test asks and written owner-only; no key material is in the tree. Used by the processor's and the serve command's TLS tests, and by end-to-end scenario Q.
 - `internal/releaseguards`: no code, only the tests of the three guards `make release-check` runs first (`make release-guards`), run against scratch copies of the Makefile, go.mod and CHANGELOG.md, of the schema line it runs next (`make release-schema-line`: the `.goreleaser.yaml` header names the schema version `internal/catalog/schema.go` writes and says a v6 file is migrated in place; `TestReleaseGuards_schemaLineNamesTheMigration`), and of `scripts/release-notes.sh`, the release workflow's notes step (a final tag's own changelog section, a candidate's fallback to Unreleased, the refusals), run against scratch changelogs, plus the check that release.yml hands the file to goreleaser and `.goreleaser.yaml` keeps the changelog pipe enabled.
 - `internal/extmcpv1`: generated ExtMCP stubs (package `api`) from `third_party/agentgateway/ext_mcp.proto`.
-- `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to R on one shared stack; Q runs right after H and puts TLS on mock's processor link; R runs right after I and restarts mock's processor with the two serve ages; `e2e/testdata/gateway_tool_keys.json` is the L2 golden of the key paths the gateway drops, keeps and adds, which scenario L compares exactly); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
+- `e2e/`: the end-to-end test behind the `e2e` build tag (`TestEndToEnd`, scenarios A to S on one shared stack; Q runs right after H and puts TLS on mock's processor link; R runs right after I and restarts mock's processor with the two serve ages; S runs right after R, bootstraps the operator trust list through the in-process ssh-agent and the run-time keys of `e2e/sshlab_test.go` (nothing in the tree), signs every decision from then on as the harness's reviewer, forges the two entries of orchestrator decision 14 with raw SQL and restarts mock's processor under `--trust-root`, which every later command and processor carries until N re-initialises the catalog (`e2e/scenario_signed_test.go`, `e2e/scenario_signed_forgery_test.go`); `e2e/testdata/gateway_tool_keys.json` is the L2 golden of the key paths the gateway drops, keeps and adds, which scenario L compares exactly); `demo/run.sh` runs it unattended into `demo/last-run.log` (gitignored).
 - `seam/`: spike scripts and gateway configs; `seam/RESULTS.md` holds findings F1 to F5, decisions D1 to D10 as the commits state them, and the post-review corrections after each review round.
 - `scripts/`: `scripts/gen-proto.sh`, `scripts/gen-confusables.sh` (regenerates `internal/textdiff/confusables_table.go` from the vendored UTS #39 data; the lint job runs `--check`), `scripts/gen-third-party-notices.sh`, `scripts/requalify-gateway.sh` with its helpers `scripts/requalify-lib.sh` (the L7 checklist; docs/operations.md, Moving the gateway pin), `scripts/release-notes.sh` (the CHANGELOG.md section a tag publishes; run by the release workflow, usable by hand before a tag).
-- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D21), `docs/operations.md`.
+- `docs/`: `docs/threat-model.md`, `docs/decisions.md` (D1 to D22), `docs/operations.md`.
 - `CHANGELOG.md`: one prose line per change an operator can see, under `## [Unreleased]` until the release commit moves the lines under `## [x.y.z] - YYYY-MM-DD` (keep a changelog; `make release-check` refuses a tree without the Unreleased heading and, with `VERSION=x.y.z`, without that version's heading).
 - `.github/workflows/ci.yml`: the CI workflow; `.github/workflows/release.yml`: the release workflow on `v*` tags, gated on a successful `ci` run of the tagged commit and on no published release for the tag; it takes the notes from CHANGELOG.md through `scripts/release-notes.sh`, attests the archives and SBOMs (SLSA provenance, the `.intoto.jsonl` asset) and rebuilds linux/amd64 against the archive (D16, D20); `.goreleaser.yaml`: what a tag builds, signs and publishes as a draft (D16), with no changelog block, since goreleaser v2.18.2 reads `--release-notes` inside the changelog pipe and `disable: true` would skip the file with the pipe.
 
@@ -102,8 +105,8 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CO
 - Tests before commit: every behaviour change gets a test; gofmt, go vet and golangci-lint clean; `go test -race` on the touched packages; keep existing tests passing or say which design decision changed them.
 - Nothing is pushed, tagged, published or registered without the owner.
 - Keep "MCP" out of the product name; "toolwarrant for MCP" is the permitted form.
-- Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, fail closed.
-- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D21 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`, `cmd/toolwarrant/livetls.go`, `cmd/toolwarrant/servetls.go`.
+- Treat upstream text as hostile: `textdiff.Escape` in text mode, `strconv.Quote` in logs, never print tokens or credential-bearing URLs, and never key material (fingerprints are the only key text a message holds), fail closed.
+- Read `seam/RESULTS.md` (including its post-review sections) and `docs/decisions.md` D10 to D22 before changing anything the gateway sees: `internal/emit`, `internal/processor`, `internal/extmcpv1`, `cmd/toolwarrant/verify.go`, `cmd/toolwarrant/probe.go`, `cmd/toolwarrant/liveadmin.go`, `cmd/toolwarrant/livecompare.go`, `cmd/toolwarrant/livetls.go`, `cmd/toolwarrant/servetls.go`.
 - Documents cite tests by their exact names and state what the logs show, not what was expected; when a test is renamed, update every document that cites it (the CI `docs` job fails otherwise). Plain prose, no marketing language, no em dashes.
 - A change an operator can see adds one prose line under `## [Unreleased]` in `CHANGELOG.md`, naming the test that proves it; the release commit moves those lines under the version's heading and leaves an empty `## [Unreleased]` above them.
 - Style: a doc comment on every exported identifier saying why; lower-case error messages wrapped with `%w`; named constants; functions under about 50 lines, files under about 400; no package-level mutable state.

@@ -1,4 +1,4 @@
-# Design decisions D1 to D21
+# Design decisions D1 to D22
 
 These records are taken from the commit messages that state each decision: the
 five wave-1 commits of 2026-10-07 (b9e4533 core, 29dd670 processor, f2a3e5a
@@ -21,13 +21,16 @@ the v0.2 release round of 2026-10-14 (the plan's PR 1.4 with owner decisions O-4
 and O-5, landed as pull requests #15, #16, #20 and the release workflow change),
 which is D20, and the v0.3 round of 2026-10-14 and 2026-10-15 (the plan's Phases
 4 and 5 with owner decisions O-6, O-7 and O-8, landed as pull requests #29, #30,
-#31, #32, #33 and #34), which is D21. The post-review sections of
+#31, #32, #33 and #34), which is D21, and the v0.4 round of 2026-10-15 and
+2026-10-16 (the signed-approvals plan's PRs 7.1 to 7.7 with owner decisions O-9
+to O-18, landed as pull requests #46 to #52 and the end-to-end and document
+pull request that wrote this record), which is D22. The post-review sections of
 [../seam/RESULTS.md](../seam/RESULTS.md) quote the same decisions and record the
 corrections they forced to the spike's findings. Each record gives the context
 (what a review found), the decision, its consequences for operators and for
 other packages, and where it lives in code with the tests that pin it. Where a
 decision is proven on the real gateway, the end-to-end scenario is named:
-`TestEndToEnd` in `e2e/` runs scenarios A to R against the agentgateway v1.6.0
+`TestEndToEnd` in `e2e/` runs scenarios A to S against the agentgateway v1.6.0
 binary (`make e2e`; `demo/run.sh` keeps the last run in `demo/last-run.log`).
 
 ## D1. The digest covers the whole definition: profile `full-v1`
@@ -1882,7 +1885,7 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   schema's, so a v5 file from the sixth round is refused with `ErrSchema`
   and must be re-initialised like every earlier pre-release file (there is no
   migration; stop the processors, back the file up, `init`, re-register,
-  crawl, re-approve from the git export). After the eighth review the refusal distinguishes an unreleased schema (below `firstReleasedSchema`, 6: delete and init again) from a released one (6 and above: never delete, read it with a build of that schema or migrate as its release notes say), so the first bump after v0.1.0 cannot tell an operator to destroy an audit log (`TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`). `server list`, `emit`, `crawl`,
+  crawl, re-approve from the git export). After the eighth review the refusal distinguishes an unreleased schema (below `firstReleasedSchema`, 6: delete and init again) from a released one (6 and above: never delete, read it with a build of that schema or migrate as its release notes say), so the first bump after v0.1.0 cannot tell an operator to destroy an audit log (`TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`). (Note, 2026-10-16: D22 (g) is that bump, schema v7, and carried the in-place migration of a v6 file, never the delete advice.) `server list`, `emit`, `crawl`,
   `serve` and `show` now refuse a file whose servers row disagrees with the
   audit log, and `emit` prints a change line whenever the address it writes
   differs from the newest verified `server.processor_set` entry. A rollback
@@ -3461,7 +3464,9 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   `TestDigestProfile_IsFullV1WithNoExclusions` and
   `TestDigest_MetaIsPartOfTheDigest` (D1); catalog
   `TestOpen_RefusesOtherSchemaVersions` (schema v6 is the only version a `Store`
-  opens).
+  opens; note of 2026-10-15: since D22 (g) a `Store` also opens a v6 file by
+  migrating it in place, and the test now pins that 6 migrates and every other
+  version is refused).
 - Note (2026-10-15). The cheap substitute landed, with no schema change: the
   processor writes one `digest mismatch` line per mismatched tool (the first
   ten of a page, in page order, the cap every list of names in its log has)
@@ -3483,3 +3488,1500 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   code before this note the test fails on the missing `live=` field and on
   the one line for the thirteen tools. `internal/processor/filter.go`,
   `internal/processor/list.go`. The rest of the Phase 6 list stands as tracked.
+
+## D22. v0.4: signed per-person decisions and the operator trust list (closes L13 with a stated residual)
+
+- Context. D14, D15 and D17 fixed the trust boundary of the catalog file:
+  whoever can write the 0600 file can append a correctly sealed audit entry, so
+  an approval was attributed by the chain to whatever `--as NAME` said, and
+  L13 asked for a decision provable as one person's. The research report of
+  2026-10-15 (twelve findings, each verified three to zero) ranked the
+  primitives and fixed the rules for whatever is signed; two design proposals
+  were merged into the plan of 2026-10-15, and the owner decided its open
+  questions O-9 to O-18 the same day, every one as recommended: sshsig through
+  ssh-agent (O-9), no new head anchor in v0.4 and the head log first in v0.5
+  (O-10), a signed versioned trust list in the chain (O-11), an in-place v7
+  migration with the bootstrap attesting the legacy history (O-12), `--as` as
+  a label that must match the key (O-13), threshold 1 only (O-14), suffix-only
+  verification at reload (O-15), all eight human decisions signed (O-16), the
+  signature before the transaction with the compare-and-set inside it (O-17),
+  ssh-agent first and a key file second (O-18). The round landed on
+  2026-10-15 and 2026-10-16 as pull requests #46 (7.2, schema v7), #47 (7.1,
+  `internal/signing`), #48 (7.3, `internal/trust`), #49 (7.4, the trust list
+  in the chain), #50 (7.5, signed decisions through `Decide`, three
+  adversarial review rounds), #51 (the quoting follow-up of the walk's
+  sentences) and #52 (7.6, the CLI, two review rounds), under the document
+  ownership rule of D21: each feature pull request owned its code, its tests,
+  its [operations.md](operations.md) region and its CHANGELOG.md line, and
+  this record, the known limits and the guarantee sentences of README.md,
+  SECURITY.md and [threat-model.md](threat-model.md) were written once,
+  afterwards, from the decision texts the pull requests handed over and the
+  decisions the orchestrator took between them. Each sub-decision below
+  carries its own context, decision, consequence, where and proof. In
+  [threat-model.md](threat-model.md) this round rewrote the operators bullet
+  of the actors list and added the key, the agent socket and the trust root
+  to it, extended the catalog bullet, row 21 and its note, added row 27 and
+  its note, closed L13 with its residual and added L20; SECURITY.md gained
+  the fifth line of its Scope, a checklist item and the supported-versions
+  rows for 0.4.x; README.md the trust-model paragraph, the `trust init` and
+  `--ssh-key` steps of the quickstart, the L13 and L20 one-liners and the
+  schema sentence.
+- What a verified signature proves, in one paragraph. It proves that whoever
+  controlled the private half of a key named for operator X in the trust list
+  in force at that seq produced exactly this decision for exactly this catalog
+  on top of exactly this head. It does not prove X was present: an unlocked
+  agent or a stolen unencrypted key file signs too, and a FIDO2 key with touch
+  narrows it to physical presence. Authorisation is a second check, separate
+  from validity (research finding 6): the embedded key must resolve to a name
+  in the list in force, and that name must be the entry's actor and the
+  payload's actor; a valid signature from a key the list does not name is
+  `ErrCorrupt`, never a warning. What the whole round proves, in one sentence:
+  every approval the gate serves after the cut-over was made by a person who
+  held a key the trust list named for them at the time, over a history they
+  had seen up to that head, and nothing appended without such a key can
+  approve, enable, resume or re-enable anything, whatever the writer can
+  write.
+- The residual, stated plainly and carried into every document. (1) Rollback
+  by truncation: whoever can write the file while no `Store` holds a pin can
+  cut the chain back to an earlier signed state and rewrite the mutable tables
+  to match, dropping a later disable, reject, rollback or approval; they
+  cannot add a decision. The controls are the head printed after every signed
+  decision (every signed record is itself a signed head, finding 11), `audit
+  verify --expect-head`, `--expect-head` on every decision as the operator's
+  compare-and-set (finding 12), `--trust-root`, the signed export (D21 (e))
+  and backups; the head log that lets the processor detect a rollback at
+  reload is O-10 and the first v0.5 item. (2) Threshold 1: one compromised
+  key approves and can evict the other signer of a two-person list (TUF's
+  rule with threshold 1 allows it); threshold 2 is the fix and waits. (3) An
+  unlocked agent or a readable key file on a compromised workstation signs.
+  (4) Removal is not retroactive: decisions a key signed before its removal
+  stand and must be undone by hand. (5) Crawls, `server add` and `emit`'s
+  `server.processor_set` are unsigned (L20): a crawl run as `--as alice` by
+  someone else makes alice a proposer and blocks her approval of that digest;
+  neither can put an unapproved digest on the wire. (6) A catalog never
+  bootstrapped serves as v0.3 did, with a warning on every `serve` start and
+  every decision; `serve --trust-root` turns that into a refusal, and v0.5 is
+  where the default flips (O-12). (7) A lost key: enrol a second key at init
+  and keep it offline; without one there is no in-file recovery, the path is
+  the existing re-initialisation (fresh `init`, re-register, re-approve from
+  the export).
+- Deferred beyond v0.4, with the reason (the plan's section 5, extended by
+  the decisions taken between the pull requests). The head log (`--head-log`,
+  `audit record-head`, `audit verify --head-log`, `serve --head-log`, scenario
+  T): O-10; its value needs an off-host copy the operator already has to keep
+  for the recorded head, and its processor check adds a file read on the hook
+  path; the `toolwarrant/head/v1` payload type and the
+  `head@toolwarrant.invalid` namespace are reserved in `internal/signing` so
+  the records of v0.4 need no change. Thresholds above 1, the `trust
+  canon|sign|set` multi-step flow, a `signed_signatures` table and
+  propose-and-countersign decisions: O-14; a second UX, a lifecycle state the
+  gate does not know, a second schema object. Per-operator permitted decision
+  kinds and per-server or per-tool scopes: at threshold 1 every listed key
+  signs everything, and the payload type is versioned (`trust-list/v1`) so a
+  v2 can add them. Sigstore keyless: finding 5, needs live network and a
+  public log. Secure Enclave and third-party agents: whatever an agent exposes
+  over the ssh-agent protocol works today. A witness service: once the head
+  log exists. Signing crawls, `server add` and `emit`'s `server.processor_set`
+  (L20): a scheduled crawl or re-emit would need a key; v0.5 with the head
+  log. `audit show-signature SEQ --out DIR`: `audit list --json` and the
+  `ssh-keygen -Y verify` recipe of [operations.md](operations.md) do it.
+  Signer fingerprints in the export manifest (manifest v4): reachable through
+  `audit list --json` on the catalog. Moving the export manifest's Ed25519
+  signature (D21 (e)) onto sshsig: a second signing story for the export's
+  operators, revisited after the list has run for a release. Approval expiry
+  and break-glass re-bootstrap after a lost key: not evidenced by the
+  research; the two-key rule and re-initialisation are the recovery. Refusing
+  a never-bootstrapped catalog by default (O-12 (c)): v0.5, after the owner has
+  run the cut-over. Rule 6 and the continuity rule applied to history before
+  the bootstrap: they would refuse any legacy file whose history an older
+  lifecycle wrote differently (the legacy residual of (f)). Added between the
+  pull requests: verifying the signed pages of the open-time walk in parallel
+  goroutines, so that a 10000-decision catalog opens in less than the 1.5 s
+  measured in (e) (orchestrator decision 10: the sigref specification of (c)
+  was not changed to cheapen it); comparing `before_hash` across a decision
+  transaction's entries, a tightening of the shape rule of (d) that nothing
+  needs today (decision 17); and the repository-wide "escape once" pass over
+  the CLI's older refusal sites that pre-escape a value `describe()` escapes
+  again (`paths.go`, `export.go`, `exportverify.go`, `servetls.go`,
+  `emitout.go`, `emitvalidate.go`, `emitports.go`, `global.go`,
+  `liveconfig.go`, `audit.go`; decision 34).
+
+### D22 (a). Decisions are signed with OpenSSH `sshsig` records under toolwarrant's own namespaces, over the exact bytes of a typed payload, with a key that passes toolwarrant's policy and lives in ssh-agent or in an unencrypted OpenSSH key file
+
+- Context. The research report fixed four rules for whatever is signed: a
+  dedicated namespace so a git or export signature can never be replayed as a
+  decision (finding 2); the exact bytes signed, stored and verified before any
+  parse, never a re-canonicalisation (finding 7); an authenticated type inside
+  the signed bytes so two payload kinds cannot be confused (finding 8); and
+  the library's gaps named, since github.com/hiddeco/sshsig does not refuse
+  ssh-dss or small RSA and its `Verify` accepts an empty expected namespace
+  (findings 2 and 3). The owner decided O-9 and O-18 on 2026-10-15. The
+  pull request is #47 (PR 7.1).
+- Decision (1): the primitive and where it lives. `internal/signing` is the
+  one package that touches the envelope. `Sign(ctx, payload, key, namespace)`
+  returns a `Record{Payload, Signature, Signer}`: the bytes as given, the
+  sshsig wire blob, and the `SHA256:` fingerprint of the key.
+  `Verify(payload, sig, namespace, signer)` checks, in a fixed order, the
+  bounds (`MaxPayloadBytes` 64 KiB, `MaxSignatureBytes` 4 KiB), the blob's
+  shape, which includes being the canonical encoding of the signature it
+  parses to (the library's `Signature` type drops the wire `reserved` string
+  unchecked, so a blob with it set verifies under the library and has a
+  `RecordDigest` of its own; here it is `ErrSignatureFormat`, so one signature
+  has one byte form), the key policy on the embedded key, the embedded key's
+  fingerprint against the one the record names (`ErrNotTheExpectedKey`, before
+  any cryptography), the message hash (sha512, OpenSSH's default; a sha256
+  signature is refused by name), for an ssh-rsa key the inner signature
+  algorithm (rsa-sha2-512; the library's `Verify` accepts an rsa-sha2-256 blob
+  and it is refused here by name, `ErrSignatureAlgorithm`), the namespace,
+  and then the signature. `Sign` verifies its own output under the signer's
+  public key before returning it, so a faulty or hostile agent cannot make the
+  CLI store a signature that does not verify (`ErrSignerOutput`, nothing
+  returned). `RecordDigest(Record)` is the `sigref` token an audit entry
+  carries: the lower-case hex SHA-256 of the RFC 8785 form of
+  `{"payload":<base64>,"signature":<base64>,"signer":"SHA256:..."}`. `Armor`
+  and `Unarmor` move a blob to and from the `-----BEGIN SSH SIGNATURE-----`
+  block `ssh-keygen` reads and writes; `Unarmor` requires that line at the
+  first byte, as `ssh-keygen`'s dearmor does, and refuses headers, a second
+  block and trailing text. The pre-1.0, single-maintainer risk of the library
+  is carried by the pin, by the two-way interop tests against the system
+  `ssh-keygen` in CI, and by this package being the only importer, so an
+  in-house envelope over x/crypto/ssh could replace it without touching a
+  caller.
+- Decision (2): the namespaces and the types. `Namespace` is a string type
+  whose only accepted values are the constants `NamespaceDecision`
+  (`decision@toolwarrant.invalid`), `NamespaceTrust`
+  (`trust@toolwarrant.invalid`) and the reserved `NamespaceHead`
+  (`head@toolwarrant.invalid`, written by nothing in v0.4 and reserved with
+  `TypeHead` so the head log of v0.5 needs no format change); `Sign` and
+  `Verify` refuse any other value, so no caller string, and in particular no
+  empty expected namespace, reaches the library. Every payload carries its
+  `type` inside the signed bytes, `TypeDecision` (`toolwarrant/decision/v1`)
+  or `TypeTrustList` (`toolwarrant/trust-list/v1`), and each parser reads
+  `type` first and refuses another (`ErrType`), so a trust list signed under
+  the decision namespace verifies as bytes and is refused as a decision, and
+  the reverse.
+- Decision (3): the payloads are bytes, made once. `MarshalDecision` and
+  `MarshalTrustList` produce the RFC 8785 form through `gate.Canonical` and
+  validate every field first; the catalog stores those bytes verbatim and
+  never rebuilds them from columns. `ParseDecision` and `ParseTrustList` run
+  only on bytes whose signature verified and accept exactly what the marshal
+  wrote: the bytes equal their own canonicalisation, valid UTF-8, no duplicate
+  key, exactly the key set (ten for a decision, eight for a list, two for each
+  signer), string values within their caps (actor as D7, server as
+  `validateServerName`, tool as `toolname.Validate`, catalog 32 hex, heads and
+  digests 64 hex, `signed_at` RFC 3339 UTC to the second with a `Z`, `signer`
+  a `SHA256:` fingerprint), integers canonical and bounded, one to
+  `MaxSigners` (64) signers each with a canonical key line. A decision's
+  `kind` is one of the eight (approve, reject, rollback, disable, enable,
+  pause, resume, budget_reset); `digest` is present exactly for approve,
+  reject and rollback, `tool` is empty exactly for pause and resume, so there
+  is one shape per kind and every field is always present. `signed_at` is
+  informational, the signer's clock; `prev_head` is the freshness token.
+- Decision (4): the key policy. `CheckKeyPolicy` accepts `ssh-ed25519`,
+  `sk-ssh-ed25519@openssh.com`, `ecdsa-sha2-nistp256`, `-384`, `-521`,
+  `sk-ecdsa-sha2-nistp256@openssh.com` and `ssh-rsa` with a modulus of at
+  least `MinRSABits` (3072), and refuses `ssh-dss`, smaller RSA, certificates
+  and any other type. It runs before signing, before verifying (on the
+  embedded key), on a key asked of the agent and on a key read from a file;
+  `internal/trust` applies it to every key a list names. A key is stored and
+  shown as one `authorized_keys` line, `type base64`, no comment, no options
+  (`MarshalKey`), and `ParseAuthorizedKey` accepts only that spelling, strict
+  base64 included. Identity is the `SHA256:` fingerprint `ssh-keygen -l`
+  prints (`Fingerprint`); FIDO2 keys are recognised by their `sk-` prefix
+  (`NeedsTouch`) so the CLI can say a touch is coming.
+- Decision (5): the key handling rules. ssh-agent: `OpenAgent(ctx, sock)`
+  takes the value of `SSH_AUTH_SOCK` (the package reads no environment) and
+  refuses it unless it is shorter than `MaxSocketPathBytes` (104, darwin's
+  `sun_path`), a unix socket by `Lstat` (no link followed), owned by this
+  uid, and either with no group or other bits (OpenSSH's `ssh-agent` makes it
+  0600) or inside a directory of this uid with no group or other bits
+  (launchd's agent on macOS makes a 0666 socket in a 0700 directory, the
+  release platform's default agent, which the plan's literal rule would have
+  refused; the implementer's deviation, pinned both ways). The dial and the
+  key list are bounded by `AgentTimeout` (5 s) and by the context; a `Sign`
+  through the agent is bounded by the caller's context alone (the CLI's
+  `--sign-timeout`); the agent is asked to sign with the one key the operator
+  named, and a missing key is `ssh-agent at SSH_AUTH_SOCK does not hold the
+  key SHA256:...`. Key file: `ReadPrivateKeyFile(path)` applies the export
+  key's rules generalised (a regular file by `Lstat` and again on the open
+  file, `O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, mode with no group or other bits
+  checked on both, at most `MaxKeyFileBytes` 16 KiB, exactly one PEM block),
+  parses it with `ssh.ParseRawPrivateKey`, refuses a passphrase-protected key
+  with `load the key into ssh-agent; toolwarrant does not read passphrases`
+  and a file that is neither a key nor a `.pub` line with `not a PEM private
+  key` (no PEM marker in any output), applies the policy, clears every buffer
+  the key passed through, and returns a `SigningKey` whose `Close` marks it
+  closed and clears the Ed25519 seed (an ECDSA or RSA secret cannot be
+  cleared through the standard library and is left to the collector).
+  `KeySource{Path, AuthSock}.Open(ctx)` is the one entry the CLI uses: a file
+  whose first line is a public key means that key through the agent at
+  `AuthSock`; any other file is a private key under the file rules; a public
+  key with options, or with no socket given (`SSH_AUTH_SOCK is not set`), is
+  refused by name. No function returns or prints private material; the
+  fingerprint is the only key text an error carries.
+- Consequence. A record is three fields the catalog can store and the chain
+  can commit to through `sigref`; its signature is re-verifiable by an auditor
+  with stock `ssh-keygen -Y verify` and an `allowed_signers` line, and a
+  signature `ssh-keygen -Y sign` made, from a key file or through an agent,
+  verifies here. A git commit signature (`-n git`) or an export signature can
+  never be presented as a decision; a decision can never be read as a trust
+  list. Dependencies: `github.com/hiddeco/sshsig` v0.2.0 (Apache-2.0) and
+  `golang.org/x/crypto` v0.58.0 (BSD-3-Clause with the Go patent grant) are
+  new to the module; x/crypto's own graph moves `golang.org/x/text` to
+  v0.43.0, `golang.org/x/sys` to v0.49.0 and `golang.org/x/sync` to v0.24.0;
+  `THIRD_PARTY_NOTICES.md` is regenerated with the licence files read from the
+  module cache, and `scripts/gen-third-party-notices.sh --check` runs on every
+  pull request of the round since #49, when the catalog's import of
+  `internal/trust` pulled both modules into the binary (its section 1 names the
+  binaries that link each module). `govulncheck` reports nothing the code
+  calls. The CI gitleaks job flagged a test fixture of this pull request that
+  only looked like a key; the fixture assembles the header at run time and the
+  one fingerprint is listed in `.gitleaksignore` with its reason, as SECURITY.md
+  says.
+- Where. `internal/signing` (`doc.go`, `record.go`, `payload.go`,
+  `decision.go`, `trustlist.go`, `keys.go`, `agent.go`, `keyfile.go`,
+  `source.go`), `internal/signing/sigtest` (test keys and in-process agents, a
+  keyring, one that never answers a Sign and one that never answers at all;
+  no key material in the tree), `go.mod`, `go.sum`,
+  `scripts/gen-third-party-notices.sh`, `THIRD_PARTY_NOTICES.md`,
+  `.gitleaksignore`, CLAUDE.md (the Stack line and the `internal/signing`
+  bullet), CHANGELOG.md.
+- Tests and proof. `TestConstants_PinTheNamespacesTypesAndBounds` (every
+  constant above); `TestVerify_RefusesAnotherNamespace` (decision under trust,
+  head, empty, `git`, a trailing space; `Sign` under the same);
+  `TestVerify_RefusesAnotherKeyBeforeLookingAtTheSignature`;
+  `TestVerify_RefusesASHA256Signature`;
+  `TestVerify_RefusesAnRsaSha2256Signature` (an ssh-rsa blob with an
+  rsa-sha2-256 inner signature: `ErrSignatureAlgorithm`, while the library's
+  own `Verify` accepts the blob);
+  `TestVerify_RefusesANonCanonicalSignatureEncoding` (the same blob with
+  `reserved` set is `ErrSignatureFormat` from `Verify` and from `Armor`, the
+  library accepts it, and the two byte forms had different digests);
+  `TestVerify_RefusesAFlippedPayloadByteAndAFlippedSignatureByte` (every byte
+  of both); `TestSign_VerifiesTheAgentsSignatureBeforeReturningIt` (an agent
+  that answers zeros: `ErrSignerOutput`, no record);
+  `TestRecordDigest_ChangesWithPayloadSignatureOrSigner`;
+  `TestUnarmor_RefusesWhatSshKeygenWouldNotWrite`;
+  `TestSignAndVerify_RefuseOutOfBoundsInputs`;
+  `TestDecision_MarshalIsCanonicalAndParseRequiresTheExactBytes` (the exact
+  plan document and 26 refusals: whitespace, key order, a trailing byte,
+  unknown, missing and duplicate keys, a non-string value, the wrong type, an
+  unknown kind, upper-case hex, a short head, actor and tool over their caps,
+  a server with a slash, a malformed fingerprint, `signed_at` with an offset
+  or a fraction, pause with a tool, disable with a digest, approve without
+  one, invalid UTF-8, empty, an array, oversized);
+  `TestDecision_EveryKindMarshalsItsOwnShape`;
+  `TestDecision_RefusesATrustListUnderTheDecisionNamespace`;
+  `TestTrustList_MarshalAndParseRoundTrip`;
+  `TestTrustList_RefusesKeyCommentsOptionsAndNonCanonicalKeyLines` (16
+  spellings); `TestTrustList_RefusesBoundsAndShape` (65 signers refused, 64
+  parse); `TestCheckKeyPolicy_RefusesDSAAndRSABelow3072AndAcceptsTheSKTypes`
+  (RSA 3071 refused, 3072 accepted, a certificate refused);
+  `TestFingerprint_MatchesSshKeygen`;
+  `TestAgent_SignsWithAnEd25519KeyAndNamesAMissingKey`;
+  `TestAgent_RSAKeySignsRsaSha2512`; `TestAgent_RefusesASharedOrForeignSocket`
+  (0600 in 0700 and 0666 in 0700 accepted, 0666 and 0660 in 0755 refused, a
+  regular file, a link, a directory, an empty value, a missing path and a
+  104-byte path refused); `TestAgent_SignHonoursTheContextDeadline` (an agent
+  that never answers a Sign: the error wraps `context.DeadlineExceeded` and
+  names the fingerprint, 20 of 20 runs green);
+  `TestKeyFile_RefusesEveryUnsafeShape` (modes 0644, 0640, 0604, a link, a
+  directory, a pipe, a missing path, an empty path, an oversized file, two PEM
+  blocks, a public key, garbage, a garbage block, an encrypted key with the
+  agent advice, DSA, RSA-2048; no error carries a body line, the seed or the
+  PEM marker); `TestKeyFile_ClosedKeySignsNothing`;
+  `TestKeySource_PublicKeyPathSignsThroughTheAgentAndPrivateKeyPathSignsFromTheFile`;
+  `TestKeySource_NeverPrintsPrivateMaterialInAnError`; the interop, which ran
+  on this host (OpenSSH 10.3p1) and on the ubuntu runners and skips with the
+  reason where `ssh-keygen` is not on PATH:
+  `TestSign_ProducesASignatureSshKeygenVerifiesUnderTheNamespace` (`Good
+  "decision@toolwarrant.invalid" signature for alice` for Ed25519, ECDSA
+  P-256 and RSA-3072; refused under `-n git`, for another principal and over a
+  changed payload),
+  `TestVerify_AcceptsASignatureSshKeygenMadeAndRefusesItUnderAnotherNamespace`
+  (a `-n git` signature is `ErrNamespaceMismatch` naming `"git"`),
+  `TestOpenSSH_SignatureVerifiesWithSshKeygenAndTheReverse` (`ssh-keygen -Y
+  sign -f id.pub` against the in-process agent verifies here and `Sign`
+  through the same agent is `Good ... signature for alice` to `ssh-keygen -Y
+  verify`); the properties
+  `TestProperty_signThenVerifyHoldsForEveryKeyTypeAndRandomPayloadAndFailsForEveryMutation`,
+  `TestProperty_recordDigestIsInjectiveOnTheEncodedTriple`,
+  `TestProperty_decisionMarshalParseRoundTripForEveryValidShape`; the fuzzers
+  `FuzzParseDecision` (289454 execs in 20 s, 144 interesting inputs, no
+  failure), `FuzzParseTrustList` (335095 execs, 158) and `FuzzUnarmor` (866570
+  execs, 60; a junk-prefixed armor is a seed), each holding the law that
+  whatever parses re-marshals to exactly the input. Break-check by mutation on
+  2026-10-15: dropping the hash check, the self-verify, the directory rule,
+  the canonical-bytes check, the ssh-dss refusal, the namespace comparison or
+  the private-key mode check each failed its named test.
+
+### D22 (b). Every human decision goes through one entry point, carries a signed record once a trust list is in force, and is bound to the head it was signed over by a compare-and-set inside the write transaction
+
+- Context. (a) gives signatures over exact bytes, (c) the operator list in the
+  chain; what remained was the decision itself. The owner decided O-13 (`--as`
+  is a label that must match the key's operator), O-16 (all eight human
+  decisions are signed, because `enable` and `resume` are the two that undo a
+  revocation: a forged `tool.enabled` or `server.resumed` appended by whoever
+  can write the file would re-serve what a person disabled or paused) and
+  O-17 (the signature is made before the transaction, the compare-and-set
+  inside it, so the write lock is never held on a person or an agent). The
+  pull request is #50 (PR 7.5).
+- Decision. `Store.Decide(ctx, Decision)` is the one write path of a human
+  decision; `Approve`, `Reject`, `Rollback`, `Disable`, `Enable`,
+  `ResetProposalBudget`, `PauseServer` and `ResumeServer` are `Decide` without
+  a record and keep their tests. A `Decision` names the kind (`signing.Kind`,
+  the eight constants), the server, the tool (empty for pause and resume), the
+  digest (approve, reject and rollback only), the person and, when a list is
+  in force, the `signing.Record` over the `toolwarrant/decision/v1` payload.
+  Before any lock is taken the record is verified under the decision
+  namespace and parsed, and the payload must name this catalog, the deciding
+  actor and exactly the decision being made (`ErrInvalid` otherwise). Inside
+  the transaction, after the chain was verified to its head: an unsigned
+  decision while a list is in force is `ErrSignatureRequired` for every one of
+  the eight kinds; a payload whose `prev_head` is not the pin is
+  `ErrHeadMoved` (`audit head mismatch`) and nothing is written, which also
+  refuses the same record a second time and the loser of two signatures over
+  one head; the `decision.signed` entry is sealed from the pin, so its
+  `prev_hash` is the `prev_head` the payload names by construction, checked
+  with the walk's own `checkDecisionRecord` (one function for the writer and
+  the reader) and stored first with its row; then the lifecycle, budget or
+  server entries follow in the same transaction, each ending with
+  ` signed=N`, the seq of that entry. The record's signer must be the key the
+  list in force names for the entry's actor: an unlisted key is
+  `ErrNotASigner`, a key listed for another person is `ErrNotASigner` saying
+  `the key belongs to <name>` (O-13), a key the newest list no longer names is
+  refused from the rotation on while its earlier decisions stand, and a
+  signed decision on a catalog without a list is `ErrNoTrustList`. Before
+  the bootstrap nothing changes: the unsigned methods write exactly what v0.3
+  wrote, no token, no row (O-12). `Decide` returns a `Receipt`: `Seq` is the
+  `decision.signed` entry (0 for an unsigned decision) and `Head` the hash of
+  the last entry the transaction wrote, the head the CLI prints (O-10 (d)).
+- The `decision.signed` entry. Subject the server (pause, resume) or
+  `server/tool`; actor the person; no before or after hash; detail
+  `kind=<kind> digest=<64 hex or -> signer=SHA256:... sigref=<hex>`. The
+  record in `signed_records` at its seq, the exact bytes that were signed. The
+  snapshot's one pass over a server's entries filters by event, so a
+  `decision.signed` entry about `server/tool` is never taken as a decision or
+  state entry.
+- Where. `internal/catalog/decide.go` (`Decision`, `Decide`,
+  `prepareDecision`, `prepareDecisionRecord`, `recordSigned`,
+  `decisionWriteError`, `applyDecision`, `changeFor`), `ops.go` (the six
+  wrappers, `transitionTx`, `resetBudgetTx`), `servers.go` (`PauseServer`,
+  `ResumeServer`, `setPausedTx`), `signed.go` (`fieldSigned`,
+  `decisionDetail`, `signedNote`), `catalog.go` (`ErrSignatureRequired`).
+- Tests and proof. `TestDecide_RefusesAPayloadSignedForAnotherCatalog`,
+  `TestDecide_RefusesADecisionWhoseShapeOrPayloadDoesNotFit`,
+  `TestDecide_UnsignedDecisionAfterTheBootstrapIsRefused` (the eight kinds),
+  `TestDecide_RefusesAPayloadWhosePrevHeadIsNotThePin`,
+  `TestDecide_RefusesAReplayedSignature`,
+  `TestConcurrency_TwoSignedApprovalsOverOneHeadLetExactlyOneWin` (six rounds
+  of two handles, exactly one winner each),
+  `TestDecide_SignedApprovalWritesTheSignedEntryFirstAndTheLifecycleEntriesNameIt`,
+  `TestDecide_EveryKindSignsAndItsEntriesCarryTheToken` (the eight kinds, the
+  `version.superseded` and `version.proposed` an approve, rollback, disable or
+  enable writes beside its own event carrying the token too),
+  `TestDecide_ValidSignatureFromAnUnlistedKeyIsNotAuthorization`,
+  `TestDecide_LabelMustEqualTheSignersOperatorName`,
+  `TestDecide_RefusesAKeyRevokedByTheNewestTrustList`,
+  `TestDecide_UnsignedDecisionBeforeTheBootstrapStillWorks`; end to end,
+  scenario S approves, disables, enables and approves signed through the
+  built binary and the gateway serves the result.
+
+### D22 (c). The operators are named by a signed, versioned list inside the audit chain; the list rotates under TUF's root rule at a threshold of one; a key's signature is authorisation only when the list in force names that key for that person; every record is bound to its entry by a digest token and to the head it was signed over by a compare-and-set; the root is pinned by fingerprint or trusted on first use
+
+- Context. (a) gives a signature that proves which key signed which bytes,
+  and nothing about who the key belongs to: the sshsig blob embeds a public
+  key and no identity (finding 1), and the library does no principal lookup
+  (finding 3), so the identity-to-key binding is toolwarrant's own. gitsign's
+  history is the warning (finding 6): a verifier that checks that someone
+  signed, but not who, is called dangerous by Sigstore's own maintainers.
+  TUF's root metadata is the prior art for a list that changes hands safely
+  (finding 10): version N+1 signed by a threshold of keys of both version N
+  and N+1, the version exactly N+1 or it is a rollback, revocation by
+  publishing a list without the key. Seven TUF implementations miscounted
+  duplicate key ids toward a threshold (finding 9, CVE-2020-6174 and
+  siblings). The owner decided O-11, O-12, O-14, O-15 and O-17. The pull
+  requests are #48 (PR 7.3, `internal/trust`, the pure rules) and #49 (PR
+  7.4, the records in the chain).
+- Decision (1): the shape and the rules of a list (`internal/trust`). A trust
+  list is the `toolwarrant/trust-list/v1` payload of (a): the catalog
+  identity, the head it extends, the signer's fingerprint, `signers` as an
+  ordered array of `{"key": "<type base64>", "name": "<D7 name>"}`,
+  `threshold`, `version`. `internal/trust` is the one place that says which
+  such lists are acceptable and how one list may follow another; it imports
+  `internal/signing` (payload shape, key line, key policy, the two namespaces)
+  and `golang.org/x/text/unicode/norm` (the NFKC fold the catalog's
+  `normalizeActor` applies), and nothing else, so the catalog's walk, the
+  CLI's `trust` commands and the rendering an auditor uses apply one
+  implementation. `trust.Validate(signing.TrustList) (trust.Record, error)`
+  applies the rules a list must satisfy on its own: a version from 1; a
+  threshold of exactly 1 (`ErrUnsupportedThreshold`, so no record of this
+  release can claim a rule its verifier does not apply); one to
+  `signing.MaxSigners` (64) operators; every name normalised as D7 does
+  (`trust.NormalizeName`, the rule of the catalog's `normalizeActor`
+  re-implemented and pinned from both sides) and unique; every key its one
+  canonical `authorized_keys` line, within `signing.CheckKeyPolicy`, and
+  unique by fingerprint across the list. The returned `Record` is bound to
+  its content: `Validate` stores a SHA-256 over the version, the threshold and
+  every operator's name, key and fingerprint, and every other function of the
+  package recomputes it, so a zero, hand-built or altered-after-`Validate`
+  record names nobody, authorises nothing, cannot bootstrap, rotate, fold or
+  render. Names are unique per list on purpose: one person is one entry, so a
+  future threshold above one counts people and not keys, and a second key for
+  one person is enrolled under a second name (`alice@backup`, which D7
+  allows); the two-key rule of the residual is done that way.
+- Decision (2): the TUF rule at a threshold of one. The first list of a
+  catalog is the bootstrap, `trust.bootstrap`: `trust.CheckBootstrap(next,
+  signer, pinnedRoot)` requires version 1 (`ErrBootstrapVersion`), a signer
+  that is one of the list's own keys (`ErrNotSelfSigned`; trust on first use,
+  the list vouches for itself) and, when the operator pinned a root, that the
+  signer equals the pinned fingerprint (`ErrNotThePinnedRoot`, naming both).
+  Every later list is a rotation, `trust.rotated`: `trust.CheckRotation(prev,
+  next, signer)` requires `next.Version == prev.Version+1` (`ErrRollback`; a
+  lower and a skipped version alike) and a signer that is a key of both
+  `prev` and `next` (`ErrSignerNotInBothLists`). With one signature per
+  record the rule says: one listed key may add any key, remove any other key,
+  or rename, in one step; a key that is leaving cannot sign its own
+  replacement, a key that is arriving cannot vouch for itself, and the last
+  remaining key can neither remove itself nor hand the list to a new key, so
+  a list is never emptied and signing can never be switched off by a
+  rotation. `trust.State{Current *Record; BootstrapSeq, ListSeq int64}` is
+  the list in force after folding the trust records of a chain up to a point;
+  `State.Apply(seq, kind, next, signer, pinnedRoot)` folds one record in
+  increasing seq order from 1 (`ErrSeqOrder` otherwise), refuses a second
+  bootstrap while a list is in force (`ErrSecondBootstrap`), a rotation
+  before any bootstrap (`ErrNoList`) and any other event (`ErrKind`), applies
+  the pinned root to the bootstrap only (O-15: the bootstrap is below the pin
+  and cannot change under it), and returns a new `State`, leaving the receiver
+  as it was, so a walk keeps the state it had before a refused record.
+  Revocation is a rotation that omits the key; it is not retroactive.
+- Decision (3): authorisation is a second check, separate from validity
+  (finding 6). `signing.Verify` proves that the key whose fingerprint the
+  record names signed exactly these bytes under this namespace. Whether that
+  key may decide is `Record.Authorize(fingerprint, actor)` on the list in
+  force at that seq: the key must be listed (`ErrUnauthorizedSigner`; a valid
+  signature from a key the list does not name authorises nothing) and listed
+  for exactly the person the entry names (`ErrAnotherOperatorsKey`, naming
+  both people, so `--as` can never put a name in the audit log that the key
+  does not back, O-13). `Record.Lookup(fingerprint) (name, ok)` is the
+  resolution the CLI uses to default `--as`. The catalog turns every refusal
+  into `ErrCorrupt`, never a warning, and requires besides that the entry's
+  actor equal the listed canonical name letter for letter (the `Store` writes
+  no other spelling, so `ALICE` under alice's key is a forgery).
+- Decision (4): the auditor's file. `trust.AllowedSigners(Record)` renders the
+  list as the `allowed_signers` file stock `ssh-keygen -Y verify -f FILE -I
+  NAME -n NAMESPACE` reads: one line per key, in list order, `NAME
+  namespaces="decision@toolwarrant.invalid,trust@toolwarrant.invalid" TYPE
+  BASE64`, the key being the stored line itself, so the file holds exactly
+  the public keys the chain holds and nothing else; the `namespaces=` option
+  restricts each key to toolwarrant's two namespaces in the file alone, so an
+  auditor's `ssh-keygen` refuses a git or export signature by the same key.
+- Decision (5): the two events and the token (the chain, #49). A trust list
+  is one audit entry about the subject `@trust` (no server name starts with
+  `@`, no tool subject lacks a `/`): `trust.bootstrap` for version 1,
+  `trust.rotated` for every later version, actor the person whose key signed,
+  no before or after hash, detail `version=N signers=K signer=SHA256:...
+  sigref=<hex>`. The record itself, the exact RFC 8785 bytes
+  `signing.MarshalTrustList` produced, the sshsig blob and the signer's
+  fingerprint, sits in `signed_records` at the entry's seq (schema v7, (g)).
+  `sigref` is `signing.RecordDigest`, so the entry's hash, and through it the
+  chain, commits to the exact record: a row swapped under an entry no longer
+  matches the token the chain verified and is `the signed record of audit
+  entry N was replaced` (the fourth and fifth reviews' lesson about every
+  table the chain does not cover, applied to the new table). The three signed
+  events are chain-recorded events, so the checked read behind `audit list
+  --json` (`Store.SignedRecords`) verifies each entry through the memory and
+  its row against the token. The table holds nothing the chain does not name:
+  a row at the seq of an entry that carries no record is refused where the
+  walk meets the entry, by one primary-key range seek of seqs per walked page
+  (`signed_records row N belongs to audit entry N, a "tool.discovered", which
+  carries no signed record; the row was inserted by hand`). Every value a
+  refusal sentence prints that it read from the file before matching it
+  against a known constant is quoted with `strconv.Quote`, an unverified
+  record's signer fingerprint included (#51).
+- Decision (6): the compare-and-set. The payload names the audit head the
+  signer saw as `prev_head`. `Store.SetTrust(ctx, rec signing.Record, by
+  Actor)` verifies the signature and parses the list before any lock is taken
+  (the catalog never calls a signer), then, inside the write transaction and
+  after the chain was verified to its head, refuses the record with
+  `ErrHeadMoved` (`audit head mismatch`) unless that head is the pin, seals
+  the entry from the pin, runs the walk's own `checkTrustRecord` on the
+  sealed entry and the record, and only then stores both (`txn.sealSigned`
+  and `txn.storeSigned`, one rule function for the reader and the writer).
+  The entry's `prev_hash` is the pin by construction, so a stored `prev_head`
+  always equals its entry's `prev_hash`, which is what the walk requires of
+  every record: every trust record is a signed head, and a signature made over
+  a head the log has left behind is never stored. The write lock is never
+  held on a person or an agent. Observed while writing the test: a crawler
+  whose whole cycle is shorter than the operator's read-sign-write window (a
+  few milliseconds, where a synced commit takes about twenty) starves every
+  compare-and-set; the scheduled crawl of a deployment runs once a minute, and
+  the CLI's one automatic retry (O-17, (h)) covers a crawl landing in the
+  signing window.
+- Decision (7): the pinned root and trust on first use. `OpenOptions.TrustRoot`
+  is the fingerprint the operator recorded at the bootstrap; the catalog
+  accepts any `SHA256:`-prefixed value and refuses other prefixes as
+  `ErrInvalid` (the full shape check is the CLI's, (h)). The walk passes it to
+  `trust.State.Apply`, so a bootstrap another key signed is `the trust
+  bootstrap at entry N was signed by SHA256:X, not the pinned trust root
+  SHA256:Y; the catalog was re-bootstrapped or replaced`, and a catalog with
+  no trust list at all is `the catalog has no trust list and a trust root
+  ... was given` (`ErrCorrupt` wrapping `ErrNoTrustList`): the pin says the
+  operator bootstrapped this catalog, so a file without a bootstrap is another
+  file or a history cut back below it. Both rules end every walk
+  (`requireTrustRoot` after `verifyChainLocked`'s walk), so the open-time
+  walk, every write transaction and every checked read apply them and a
+  forensic open, which does not walk at open, refuses on its first view;
+  `Integrity` prints the no-trust-list sentence, counted under
+  `TrustListsInvalid`, only for a log that holds no trust entry at all, and
+  under a wrong pinned root with a bootstrap present names the bootstrap
+  refusal alone (one line, not two). Without a pin the bootstrap's own signer
+  is trusted on first use (O-11).
+- Decision (8): the suffix walk (O-15). `chainMemory` carries, beside the pin
+  and the hashes, a `trustMemory` (the `trust.State` after folding every
+  verified trust record, the bootstrap's signer, the count of lists) and the
+  outcome of every verified `decision.signed` entry. `recordPage` verifies the
+  signed entries of a page first, against the list in force after the pages
+  before, reading the rows by primary key once per page (`SEARCH
+  signed_records USING INTEGER PRIMARY KEY`), and records nothing of a page
+  one of them fails: the walk stops there, the pin stays below the refused
+  record, and the refusal is the `ErrCorrupt` the open or the read returns. So
+  every signed record is verified once at open, the appended ones on each
+  reload, and none on a crawl-only reload. `Integrity` applies the same
+  functions to every signed entry in order, prints each refusal with the
+  walk's sentence, keeps the list in force past a refused record so later
+  records are judged against it, and names a row of no signed entry.
+- Decision (9): the bootstrap attests the legacy history (O-12). Nothing
+  before the bootstrap is read or rewritten; approvals made before it are
+  served by chain anchoring alone, as in v0.3, and are listed by `Integrity`
+  as `LegacyApprovalsInService` until re-approved with a signed decision
+  ((d), (h)).
+- The residual, stated plainly. At a threshold of one, one compromised key
+  rotates the list and can evict the other signer: the rotation rule allows
+  it because the compromised key is in both the old and the new list, and the
+  evicted operator's keys sign nothing afterwards. The controls are the walk's
+  (every rotation is a signed record in the chain naming its signer, so the
+  eviction is attributed to the key that made it; `audit verify --expect-head`
+  and the head printed after every signed write make the rotation visible;
+  `--trust-root` keeps a replaced catalog from passing as the original) and
+  the operator's own: a second key per person under a second name kept
+  offline. Threshold two, where no single key can rotate, is the fix and
+  waits for the propose-and-countersign flow (O-14). Removal is not
+  retroactive. A rollback of the file to an earlier signed state while no
+  `Store` holds a pin is the pin limit of D17; the recorded head, the trust
+  root, the signed export and backups are the controls. A swapped row below a
+  running `Store`'s pin is not re-read by its suffix walk (O-15): the serving
+  path reads no row, so the swap changes nothing served, and the restart,
+  `audit verify` and the checked read of the records catch it; a
+  `signed_records` row above the head, which only a write with the foreign key
+  off can place, belongs to no walked page and is inert until an entry arrives
+  at its seq, where the walk or the `Store`'s own insert refuses it, and
+  `audit verify` names it at once (a stated residual, not closed with a count
+  on every idle reload). A lost key has no in-file recovery beyond a second
+  enrolled key; the path is otherwise re-initialisation.
+- Where. `internal/trust` (`doc.go`, `record.go`, `rotation.go`,
+  `authorize.go`, `allowedsigners.go`, `state.go`);
+  `internal/catalog/signed.go` (the three events, `fieldSigned`,
+  `TrustEntries`), `trust.go` (`SetTrust`, `TrustList`, `SigningState`,
+  `TrustView`, `Receipt`), `trustwalk.go` (`checkRecordBinding`,
+  `checkPayloadBinding`, `checkTrustRecord`, `checkTrustActor`,
+  `verifySignedEntries`, `checkOrphanRows`), `integrity_signed.go`
+  (`SignedRecordsInvalid`, `SignedRecordsOrphaned`, `TrustListsInvalid`),
+  `chain.go` (`recordPage`, `trustMemory`), `chaincheck.go`, `audit.go`
+  (`sealEntry`, `storeEntry`, `sealSigned`, `storeSigned`), `store.go`
+  (`OpenOptions.TrustRoot`, `requireTrustRoot`), `catalog.go`
+  (`ErrSignatureRequired`, `ErrNotASigner`, `ErrHeadMoved`, `ErrNoTrustList`);
+  `internal/catalog/validate_test.go` (the catalog's `TestNormalizeActor` runs
+  `trust.NormalizeName` on every human row); CLAUDE.md (the catalog and
+  `internal/trust` bullets); [operations.md](operations.md) ("The operator
+  trust list"); CHANGELOG.md (two lines).
+- Tests and proof. trust: `TestRecord_RulesRefuseARecordValidateDidNotProduce`
+  (a zero record, a hand-built one, one renamed and one version-bumped after
+  `Validate`), `TestRecord_ValidateNormalisesNamesAndRefusesDuplicateNamesAndKeys`,
+  `TestRecord_RefusesAnEmptyListAndOneOverMaxSigners`,
+  `TestRecord_RefusesAThresholdOtherThanOne`,
+  `TestRecord_RefusesAKeyOutsideThePolicyAndANonCanonicalKeyLine`,
+  `TestNormalizeName_AgreesWithCatalogsNormalizeActorTable`,
+  `TestCheckBootstrap_IsSelfSignedByAListedKeyAndMatchesAPinnedRoot`,
+  `TestCheckRotation_MustBeExactlyNextVersionAndSignedByAKeyOfBothLists`,
+  `TestState_FoldsBootstrapAndRotationsAndRefusesASecondBootstrapOrARotationBeforeOne`,
+  `TestState_RefusesAnUnknownKindAndASeqOutOfOrderAndLeavesTheReceiverUnchanged`,
+  `TestAuthorize_ValidKeyNotInTheListIsNotAuthorization` (with a signature
+  `signing.Verify` accepts), `TestAuthorize_AnotherOperatorsKeyIsNamed`,
+  `TestAllowedSigners_RendersOneLinePerKeyWithBothNamespacesAndSshKeygenAcceptsIt`
+  (the exact lines; this host's OpenSSH 10.3p1 verified a decision and a list
+  for Ed25519, ECDSA P-256 and RSA-3072, `-Y find-principals` named the
+  principal, and refused the same signature under `-n git`, for another
+  listed principal and over a changed payload),
+  `TestProperty_rotationNeverLowersTheVersion`,
+  `TestProperty_stateAfterFoldingEqualsTheLastAcceptedRecord`,
+  `FuzzRecordValidate` (768533 execs in 20 s, 84 interesting inputs, no
+  failure). catalog:
+  `TestSetTrust_BootstrapWritesAVersionOneListSignedByItsOwnKeyAndBindsItToTheChain`
+  (the approved tool stays served),
+  `TestSetTrust_RotationAddsAKeySignedByAKeyOfBothLists`,
+  `TestSetTrust_RemovalNeedsAKeyThatStaysAndTheLastSignerCannotBeRemoved`,
+  `TestSetTrust_RefusesASecondBootstrapAnUnlistedKeyAndAWeakKey`,
+  `TestSetTrust_RefusesAPayloadSignedForAnotherCatalog`,
+  `TestSetTrust_ExpectHeadRefusesWhenTheLogMoved` (a record over a stale head
+  refused with nothing written; fifty rotations under a crawler that commits
+  every forty milliseconds, each retried on `ErrHeadMoved`, leave `prev_head`
+  equal to `prev_hash` in every row; 29 of 50 rotations retried on the idle
+  host, and under a load average of 45 to 73 with the race detector four runs
+  passed with 89 to 113 refusals; the test parks the crawler after five
+  refusals in a row so it fails only when the compare-and-set never succeeds),
+  `TestWalk_RefusesATrustListWithTheWrongVersionOrSigner` (a non-canonical
+  actor included),
+  `TestWalk_RefusesATrustRecordWhoseTokensOrPayloadDisagreeWithTheEntry`,
+  `TestWalk_RefusesASwappedSignedRecordBecauseTheTokenDisagrees`,
+  `TestWalk_RefusesASignedRecordRowUnderAnEntryThatCarriesNone`,
+  `TestWalk_RefusesAReplayedTrustRecordFromAnotherCatalog`,
+  `TestWalk_DecisionRecordsAreBoundAndAuthorisedAgainstTheListInForce`,
+  `TestWalk_RefusalSentencesQuoteHostileStateHalves`,
+  `TestWalk_RefusalSentencesQuoteAHostileSigner`,
+  `TestReload_ANewTrustListEntersTheStateOnTheSuffixWalk` (a long-lived
+  read-only `Store` sees version 2 after the writer rotates, one verification
+  per record, none on a crawl-only reload),
+  `TestOpen_PinnedTrustRootRefusesAnotherBootstrapAndAcceptsTheRightOne`,
+  `TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap`,
+  `TestForensicOpen_VerifiesTrustLazilyAndNamesTheBrokenRecord`,
+  `TestIntegrity_ReportsEveryTrustProblemTheWalkRefuses`,
+  `TestSignedRecords_ReturnsTheRecordsOfSignedEntriesAndSkipsTheOthers`,
+  `TestTrustEntries_ListsTheBootstrapAndEveryRotationInOrder`,
+  `TestAnchorQueries_StayOnTheAuditLogBySubjectIndex` (the primary-key seek
+  of the records and the subject-index read of the trust entries),
+  `TestProperty_trustStateAfterAWalkEqualsTheStateAfterReplayingTheRecords`.
+  sqlite3 break-checks of 2026-10-15 on copies of a fixture (bootstrap at seq
+  6, rotation at 7, a crawl at 8 to 10): the two rows swapped made `list` exit
+  1 at open with `the signed record of audit entry 6 was replaced: its digest
+  is not the sigref token the entry carries` and `audit verify` print it for
+  entries 6 and 7; the row of seq 7 copied under seq 8 made `list` exit 1
+  with `signed_records row 8 belongs to audit entry 8, a "tool.discovered",
+  which carries no signed record; the row was inserted by hand`; the
+  `trust.rotated` detail edited from `version=2` to `version=3` made `list`
+  exit 1 with `the audit log is broken at entry 7` and `audit verify` print
+  `audit entry 7 does not re-seal` and `audit entry 7 says version="3" but its
+  signed trust list is version 2`. End to end, scenario S bootstraps the list
+  through the built binary, rotates it three times (bob added, the reviewer
+  removed and added back), refuses the last signer's removal and a removed
+  key's decision, and refuses the processor under a stranger's root.
+
+### D22 (d). After the bootstrap every entry a human decision alone writes must name the verified signed record of its own transaction and say what that decision did, every entry about a tool must start where the chain left the tool, the walk checks all of it once per entry and the anchor pass checks the binding once per anchored entry with two parses and one lookup, and signature verification never happens on the serving path
+
+- Context. The processor's serving path (`Snapshot`) anchors every approved
+  digest and every tool's state to the newest entry about the tool, verified
+  through the chain memory (D15, D17 (c)). A correctly sealed
+  `version.approved` appended after the bootstrap by whoever can write the
+  file would pass both anchors; the signed record alone changes nothing unless
+  the entries it does not sign are refused. O-15 fixes the cost: signature
+  verification in the walk only (every signed entry once at open, the new
+  suffix on each reload, none on a crawl-only reload) and an O(1) rule per
+  anchored entry. The plan's rules 5 and 6 alone admit the replay, the
+  borrowed token, the lying from half and the false transition the three
+  adversarial reviews of #50 found; the contiguity rule, the content rule, the
+  continuity rule and the shape rule below are the design additions those
+  reviews forced.
+- Decision (1): rule 5, the binding, as the walk applies it
+  (`checkLifecycleEntry`, `checkSignedBinding`, `bindOutcome`). After the
+  bootstrap, an entry whose event only a human command writes
+  (`version.approved`, `version.rejected`, `version.rolled_back`,
+  `tool.disabled`, `tool.enabled`, `tool.budget_reset`, `server.paused`,
+  `server.resumed`) must carry ` signed=N` where N is a verified
+  `decision.signed` entry below it, about the same subject, by the same
+  person, at the same time, whose kind writes that event (approve: approved
+  and superseded; rollback: rolled_back and superseded; disable: disabled and
+  superseded; enable: enabled, superseded and proposed; reject, budget_reset,
+  pause, resume: their own event) and, for an approval, rollback or
+  rejection, whose digest is the one the entry records. The entry must
+  belong to N's transaction as the chain shows it, that is N itself or the
+  entries right after it that carry the same token, because the write lock
+  makes a transaction's entries contiguous: the walk carries "the decision
+  transaction that is open" from entry to entry (`chainMemory.open`, an
+  `openTxn`, across pages); an entry without a token closes it, a trust entry
+  closes it, a verified `decision.signed` opens its own. Without this rule a
+  `version.approved` appended after a later disable, naming a
+  `decision.signed` alice did make, with her time, actor and digest copied,
+  binds and re-serves the digest she disabled. Every refusal is `ErrCorrupt`
+  with a fixed sentence naming the entry: `audit entry N is a
+  version.approved after the trust bootstrap (entry B) and names no signed
+  record; the entry was appended outside toolwarrant`, and for a token that
+  does not bind: `names signed=K, which is not the seq of a decision.signed
+  entry below it`, `names signed=K, which is not a verified decision.signed
+  entry`, `names signed=K, whose transaction ended before it; a signed record
+  attests the entries of its own transaction only`, `names signed=K, a
+  decision.signed about S by A at T, but the entry is about S2 by A2 at T2;
+  the entries of one decision share its subject, actor and time`, `is a
+  "tool.enabled" but names signed=K, a decision of kind approve, which writes
+  no such entry`, `is a version.approved of digest D but names signed=K,
+  which decided digest D2`. The binding then reads the entry's content
+  (`bindContent`, added after the first review): an entry of a tool kind
+  carries a `state=A->B` the kind can make (`lifecycle.DecisionMayMove` for
+  approve, reject, rollback, disable and enable; a budget reset stays put)
+  and an entry of a pause or resume carries the paused flag the kind leaves,
+  each with its sentence: `audit entry N moves tool "S/T" from "disabled" to
+  "enabled" under event "tool.disabled" but names signed=K, a decision of
+  kind disable, which makes no such move; the entry was appended outside
+  toolwarrant`, `audit entry N is a server.paused saying paused=false but
+  names signed=K, a decision of kind pause, which leaves the server
+  paused=true; the entry was appended outside toolwarrant`, `names signed=K,
+  a decision of kind approve about a tool, but carries no state field; the
+  entries of a tool decision record its transition`, `names signed=K, a
+  decision of kind pause about a server, but carries no paused flag`. Entries
+  that carry a token but are not human-only (the `version.superseded` of an
+  approve) are held to the same binding, content included, so a token cannot
+  be borrowed by an entry that says the opposite of its decision.
+- Decision (2): the continuity rule (`checkContinuity`, `toolLast`,
+  `chainMemory.states`), added after the second review, which makes the from
+  half of every `state=A->B` trustworthy for rule 5 and rule 6 alike. The
+  walk remembers, for every tool subject, what the newest entry about the
+  tool left it: the entry's seq, its time and its transition, one value per
+  tool and never one per entry, kept beside `hashes` and `signed`, advanced in
+  `recordPage` from a page-local map, dropped in `drop`, and tracked from the
+  genesis (before the bootstrap the memory is kept and nothing is refused,
+  O-12), so the first entry after the bootstrap is checked against the state
+  before it. After the bootstrap every entry about a tool, with a token or
+  without, must move the tool from that state, unless it is a sibling of that
+  entry, the same transition at the same time (`auditTool` writes one entry
+  per lifecycle event of one operation, each with the operation's before and
+  after, so the entries of one operation repeat its transition). A tool entry
+  that records no transition is refused as such by rule 6 (`audit entry N
+  about "S/T" is a tool entry (its detail starts with digest=) but carries no
+  state field; every entry the catalog writes about a tool records its
+  transition, so the entry was appended outside toolwarrant`): every entry the
+  catalog writes about a tool carries one (every released build since v0.1.0
+  does), and accepted it would have become the newest entry about the tool
+  with nothing for the rule to compare the next entry with (the third
+  review's finding). A tool whose newest entry recorded no transition, which
+  only a stateless entry planted before the bootstrap leaves, is refused
+  rather than skipped (`audit entry N says tool "S/T" moves from "A" but the
+  newest entry about it (seq M) records no transition; the entry was appended
+  outside toolwarrant`), and a tool the chain holds no entry about must start
+  from `discovered`, where `insertTool` creates every tool (`audit entry N
+  says tool "S/T" moves from "A" but no earlier entry is about the tool, and
+  the first entry about a tool starts from discovered; the entry was appended
+  outside toolwarrant`). The refusal otherwise: `audit entry N says tool
+  "S/T" moves from "A" but the newest entry about it (seq M) left it "C"; the
+  entry was appended outside toolwarrant`, filed under
+  `CrawlTransitionsForged` for a token-less entry and under
+  `UnsignedDecisionsAfterBootstrap` for a token-bearing one. What it closes: a
+  sealed `tool.enabled` saying `disabled->enabled` under the token of a
+  review-policy enable whose own entries left the tool in `pending_review`
+  (the writer checked the lifecycle under the `Store`'s policy, the walk a
+  policy-agnostic table), and the lying crawl-shaped entry of (f). The
+  sibling exception admits nothing wider: an entry that repeats the newest
+  transition at its time leaves the tool where that transition already left
+  it.
+- Decision (3): the transaction shape (`checkTransactionShape`, `openTxn`,
+  `txnEvent`), one small value per open transaction. Every entry naming
+  `signed=K` carries the state field and the `after_hash` of the first entry
+  that named the token (the whole operation's before and after are on every
+  event), no (event, digest) pair appears twice (the pair rather than the
+  event alone, because an enable under review may legitimately write two
+  `version.superseded` of two digests in one decision, the approval it retires
+  and the pending version `supersedePending` retires when it re-proposes the
+  last seen digest, and no decision repeats a pair), and nothing follows the
+  decision's own event, the human-only event of its kind, which every command
+  writes last (`openTxn.ownEvent`), so the transaction open at the head
+  cannot be extended under its token once that event is written. Sentences,
+  as the code prints them: `audit entry N names signed=K and says
+  state="A->B" but the first entry of that transaction (seq F) says
+  state="C->D"; the entries of one decision record one transition`, `audit
+  entry N names signed=K and records after_hash D but the first entry of that
+  transaction (seq F) records E; the entries of one decision record one
+  approved digest`, `audit entry N is a second tool.disabled of digest none
+  under signed=K (entry F wrote the first); a decision writes each of its
+  events once`, `audit entry N names signed=K but that transaction ended with
+  its version.approved (seq F), the last entry a decision writes; the entry
+  was appended outside toolwarrant`. `before_hash` is not part of the shape
+  rule and this record does not promise it.
+- Decision (4): rule 6, the crawl-transition guard (`checkCrawlTransition`,
+  `lifecycle.CrawlMayMove`), with the continuity rule after it. After the
+  bootstrap, an entry about a tool that no decision signed moves the tool's
+  state only along a transition a crawl observation can make: discovered to
+  pending_review or itself, pending_review to deprecated or itself, enabled
+  to changed_pending_reapproval, deprecated or itself,
+  changed_pending_reapproval to enabled, deprecated or itself, disabled to
+  itself only, deprecated to pending_review or itself, and nothing to or from
+  a state the lifecycle does not define; and only from the state the newest
+  entry about the tool left it in. The table is exported from
+  `internal/lifecycle`, whose property tests check every step the state
+  machine takes against it (so it cannot be narrower than the machine) and
+  whose `TestCrawlMayMove_EqualsTheInvariantsTable` spells it out pair by pair
+  (so it cannot be wider). The refusals: `audit entry N moves tool "S/T" from
+  "disabled" to "enabled" under event "tool.reverted", which no crawl can do;
+  the entry was appended outside toolwarrant` for the entry that confesses
+  where the tool was, and the continuity sentence for the one that lies. Order
+  on the token path: `bindOutcome`, continuity, shape; on the crawl path: the
+  crawl table, continuity.
+- Decision (5): the anchor pass (`entryChecker.verify`,
+  `chainMemory.requireSigned`). Every anchor of a checked read goes through
+  `entryChecker.verify`: the decision anchor, the state anchor, the three
+  server anchors (`anchorServer`, `anchorPaused`) and the version history
+  (`versionsFromLog`). After `chainMemory.verify` it applies the binding of
+  rule 5 to the entry when a bootstrap is in force below it and its event is
+  one of the eight: one `detailField` parse of the token, one of the state
+  field or the paused flag, one map lookup of the outcome the walk recorded,
+  the same `bindOutcome` comparison; contiguity, continuity and the shape are
+  the walk's, which recorded the entry the anchor reads, and are not redone.
+  It reads no bytes and hashes nothing, so `hashes/op` of the reload
+  benchmarks is unchanged. The state anchor counts `tool.budget_reset` among
+  the state-bearing entries, as `Integrity`'s tools pass does, so the two name
+  the same entry when a column is edited after a reset. Signature
+  verification stays in the walk: the read-only `Store` verifies a signed
+  approval's record once, on the reload that meets it, and nothing on the
+  reloads after crawls; a swapped decision record is refused by the walk that
+  meets it and by every fresh open, while a `Store` whose pin lies above the
+  rows keeps serving, the restart and `audit verify` catching the swap.
+- Decision (6): rules 2 and 4 for the record itself (`checkDecisionRecord`),
+  shared by the writer and the walk: the kind token, the digest token and the
+  subject must be the payload's (`audit entry N says digest="D2" but its
+  signed decision names digest D`, `audit entry N is about "alpha/echo" but
+  its signed decision is about "alpha/sum"`), and the signer must be the key
+  the list in force at that entry names for the actor (`signer X is not in
+  trust list vK in force at that entry`, `signer X belongs to "alice" but the
+  entry and payload name "bob"`).
+- `Integrity` applies the same functions to every entry in order
+  (`integrity_decisions.go`, one more streaming pass over the log after the
+  signed records were folded, with its own map of every tool's last state
+  from the genesis), prints each refusal with the walk's sentence under
+  `UnsignedDecisionsAfterBootstrap` (rule 5, a missing or non-binding token,
+  the continuity or the shape of a token-bearing entry) and
+  `CrawlTransitionsForged` (rule 6 and the continuity of a token-less entry),
+  goes on past each, and lists the approvals in force that predate the
+  bootstrap in `LegacyApprovalsInService`, sorted, as information and not a
+  problem. The report has one line per forgery: a refused entry's state is
+  recorded, so the entries built on it are not each reported again, and the
+  stateless attack prints two lines, the stateless entry under rule 6 and the
+  lie built on it under the continuity rule, since both are forgeries.
+- Where. `internal/catalog/decisionwalk.go` (`checkDecisionRecord`,
+  `checkDecisionTokens`, `decisionWalk`, `lifecycleStep`,
+  `checkLifecycleEntry`, `checkSignedBinding`, `checkCrawlTransition`),
+  `decisionbind.go` (`bindOutcome`, `bindContent`, `bindPausedFlag`,
+  `kindMayMove`, `eventDigest`, `lookupSigned`, `requireSigned`),
+  `decisioncontinuity.go` (`toolLast`, `stateField`, `leftState`,
+  `checkContinuity`, `openTxn`, `txnEvent`, `checkTransactionShape`,
+  `lookupState`), `trustwalk.go` (`pageInput.lastState`, `pageOutcome.open`
+  and `.states`, `verifySignedEntries`), `chain.go` (`chainMemory.open`,
+  `chainMemory.states`, `recordPage`, `drop`), `chaincheck.go` (the checked
+  read, `verifyChain`), `anchor.go` (`entryChecker.verify`), `stateanchor.go`
+  (`toolStateEvents` with `tool.budget_reset`), `serveranchor.go` and
+  `versionhistory.go` (routed through `entryChecker`), `integrity.go`,
+  `integrity_signed.go`, `integrity_decisions.go`;
+  `internal/lifecycle/crawlmoves.go` (`CrawlMayMove`), `decisionmoves.go`
+  (`DecisionMayMove`); the page-boundary test of this record,
+  `internal/catalog/continuitypage_test.go`.
+- Tests and proof. `TestWalk_RefusesAnUnsignedApprovalAppendedAfterTheBootstrap`,
+  `TestWalk_RefusesAnUnsignedEnableOrResumeAppendedAfterTheBootstrap`,
+  `TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry` (the seven token
+  probes, the six content probes, the four history probes: the enable token
+  on a `tool.enabled` saying `disabled->enabled` after a review-policy enable
+  with the state and the pointer edited, the budget-reset token on a
+  `tool.budget_reset` saying `enabled->enabled` on a disabled tool, a sibling
+  `version.superseded` recording another `after_hash`, a second
+  `tool.disabled` repeating the first, and the three extensions after the
+  approve's own entry: a second `version.approved` naming another digest, a
+  `version.superseded` of the approved digest and one of a third digest),
+  `TestWalk_TheShapeRuleSentencesAreFixed` (the four sentences byte for
+  byte), `TestWalk_RefusesAPayloadWhoseKindOrDigestDisagreesWithTheEntry`,
+  `TestWalk_RefusesAValidSignatureFromAKeyOutsideTheTrustList`,
+  `TestWalk_RefusesASignatureWhoseKeyBelongsToAnotherName`,
+  `TestWalk_RefusesAPayloadCopiedFromAnotherCatalog`,
+  `TestWalk_ARemovedKeysEarlierDecisionsStandAndItsLaterOnesAreRefused`,
+  `TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled` ((f) lists its
+  cases), `TestWalk_ContinuityMemoryCrossesThePageBoundary` (this pull
+  request: the log padded to exactly the walk's page size of 5000 entries so
+  the signed disable's `tool.disabled` is entry 5000 and the lying
+  `tool.reverted` saying `changed_pending_reapproval->enabled`, with the
+  column edited, is entry 5001; the long-lived `Store`, every fresh open and
+  `Integrity` refuse it naming entry 5000 as the one that left the tool
+  disabled; 16.6 s under `-race` on the Apple M4 of 2026-10-16, a `-short`
+  skip named in CLAUDE.md, run by the `test-full` job; before it the page
+  boundary was covered by the reviewers' scratch tests only),
+  `TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes` (drawn
+  Store-written histories never trip either rule, and a fresh walk remembers
+  for each tool exactly the state the row holds; 1000 checks at 109 s),
+  `TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`
+  (oracles written out field by field to the rule and not to the code; the
+  corrected oracle fails the code before the third fix at 20000 checks, which
+  is the gate, not rapid's default 100),
+  `TestSnapshot_ServesOnlySignedApprovalsAfterTheBootstrapAndReadsNoBytes`,
+  `TestSnapshot_ABudgetResetIsTheNewestStateEntryOnBothPaths`,
+  `TestSnapshot_ReloadAfterACrawlVerifiesNoSignature`,
+  `TestSnapshot_SwappedSignedRecordRowIsCorrupt`,
+  `TestReview_ForgedSignedApprovalWithoutAKeyIsRefusedEverywhere` (the
+  approvals row, the version status, the pointer, the state column and a
+  sealed `version.approved` at the head, as an approval writes them, refused
+  by `Open`, `Snapshot`, `Approved`, `Versions`, `Tools`, every decision and
+  the crawl, named by `Integrity`, while `VerifyAudit` alone is green as D14
+  admits), `TestIntegrity_ReportsEveryDecisionRecordProblemTheWalkRefuses`
+  (seven forgeries in one file: 3 invalid records, 3 unsigned decisions, 1
+  forged crawl transition, the well-formed signed approval between them not
+  reported), `TestIntegrity_CountsLegacyApprovalsInService`,
+  `TestWalk_LegacyApprovalsBeforeTheBootstrapNeedNoRecord`,
+  `TestBenchmarkSnapshotHashesOnlyAuditEntries` (holds at n and 2n); lifecycle:
+  `TestCrawlMayMove_EqualsTheInvariantsTable`,
+  `TestDecisionMayMove_EqualsTheInvariantsTable`; cmd:
+  `TestServeDeniesEveryHookAfterAnUnsignedApprovalIsAppended` (the in-process
+  processor over gRPC denies every hook `catalog unavailable` from its next
+  reload after a sealed `version.approved` is appended). sqlite3 break-checks
+  of 2026-10-16 through the built binary on fixture catalogs (the sentences as
+  printed then, before #51 quoted the state halves): a sealed
+  `version.approved` of a pending tool after the bootstrap made `list` exit 1
+  at open and `audit verify` print the rule 5 sentence among six integrity
+  lines; a sealed `tool.reverted disabled->enabled` by the crawler with the
+  column edited made both name the crawl-table sentence; the two decision
+  records swapped named `the signed record of audit entry 12 was replaced` and
+  `audit entry 13 names signed=12, which is not a verified decision.signed
+  entry`; a sealed `tool.disabled` at the disable's own time saying
+  `disabled->enabled` under its token named the content-binding sentence; a
+  sealed `tool.reverted changed_pending_reapproval->enabled` and a sealed
+  `tool.enabled disabled->enabled` under a review-policy enable's token with
+  the state and the pointer edited each named the continuity sentence against
+  the entry that left the tool `disabled` or `pending_review`. End to end,
+  scenario S repeats the unsigned approval and the crawl-shaped revert through
+  the built binary: the processor exited 1 at open and `audit verify` exited
+  1, each naming the entry (the proof note of row 27 in
+  [threat-model.md](threat-model.md) quotes the lines).
+
+### D22 (e). The costs measured: the migration, the reload, the open, the continuity memory and the end-to-end restart
+
+- The migration ((g); 2026-10-15, by hand, Apple M4). One immediate
+  transaction adds one table and four triggers and reads or rewrites no row
+  of any other table. Against a catalog the published v0.3.0 binary wrote
+  (9 audit entries, 32 schema objects, `audit log ok: 9 entries, head
+  e6dd20ce...2fb3a`): the branch binary's `serve`, `audit verify` and `audit
+  list` each exited 1 with the migration message and left the file's SHA-256
+  and `user_version` 6 unchanged; its `init` exited 0, after which the file
+  had `user_version` 7, 37 objects (`table signed_records` and its four
+  triggers), 0 rows in `signed_records`, every other table's row count
+  unchanged and `audit verify` printed the same head; the v0.3.0 binary then
+  refused the file (`database is version 7, this build supports 6`). The
+  migration's wall time was not timed; it is one DDL transaction on a file of
+  a few hundred rows.
+- The reload (D21 (d)'s regression check). `BenchmarkSnapshot10000Approved8KiB`
+  measured 255 to 259 ms/op at 10000 hashes/op on the Apple M4 after #49
+  (2026-10-15; 258.7 ms after its review round, with the range seek per walked
+  page costing the serving path nothing on an idle reload) and 252 ms/op at
+  10000 hashes/op at the merged head of #50 (2026-10-16, f21461b; 249 ms at
+  144c52a with three iterations); the D21 (d) band of 370 to 415 ms was
+  recorded on 2026-10-14 on the same machine against the v0.3 tree. The
+  regression check is hashes/op, not the wall time: the anchor rule hashes
+  nothing and its cost is two `strings.Fields` parses per anchored human
+  decision (the `signed=` token, then the state field or the paused flag), of
+  which that store has 10000; the continuity and shape rules run in the walk
+  only and add nothing to the reload (`TestBenchmarkSnapshotHashesOnlyAuditEntries`
+  holds at n and 2n).
+- The open. `BenchmarkOpen10000SignedApprovals` (`recheck_bench_test.go`)
+  opens a read-only `Store` on a catalog of `MaxToolsPerCrawl` (10000) tools
+  each approved with a signed Ed25519 decision after the bootstrap, 10001
+  signed records and about 30000 audit entries: 1.563 s/op at 10001
+  verifications/op, 631.39 MB and 9087578 allocations per open at the merged
+  head of #50 (f21461b, one iteration, Apple M4, 2026-10-16; 1.532 s, 631.42
+  MB and 9087763 allocations at 144c52a with three iterations; 1.587 s before
+  the first review's fix). That is about 155 us per signed record, above the
+  plan's estimate of "under one second". A CPU profile of five opens of a
+  3000-record catalog (0.49 s per open, the same per-record cost) puts about
+  half in Ed25519 field arithmetic, about a fifth in the RFC 8785
+  canonicalisation that `signing.RecordDigest` (the sigref token over the
+  base64 record) and `signing.ParseDecision` (the exact-bytes check, finding
+  7) perform, and the rest in the row reads, the entry hashes and the
+  allocator. The orchestrator decided (decision 10) to accept and record the
+  number rather than change the sigref specification of (c) to cheapen it,
+  and to list parallel verification of the signed pages among the v0.5 items:
+  a real catalog holds tens to hundreds of signed decisions, not ten
+  thousand. The cost is paid once per signed record, at open and on the
+  suffix walk that meets it, never on the serving path: a crawl-only reload
+  verifies nothing (O-15; `TestSnapshot_ReloadAfterACrawlVerifiesNoSignature`).
+  A processor that restarts on a 10000-decision catalog therefore takes about
+  1.5 s longer to open than a v0.3 processor on the same file; the serving
+  path is unchanged.
+- The continuity memory. One `toolLast` per tool subject (seq, time, from,
+  to) and the shape of each decision transaction cost about 13 MB and 70000
+  allocations per open for 10000 tools (631.4 MB against 618.7 MB before the
+  rule) and no measurable wall time (1.532 s against 1.529 s); the third
+  review's rules (the stateless refusal, the ended clause) cost nothing
+  measurable either (verifications/op, memory and allocations within noise at
+  f21461b).
+- End to end (scenario S, 2026-10-16, Apple M4, `make e2e` against
+  agentgateway v1.6.0). A signed approve through the in-process ssh-agent took
+  32.6 ms for the whole CLI run, the key resolution, the `SigningState` read,
+  the review, the Ed25519 signature and `Decide`'s transaction included.
+  mock's processor restarted under `--trust-root` on a log of 72 entries (the
+  bootstrap, three rotations, eight decision records and the entries they
+  produced among them) was listening 45.4 ms after its start, the open-time
+  walk having verified every signed record, and served add and echo 50.9 ms
+  after its start; its line read `signed decisions: enforced from entry 48
+  (trust list v4, 2 signers, root SHA256:... at entry 47)`. The whole scenario
+  ran in 1.64 s inside a 38.98 s `TestEndToEnd`.
+
+### D22 (f). The crawl-transition guard, the continuity rule and the legacy residual
+
+- Context and decision. Rule 6 closes a gap the signatures alone leave open:
+  the state anchor (D17 (c)) compares the tools column with the after half of
+  the newest entry about the tool and never replays the lifecycle, so a
+  correctly sealed `tool.reverted` with `state=disabled->enabled`, appended by
+  whoever can write the file and matched by one `UPDATE` of the column,
+  re-enables a disabled tool under a clean chain, signatures or not. After the
+  bootstrap the walk refuses it. The first adversarial review of #50 showed the
+  same shape with a key's token borrowed: a sealed `tool.disabled` with
+  `state=disabled->enabled` naming the disable's own `signed=K` while that
+  transaction is the chain tail passed the binding, because rule 6 ran only
+  on token-less entries; the binding reads the content too ((d),
+  `bindContent`). The second review showed that both checks read the from
+  half from the forged entry itself: a sealed `tool.reverted` saying
+  `changed_pending_reapproval->enabled` (or `enabled->enabled`, or
+  `tool.returned enabled->enabled`, or `tool.drifted
+  enabled->changed_pending_reapproval`, each a move a crawl may make) about a
+  disabled tool passed the crawl table, and a sealed `tool.enabled` saying
+  `disabled->enabled` under a review-policy enable's token passed the
+  decision table, and each with the column edited was served on every path
+  with `Integrity` clean. The continuity rule ((d), decision 2) is what closes
+  both: the walk knows where the chain left every tool and refuses an entry
+  that starts anywhere else, `audit entry N says tool "S/T" moves from
+  "changed_pending_reapproval" but the newest entry about it (seq M) left it
+  "disabled"; the entry was appended outside toolwarrant`. The third review
+  showed the last gap in the same place: a sealed tool entry with no state
+  field at all was accepted, became the newest entry about the tool, and the
+  continuity rule's skip of a tool whose newest entry recorded no transition
+  freed the next entry to claim any start, on every path and across the page
+  boundary; rule 6 now refuses the stateless entry and the continuity rule
+  refuses the entry after it, and the skip, which no released build's history
+  ever needed, is gone. So nothing appended without a key, and nothing that
+  borrows the token of a decision it contradicts, outruns or extends past its
+  own event, can approve, enable, resume or re-enable anything.
+- The legacy residual, stated as the code has it. Rule 6 and the continuity
+  rule apply after the bootstrap only (the plan's section 5, the last item):
+  applied to the history before it, they would refuse any legacy file whose
+  history an older lifecycle wrote differently. The memory of every tool's
+  state is kept from the genesis all the same, so a tool disabled before the
+  bootstrap is protected by its pre-bootstrap entry against a lying entry
+  appended after it, and a stateless tool entry planted before the bootstrap
+  refuses every entry about the tool after it instead of freeing them (the
+  state anchor refuses the tool itself while that entry is its newest, so
+  nothing is served either way). Before any bootstrap the same sealed
+  `tool.reverted` is accepted, and with the column edited the disabled tool is
+  served again; the last case of `TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`
+  records exactly that (`Open` succeeds, `Snapshot.Serves` is true) and
+  `Integrity`, which compares the column with the newest entry, is clean on
+  such a file, and the entry then counts as the state the tool was left in
+  for every entry after the bootstrap. The controls for a never-bootstrapped
+  catalog are v0.3's: the recorded head, the signed export and backups; the
+  bootstrap is the cut-over, and O-12's default flip in v0.5 is where the
+  residual ends. Approvals made before the bootstrap stand by chain anchoring
+  alone and are listed by `Integrity` as `LegacyApprovalsInService` until
+  re-approved with a signed decision.
+- Where. `internal/lifecycle/crawlmoves.go` (`CrawlMayMove`) and its
+  invariants test, `internal/catalog/decisionwalk.go`
+  (`checkCrawlTransition`), `decisioncontinuity.go` (`checkContinuity`);
+  [operations.md](operations.md) ("What every reader requires of the entries
+  after the bootstrap").
+- Tests and proof. `TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`: the
+  confessing `tool.reverted disabled->enabled` and the four lying probes
+  `tool.reverted changed_pending_reapproval->enabled`, `tool.reverted
+  enabled->enabled`, `tool.returned enabled->enabled` and `tool.drifted
+  enabled->changed_pending_reapproval`, each by the crawler and by a person,
+  each with the column edited; the four stateless vehicles (the full tool
+  detail minus its state field, `digest=-` alone, and the digest field alone
+  under `tool.returned` and `tool.drifted`), each followed by the lie, with
+  the walk refusing at the stateless entry and `Integrity` counting both under
+  `CrawlTransitionsForged`; the stateless entry planted before the bootstrap,
+  whose lie after it is refused with the "records no transition" sentence; a
+  tool the chain holds no entry about starting from `enabled`; a tool disabled
+  before the bootstrap lied about after it, refused against its pre-bootstrap
+  entry; and the legacy residual before any bootstrap, recorded as the code
+  has it. `TestWalk_ContinuityMemoryCrossesThePageBoundary` ((d)).
+  `TestCrawlMayMove_EqualsTheInvariantsTable` and the lifecycle's property
+  tests, which read the table on every step. End to end, scenario S: with
+  mock's processor stopped, a sealed `tool.reverted` from `disabled` to
+  `enabled` by the crawler about a tool a signed decision had disabled, with
+  the state column edited, made the processor exit 1 at open and `audit
+  verify` exit 1, both naming `audit entry 67 moves tool "mock/echo" from
+  "disabled" to "enabled" under event "tool.reverted", which no crawl can do`
+  (run of 2026-10-16).
+
+### D22 (g). Schema v7: the `signed_records` table and the in-place migration of a v6 file
+
+- Context. Signed decisions and the signed trust list need a place for the
+  record itself: the exact RFC 8785 bytes that were signed, the signer's
+  fingerprint and the sshsig wire blob, one per signed audit entry, bound to
+  the chain through the `sigref` token of the owning entry's detail. The audit
+  log's columns cannot hold a blob of that size and shape without changing
+  the chain's own fields, so a table is needed, and a table is a schema
+  change. Schema v6 is the first released schema (v0.1.0 to v0.3.x) and D17's
+  eighth review promised that the first bump after it would carry a migration
+  or name the build that reads a v6 file, never the delete advice; D21 (f)
+  described the in-place path. The owner decided O-12 on 2026-10-15. The pull
+  request is #46 (PR 7.2).
+- Decision. `schemaVersion` is 7 and `migratableFrom` is 6. The migration
+  `migrateV6ToV7` runs inside the one immediate transaction `migrate` already
+  holds for a read-write open: it refuses a v6 file that already holds an
+  object under one of the five names it creates (`ErrCorrupt`, "already holds
+  table signed_records ... nothing was written"), creates `signed_records`
+  (`seq INTEGER PRIMARY KEY REFERENCES audit_log (seq)`, `payload BLOB` of 1
+  to 65536 bytes, `signer_fingerprint TEXT GLOB 'SHA256:*'`, `signature BLOB`
+  of 1 to 4096 bytes; no UNIQUE constraint beyond the rowid alias, so the
+  automatic index list is unchanged), creates its four guards
+  `signed_records_no_update`, `signed_records_no_delete`,
+  `signed_records_no_replace` (BEFORE INSERT on an existing seq) and
+  `signed_records_positive_id` (AFTER INSERT on a seq below 1), sets `PRAGMA
+  user_version = 7`, and then the usual guard comparison runs against the
+  migrated schema, so a v6 file that had lost a guard is still corruption and
+  nothing commits. No row of any other table is read or rewritten. A read-only
+  open (the processor) and a forensic open (`audit verify`, `audit list`) of a
+  v6 file return `ErrSchema` with a message naming the migration (`run
+  "toolwarrant init" with this build ... a read-only open does not migrate`),
+  never the delete advice, and write nothing; `schemaMessage` prints the
+  migration sentence only for the migratable version and tells an older
+  released schema to be read with a build of that schema or migrated with
+  each release in turn. The ghost-row check every read and write runs covers
+  the new table, `Integrity` counts such a row in `GhostRows`, and the column
+  CHECKs bound what raw SQL can plant. The release notes header of
+  `.goreleaser.yaml` names v7 and the migration sentence, and `make
+  release-check` (its `release-schema-line` target) refuses a header naming
+  another version than the code writes. The CLI's schema advice names the
+  migration and never deletion.
+- Consequence. Upgrading from v0.1.0 to v0.3.x is: stop the processors, back
+  the file up and record its head with the build that wrote it, run `init`
+  (or any writing command) with the new binary, compare the head, start the
+  processors. Every command but `serve` (read-only), `audit verify` and `audit
+  list` (forensic) opens the file read-write and migrates a v6 file on its
+  first run, `list`, `show`, `diff` and `server list` included, so the backup
+  comes first. The audit head of a migrated file is the head it had, so the
+  recorded head stays valid across the upgrade and `export verify
+  --expect-head` keeps working; every approval is served as before. A
+  processor started on a v6 file exits 1 with the message instead of
+  migrating, by design (`serve` must never write); a v0.3.x processor left
+  running keeps answering from its cached snapshot until the first crawl or
+  decision with the new build moves the generation, then denies every hook
+  from its next reload with `unexpected table signed_records ... the file was
+  edited outside toolwarrant`, and the fix is to restart it on the new build,
+  never to restore a backup over the migrated file; a v0.3.x binary then
+  refuses the migrated file as written by a newer build ("database is version
+  7, this build supports 6"), which moves every host to the new build
+  together. A crash in the middle of the migration leaves a v6 file that
+  migrates on the next read-write open (SQLite DDL is transactional); two
+  processes opening a v6 file at once migrate it once. A v6 file this build
+  refuses as corrupt before migrating it has no forensic path in this build
+  and is inspected with a v0.3.x binary, so one is kept through the upgrade.
+  What (g) does not do: it does not sign or verify anything, it does not
+  change the chain, it does not bootstrap a trust list (O-12: a catalog never
+  bootstrapped serves as v0.3 did), and it does not migrate from v2 to v5,
+  which stay refused with the re-initialise advice. The residual is the one
+  (c) states: whoever can write the file can plant a well-formed row in the
+  table; the walk refuses a row without a matching `sigref` token in a
+  verified entry.
+- Where. `internal/catalog/schema.go` (`schemaVersion = 7`, `migratableFrom =
+  6`, `migrate`, `schemaMessage`, `historyTables`), `schemav7.go` (the
+  bounds, the DDL, the four guards, `migrateV6ToV7`,
+  `refuseForeignV7Objects`), `guards.go`, `ghostrows.go`, `integrity.go`,
+  `integrity_signed.go`, `openmodes.go` (`prepareFile`, `checkReadOnlyFile`),
+  `cmd/toolwarrant/advice.go` (`adviceSchema`), `.goreleaser.yaml` (the
+  header), `Makefile` (`release-schema-line`), `internal/releaseguards`
+  (`schemaline_test.go`), [operations.md](operations.md) ("Recovering from
+  ErrCorrupt and ErrSchema", "Releasing"), CLAUDE.md (the catalog and
+  releaseguards bullets), CHANGELOG.md (one Changed line).
+- Tests and proof. catalog
+  `TestMigrate_V6FileIsMigratedInPlaceAndKeepsEveryRowAndTheHead` (a v6 file
+  built from the frozen v0.3.0 DDL, copied verbatim from a fresh catalog the
+  published v0.3.0 binary initialised: after `Open`, `user_version` is 7, the
+  table and its four guards exist, every other table keeps its row count,
+  `AuditHead` is the head the v6 file had, `Snapshot` serves the legacy
+  approval alone, `Integrity` is clean and a second open migrates nothing),
+  `TestMigrate_ReadOnlyAndForensicOpensOfAV6FileNameTheMigrationAndWriteNothing`
+  (both opens pin `run "toolwarrant init" with this build` and `a read-only
+  open does not migrate`, never "delete", and the file's SHA-256 is
+  unchanged), `TestMigrate_RefusesAV6FileThatAlreadyHoldsAForeignSignedRecordsTable`,
+  `TestMigrate_RefusesAV6FileThatLostAGuardAndCommitsNothing` (`ErrCorrupt`
+  naming the guard, `user_version` still 6, no `signed_records` object, the
+  file digest unchanged), `TestMigrate_TwoProcessesOpeningAV6FileAtOnceMigrateItOnce`
+  (the second opener a real process, exactly five objects named
+  `signed_records*`, same head and rows),
+  `TestSchema_SignedRecordsGuardsRefuseUpdateDeleteReplaceAndGhostRows`,
+  `TestSchema_SignedRecordsGhostRowIsCorruptAndCountedByIntegrity`,
+  `TestSchema_SignedRecordsRefusesOversizedRows` (a row at both bounds stored;
+  since #49 the planted row is reported as an orphan), the updated
+  `TestOpen_RefusesOtherSchemaVersions` (6 migrates on a read-write open after
+  a read-only open named the migration; 8, 99, -3 and 1 to 5 refused),
+  `TestOpen_RefusesAPreReleaseSchemaFileUntouched` (pins `this build uses 7`),
+  `TestSchemaMessage_AdvisesDeletionOnlyForUnreleasedSchemas`,
+  `TestSchema_ConstraintsHoldAgainstDirectSQL`,
+  `TestSchema_AutomaticIndexesArePinned`; releaseguards
+  `TestReleaseGuards_schemaLineNamesTheMigration` (a header naming v6 is
+  refused with "release notes name schema v6 but internal/catalog/schema.go
+  writes v7"; `make -n release-check` reads the line before `goreleaser
+  check`). The hand-run of 2026-10-15 against the published v0.3.0 binary's
+  catalog is recorded in (e).
+
+### D22 (h). The CLI names the key by path and never by value, derives the deciding person from the key, signs after the review and outside the write lock over the head it read, retries once when a crawl landed in the signing window and never under --expect-head, pins every open to the recorded root, and prints fingerprints and nothing else of a key
+
+- Context. (a) to (f) gave the records, the list and the catalog's
+  compare-and-set; what remained was the operator's side: where the key comes
+  from, who the decision is attributed to, when the signature is made, what
+  happens when the head moves, and what the operator must record. The owner
+  decided O-13, O-17 and O-18. The research findings that bind the CLI: 2 (one
+  namespace per payload type), 3 (the library signs with keys the policy
+  refuses, so the CLI relies on `internal/signing`'s policy), 4 (a FIDO2 key
+  asks for a touch and a lost one has no backup: the two-key rule), 5 (nothing
+  online), 8 (the typed payload), 11 (the head and the root kept off the file:
+  the record-the-root rule and the head printed after every signed write).
+  The pull request is #52 (PR 7.6, two review rounds).
+- Decision (1): the key, by path only (`sshkey.go`). `--ssh-key PATH` (env
+  `TOOLWARRANT_SSH_KEY`) is a global flag read as `ssh-keygen -Y sign -f`
+  reads it (`signing.KeySource`): a file whose first line is a public key
+  means "ask the agent at `SSH_AUTH_SOCK` for exactly this key", and the agent
+  is never asked to sign with another; any other file is an unencrypted
+  OpenSSH private key under the export key's file rules, a passphrase-protected
+  one is refused with `load the key into ssh-agent; toolwarrant does not read
+  passphrases`, and a file that is neither is `not a PEM private key; name
+  the private key file ssh-keygen wrote (the PEM block), or its .pub to sign
+  through ssh-agent` (no PEM marker in any output). An agent that accepts the
+  connection and never lists its keys is `ssh-agent at SSH_AUTH_SOCK did not
+  answer the key list within 5s; nothing was written; run ssh-add -l to see
+  whether it answers`, exit 1, after the signing package's 5 s bound on the
+  dial and the list, which `--sign-timeout` does not shorten, and never
+  `interrupted`, which only the process's own ^C prints (the CLI tells the two
+  apart by its own context); an agent that does not hold the key is
+  `ssh-agent at SSH_AUTH_SOCK does not hold the key SHA256:FP`, and a `.pub`
+  with no `SSH_AUTH_SOCK` set is refused by name. A key the list does not name
+  is refused with its fingerprint and the `trust show` advice once. A path or
+  value the operator gave is escaped once, when the refusal is printed, so a
+  control character shows as `\u{001B}` and never doubled. The key is
+  resolved before the catalog is opened in every command, so a refused key
+  changes nothing; it is closed when the command ends. Every signature is
+  bounded by `--sign-timeout` (60 s by default): a timeout is `signing timed
+  out after 60s waiting for the agent; nothing was written`, and nothing was,
+  since every write follows its signature; for a FIDO2 key the command prints
+  `touch your security key for SHA256:FP` on stderr before the agent waits.
+  The agent's signature is verified locally before it is handed to the catalog
+  (`signing.Sign` verifies its own output). Fingerprints are the only key
+  material any output carries; the public key line appears only where it is
+  the output (`trust show --json`, `trust show --allowed-signers`) and inside
+  the payloads `audit list --json` carries.
+- Decision (2): the actor from the key (O-13; `signedActor`). With a trust
+  list in force the person deciding is the operator the list names for the
+  key's fingerprint; `--as`, `TOOLWARRANT_ACTOR` and `budget reset --by` are
+  labels that must agree with it (`--as bob names another operator than the
+  key SHA256:FP, which the trust list lists for alice`, exit 2, the refusal
+  naming the label as it was given: `--as bob`, `--by bob` or
+  `TOOLWARRANT_ACTOR=bob`) and may be left out; a key the list does not name
+  is refused with its fingerprint, exit 1, and nothing is written; the
+  proposer rule holds against the derived name. Without a list the commands
+  run as v0.3 ran them, with `warning: this decision is not signed: the
+  catalog has no trust list (L13); run "toolwarrant trust init"` on stderr,
+  and a key given then is a usage error naming `trust init`, since a signed
+  decision needs a list to be verified against and a record with none would
+  be `ErrCorrupt` on the walk. With a list and no key every one of the eight
+  decisions is exit 2 with the fix (`signing is required since the trust
+  bootstrap at entry N; pass --ssh-key PATH (or set TOOLWARRANT_SSH_KEY)
+  naming a key the trust list holds`), before anything about the tool is
+  read.
+- Decision (3): when the signature is made, and the retry (O-17;
+  `signflow.go`). A decision reads the catalog identity, the audit head and
+  the list in one `SigningState`, reviews the decision as before (the drift
+  line, the suspicious-text review), then signs the `toolwarrant/decision/v1`
+  payload over that head outside the catalog's write lock and hands the
+  record to `Decide`, which compares the head inside its transaction. When
+  `Decide` returns `ErrHeadMoved` and the operator named no head, the log grew
+  while they signed (a scheduled crawl landed in the window): the command says
+  `the log grew while you signed; signing again` on stderr and signs once more
+  over the new head; a second move is `the log moved twice while you signed;
+  stop the scheduled crawl and try again`, exit 1, and the first signature was
+  never written. With `--expect-head HEX` (a flag of every decision and of the
+  trust writes) the head read for signing must be the one the operator
+  recorded (`audit head mismatch: expected ..., found ...; the log grew since
+  you recorded the head or it was rewritten, and nothing was signed`) and a
+  head that moves under the signature is refused without a second signature;
+  on a catalog without a trust list `--expect-head` is a usage error, since it
+  compares the head inside a signed write and an unsigned `Decide` has no
+  compare-and-set to compare in. The line after the command's own, `signed as
+  alice with SHA256:FP over head PREV; audit head now HEAD`, is the head to
+  record. The trust writes go through the same `signedWrite`. The crawler
+  starvation of (c) stands: one retry covers the once-a-minute crawl of a
+  deployment.
+- Decision (4): the trust commands (`trust.go`, `trustshow.go`). `trust init`
+  signs a version 1 list naming the acting person (`--as` or the OS user,
+  never the system actor) with the key that signs it, records it as the
+  bootstrap and prints the root with the record-the-root rule: `trust list v1
+  recorded at entry N: alice SHA256:FP` and `decisions from entry N+1 on must
+  be signed by a listed key; record the trust root SHA256:FP with the audit
+  head HEAD outside the database and pass it as --trust-root (env
+  TOOLWARRANT_TRUST_ROOT) to every command and to serve`; a second init is
+  refused. `trust add NAME --key PUBKEY_FILE` (the `.pub` as ssh-keygen wrote
+  it, comment allowed, options refused) and `trust remove NAME` write the next
+  version signed by a listed key, print the list in force and `signed as
+  alice`, and refuse, before anything is signed, the last signer's removal
+  (`the trust list must keep at least one signer`) and a key signing its own
+  removal (`a key cannot sign its own removal; sign with a key that stays`),
+  which the catalog's rotation rule refuses again; `remove`'s line ends
+  `decisions signed before this entry stand`. `trust show` prints the list,
+  its root and its counts, one row per operator with the entry that first
+  listed the key (read through `Store.TrustEntries`, the subject index, never
+  the whole log), `--json` the view with the key lines and `--allowed-signers`
+  the file stock `ssh-keygen -Y verify -f` reads, through
+  `trust.AllowedSigners`; without a list it says `no trust list; decisions are
+  attributed by name only (L13); run "toolwarrant trust init"` and exits 0.
+- Decision (5): the record-the-root rule and the pin. `--trust-root
+  SHA256:FP` (env `TOOLWARRANT_TRUST_ROOT`) is a global flag every command
+  applies through its open as `OpenOptions.TrustRoot`, `serve`, `audit
+  verify` and `audit list --json` included; its shape (`SHA256:` and 43
+  base64 characters decoding to 32 bytes) is checked by the CLI and a
+  malformed value is exit 2. A catalog whose bootstrap another key signed, or
+  that has no trust list, is refused, exit 1; `audit list` in text form lists
+  the entries (the forensic view) and its `--json` withholds the records with
+  the refusal on stderr; the catalog with no trust list gets the advice `this
+  catalog has no trust list: run "toolwarrant trust init" without
+  --trust-root (or TOOLWARRANT_TRUST_ROOT), or name the root of the catalog
+  you meant`, never the corrupt advice, since a never-bootstrapped catalog (a
+  brand-new `init` under `TOOLWARRANT_TRUST_ROOT` included) has no backup to
+  restore. The processor prints `signed decisions: enforced from entry B+1
+  (trust list vK, R signers, root SHA256:FP at entry B)` or `signed decisions:
+  not enabled; the catalog has no trust list (L13 open); run "toolwarrant
+  trust init"` after its listening line, and a correctly sealed approval
+  appended after the bootstrap without a key makes its next reload fail and
+  every hook deny `catalog unavailable`.
+- Decision (6): what the readers say (`auditsigned.go`, `showsigner.go`).
+  `audit verify` ends, after a clean chain and a clean integrity report, with
+  `signed records ok: N decisions and M trust lists verified; trust list vK in
+  force (alice SHA256:..., bob SHA256:...); root SHA256:... at entry B; U
+  entries before the bootstrap are unsigned history vouched for by alice` and,
+  when an approval in force predates the bootstrap, `unsigned approvals in
+  service: N (approved before the cut-over at entry B; re-approve them to sign
+  them): server/tool` from `IntegrityReport.LegacyApprovalsInService`
+  (re-approving is disable, enable, approve, each signed), or `signed
+  records: none; the catalog has no trust list (L13 open)`; a refused record
+  is an `integrity problem:` line as every other finding. `audit list --json`
+  gives every entry `"signed": {"payload": <base64>, "signature": "-----BEGIN
+  SSH SIGNATURE-----...", "signer": "SHA256:..."}` or `null`, through
+  `Store.SignedRecords`, and on a broken file keeps listing with `null`
+  everywhere and `signed records not shown: ...; run "toolwarrant audit
+  verify"` on stderr (the listing is the forensic view, `audit verify` the
+  judge). `show` prints `approved by alice, signed with SHA256:FP (audit entry
+  N)`, `approved by alice, unsigned (before the cut-over at entry B)` or
+  `approved by alice, unsigned (no trust list)` under the versions table and
+  `show --json` carries `"signer": {"operator", "key", "entry"}` or `null`,
+  from the verified approval entry (`ToolView.ApprovedBy`, `ApprovedSeq`,
+  `SignedSeq`).
+- Break-glass, as the operations guide states it. A list whose keys are all
+  lost has no in-file recovery: no key can sign the next list or a decision,
+  and the file cannot be un-bootstrapped. With a second listed key (a
+  colleague's, or a backup enrolled under `alice@backup` on day one) the path
+  is `trust remove` of the lost key signed by the one that stays, then `trust
+  add` of its replacement; what the lost key signed stands. Without one,
+  restore from a backup taken before the loss and replay from the signed
+  export, or re-initialise (fresh `init`, `server add`, `crawl`, `trust init`
+  with the new key, re-approve from the export) and record the new root with
+  the new head. A compromised key is removed the same way; its decisions
+  before the removal stand and are undone by hand (threshold 1, O-14).
+- Exit codes. 2: a decision without a key once a list is in force; a key, or
+  `--expect-head`, on a catalog without a list; `--as` (or `--by`) naming
+  another operator than the key's; a trust write without a key; the system
+  actor; a malformed `--trust-root`; a `--sign-timeout` that is not positive.
+  1: a key file that fails the file rules, is encrypted or is neither a key
+  nor a `.pub` line; an agent that does not hold the key, cannot be reached or
+  does not answer the key list within 5 s; a signing timeout; `audit head
+  mismatch` under `--expect-head` or after the log moved twice; a key outside
+  the trust list; every trust-list rule refusal; a catalog without a bootstrap
+  or with another root under `--trust-root`; every `ErrCorrupt`.
+- Where. `cmd/toolwarrant/sshkey.go` (`keySource`, `optionalSigner`,
+  `requireSigner`, `cliSigner.sign`, `trustRoot`, `isFingerprint`,
+  `operatorOf`, `signedActor`, `labelGiven`, `signerList`), `signflow.go`
+  (`decisionFlow`, `beginSigned`, `settle`, `decide`, `report`, `signedWrite`,
+  `checkExpectedHead`, `afterSigning`), `trust.go` (`trustCommands`,
+  `runTrustInit`, `runTrustAdd`, `runTrustRemove`, `rotateTrustAs`,
+  `setTrust`, `readPublicKeyFile`), `trustshow.go` (`runTrustShow`,
+  `printAllowedSigners`, `signerSince`), `auditsigned.go` (`reportTrust`,
+  `bootstrapActor`, `auditJSON`), `showsigner.go` (`approvalLine`),
+  `global.go` (the three flags, `openStore`'s `TrustRoot`), `decide.go`,
+  `server.go`, `budget.go` (the eight decisions through the flow), `serve.go`
+  (`signedDecisionsLine`), `advice.go`, `main.go` (the `trust` command,
+  `app.afterSign`); `internal/catalog/catalog.go` (`ToolView.ApprovedBy`,
+  `ApprovedSeq`, `SignedSeq`), `views.go` (`adoptApproval`), `signed.go`
+  (`TrustEntries`); [operations.md](operations.md) ("Signing decisions and
+  managing the operator trust list", the first paragraph of "Running the
+  processor", "Reading the audit log and recording its head", "Exit codes");
+  CLAUDE.md (the `cmd/toolwarrant` bullet); CHANGELOG.md (three Added lines).
+- Tests and proof. `TestTrustInitRecordsTheBootstrapAndPrintsTheRoot`,
+  `TestTrustInitRefusesASecondBootstrapAndTheSystemActor`,
+  `TestTrustAddAndRemoveRotateTheListAndRefuseTheLastSigner`,
+  `TestTrustShowPrintsTheListTheAllowedSignersFileAndJSON` (its sub-step
+  feeds `trust show --allowed-signers` and a record from `audit list --json`
+  to the host's `ssh-keygen -Y verify` and `-Y check-novalidate`, and refuses
+  it under `-n git`), `TestTrustUsageHelpAndRefusals`, `TestTrustRootShape`,
+  `TestDecisionsRequireAKeyOnceATrustListIsInForce` (exit 2 with the fix for
+  each of the eight commands), `TestApproveSignsThroughTheAgentAndPrintsTheHead`,
+  `TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne` (every refusal exit 1,
+  the agent that lacks the named key pinned with its fingerprint, no `PRIVATE
+  KEY` in any output), `TestApproveDerivesTheActorFromTheKeyAndRefusesAMismatch`
+  (the three label forms and `--by` over `--as`),
+  `TestApproveRetriesOnceWhenTheHeadMovedWhileSigning` (a crawl injected
+  between the signature and the write through `app.afterSign`),
+  `TestApproveExpectHeadRefusesAMovedLogWithoutARetry`,
+  `TestApproveWithoutATrustListWarnsOnStderrAndRefusesAKey`,
+  `TestRollbackRejectDisableEnablePauseResumeAndBudgetResetSignLikeApprove`,
+  `TestApproveTouchHintIsPrintedForASecurityKey` (an in-process agent that
+  serves an Ed25519 key as `sk-ssh-ed25519@openssh.com` and signs as a
+  security key does, so the signature verifies under x/crypto's sk verifier
+  end to end), `TestSigningTimeoutWritesNothing`,
+  `TestSigningTimeoutRefusalRendersWholeSeconds` (`60s`, never `1m0s`),
+  `TestAnAgentThatNeverAnswersIsNamedAndWritesNothing` (5.1 s each for
+  `approve` and `trust add`, the sentence, the unchanged head and list, no
+  `interrupted`), `TestDecisionsAfterTheBootstrapRefuseAnUnlistedKey` (the
+  `trust show` advice exactly once),
+  `TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`,
+  `TestAuditVerifyNamesAForgedSignedRecord`,
+  `TestAuditListJSONCarriesTheSignedRecord` (the broken-file case included),
+  `TestShowNamesTheSignerOrTheLegacyApproval`,
+  `TestServePrintsTheSignedDecisionsLineAndRefusesWithoutABootstrapUnderTrustRoot`,
+  `TestServeTrustRootRefusesAnotherBootstrap`,
+  `TestServeDeniesEveryHookAfterAnUnsignedApprovalIsAppended`,
+  `TestEveryCommandRefusesACatalogWhoseRootIsNotTheTrustRoot` (a
+  never-bootstrapped catalog and `init` of a brand-new path under the pin
+  get the no-trust-list advice, never `restore it from a backup`),
+  `TestNoOutputCarriesKeyMaterial` (thirty-seven runs of the signed flow on
+  success and on every refusal, the retry, the wrong root, a private key
+  handed to `trust add --key` and a `serve` start and stop),
+  `TestSelfApprovalAndSystemActorRefusals` (the proposer rule against the
+  signer's operator name), `TestHelpAndVersion` and `TestUsageErrors`
+  extended; catalog `TestTrustEntries_ListsTheBootstrapAndEveryRotationInOrder`.
+  The implementer's live probe of 2026-10-16 (the built binary, a real
+  `ssh-agent -a` on a socket under `mktemp -d`, Ed25519 keys, cmd/mockupstream)
+  printed `trust list v1 recorded at entry 9: alice SHA256:cRY7...`, `signed
+  as alice with SHA256:cRY7... over head 440a80cf...; audit head now
+  cb244f99...`, `ssh-keygen -Y verify`'s `Good "decision@toolwarrant.invalid"
+  signature for alice with ED25519 key SHA256:cRY7...` and `-n git`'s
+  `Couldn't verify signature: namespace does not match`, the key-file approve
+  with `SSH_AUTH_SOCK` unset, the hung agent's sentence after 6 s, the
+  escaped-once path, the unlisted key's advice once and the plain-text file
+  refused with no PEM marker. End to end, scenario S drives the whole surface
+  through the built binary and the real gateway with an in-process agent
+  (the proof note of row 27 in [threat-model.md](threat-model.md)), and
+  scenario N's re-initialised catalog takes an unsigned approval with the
+  warning and a processor printing `signed decisions: not enabled`. A FIDO2
+  key through a real agent was not available on the implementer's host; the
+  touch hint and the sk signature are proven by the in-process agent of
+  `TestApproveTouchHintIsPrintedForASecurityKey`, and the owner's proof with a
+  real security key is (i)'s.
+
+### D22 (i). The observed first signed approval
+
+- Placeholder (2026-10-16). The owner's first signed approval on their real
+  catalog after the v0.4.0 release is to be recorded here, as the plan's
+  release round states: the `init` that migrated the v6 file with `audit
+  verify`'s head unchanged, the `trust init` line with the root and the head
+  recorded, the processors restarted with `--trust-root` and their `signed
+  decisions: enforced from entry` lines, the `signed as ... with SHA256:...
+  over head ...; audit head now ...` line of the first approval through
+  ssh-agent (with a FIDO2 key, the `touch your security key` hint and the
+  accepted signature), `audit verify`'s `signed records ok` line and its
+  `unsigned approvals in service` count, and the time the first approval took.
+  Until the owner fills it, the observed signed approval is the one of
+  end-to-end scenario S on 2026-10-16 (Apple M4, agentgateway v1.6.0, an
+  in-process ssh-agent, Ed25519): `trust init` recorded the bootstrap at
+  entry 47 and printed the root and the head; the signed approve of echo took
+  32.6 ms for the whole CLI run and printed `signed as reviewer with
+  SHA256:A0ZB... over head 9b27bbb9...; audit head now 31cab125...`; `audit
+  verify` printed `signed records ok: 5 decisions and 2 trust lists verified;
+  trust list v2 in force (reviewer SHA256:A0ZB..., bob SHA256:UiPs...); root
+  SHA256:A0ZB... at entry 47; 46 entries before the bootstrap are unsigned
+  history vouched for by reviewer`; and the processor restarted under the
+  root was listening 45.4 ms after its start ((e)).
