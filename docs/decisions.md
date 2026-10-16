@@ -3604,7 +3604,10 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   the CLI's older refusal sites that pre-escape a value `describe()` escapes
   again (`paths.go`, `export.go`, `exportverify.go`, `servetls.go`,
   `emitout.go`, `emitvalidate.go`, `emitports.go`, `global.go`,
-  `liveconfig.go`, `audit.go`; decision 34).
+  `liveconfig.go`, `audit.go`; decision 34; done on 2026-10-16, right after
+  the release: those sites now embed the value as given and `describe()`
+  escapes the sentence once, which `TestRefusalsEscapeHostileValuesOnce` pins
+  as one `\u{001B}` per hostile value).
 
 ### D22 (a). Decisions are signed with OpenSSH `sshsig` records under toolwarrant's own namespaces, over the exact bytes of a typed payload, with a key that passes toolwarrant's policy and lives in ssh-agent or in an unencrypted OpenSSH key file
 
