@@ -1318,6 +1318,194 @@ the integrity report prints it as one `integrity problem:` line
 `TestOpen_PinnedTrustRootRefusesACatalogWithoutABootstrap`). Without it the
 bootstrap's own signer is trusted on first use.
 
+Signing a decision. From the bootstrap on, every human decision must carry a
+signed record: approve, reject, rollback, disable, enable, pause, resume and
+the proposal-budget reset, the eight kinds of `toolwarrant/decision/v1`
+(owner decision O-16; the `enable` and `resume` that undo a revocation
+included, so a forged `tool.enabled` or `server.resumed` re-serves nothing).
+The record is the exact RFC 8785 bytes of a payload naming this catalog's
+identity, the deciding person, the kind, the server, the tool (empty for
+pause and resume), the digest (empty for the kinds that name none), the
+signer's fingerprint, the signing time and the audit head the signer saw as
+`prev_head`, signed under the namespace `decision@toolwarrant.invalid` by a
+key the trust list in force names for that person. The catalog writes it as
+one `decision.signed` entry about the server or `server/tool`, by that person,
+with the detail `kind=approve digest=<64 hex or -> signer=SHA256:...
+sigref=<hex>`, the record in `signed_records` at its seq, followed in the same
+transaction by the entries the decision produces as before (`version.approved`
+and the `version.superseded` of the approval it retires, `tool.disabled`,
+`server.paused`, and so on), each ending with ` signed=N`, the seq of that
+`decision.signed` entry. The signature is made before the transaction, over
+the head `SigningState` hands out, and the catalog never calls a signer: the
+write lock is never held while a person or an agent signs, so a hung agent
+cannot block the scheduled crawl (O-17). Inside the transaction the payload's
+`prev_head` is compared with the audit head after the chain was verified to
+it and refused with `audit head mismatch` when the log grew since the
+signature was made, nothing written; the `decision.signed` entry is sealed
+from that head, so a stored `prev_head` always equals its entry's `prev_hash`
+and every decision record is a signed head, and two signatures over one head
+let exactly one through (`TestDecide_RefusesAPayloadWhosePrevHeadIsNotThePin`,
+`TestDecide_RefusesAReplayedSignature`,
+`TestConcurrency_TwoSignedApprovalsOverOneHeadLetExactlyOneWin`). `--as` is a
+label: it must name the person the key is listed for, and the decision is
+refused with `the key belongs to <name>` otherwise (O-13;
+`TestDecide_LabelMustEqualTheSignersOperatorName`). A valid signature from a
+key the list does not name authorises nothing
+(`TestDecide_ValidSignatureFromAnUnlistedKeyIsNotAuthorization`), a decision
+made without a record while a list is in force is `this decision must be
+signed: a trust list is in force` for every one of the eight kinds
+(`TestDecide_UnsignedDecisionAfterTheBootstrapIsRefused`), and before the
+bootstrap the commands write exactly what v0.3 wrote
+(`TestDecide_UnsignedDecisionBeforeTheBootstrapStillWorks`,
+`TestDecide_SignedApprovalWritesTheSignedEntryFirstAndTheLifecycleEntriesNameIt`,
+`TestDecide_EveryKindSignsAndItsEntriesCarryTheToken`).
+
+What every reader requires of the entries after the bootstrap. The walk a
+`Store` makes at open and on every reload verifies each `decision.signed`
+record once, as it verifies the trust records (the signature, the canonical
+payload, this catalog, the entry's own `prev_hash`, the actor, the kind and
+digest tokens and the subject, and the signer listed for the actor by the list
+in force at that entry), and then holds every other entry after the bootstrap
+to two rules. An entry whose event only a human command writes must name, as
+`signed=N`, a verified `decision.signed` entry of its own transaction: the
+entry at N or the entries right after it that carry the same token, about the
+same subject, by the same person, at the same time, whose kind writes that
+event, for an approval, rollback or rejection, whose digest is the one the
+entry records, and whose content is what the kind does: a tool entry's
+`state=A->B` is a transition the kind can make (`lifecycle.DecisionMayMove`;
+a budget reset stays put) and a server entry's `paused` flag is the one the
+kind leaves; then the entry must start where the chain left the tool and fit
+the shape of its transaction (the continuity rule and the shape rule, below,
+which the walk applies to the token-bearing entries as well). Each failure
+has its sentence. An entry that names no record:
+`audit entry N is a version.approved after the trust bootstrap (entry B) and
+names no signed record; the entry was appended outside toolwarrant`. An
+approval appended later naming a decision that was made, with its time
+copied, refused as a replay: `audit entry N names signed=K, whose transaction
+ended before it; a signed record attests the entries of its own transaction
+only, and the entry was appended outside toolwarrant`. A sealed
+`tool.disabled`, `version.superseded` or `tool.budget_reset` with
+`state=disabled->enabled`, or a `server.paused` saying `paused=false`, that
+borrows the token of the disable, budget reset or pause whose transaction is
+open at the head, and which the state anchor would otherwise take as the
+tool's or the server's state: `audit entry N moves tool "S/T" from disabled
+to enabled under event tool.disabled but names signed=K, a decision of kind
+disable, which makes no such move; the entry was appended outside
+toolwarrant` and `audit entry N is a server.paused saying paused=false but
+names signed=K, a decision of kind pause, which leaves the server
+paused=true; the entry was appended outside toolwarrant`
+(`TestWalk_RefusesAnUnsignedApprovalAppendedAfterTheBootstrap`,
+`TestWalk_RefusesAnUnsignedEnableOrResumeAppendedAfterTheBootstrap`,
+`TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry`,
+`TestDecisionMayMove_EqualsTheInvariantsTable`,
+`TestWalk_RefusesAValidSignatureFromAKeyOutsideTheTrustList`,
+`TestWalk_RefusesASignatureWhoseKeyBelongsToAnotherName`,
+`TestWalk_RefusesAPayloadCopiedFromAnotherCatalog`,
+`TestWalk_RefusesAPayloadWhoseKindOrDigestDisagreesWithTheEntry`,
+`TestReview_ForgedSignedApprovalWithoutAKeyIsRefusedEverywhere`). The
+continuity rule, which the adversarial review of this round asked for: the
+walk remembers, for every tool, what the newest entry about it left it
+(`state=A->B`, read from the genesis on, so the first entry after the
+bootstrap is checked against the state before it), and after the bootstrap
+every entry about a tool, token or none, must move it from that state, unless
+it repeats that entry's transition at that entry's time, which is what the
+entries of one operation do (the catalog writes one entry per lifecycle event
+of one operation, each with the operation's before and after). So a sealed
+`tool.enabled` saying `disabled->enabled`, a move an enable makes under the
+other policy, that borrows the token of the enable whose own entries left the
+tool in `pending_review`, and which would otherwise re-serve the digest that
+enable put under review, is `audit entry N says tool "S/T" moves from
+disabled but the newest entry about it (seq M) left it pending_review; the
+entry was appended outside toolwarrant`. A tool entry that records no
+transition is refused as such: every entry the catalog writes about a tool
+carries `state=A->B`, so an entry whose detail starts with `digest=` and has
+no state field was appended by hand, and accepted it would have become the
+newest entry about the tool with nothing for the rule to compare the next
+entry with (`audit entry N about "S/T" is a tool entry (its detail starts
+with digest=) but carries no state field; every entry the catalog writes
+about a tool records its transition, so the entry was appended outside
+toolwarrant`); an entry about a tool whose newest entry, planted before the
+bootstrap, recorded no transition is refused too (`audit entry N says tool
+"S/T" moves from A but the newest entry about it (seq M) records no
+transition; the entry was appended outside toolwarrant`), and an entry about
+a tool the chain holds no entry for must start from `discovered`, where every
+tool is created (`audit entry N says tool "S/T" moves from A but no earlier
+entry is about the tool, and the first entry about a tool starts from
+discovered; the entry was appended outside toolwarrant`); the third review of
+this round sealed a stateless tool entry after a signed disable and re-enabled
+the tool with the lie after it on every path
+(`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the stateless probes
+and the tool the chain holds no entry about). The shape rule, the second belt
+on the token: every entry naming `signed=K` carries the `state=A->B` and the
+`after_hash` of the first entry that named it, no event of one decision
+appears twice, and nothing follows the decision's own event
+(`version.approved`, `tool.disabled` and the six others), which every command
+writes last, so the transaction open at the head cannot be extended under its
+token once that event is written: `audit entry N names signed=K and says
+state="A->B" but the first entry of that transaction (seq F) says
+state="C->D"; the entries of one decision record one transition`, `audit
+entry N names signed=K and records after_hash D but the first entry of that
+transaction (seq F) records E; the entries of one decision record one approved
+digest`,
+`audit entry N is a second tool.disabled of digest none under signed=K (entry
+F wrote the first); a decision writes each of its events once`, `audit entry
+N names signed=K but that transaction ended with its version.approved (seq
+F), the last entry a decision writes; the entry was appended outside
+toolwarrant` (the third review of this round appended, after alice's signed
+approve at the head, a second `version.approved` naming another digest and a
+`version.superseded` of the approved and of a third digest, each at her time
+with her transition and `after_hash`, and the walk accepted them as entries
+of her decision)
+(`TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry`, the history probes;
+`TestWalk_TheShapeRuleSentencesAreFixed`, the four sentences byte for byte;
+`TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`). The
+crawl-transition guard, in one sentence: an entry about a tool that no
+decision signed may move the tool's state only along a transition a crawl
+observation can make (disabled stays disabled, deprecated reappears to
+pending_review, enabled and changed_pending_reapproval move between
+themselves or deprecate) and only from the state the newest entry about the
+tool left it in, so a correctly sealed `tool.reverted` with
+`state=disabled->enabled`, which would otherwise re-enable a disabled tool
+under a clean chain, is `audit entry N moves tool "S/T" from disabled to
+enabled under event tool.reverted, which no crawl can do; the entry was
+appended outside toolwarrant`, and the same entry lying about where the tool
+was (`state=changed_pending_reapproval->enabled`, `enabled->enabled` or
+`enabled->changed_pending_reapproval`, each a move a crawl may make) is
+`audit entry N says tool "S/T" moves from enabled but the newest entry about
+it (seq M) left it disabled; the entry was appended outside toolwarrant`
+(`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the crawler and a
+person, the confessing entry and the four lying ones;
+`TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes`, whose drawn
+histories never trip either rule and whose remembered state is the row's;
+`TestCrawlMayMove_EqualsTheInvariantsTable`). A `tool.budget_reset` is a
+state-bearing entry to the state anchor as it is to Integrity, so the two
+name the same entry when a column is edited after a budget reset
+(`TestSnapshot_ABudgetResetIsTheNewestStateEntryOnBothPaths`). The serving path verifies no
+signature: the anchor pass of every snapshot reads the `signed=` token of each
+human decision it anchors, looks the record up in the memory of the walk and
+compares the entry's state field or paused flag with the kind, two token
+parses and one lookup per anchored entry and no bytes
+(`TestSnapshot_ServesOnlySignedApprovalsAfterTheBootstrapAndReadsNoBytes`,
+`TestSnapshot_ReloadAfterACrawlVerifiesNoSignature`,
+`TestSnapshot_SwappedSignedRecordRowIsCorrupt`,
+`TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`); the
+continuity rule and the shape rule run in the walk alone, which recorded the
+entry the anchor pass reads, so the anchor pass gained nothing.
+`audit verify`'s integrity report prints every refusal with the walk's
+sentence and lists, as information and not as a problem, the approvals in
+force that were made before the bootstrap: they stand by chain anchoring
+alone, as in v0.3, until re-approved with a signed decision (O-12;
+`TestIntegrity_ReportsEveryDecisionRecordProblemTheWalkRefuses`,
+`TestIntegrity_CountsLegacyApprovalsInService`,
+`TestWalk_LegacyApprovalsBeforeTheBootstrapNeedNoRecord`). Removal is not
+retroactive: what a key signed before its removal stands and is served, and
+what it signs afterwards is refused
+(`TestWalk_ARemovedKeysEarlierDecisionsStandAndItsLaterOnesAreRefused`,
+`TestDecide_RefusesAKeyRevokedByTheNewestTrustList`). Before the bootstrap
+the guard does not apply, so the residual it closes stands for the legacy
+history: a sealed `tool.reverted` leaving disabled, appended before any
+bootstrap, is accepted and served, which the same test records.
+
 The threshold-1 residual, stated plainly. With one signature per record, one
 compromised key rotates the list and can evict the other signer: the rule
 allows it because the compromised key is in both lists, and the evicted

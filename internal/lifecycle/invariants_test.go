@@ -77,6 +77,7 @@ func stepViolations(rec stepRecord) []string {
 	out = append(out, shapeViolations(rec.res.Tool)...)
 	out = append(out, edgeViolations(rec)...)
 	out = append(out, crawlViolations(rec)...)
+	out = append(out, decisionViolations(rec)...)
 	out = append(out, serveViolations(rec.res.Tool)...)
 	out = append(out, effectViolations(rec)...)
 	out = append(out, eventViolations(rec)...)
@@ -273,6 +274,13 @@ func crawlViolations(rec stepRecord) []string {
 	before, after := rec.before, rec.res.Tool
 	retired := c.Present && !c.Unusable && before.State == lc.Deprecated
 	var out []string
+	// Rule 6 of the v0.4 plan reads this table through the exported function;
+	// every step the machine takes is checked against it here, so the table
+	// cannot be narrower than the machine (TestCrawlMayMove_EqualsTheInvariantsTable
+	// pins that it is not wider).
+	if !lc.CrawlMayMove(before.State, after.State) {
+		out = append(out, fmt.Sprintf("a crawl moved %s -> %s, which CrawlMayMove forbids", before.State, after.State))
+	}
 	if after.Approved != before.Approved && (!retired || after.Approved != "") {
 		out = append(out, fmt.Sprintf("crawl changed Approved %q -> %q", before.Approved, after.Approved))
 	}
@@ -286,6 +294,21 @@ func crawlViolations(rec stepRecord) []string {
 		return append(out, presentCrawlViolations(c, before, after)...)
 	}
 	return append(out, missingCrawlViolations(rec.pol, before, after)...)
+}
+
+// decisionViolations is the decision half of rule 5 of the v0.4 plan read the
+// other way: every step a person's command takes is a transition the exported
+// DecisionMayMove admits, so the table the catalog's walk binds a signed
+// decision's entries to cannot be narrower than the machine
+// (TestDecisionMayMove_EqualsTheInvariantsTable pins that it is not wider).
+func decisionViolations(rec stepRecord) []string {
+	if _, isCrawl := rec.cmd.(lc.ObserveCrawl); isCrawl {
+		return nil
+	}
+	if !lc.DecisionMayMove(rec.cmd, rec.before.State, rec.res.Tool.State) {
+		return []string{fmt.Sprintf("%T moved %s -> %s, which DecisionMayMove forbids", rec.cmd, rec.before.State, rec.res.Tool.State)}
+	}
+	return nil
 }
 
 // unusableCrawlViolations: "LastSeen = UnusableDigest, MissingCrawls = 0,
@@ -307,15 +330,10 @@ func presentCrawlViolations(c lc.ObserveCrawl, before, after lc.Tool) []string {
 	if _, ok := findVersion(after, c.Digest); !ok {
 		out = append(out, "the crawled digest is not a known version afterwards")
 	}
-	allowed := map[lc.State][]lc.State{
-		lc.Discovered:               {lc.PendingReview},
-		lc.PendingReview:            {lc.PendingReview},
-		lc.Enabled:                  {lc.Enabled, lc.ChangedPendingReapproval},
-		lc.ChangedPendingReapproval: {lc.ChangedPendingReapproval, lc.Enabled},
-		lc.Disabled:                 {lc.Disabled},
-		lc.Deprecated:               {lc.PendingReview},
-	}
-	if !containsState(allowed[before.State], after.State) {
+	// A sighting moves along the exported crawl table, except that it never
+	// deprecates (a miss does that); a sighting of a discovered or deprecated
+	// tool must move it, which the shape and reappearance rules above pin.
+	if !lc.CrawlMayMove(before.State, after.State) || after.State == lc.Deprecated {
 		out = append(out, fmt.Sprintf("sighting moved %s -> %s", before.State, after.State))
 	}
 	if before.State != lc.Deprecated && c.Digest == before.Approved && len(after.Versions) != len(before.Versions) {
@@ -332,15 +350,6 @@ func presentCrawlViolations(c lc.ObserveCrawl, before, after lc.Tool) []string {
 func isRejected(t lc.Tool, digest string) bool {
 	v, ok := findVersion(t, digest)
 	return ok && v.Status == lc.VersionRejected
-}
-
-func containsState(list []lc.State, s lc.State) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 func missingCrawlViolations(p lc.Policy, before, after lc.Tool) []string {

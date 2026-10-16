@@ -26,10 +26,15 @@ func mustIntegrity(t *testing.T, s *Store) IntegrityReport {
 	return rep
 }
 
-// mustBeClean asserts that Integrity found nothing wrong.
+// mustBeClean asserts that Integrity found nothing wrong: no problem line and
+// every counter zero. The approvals made before a trust bootstrap that the
+// report lists are information, not a problem (O-12), so they are not compared
+// here; TestIntegrity_CountsLegacyApprovalsInService pins them.
 func mustBeClean(t *testing.T, s *Store, when string) {
 	t.Helper()
-	if rep := mustIntegrity(t, s); !reflect.DeepEqual(rep, IntegrityReport{}) {
+	rep := mustIntegrity(t, s)
+	rep.LegacyApprovalsInService = nil
+	if !reflect.DeepEqual(rep, IntegrityReport{}) {
 		t.Fatalf("Integrity %s = %+v, want a clean report", when, rep)
 	}
 }

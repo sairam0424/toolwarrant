@@ -3,9 +3,7 @@ package catalog
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -28,7 +26,11 @@ import (
 // of the pages it walks (trustwalk.go: the trust records once at open and the
 // new ones on each reload, none on a crawl-only reload, O-15) and carries the
 // trust list in force and the outcome of every verified decision record in
-// the same memory. An audit entry is trusted on the serving path and on the
+// the same memory; since D22 (b) and (d) it holds every entry after the
+// bootstrap to the signed= binding and the crawl-transition guard
+// (decisionwalk.go), and the anchor pass asks the memory whether an anchored
+// human decision names a verified record (requireSigned). An audit entry is
+// trusted on the serving path and on the
 // decision path only when the hash computed from the fields read now equals
 // the hash recorded for its seq in that walk (chainMemory.verify): the stored
 // hash column is never consulted for trust, since whoever can write the file
@@ -87,11 +89,17 @@ type chainMemory struct {
 	// TestBenchmarkSnapshotHashesOnlyAuditEntries pins are the anchor pass
 	// alone.
 	hashed atomic.Int64
-	// trust is what the walk knows about the operator trust list and signed
-	// what it recorded about every verified decision.signed entry
-	// (trustwalk.go); both grow with the walk, under mu.
+	// trust is what the walk knows about the operator trust list, signed
+	// what it recorded about every verified decision.signed entry, open the
+	// decision transaction the head entry belongs to (seq 0 when none) and
+	// states what the newest entry about each tool left it (trustwalk.go,
+	// decisionwalk.go, decisioncontinuity.go); all four advance with the
+	// walk, under mu. states holds one value per tool subject, never one per
+	// entry, so a long-lived processor keeps it beside hashes.
 	trust  trustMemory
 	signed map[int64]signedOutcome
+	open   openTxn
+	states map[string]toolLast
 	// verified counts the signatures the walks have verified since the Store
 	// opened: every signed entry once at open, the new ones on each reload,
 	// none on a crawl-only reload (O-15;
@@ -100,7 +108,7 @@ type chainMemory struct {
 }
 
 func newChainMemory() *chainMemory {
-	return &chainMemory{hashes: map[int64]entryHash{}, signed: map[int64]signedOutcome{}}
+	return &chainMemory{hashes: map[int64]entryHash{}, signed: map[int64]signedOutcome{}, states: map[string]toolLast{}}
 }
 
 // pin returns the head of the verified chain.
@@ -114,19 +122,21 @@ func (c *chainMemory) pin() chainPin {
 // just verified in order. audit.VerifyFrom accepted the page, so each entry's
 // Hash field equals the hash it computed from the entry's fields; that
 // computed value is what is kept, for every decision entry and for the head.
-// The signed entries of the page are verified first (verifySignedPage),
-// against the trust list in force as the memory holds it after the pages
-// before, and nothing of the page is recorded when one of them is refused:
-// the walk stops there, the pin stays below the refused record, and the
-// refusal is the ErrCorrupt the caller returns.
+// The page is walked first (verifySignedPage): the signed entries against the
+// trust list in force as the memory holds it after the pages before, the
+// others against the bootstrap, the decision outcomes and the tool states
+// known at their point (rules 5 and 6), and nothing of the page is recorded
+// when one entry is refused: the walk stops there, the pin stays below the
+// refused entry,
+// and the refusal is the ErrCorrupt the caller returns.
 func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.Entry, identity, pinnedRoot string) error {
 	if len(page) == 0 {
 		return nil
 	}
 	c.mu.RLock()
-	tm := c.trust
+	in := pageInput{trust: c.trust, open: c.open, identity: identity, pinnedRoot: pinnedRoot, lookup: c.lookupSigned, lastState: c.lookupState}
 	c.mu.RUnlock()
-	out, err := verifySignedPage(ctx, q, page, tm, identity, pinnedRoot)
+	out, err := verifySignedPage(ctx, q, page, in)
 	if err != nil {
 		return err
 	}
@@ -142,8 +152,12 @@ func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.En
 		}
 	}
 	c.trust = out.trust
+	c.open = out.open
 	for seq, o := range out.signed {
 		c.signed[seq] = o
+	}
+	for subject, l := range out.states {
+		c.states[subject] = l
 	}
 	last := page[len(page)-1]
 	c.head = chainPin{seq: last.Seq, hash: last.Hash}
@@ -165,6 +179,8 @@ func (c *chainMemory) drop() {
 	c.hashes = map[int64]entryHash{}
 	c.trust = trustMemory{}
 	c.signed = map[int64]signedOutcome{}
+	c.open = openTxn{}
+	c.states = map[string]toolLast{}
 }
 
 // hashCount is the number of entries verify has hashed so far.
@@ -278,128 +294,4 @@ func walkChain(ctx context.Context, q queryer, from chainPin, visit func([]audit
 			return chainPin{seq: prev.Seq, hash: prev.Hash}, walked, nil
 		}
 	}
-}
-
-// loadPin reads the head of the verified chain; tests compare it with the log.
-func (s *Store) loadPin() chainPin { return s.chain.pin() }
-
-// checkFile is what every serving-path and view read requires of the file
-// before it trusts a row: the file at the path still the one this Store opened
-// and still carrying the catalog identity it read at open (identity.go, D14
-// e), no row below id 1 in the history tables (checkGhostRows, D17 b) and the
-// guard objects and tables as the schema defines them (both skipped by a
-// forensic open, as at Open, so that the views can inspect a file whose
-// guards are gone or that holds a planted row, which Integrity and the
-// listing then report), and the audit chain unchanged since this Store last looked, with the
-// memory of it extended to the head (verifyChain). It must be the first thing
-// a read transaction runs: the whole check holds walkMu, so the transaction's
-// first statement, which fixes its snapshot, runs under the same lock as the
-// read of the pin it is compared with. A snapshot fixed before the lock could
-// predate a pin another handle of this Store advanced in between, and the
-// pinned entry, absent from that older snapshot, read as a truncation (D17 f;
-// the seventh review measured one in five Snapshot calls under six readers
-// and one writer failing that way on an untouched file).
-func (s *Store) checkFile(ctx context.Context, q queryer) error {
-	_, err := s.checkFilePinned(ctx, q)
-	return err
-}
-
-// checkFilePinned is checkFile returning the head of the verified chain as
-// this read verified it: the pin after the walk, read under the same hold of
-// walkMu as the walk, so it is the head of this transaction's snapshot, never
-// one that another handle of this Store advanced after the lock was released
-// (a pin read after checkFile returned could be newer than the rows this read
-// goes on to return). Callers that record the head beside what they read in
-// the same transaction (ApprovedWithHead, AuditHead) use it.
-func (s *Store) checkFilePinned(ctx context.Context, q queryer) (chainPin, error) {
-	cs, err := s.checkFileState(ctx, q)
-	return cs.pin, err
-}
-
-// checkFileState is checkFilePinned returning, beside the pin, the trust
-// memory of the same walk and its decision count, taken under the same hold
-// of walkMu, so SigningState hands out a head and the list in force of one
-// snapshot (D22 c, as ApprovedWithHead pairs the head with the approvals).
-func (s *Store) checkFileState(ctx context.Context, q queryer) (chainState, error) {
-	if err := s.checkFileIdentity(); err != nil {
-		return chainState{}, err
-	}
-	s.chain.walkMu.Lock()
-	defer s.chain.walkMu.Unlock()
-	if err := s.checkStoredIdentity(ctx, q); err != nil {
-		return chainState{}, err
-	}
-	if !s.forensic {
-		if err := checkGhostRows(ctx, q); err != nil {
-			return chainState{}, err
-		}
-		if err := verifyGuards(ctx, q); err != nil {
-			return chainState{}, err
-		}
-	}
-	if err := s.verifyChainLocked(ctx, q); err != nil {
-		return chainState{}, err
-	}
-	return s.chain.state(), nil
-}
-
-// verifyChain brings the Store's memory of the chain up to the log as this
-// transaction sees it, under walkMu. Open and every write transaction call
-// it: at Open it is the transaction's first statement, and a write transaction
-// (BEGIN IMMEDIATE) always sees the newest commit, so neither can hold a
-// snapshot older than the pin. Reads go through checkFile, which takes the
-// lock before their first statement.
-func (s *Store) verifyChain(ctx context.Context, q queryer) error {
-	s.chain.walkMu.Lock()
-	defer s.chain.walkMu.Unlock()
-	return s.verifyChainLocked(ctx, q)
-}
-
-// verifyChainLocked is verifyChain with walkMu held: the pinned entry must
-// still hash, from its fields as stored now, to the recorded hash, every entry
-// after it must continue the chain, every signed entry after it must pass the
-// rules of trustwalk.go against this catalog's identity and the pinned trust
-// root, the memory is extended to the new head, and with a root pinned a list
-// must then be in force (requireTrustRoot). Nothing before the pin is read
-// again; with no pin yet (a fresh Store, or an empty log so far) the walk
-// starts at the genesis.
-func (s *Store) verifyChainLocked(ctx context.Context, q queryer) error {
-	pin := s.chain.pin()
-	if pin.seq != 0 {
-		if err := checkPinnedEntry(ctx, q, pin); err != nil {
-			return err
-		}
-	}
-	visit := func(page []audit.Entry) error { return s.chain.recordPage(ctx, q, page, s.identity, s.trustRoot) }
-	_, _, err := walkChain(ctx, q, pin, visit)
-	var broken *audit.BrokenError
-	switch {
-	case err == nil:
-		return s.requireTrustRoot()
-	case !errors.As(err, &broken):
-		return err
-	case pin.seq == 0:
-		return fmt.Errorf("%w: the audit log does not form one chain from its first entry: %w; run audit verify", ErrCorrupt, err)
-	}
-	return fmt.Errorf("%w: the audit entries appended after entry %d do not continue its chain: %w", ErrCorrupt, pin.seq, err)
-}
-
-// checkPinnedEntry requires the pinned entry to exist and its fields, as
-// stored now, to hash to the recorded hash. The hash column is not compared:
-// the fifth review edited a pinned entry's fields and kept the column. An
-// absent pinned entry is a truncation and nothing else, because the snapshot
-// of every caller is fixed under walkMu and so never predates the pin (see
-// checkFile and verifyChain).
-func checkPinnedEntry(ctx context.Context, q queryer, pin chainPin) error {
-	e, err := scanAudit(q.QueryRowContext(ctx, `SELECT `+auditCols+` FROM audit_log WHERE seq = ?`, pin.seq))
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("%w: audit entry %d, which this store verified, is gone; the log was truncated or the file replaced under a running reader", ErrCorrupt, pin.seq)
-	case err != nil:
-		return fmt.Errorf("catalog: read pinned audit entry: %w", err)
-	}
-	if local, err := audit.HashOf(e); err != nil || local != pin.hash {
-		return fmt.Errorf("%w: audit entry %d, which this store verified, was rewritten; the log was edited or re-chained under a running reader", ErrCorrupt, pin.seq)
-	}
-	return nil
 }

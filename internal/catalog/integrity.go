@@ -2,13 +2,9 @@ package catalog
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"maps"
-	"slices"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
-	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
 
 // IntegrityReport is the result of Integrity: the mutable registry (the
@@ -122,6 +118,27 @@ type IntegrityReport struct {
 	// that carries no record, or of no entry; the catalog writes a row only
 	// with a signed entry, so such a row was inserted by hand.
 	SignedRecordsOrphaned int
+	// UnsignedDecisionsAfterBootstrap counts the entries after the trust
+	// bootstrap that a human decision alone writes (version.approved,
+	// version.rejected, version.rolled_back, tool.disabled, tool.enabled,
+	// tool.budget_reset, server.paused, server.resumed) and that name no
+	// verified decision.signed entry of their own transaction (rule 5 of the
+	// walk, decisionwalk.go): no signed= token, a token naming no verified
+	// record, one of another subject, actor, time or transaction, or one
+	// whose kind writes no such entry; and every other entry whose signed=
+	// token fails the same binding. Each was appended outside toolwarrant.
+	UnsignedDecisionsAfterBootstrap int
+	// CrawlTransitionsForged counts the entries after the trust bootstrap
+	// that no decision signed and that move a tool's state along a
+	// transition no crawl observation can make (rule 6, lifecycle.CrawlMayMove):
+	// a tool.reverted with state=disabled->enabled appended by hand.
+	CrawlTransitionsForged int
+	// LegacyApprovalsInService lists, sorted, the tools whose approval in
+	// force was made before the trust bootstrap (O-12): served by chain
+	// anchoring alone, as in v0.3, until re-approved with a signed decision.
+	// It is information, not a problem, and adds no line to Problems; nil
+	// when the catalog has no trust list.
+	LegacyApprovalsInService []string
 	// TrustListsInvalid counts the trust entries whose list the rotation rule
 	// refuses (rule 3: a second bootstrap, a rotation before one, a version
 	// that is not exactly one above the list in force, a signer not in both
@@ -182,7 +199,10 @@ type integrityCheck struct {
 	// checkApprovals consumes; seen the tool subjects that have a row, which
 	// checkTools fills for checkLogSubjects; signedEntries the entries that
 	// carry a signed record, in seq order, which checkSignedRecords verifies
-	// against the rows with the pinned trustRoot (integrity_signed.go).
+	// against the rows with the pinned trustRoot (integrity_signed.go),
+	// leaving in trustFold the list in force after them and in outcomes the
+	// decision records it accepted, which checkDecisionEntries holds every
+	// other entry to (integrity_decisions.go).
 	latest         map[string]toolTrace
 	latestApproval map[string]decisionTrace
 	discovered     map[string]int64
@@ -192,6 +212,8 @@ type integrityCheck struct {
 	seen           map[string]bool
 	signedEntries  []audit.Entry
 	trustRoot      string
+	trustFold      trustMemory
+	outcomes       map[int64]signedOutcome
 }
 
 func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport, trustRoot string) *integrityCheck {
@@ -205,6 +227,7 @@ func newIntegrityCheck(ctx context.Context, q queryer, rep *IntegrityReport, tru
 		decisions:      map[decisionKey][]int64{},
 		seen:           map[string]bool{},
 		trustRoot:      trustRoot,
+		outcomes:       map[int64]signedOutcome{},
 	}
 }
 
@@ -214,7 +237,7 @@ func (c *integrityCheck) run() error {
 	steps := []func() error{
 		c.checkGuardObjects, c.readLog, c.checkServers, c.checkTools, c.checkLogSubjects,
 		c.checkVersions, c.checkVersionHistory, c.checkOrphanVersions, c.checkApprovedBytes, c.checkApprovals,
-		c.checkSignedRecords,
+		c.checkSignedRecords, c.checkDecisionEntries,
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -238,166 +261,4 @@ func (c *integrityCheck) checkGuardObjects() error {
 		c.problem("%s", line)
 	}
 	return nil
-}
-
-// integrityToolsQuery reads every tool with what the registry claims about
-// its approval. The joins are outer so that a row pointing nowhere is
-// reported rather than dropped.
-const integrityToolsQuery = `SELECT s.name, t.id, t.name, t.state, t.last_seen_digest, t.proposals_since_decision,
-		t.approved_version_id, av.id, av.tool_id, COALESCE(av.digest, ''), COALESCE(av.status, '')
-	FROM tools t LEFT JOIN servers s ON s.id = t.server_id
-	LEFT JOIN tool_versions av ON av.id = t.approved_version_id
-	ORDER BY s.name, t.name`
-
-// integrityTool is one row of integrityToolsQuery.
-type integrityTool struct {
-	server                      sql.NullString
-	id                          int64
-	name, state, lastSeen       string
-	budget                      int
-	pointer, joined, joinedTool sql.NullInt64
-	digest, status              string
-}
-
-func (c *integrityCheck) checkTools() error {
-	rows, err := c.q.QueryContext(c.ctx, integrityToolsQuery)
-	if err != nil {
-		return fmt.Errorf("catalog: read tools: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var r integrityTool
-		if err := rows.Scan(&r.server, &r.id, &r.name, &r.state, &r.lastSeen, &r.budget, &r.pointer, &r.joined, &r.joinedTool,
-			&r.digest, &r.status); err != nil {
-			return fmt.Errorf("catalog: read tools: %w", err)
-		}
-		c.checkTool(r)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("catalog: read tools: %w", err)
-	}
-	return nil
-}
-
-// checkTool compares one tools row with what the log recorded about it. A
-// tool counts once under ApprovedDigestMismatches however many ways its
-// approval disagrees with the log, and once under each of StaleLastSeen,
-// StateMismatches, BudgetMismatches and DiscoveryMismatches.
-func (c *integrityCheck) checkTool(r integrityTool) {
-	subject := r.server.String + "/" + r.name
-	shown := quote(subject)
-	c.seen[subject] = true
-	if !r.server.Valid {
-		c.problem("tool %s belongs to a server that does not exist", shown)
-	}
-	if _, ok := c.discovered[subject]; !ok {
-		c.problem("tool %s: the audit log has no tool.discovered entry about it", shown)
-		c.rep.DiscoveryMismatches++
-	}
-	approved, sound := c.registryApproval(r, shown)
-	mismatch := !sound
-	trace, known := c.latest[subject]
-	switch {
-	case !known:
-		c.problem("tool %s: the audit log has no entry about it", shown)
-		c.rep.StaleLastSeen++
-		mismatch = mismatch || approved != ""
-	default:
-		if trace.approved != approved {
-			c.problem("tool %s: approved digest is %s but the latest audit entry (seq %d) left it as %s",
-				shown, shownDigest(approved), trace.seq, shownDigest(trace.approved))
-			mismatch = true
-		}
-		c.compareMutableColumns(r, trace, shown)
-	}
-	if approved != "" && !c.approvalEntryNames(subject, approved, shown) {
-		mismatch = true
-	}
-	if mismatch {
-		c.rep.ApprovedDigestMismatches++
-	}
-}
-
-// compareMutableColumns checks the columns of a tools row that no other pass
-// covers against the newest entry about the tool: last_seen_digest, state and
-// proposals_since_decision.
-func (c *integrityCheck) compareMutableColumns(r integrityTool, trace toolTrace, shown string) {
-	if trace.lastSeen != r.lastSeen {
-		c.problem("tool %s: last_seen_digest is %s but the latest audit entry (seq %d) recorded %s",
-			shown, shownDigest(r.lastSeen), trace.seq, shownDigest(trace.lastSeen))
-		c.rep.StaleLastSeen++
-	}
-	if trace.state != r.state {
-		c.problem("tool %s: state is %s but the latest audit entry (seq %d) left it as %s",
-			shown, quote(r.state), trace.seq, quote(trace.state))
-		c.rep.StateMismatches++
-	}
-	if trace.budget != r.budget {
-		c.problem("tool %s: proposals_since_decision is %d but the latest audit entry (seq %d) left it as %d",
-			shown, r.budget, trace.seq, trace.budget)
-		c.rep.BudgetMismatches++
-	}
-}
-
-// registryApproval returns the digest the tools row claims is approved ("" when
-// none) and whether the pointer behind the claim is sound: it must resolve to
-// a version of this tool whose status is approved.
-func (c *integrityCheck) registryApproval(r integrityTool, shown string) (string, bool) {
-	if !r.pointer.Valid {
-		return "", true
-	}
-	switch {
-	case !r.joined.Valid:
-		c.problem("tool %s points at a version that does not exist", shown)
-		return "", false
-	case r.joinedTool.Int64 != r.id:
-		c.problem("tool %s points at a version that is not its own", shown)
-	case r.status != string(lifecycle.VersionApproved):
-		c.problem("tool %s points at a version whose status is %s, not approved", shown, quote(r.status))
-	default:
-		return r.digest, true
-	}
-	return r.digest, false
-}
-
-// approvalEntryNames requires the newest version.approved or
-// version.rolled_back entry about the tool to have approved exactly digest.
-func (c *integrityCheck) approvalEntryNames(subject, digest, shown string) bool {
-	d, ok := c.latestApproval[subject]
-	switch {
-	case !ok:
-		c.problem("tool %s: approved digest %s has no version.approved or version.rolled_back entry", shown, digest)
-	case d.digest != digest:
-		c.problem("tool %s: approved digest is %s but the latest approval entry (seq %d) approved %s",
-			shown, digest, d.seq, shownDigest(d.digest))
-	default:
-		return true
-	}
-	return false
-}
-
-// checkLogSubjects reports every tool the log describes whose row is gone.
-// The catalog never deletes a tools row, and the next crawl would discover the
-// name afresh with a fresh proposer history (D14).
-func (c *integrityCheck) checkLogSubjects() error {
-	for _, subject := range slices.Sorted(maps.Keys(c.latest)) {
-		if !c.seen[subject] {
-			c.problem("tool %s: the audit log describes it (latest entry seq %d) but no tools row exists", quote(subject), c.latest[subject].seq)
-			c.rep.RowsMissing++
-		}
-	}
-	return nil
-}
-
-// shownDigest renders a digest column for a report line: "none" for an empty
-// value, the marker and a well-formed digest as they are, anything else
-// quoted, because a column someone edited by hand may hold anything.
-func shownDigest(s string) string {
-	switch {
-	case s == "":
-		return "none"
-	case s == lifecycle.UnusableDigest, lifecycle.IsDigest(s):
-		return s
-	}
-	return quote(s)
 }

@@ -232,12 +232,19 @@ func newEntryChecker(chain *chainMemory) *entryChecker {
 	return &entryChecker{chain: chain, seen: map[int64]struct{}{}}
 }
 
-// verify is chainMemory.verify run once per seq within this read.
+// verify is chainMemory.verify, then chainMemory.requireSigned (the signed=
+// rule for a human decision after the bootstrap, D22 (d)), run once per seq
+// within this read. Every anchor goes through it: the decision anchor
+// (checkAnchor), the state anchor (checkStateAnchor), the server anchors
+// (anchorServer, anchorPaused) and the version history (verifyVersionHistory).
 func (c *entryChecker) verify(e audit.Entry) error {
 	if _, ok := c.seen[e.Seq]; ok {
 		return nil
 	}
 	if err := c.chain.verify(e); err != nil {
+		return err
+	}
+	if err := c.chain.requireSigned(e); err != nil {
 		return err
 	}
 	c.seen[e.Seq] = struct{}{}

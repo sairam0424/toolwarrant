@@ -16,7 +16,9 @@ import (
 // force past a refused record, and then names the rows that belong to no
 // signed entry. The identity the records must name is read from the file
 // itself, as every other pass reads what it compares, and the trust root is
-// the one the Store was opened with.
+// the one the Store was opened with. The list in force after every record
+// and the decision records accepted are left for the pass over the other
+// entries (integrity_decisions.go).
 
 // noteSignedEntry keeps a signed entry for checkSignedRecords.
 func (c *integrityCheck) noteSignedEntry(e audit.Entry) {
@@ -117,7 +119,11 @@ func (c *integrityCheck) foldSignedEntries() error {
 			continue
 		}
 		tm = res.trust
+		if res.decision != nil {
+			c.outcomes[e.Seq] = *res.decision
+		}
 	}
+	c.trustFold = tm
 	return nil
 }
 
@@ -125,9 +131,18 @@ func (c *integrityCheck) foldSignedEntries() error {
 // and prints the walk's sentence.
 func (c *integrityCheck) noteSignedProblem(err error) {
 	var p *signedProblem
-	if errors.As(err, &p) && p.rule == ruleTrust {
+	rule := ruleBinding
+	if errors.As(err, &p) {
+		rule = p.rule
+	}
+	switch rule {
+	case ruleTrust:
 		c.rep.TrustListsInvalid++
-	} else {
+	case ruleSignedBinding:
+		c.rep.UnsignedDecisionsAfterBootstrap++
+	case ruleCrawl:
+		c.rep.CrawlTransitionsForged++
+	default:
 		c.rep.SignedRecordsInvalid++
 	}
 	c.problem("%s", err.Error())

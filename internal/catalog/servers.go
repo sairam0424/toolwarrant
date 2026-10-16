@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/sairam0424/toolwarrant/internal/signing"
 )
 
 const serverCols = `id, name, url, owner_group, allow_private, paused, processor_addr, created_at`
@@ -87,42 +89,40 @@ func (s *Store) AddServer(ctx context.Context, spec ServerSpec, by Actor) (Serve
 // PauseServer stops crawling a server (D9): RecordCrawl returns ErrPaused and
 // Snapshot returns no tools, so nothing of it is served, while decisions keep
 // working and the views still show it. It is the operator's remedy against an
-// upstream that misbehaves. A paused server is ErrInvalid.
+// upstream that misbehaves. A paused server is ErrInvalid. It is Decide
+// without a signed record (decide.go), so it is ErrSignatureRequired once a
+// trust list is in force; the CLI signs and calls Decide.
 func (s *Store) PauseServer(ctx context.Context, name string, by Actor) error {
-	return s.setPaused(ctx, name, by, true)
+	return s.decideUnsigned(ctx, Decision{Kind: signing.KindPause, Server: name, By: by})
 }
 
 // ResumeServer lets crawls and serving continue. A server that is not paused
-// is ErrInvalid.
+// is ErrInvalid. Like PauseServer it is Decide without a signed record.
 func (s *Store) ResumeServer(ctx context.Context, name string, by Actor) error {
-	return s.setPaused(ctx, name, by, false)
+	return s.decideUnsigned(ctx, Decision{Kind: signing.KindResume, Server: name, By: by})
 }
 
-func (s *Store) setPaused(ctx context.Context, name string, by Actor, paused bool) error {
-	actor, err := requireHuman(by)
+// setPausedTx is the pause or resume inside the decision's transaction, after
+// the signed entry when there is one; the entry carries note.
+func (s *Store) setPausedTx(ctx context.Context, t *txn, name string, by Actor, paused bool, note string) error {
+	srv, err := loadServerRow(ctx, t, name)
 	if err != nil {
 		return err
 	}
-	return s.inTx(ctx, func(t *txn) error {
-		srv, err := loadServerRow(ctx, t, name)
-		if err != nil {
-			return err
-		}
-		if err := anchorPaused(ctx, t, s.chain, srv); err != nil {
-			return err
-		}
-		if srv.Paused == paused {
-			return invalidf("server %s is already paused=%t", quote(name), paused)
-		}
-		if _, err := t.exec(ctx, `UPDATE servers SET paused = ? WHERE id = ?`, boolInt(paused), srv.ID); err != nil {
-			return fmt.Errorf("catalog: update server: %w", err)
-		}
-		event := evServerResumed
-		if paused {
-			event = evServerPaused
-		}
-		return t.appendAudit(ctx, actor, event, srv.Name, "", "", pausedDetail(paused))
-	})
+	if err := anchorPaused(ctx, t, s.chain, srv); err != nil {
+		return err
+	}
+	if srv.Paused == paused {
+		return invalidf("server %s is already paused=%t", quote(name), paused)
+	}
+	if _, err := t.exec(ctx, `UPDATE servers SET paused = ? WHERE id = ?`, boolInt(paused), srv.ID); err != nil {
+		return fmt.Errorf("catalog: update server: %w", err)
+	}
+	event := evServerResumed
+	if paused {
+		event = evServerPaused
+	}
+	return t.appendAudit(ctx, by, event, srv.Name, "", "", pausedDetail(paused)+note)
 }
 
 // Servers lists registered upstreams ordered by name. The file is checked

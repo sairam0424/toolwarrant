@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
+	"github.com/sairam0424/toolwarrant/internal/signing"
+	"github.com/sairam0424/toolwarrant/internal/signing/sigtest"
 )
 
 const (
@@ -257,3 +260,103 @@ func benchName(i int) string { return fmt.Sprintf(benchNameFormat, i) }
 // to MaxToolBytes exactly, the largest the catalog accepts (tooldef.go refuses
 // a longer one); def quotes a plain ASCII description byte for byte.
 func benchCapDescBytes() int { return MaxToolBytes - len(def(benchName(0), "")) }
+
+// BenchmarkOpen10000SignedApprovals measures the open of a catalog whose
+// MaxToolsPerCrawl tools were each approved with a signed decision after the
+// bootstrap: the walk a fresh Store makes at open verifies every signed record
+// once, so one open costs ten thousand Ed25519 verifications and ten thousand
+// record reads by primary key, the cost O-15 confines to the open and to the
+// suffix of each reload (D22 (e)). verifications/op reports what the walk
+// verified per open; it must equal the signed entries of the file, the
+// bootstrap included. The definitions are small: the open reads no bytes.
+func BenchmarkOpen10000SignedApprovals(b *testing.B) {
+	s := benchOpen(b)
+	path := s.path
+	benchSignedFill(b, s, benchLargeTools)
+	var signed int64
+	if err := rawDBAt(b, path).QueryRowContext(bg, `SELECT COUNT(*) FROM signed_records`).Scan(&signed); err != nil {
+		b.Fatal(err)
+	}
+	if signed != int64(benchLargeTools)+1 {
+		b.Fatalf("%d signed records, want %d: one per approval and the bootstrap", signed, benchLargeTools+1)
+	}
+	_ = s.Close()
+	b.ReportAllocs()
+	var verified int64
+	for b.Loop() {
+		fresh, err := OpenWith(path, OpenOptions{ReadOnly: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		verified += fresh.chain.verifiedSignatures()
+		_ = fresh.Close()
+	}
+	b.ReportMetric(float64(verified)/float64(b.N), "verifications/op")
+	if verified != signed*int64(b.N) {
+		b.Fatalf("the opens verified %d signatures over %d opens, want %d each", verified, b.N, signed)
+	}
+}
+
+// benchSignedFill gives benchServer n tools of a small definition, bootstraps
+// the trust list with a throwaway key and approves every tool with a signed
+// decision over the head SigningState hands out.
+func benchSignedFill(b *testing.B, s *Store, n int) {
+	b.Helper()
+	const desc = "benchmark"
+	rawBytes := len(def(benchName(0), desc))
+	perCrawl := min(n, MaxCrawlBytes/rawBytes)
+	var digests []string
+	for from := 0; from < n; from += perCrawl {
+		digests = append(digests, benchCrawl(b, s, from, min(from+perCrawl, n), desc)...)
+	}
+	alice := operator{name: "alice", key: sigtest.GenerateEd25519(b)}
+	st, err := s.SigningState(bg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	payload, err := signing.MarshalTrustList(listFor(st.Identity, st.Head, 1, alice, alice))
+	if err != nil {
+		b.Fatal(err)
+	}
+	rec, err := signing.Sign(bg, payload, alice.key.Signer, signing.NamespaceTrust)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if _, err := s.SetTrust(bg, rec, alice.actor()); err != nil {
+		b.Fatal(err)
+	}
+	for i, d := range digests {
+		if err := benchSignedApprove(s, alice, benchName(i), d); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchSignedApprove signs and records one approval over the current head.
+func benchSignedApprove(s *Store, by operator, name, digest string) error {
+	st, err := s.SigningState(bg)
+	if err != nil {
+		return err
+	}
+	payload, err := signing.MarshalDecision(decisionOf(st.Identity, st.Head, by, signing.KindApprove, benchServer, name, digest))
+	if err != nil {
+		return err
+	}
+	rec, err := signing.Sign(bg, payload, by.key.Signer, signing.NamespaceDecision)
+	if err != nil {
+		return err
+	}
+	_, err = s.Decide(bg, Decision{Kind: signing.KindApprove, Server: benchServer, Tool: name, Digest: digest, By: by.actor(), Signed: &rec})
+	return err
+}
+
+// rawDBAt is rawDB for a benchmark.
+func rawDBAt(b *testing.B, path string) *sql.DB {
+	b.Helper()
+	db, err := sql.Open(driverName, dsnFor(path, connReader, DefaultBusyTimeout))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = db.Close() })
+	return db
+}

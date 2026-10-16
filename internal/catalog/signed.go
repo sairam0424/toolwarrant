@@ -48,6 +48,11 @@ const (
 	// SHA256: fingerprint of the key that signed and the record digest.
 	fieldSigner = "signer"
 	fieldSigref = "sigref"
+	// fieldSigned is the token every lifecycle, budget-reset, pause and
+	// resume entry of a signed decision carries after its own fields: the
+	// seq of the decision.signed entry of the same transaction (rule 5,
+	// decisionwalk.go).
+	fieldSigned = "signed"
 
 	signedRecordCols = `seq, payload, signer_fingerprint, signature`
 	// signedRecordsSelect reads rows by primary key; the caller appends the
@@ -88,6 +93,23 @@ func namespaceOf(event string) signing.Namespace {
 // entry carries: the signer's fingerprint and the sigref digest of the record.
 func signedDetail(detail string, rec signing.Record) string {
 	return fmt.Sprintf("%s %s=%s %s=%s", detail, fieldSigner, rec.Signer, fieldSigref, signing.RecordDigest(rec))
+}
+
+// decisionDetail is the leading part of a decision.signed entry's detail: the
+// kind and the digest the decision names (noDigest for the kinds that name
+// none), the two tokens rule 2 compares with the signed payload.
+func decisionDetail(kind signing.Kind, digest string) string {
+	return fmt.Sprintf("%s=%s %s=%s", fieldKind, kind, fieldDigest, orNoDigest(digest))
+}
+
+// signedNote is the note the entries of a signed decision carry after their
+// own fields: " signed=N" for the decision.signed entry at seq N, nothing for
+// an unsigned decision (seq 0, before the bootstrap).
+func signedNote(seq int64) string {
+	if seq == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %s=%d", fieldSigned, seq)
 }
 
 // signedSeqs lists the seqs of the signed entries of a page, in order.
