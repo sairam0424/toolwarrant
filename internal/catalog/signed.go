@@ -277,3 +277,40 @@ func (s *Store) collectSignedRecords(entries map[int64]audit.Entry, signed []int
 	}
 	return nil
 }
+
+// trustEntriesQuery selects every trust entry (the bootstrap and each
+// rotation, about the trust subject) in sequence order. It rests on the
+// audit_log_by_subject index, so it reads the trust entries alone, however
+// long the log; TestAnchorQueries_StayOnTheAuditLogBySubjectIndex holds it to
+// that plan.
+const trustEntriesQuery = `SELECT ` + auditCols + ` FROM audit_log WHERE subject = ? AND event IN ('` +
+	evTrustBootstrap + `', '` + evTrustRotated + `') ORDER BY seq`
+
+// TrustEntries returns every trust entry of the log, the bootstrap and each
+// rotation, in sequence order: as many as the list has had versions, read
+// through the subject index rather than the whole log. The entries are
+// returned as the file holds them, as AuditEntries returns them; the checked
+// read of their records is SignedRecords, which verifies the chain first. An
+// empty slice means no list was ever recorded.
+func (s *Store) TrustEntries(ctx context.Context) ([]audit.Entry, error) {
+	out := []audit.Entry{}
+	err := s.inRead(ctx, func(q queryer) error {
+		rows, err := q.QueryContext(ctx, trustEntriesQuery, trustSubject)
+		if err != nil {
+			return fmt.Errorf("catalog: read trust entries: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			e, err := scanAudit(rows)
+			if err != nil {
+				return fmt.Errorf("catalog: read trust entries: %w", err)
+			}
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

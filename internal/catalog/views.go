@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 
+	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/gate"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
 )
@@ -151,13 +153,40 @@ func (s *Store) Tool(ctx context.Context, server, tool string) (ToolView, error)
 		if ref.id != 0 {
 			refs = []approvedRef{ref}
 		}
-		_, err = anchorTools(ctx, q, s.chain, refs, []stateRef{st})
-		return err
+		entries, err := anchorTools(ctx, q, s.chain, refs, []stateRef{st})
+		if err != nil {
+			return err
+		}
+		if ref.id != 0 {
+			return adoptApproval(&v, entries[ref.entry.Int64])
+		}
+		return nil
 	})
 	if err != nil {
 		return ToolView{}, err
 	}
 	return v, nil
+}
+
+// adoptApproval fills in the view's approver, the seq of the verified approval
+// entry and the decision.signed entry its signed= token names, as Approved
+// adopts the approver from the verified entry (D17 e). The anchor pass has
+// already held the token to rule 5 when a bootstrap is in force below the
+// entry (requireSigned); an entry before any bootstrap carries none, so a
+// token that is not a positive seq below the entry is a row the catalog never
+// wrote and is refused rather than shown.
+func adoptApproval(v *ToolView, e audit.Entry) error {
+	v.ApprovedBy, v.ApprovedSeq = e.Actor, e.Seq
+	token, ok := detailField(e.Detail, fieldSigned)
+	if !ok {
+		return nil
+	}
+	n, err := strconv.ParseInt(token, 10, 64)
+	if err != nil || n < 1 || n >= e.Seq {
+		return fmt.Errorf("%w: audit entry %d names %s=%s, which is not the seq of a decision.signed entry below it", ErrCorrupt, e.Seq, fieldSigned, quote(token))
+	}
+	v.SignedSeq = n
+	return nil
 }
 
 func toolID(ctx context.Context, q queryer, server, tool string) (int64, error) {

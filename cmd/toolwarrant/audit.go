@@ -20,8 +20,8 @@ const headReminder = "record this head outside the database (a ticket, a noteboo
 // entry after tampering is exactly what they are for.
 func auditCommands() []*command {
 	return []*command{
-		{name: "verify", synopsis: "audit verify [--expect-head HASH]", summary: "check the hash chain of the audit log, print its head, then cross-check the registry against the approvals table and the log (opens the database read-only, tampered or not)", run: runAuditVerify},
-		{name: "list", synopsis: "audit list [--after N] [--limit N] [--json]", summary: "print audit entries (opens the database read-only, tampered or not)", run: runAuditList},
+		{name: "verify", synopsis: "audit verify [--expect-head HASH]", summary: "check the hash chain of the audit log, print its head, cross-check the registry against the approvals table and the log, then report the signed records and the trust list in force (opens the database read-only, tampered or not)", run: runAuditVerify},
+		{name: "list", synopsis: "audit list [--after N] [--limit N] [--json]", summary: "print audit entries; --json carries each signed record (payload, armored signature, signer) for ssh-keygen -Y verify (opens the database read-only, tampered or not)", run: runAuditList},
 	}
 }
 
@@ -59,7 +59,7 @@ func runAuditVerify(a *app, c *command, args []string) (err error) {
 	if chainErr == nil {
 		a.stdout.printf("audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)
 	}
-	integrityErr := a.reportIntegrity(store)
+	rep, integrityErr := a.reportIntegrity(store)
 	switch {
 	case headErr != nil && integrityErr != nil:
 		return fmt.Errorf("%w; %w", headErr, integrityErr)
@@ -67,6 +67,9 @@ func runAuditVerify(a *app, c *command, args []string) (err error) {
 		return headErr
 	case integrityErr != nil:
 		return integrityErr
+	}
+	if err := a.reportTrust(store, rep); err != nil {
+		return err
 	}
 	a.stdout.printf("%s\n", headReminder)
 	return a.stdout.broken()
@@ -78,20 +81,21 @@ func runAuditVerify(a *app, c *command, args []string) (err error) {
 // forensic open tolerates dropped guards and a forged approval leaves the
 // chain intact, so "audit log ok" on its own said nothing about the file
 // (second review). Every problem line is the catalog's own fixed wording with
-// quoted names and is escaped once more here.
-func (a *app) reportIntegrity(store *catalog.Store) error {
+// quoted names and is escaped once more here. The report is returned beside
+// the verdict, since the signed-records summary reads its information fields.
+func (a *app) reportIntegrity(store *catalog.Store) (catalog.IntegrityReport, error) {
 	rep, err := store.Integrity(a.ctx)
 	if err != nil {
-		return fmt.Errorf("integrity check: %w", err)
+		return catalog.IntegrityReport{}, fmt.Errorf("integrity check: %w", err)
 	}
 	if len(rep.Problems) == 0 {
 		a.stdout.printf("integrity ok: guard objects intact, every approval recorded in the log\n")
-		return nil
+		return rep, nil
 	}
 	for _, p := range rep.Problems {
 		a.stdout.printf("integrity problem: %s\n", cell(p))
 	}
-	return fmt.Errorf("%w: %d problem(s) listed above; the file was edited outside toolwarrant or a bug wrote it, do not serve from it", catalog.ErrCorrupt, len(rep.Problems))
+	return rep, fmt.Errorf("%w: %d problem(s) listed above; the file was edited outside toolwarrant or a bug wrote it, do not serve from it", catalog.ErrCorrupt, len(rep.Problems))
 }
 
 // runAuditList prints entries in sequence order. Every field comes from the
@@ -121,7 +125,11 @@ func runAuditList(a *app, c *command, args []string) (err error) {
 		return err
 	}
 	if *asJSON {
-		return writeJSON(a.stdout, entries)
+		rows, err := a.auditJSON(store, entries)
+		if err != nil {
+			return err
+		}
+		return writeJSON(a.stdout, rows)
 	}
 	t := newTable(a.stdout)
 	t.row("SEQ", "TIME", "ACTOR", "TYPE", "EVENT", "SUBJECT", "DETAIL")

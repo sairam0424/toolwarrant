@@ -100,7 +100,8 @@ func TestApproveRefusesMixedScriptWordsUnlessAccepted(t *testing.T) {
 
 // Japanese, Korean and Chinese text with a Latin acronym is one of the UTS #39
 // Highly Restrictive combinations: approved without the flag and without a
-// word of warning, and so is a later version whose change is visible.
+// word of warning about its text (the L13 line about the missing trust list
+// is another matter), and so is a later version whose change is visible.
 func TestApproveAcceptsCJKWithLatinAcronyms(t *testing.T) {
 	t.Parallel()
 	c := newCLI(t)
@@ -113,7 +114,7 @@ func TestApproveAcceptsCJKWithLatinAcronyms(t *testing.T) {
 		if r.code != exitOK {
 			t.Fatalf("approve %s: exit %d: %s", name, r.code, r.stderr)
 		}
-		wantNotContains(t, name+" stderr", r.stderr, "mixed-script", "look-alike", "suspicious", "warning")
+		wantNotContains(t, name+" stderr", r.stderr, "mixed-script", "look-alike", "suspicious", "warning: approving")
 		if tv := c.tool("s1", name); tv.State != "enabled" || tv.Approved != v {
 			t.Fatalf("%s after approval: %+v", name, tv.toolJSON)
 		}
@@ -127,7 +128,7 @@ func TestApproveAcceptsCJKWithLatinAcronyms(t *testing.T) {
 		t.Fatalf("approve the visible change: exit %d: %s", r.code, r.stderr)
 	}
 	wantContains(t, "stderr", r.stderr, changePrefix+"1: WARNING (description-changed)\n")
-	wantNotContains(t, "stderr", r.stderr, "mixed-script", "look-alike", "suspicious", "warning")
+	wantNotContains(t, "stderr", r.stderr, "mixed-script", "look-alike", "suspicious", "warning: approving")
 	if tv := c.tool("s1", "tokyo"); tv.Approved != v2 {
 		t.Fatalf("after approving the visible change: %+v", tv.toolJSON)
 	}

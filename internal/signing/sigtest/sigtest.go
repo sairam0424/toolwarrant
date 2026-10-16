@@ -155,18 +155,35 @@ func NewBlockingAgent(t testing.TB, keys ...Key) (sock string) {
 	return Serve(t, &blockingAgent{keys: keys, stop: stop})
 }
 
-// blockingAgent is the agent NewBlockingAgent serves.
+// NewSilentAgent serves an agent that accepts a connection and answers
+// nothing, not even the key list, until the test ends: what a hung forwarded
+// agent looks like to the caller, for the tests of signing.AgentTimeout and
+// of the refusal that names it.
+func NewSilentAgent(t testing.TB) (sock string) {
+	t.Helper()
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	return Serve(t, &blockingAgent{stop: stop, silent: true})
+}
+
+// blockingAgent is the agent NewBlockingAgent and NewSilentAgent serve.
 type blockingAgent struct {
-	keys []Key
-	stop <-chan struct{}
+	keys   []Key
+	stop   <-chan struct{}
+	silent bool // List waits too, so the first request hangs
 }
 
 // errBlocking is what a blocked request returns once the test ends, and what
 // every unsupported operation returns.
 var errBlocking = errors.New("sigtest: blocking agent")
 
-// List returns the public keys as an agent does.
+// List returns the public keys as an agent does, or, for a silent agent,
+// waits until the test ends.
 func (b *blockingAgent) List() ([]*agent.Key, error) {
+	if b.silent {
+		<-b.stop
+		return nil, errBlocking
+	}
 	out := make([]*agent.Key, 0, len(b.keys))
 	for _, k := range b.keys {
 		out = append(out, &agent.Key{Format: k.Public.Type(), Blob: k.Public.Marshal(), Comment: comment})

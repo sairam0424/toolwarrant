@@ -1,0 +1,391 @@
+package main
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/sairam0424/toolwarrant/internal/signing"
+	"github.com/sairam0424/toolwarrant/internal/signing/sigtest"
+)
+
+func TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne(t *testing.T) {
+	t.Parallel()
+	l := newSignedLab(t)
+	l.bootstrap(t)
+	delete(l.env, envAuthSock) // no agent from here on: the file path signs
+	echo := l.tool("s1", "echo").Pending
+	before := l.verifiedHead()
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "shared.key")
+	data, err := os.ReadFile(l.aliceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.key")
+	if err := os.Symlink(l.aliceFile, link); err != nil {
+		t.Fatal(err)
+	}
+	encrypted := sigtest.WriteEncryptedKeyFile(t, dir, "locked.key", l.alice, "passphrase")
+	plain := filepath.Join(dir, "plain.key")
+	if err := os.WriteFile(plain, []byte("not a key, and not a public key line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// agent puts alice's agent back for one row: a .pub the agent does not
+	// hold is refused with the key's fingerprint, the plan's pinned sentence.
+	cases := []struct {
+		name, path, want string
+		agent            bool
+	}{
+		{"world-readable", shared, "readable by other users", false},
+		{"symbolic link", link, "symbolic link", false},
+		{"directory", dir, "a directory", false},
+		{"encrypted", encrypted, "load the key into ssh-agent", false},
+		{"not a key", plain, "not a PEM private key", false},
+		{"public key without an agent", l.alicePub, "SSH_AUTH_SOCK is not set", false},
+		{"public key the agent lacks", l.bobPub, "ssh-agent at SSH_AUTH_SOCK does not hold the key " + fpOf(l.bob), true},
+		{"missing", filepath.Join(dir, "none.key"), "no such file", false},
+	}
+	private, _ := keyMaterial(t, l.alice, l.aliceFile)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.agent {
+				l.env[envAuthSock] = l.sock
+				defer delete(l.env, envAuthSock)
+			}
+			r := l.sub(t).fail(exitFailure, "--ssh-key", tc.path, "approve", "s1", "echo", "--hash", echo)
+			wantContains(t, "stderr", r.stderr, tc.want)
+			wantNotContains(t, "output", r.stdout+r.stderr, private...)
+		})
+	}
+	if after := l.verifiedHead(); after != before {
+		t.Fatalf("a refused key moved the head from %s to %s", before, after)
+	}
+	// A control character in the path is escaped once, by describe, so the
+	// operator sees the value given: one \u{001B}, not a doubled backslash,
+	// and never the raw byte.
+	hostile := filepath.Join(dir, "\x1b[2Jshared.key")
+	if err := os.WriteFile(hostile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := l.fail(exitFailure, "--ssh-key", hostile, "approve", "s1", "echo", "--hash", echo)
+	wantContains(t, "hostile path", r.stderr, "readable by other users")
+	wantNotContains(t, "hostile path", r.stdout+r.stderr, private...)
+	if n := strings.Count(r.stderr, `\u{001B}`); n != 1 || strings.Contains(r.stderr, `\\u{001B}`) || strings.Contains(r.stderr, "\x1b") {
+		t.Errorf("the key path is escaped %d times in %q", n, r.stderr)
+	}
+	out := l.ok("--ssh-key", l.aliceFile, "approve", "s1", "echo", "--hash", echo)
+	if actor, fp, _, _ := signedAs(t, out); actor != "alice" || fp != fpOf(l.alice) {
+		t.Errorf("signed as %s with %s", actor, fp)
+	}
+	wantNotContains(t, "approve output", out, private...)
+}
+
+func TestApproveTouchHintIsPrintedForASecurityKey(t *testing.T) {
+	t.Parallel()
+	c, _ := fixture(t)
+	sock, pub := newSKAgent(t)
+	c.env[envAuthSock] = sock
+	skPub := filepath.Join(t.TempDir(), "sk.pub")
+	if err := os.WriteFile(skPub, ssh.MarshalAuthorizedKey(pub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := signing.Fingerprint(pub)
+	r := c.run("--as", "alice", "--ssh-key", skPub, "trust", "init")
+	if r.code != exitOK {
+		t.Fatalf("trust init with the security key: exit %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	wantContains(t, "init stderr", r.stderr, "touch your security key for "+fp)
+	wantContains(t, "init stdout", r.stdout, "alice "+fp, "record the trust root "+fp)
+	echo := c.tool("s1", "echo").Pending
+	r = c.run("--ssh-key", skPub, "approve", "s1", "echo", "--hash", echo)
+	if r.code != exitOK {
+		t.Fatalf("approve with the security key: exit %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	wantContains(t, "approve stderr", r.stderr, "touch your security key for "+fp)
+	if actor, got, _, _ := signedAs(t, r.stdout); actor != "alice" || got != fp {
+		t.Errorf("signed as %s with %s, want alice with %s", actor, got, fp)
+	}
+	wantContains(t, "trust show", c.ok("trust", "show"), "sk-ssh-ed25519@openssh.com")
+	wantContains(t, "audit verify", c.ok("audit", "verify"), "signed records ok: 1 decisions and 1 trust lists verified")
+}
+
+func TestSigningTimeoutWritesNothing(t *testing.T) {
+	t.Parallel()
+	l := newSignedLab(t)
+	l.bootstrap(t)
+	before := l.verifiedHead()
+	echo := l.tool("s1", "echo").Pending
+	l.env[envAuthSock] = sigtest.NewBlockingAgent(t, l.alice)
+	r := l.fail(exitFailure, "--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
+	wantContains(t, "stderr", r.stderr, "signing timed out after 200ms waiting for the agent; nothing was written")
+	wantNotContains(t, "stderr", r.stderr, adviceInterrupted)
+	if after := l.verifiedHead(); after != before {
+		t.Errorf("the timed-out signature moved the head from %s to %s", before, after)
+	}
+	if tv := l.tool("s1", "echo"); tv.Approved != "" {
+		t.Errorf("the timed-out approve was written: %+v", tv.toolJSON)
+	}
+	r = l.fail(exitFailure, "--sign-timeout", "200ms", "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub)
+	wantContains(t, "trust add", r.stderr, "signing timed out after 200ms")
+	wantContains(t, "trust show", l.ok("trust", "show"), "trust list v1 (entry ")
+}
+
+// The bound in the timeout refusal is spelled as the plan, CHANGELOG.md and
+// the operations guide quote it: the default --sign-timeout is "60s", never
+// time.Duration's "1m0s"; a value that is not a whole number of seconds keeps
+// time.Duration's spelling, which TestSigningTimeoutWritesNothing pins through
+// the binary at 200ms.
+func TestSigningTimeoutRefusalRendersWholeSeconds(t *testing.T) {
+	t.Parallel()
+	err := signTimeoutRefusal(defaultSignTimeout)
+	if got := err.Error(); got != "signing timed out after 60s waiting for the agent; nothing was written" {
+		t.Errorf("the default bound is refused as %q", got)
+	}
+	if !errors.Is(err, errSignTimeout) {
+		t.Errorf("the refusal does not wrap errSignTimeout: %v", err)
+	}
+	for d, want := range map[time.Duration]string{
+		defaultSignTimeout:        "60s",
+		time.Second:               "1s",
+		90 * time.Second:          "90s",
+		time.Minute + time.Second: "61s",
+		time.Hour:                 "3600s",
+		200 * time.Millisecond:    "200ms",
+		1500 * time.Millisecond:   "1.5s",
+	} {
+		if got := wholeSeconds(d); got != want {
+			t.Errorf("wholeSeconds(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+// An agent that accepts the connection and never lists its keys (a hung
+// forwarded agent) is named as such once the signing package's bound on the
+// list passes, exit 1 with nothing written, and never reads as this process
+// being interrupted, which is what ^C during a signature prints.
+func TestAnAgentThatNeverAnswersIsNamedAndWritesNothing(t *testing.T) {
+	t.Parallel()
+	l := newSignedLab(t)
+	l.bootstrap(t)
+	before := l.verifiedHead()
+	echo := l.tool("s1", "echo").Pending
+	l.env[envAuthSock] = sigtest.NewSilentAgent(t)
+	want := "ssh-agent at SSH_AUTH_SOCK did not answer the key list within " + signing.AgentTimeout.String() + "; nothing was written"
+	start := time.Now()
+	r := l.fail(exitFailure, "--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
+	t.Logf("approve against the silent agent returned after %v", time.Since(start).Round(time.Millisecond))
+	wantContains(t, "approve", r.stderr, "--ssh-key "+l.alicePub+": "+want, "run ssh-add -l")
+	wantNotContains(t, "approve", r.stderr, adviceInterrupted, "context deadline exceeded")
+	if after := l.verifiedHead(); after != before {
+		t.Errorf("the silent agent moved the head from %s to %s", before, after)
+	}
+	if tv := l.tool("s1", "echo"); tv.Approved != "" {
+		t.Errorf("the approve against the silent agent was written: %+v", tv.toolJSON)
+	}
+	r = l.fail(exitFailure, "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub)
+	wantContains(t, "trust add", r.stderr, want)
+	wantNotContains(t, "trust add", r.stderr, adviceInterrupted)
+	wantContains(t, "trust show", l.ok("trust", "show"), "trust list v1 (entry ")
+	wantNotContains(t, "trust show", l.ok("trust", "show"), "bob")
+}
+
+// Every command of the signed flow, on success and on every refusal, prints
+// fingerprints and nothing else of a key: no PEM marker, no base64 of the
+// seed, the private key or the key file's body; the public key's base64 only
+// where it is the output (trust show --json and --allowed-signers, and audit
+// list --json, whose payloads carry the key lines a trust list stores). The
+// matrix holds the refusals that name what the operator gave: the --expect-head
+// mismatch, the wrong --trust-root (list, and audit list --json, which
+// withholds the payloads and so prints no key line), the retry after a crawl
+// landed in the signing window, and a private key file handed to trust add
+// --key by mistake, the one slip most likely to put key material on a
+// terminal; want is the line that proves the row took the path it names.
+// serve, which prints the root line, is started and stopped after the matrix.
+func TestNoOutputCarriesKeyMaterial(t *testing.T) {
+	t.Parallel()
+	l := newSignedLab(t)
+	alicePrivate, alicePublic := keyMaterial(t, l.alice, l.aliceFile)
+	bobPrivate, bobPublic := keyMaterial(t, l.bob, l.bobFile)
+	forbidden := append(alicePrivate, bobPrivate...)
+	publicOK := map[string]bool{"trust show --json": true, "trust show --allowed-signers": true, "audit list --json": true}
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "shared.key")
+	data, err := os.ReadFile(l.bobFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	encrypted := sigtest.WriteEncryptedKeyFile(t, dir, "locked.key", l.bob, "passphrase")
+	plain := filepath.Join(dir, "plain.key")
+	if err := os.WriteFile(plain, []byte("not a key, and not a public key line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocking := sigtest.NewBlockingAgent(t, l.bob)
+	echo := l.tool("s1", "echo").Pending
+	add := l.tool("s1", "add").Pending
+	crawls := 0
+	crawlOnce := func() {
+		if crawls++; crawls == 1 {
+			l.ok("crawl", "s1")
+		}
+	}
+	wrongRoot := fpOf(l.bob)
+	runs := []struct {
+		name string
+		env  map[string]string
+		hook func()
+		want string
+		args []string
+	}{
+		{"approve before the bootstrap with a key", nil, nil, "", []string{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo}},
+		{"trust init", nil, nil, "", []string{"--as", "alice", "--ssh-key", l.alicePub, "trust", "init"}},
+		{"trust init again", nil, nil, "", []string{"--as", "alice", "--ssh-key", l.alicePub, "trust", "init"}},
+		{"approve", nil, nil, "", []string{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo}},
+		{"approve without a key", nil, nil, "", []string{"approve", "s1", "add", "--hash", add}},
+		{"approve with an unlisted key file", nil, nil, "", []string{"--ssh-key", l.bobFile, "approve", "s1", "add", "--hash", add}},
+		{"approve with a shared key file", nil, nil, "", []string{"--ssh-key", shared, "approve", "s1", "add", "--hash", add}},
+		{"approve with an encrypted key file", nil, nil, "", []string{"--ssh-key", encrypted, "approve", "s1", "add", "--hash", add}},
+		{"approve with a plain-text key file", nil, nil, "", []string{"--ssh-key", plain, "approve", "s1", "add", "--hash", add}},
+		{"approve with a key the agent lacks", nil, nil, "", []string{"--ssh-key", l.bobPub, "approve", "s1", "add", "--hash", add}},
+		{"approve with a mismatched label", nil, nil, "", []string{"--as", "bob", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
+		{"approve with a stale --expect-head", nil, nil, "audit head mismatch", []string{"--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add, "--expect-head", strings.Repeat("0", 64)}},
+		{"approve that times out", map[string]string{envAuthSock: blocking}, nil, "", []string{"--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
+		{"approve signed again after a crawl landed in the signing window", nil, crawlOnce, "the log grew while you signed", []string{"--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
+		{"trust add with a private key file as --key", nil, nil, "not an SSH public key", []string{"--ssh-key", l.alicePub, "trust", "add", "carol", "--key", l.bobFile}},
+		{"trust add", nil, nil, "", []string{"--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub}},
+		{"disable by bob's key file", nil, nil, "", []string{"--ssh-key", l.bobFile, "disable", "s1", "echo"}},
+		{"enable", nil, nil, "", []string{"--ssh-key", l.alicePub, "enable", "s1", "echo"}},
+		{"reject", nil, nil, "", []string{"--ssh-key", l.alicePub, "reject", "s1", "echo", "--hash", echo}},
+		{"rollback refused", nil, nil, "", []string{"--ssh-key", l.alicePub, "rollback", "s1", "echo", "--to", add}},
+		{"server pause", nil, nil, "", []string{"--ssh-key", l.alicePub, "server", "pause", "s1"}},
+		{"server resume", nil, nil, "", []string{"--ssh-key", l.alicePub, "server", "resume", "s1"}},
+		{"budget reset", nil, nil, "", []string{"--ssh-key", l.alicePub, "budget", "reset", "s1", "echo"}},
+		{"trust remove own key", nil, nil, "", []string{"--ssh-key", l.alicePub, "trust", "remove", "alice"}},
+		{"trust remove", nil, nil, "", []string{"--ssh-key", l.bobFile, "trust", "remove", "alice"}},
+		{"trust show", nil, nil, "", []string{"trust", "show"}},
+		{"trust show --json", nil, nil, "", []string{"trust", "show", "--json"}},
+		{"trust show --allowed-signers", nil, nil, "", []string{"trust", "show", "--allowed-signers"}},
+		{"show", nil, nil, "", []string{"show", "s1", "echo"}},
+		{"show --json", nil, nil, "", []string{"show", "s1", "echo", "--json"}},
+		{"list", nil, nil, "", []string{"list"}},
+		{"list under the wrong trust root", nil, nil, "pinned trust root", []string{"--trust-root", wrongRoot, "list"}},
+		{"audit verify", nil, nil, "", []string{"audit", "verify"}},
+		{"audit list", nil, nil, "", []string{"audit", "list"}},
+		{"audit list --json", nil, nil, "", []string{"audit", "list", "--json"}},
+		{"audit list --json under the wrong trust root", nil, nil, "signed records not shown", []string{"--trust-root", wrongRoot, "audit", "list", "--json"}},
+		{"help", nil, nil, "", []string{"help"}},
+	}
+	for _, run := range runs {
+		saved := map[string]string{}
+		for k, v := range run.env {
+			saved[k] = l.env[k]
+			l.env[k] = v
+		}
+		var r result
+		if run.hook != nil {
+			r = l.runHooked(run.hook, run.args...)
+		} else {
+			r = l.run(run.args...)
+		}
+		for k, v := range saved {
+			l.env[k] = v
+		}
+		out := r.stdout + r.stderr
+		if run.want != "" {
+			wantContains(t, run.name, out, run.want)
+		}
+		wantNotContains(t, run.name, out, forbidden...)
+		if !publicOK[run.name] {
+			wantNotContains(t, run.name+" (public key)", out, alicePublic, bobPublic)
+		}
+	}
+	stdout, stderr, stop := l.start("serve", "--server", "s1", "--listen", "127.0.0.1:0")
+	waitListening(t, stdout)
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	served := stdout.String() + stderr.String()
+	wantContains(t, "serve", served, "signed decisions: enforced from entry ")
+	wantNotContains(t, "serve", served, forbidden...)
+	wantNotContains(t, "serve (public key)", served, alicePublic, bobPublic)
+}
+
+// The shape --trust-root must have is the one the signing package prints and
+// requires inside a payload, so a recorded root always passes.
+func TestTrustRootShape(t *testing.T) {
+	t.Parallel()
+	for _, k := range []sigtest.Key{sigtest.GenerateEd25519(t), sigtest.GenerateRSA(t, 3072)} {
+		if fp := signing.Fingerprint(k.Public); !isFingerprint(fp) {
+			t.Errorf("isFingerprint(%s) = false", fp)
+		}
+	}
+	fp := signing.Fingerprint(sigtest.GenerateEd25519(t).Public)
+	for _, bad := range []string{"", "SHA256:", fp[:len(fp)-1], fp + "=", strings.ToLower(fp), "MD5:" + fp[7:], "sha256:" + fp[7:], fp + "x"} {
+		if isFingerprint(bad) {
+			t.Errorf("isFingerprint(%q) = true", bad)
+		}
+	}
+}
+
+func TestEveryCommandRefusesACatalogWhoseRootIsNotTheTrustRoot(t *testing.T) {
+	t.Parallel()
+	l := newSignedLab(t)
+	root, _ := l.bootstrap(t)
+	echo := l.tool("s1", "echo").Pending
+	wrong := fpOf(l.bob)
+	commands := [][]string{
+		{"list"}, {"show", "s1", "echo"}, {"trust", "show"}, {"audit", "verify"},
+		{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo},
+		{"--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub},
+		{"server", "list"},
+	}
+	for _, args := range commands {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			r := l.sub(t).fail(exitFailure, append([]string{"--trust-root", wrong}, args...)...)
+			wantContains(t, "output", r.stdout+r.stderr, "pinned trust root")
+		})
+	}
+	// audit list is the forensic view and lists the log whatever the pin
+	// says; its --json form withholds the records and says why.
+	wantContains(t, "audit list", l.ok("--trust-root", wrong, "audit", "list"), "trust.bootstrap")
+	r := l.run("--trust-root", wrong, "audit", "list", "--json")
+	if r.code != exitOK || !strings.Contains(r.stderr, "signed records not shown: ") || !strings.Contains(r.stderr, "pinned trust root") || strings.Contains(r.stdout, "BEGIN SSH SIGNATURE") {
+		t.Errorf("audit list --json under the wrong root = %+v", r)
+	}
+	l.env[envTrustRoot] = wrong
+	r = l.fail(exitFailure, "list")
+	wantContains(t, "env root", r.stderr, "pinned trust root")
+	l.env[envTrustRoot] = root
+	l.ok("list")
+	l.ok("--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
+	wantContains(t, "audit verify under the right root", l.ok("audit", "verify"), "signed records ok")
+	delete(l.env, envTrustRoot)
+	// A catalog never bootstrapped is refused under any root, with the advice
+	// for that case: drop the pin to bootstrap it, or name the right root;
+	// never the corrupt advice, since there is no backup to restore.
+	fresh, _ := fixture(t)
+	r = fresh.fail(exitFailure, "--trust-root", root, "list")
+	wantContains(t, "no bootstrap", r.stderr, "no trust list", "trust root", adviceNoTrustListPinned)
+	wantNotContains(t, "no bootstrap", r.stderr, adviceCorrupt)
+	if tv := fresh.tool("s1", "echo"); tv.Approved != "" {
+		t.Errorf("fresh catalog: %+v", tv.toolJSON)
+	}
+	// init of a brand-new path with the root pinned by the environment: the
+	// file did not exist a moment ago, so "restore it from a backup" would be
+	// nonsense; the operator reads which pin to drop.
+	brandNew := &cli{t: t, db: filepath.Join(t.TempDir(), "new.db"), env: map[string]string{envTrustRoot: root}}
+	r = brandNew.fail(exitFailure, "init")
+	wantContains(t, "init under the env pin", r.stderr, "no trust list", adviceNoTrustListPinned, envTrustRoot)
+	wantNotContains(t, "init under the env pin", r.stderr, adviceCorrupt)
+}

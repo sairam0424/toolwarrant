@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/emit"
 	"github.com/sairam0424/toolwarrant/internal/processor"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
@@ -124,6 +125,10 @@ func runServe(a *app, c *command, args []string) (err error) {
 	if _, err := store.Server(a.ctx, o.server); err != nil {
 		return err
 	}
+	trustView, err := store.TrustList(a.ctx)
+	if err != nil {
+		return err
+	}
 	lis, err := listenOn(o.listen, a.stderr)
 	if err != nil {
 		return err
@@ -143,6 +148,7 @@ func runServe(a *app, c *command, args []string) (err error) {
 	}
 	proc := processor.New(store, cfg)
 	a.stdout.printf("listening on %s, guarding server %s, target %s%s%s\n", textdiff.Escape(lis.Addr().String()), cell(o.server), cell(target), tlsNote(tlsConf), authNote(secret, tlsConf))
+	a.stdout.printf("%s\n", signedDecisionsLine(trustView))
 	serveErr := proc.Serve(a.ctx, lis)
 	writeStats(a.stdout, proc.Stats())
 	if serveErr != nil {
@@ -262,4 +268,18 @@ func writeStats(w *stream, st processor.Stats) {
 	w.printf("stats: lists served=%d denied=%d, tools hidden=%d (mismatched=%d unapproved=%d oversized=%d unverified=%d), calls allowed=%d denied=%d (stale=%d), wrong backend=%d, unauthenticated=%d, throttled=%d, source errors=%d, evidence dropped=%d\n",
 		st.ListsServed, st.ListsDenied, st.ToolsHidden, st.ToolsMismatched, st.ToolsUnapproved, st.ToolsOversized, st.ToolsUnverified,
 		st.CallsAllowed, st.CallsDenied, st.CallsStale, st.WrongBackend, st.Unauthenticated, st.Throttled, st.SourceErrors, st.EvidenceDropped)
+}
+
+// signedDecisionsLine says, right after the listening line, what the
+// processor requires of the decisions it serves (D22 (h)): with a trust list
+// in force every decision after the bootstrap must carry a verified signed
+// record, which the open and every reload enforce, so the line names the
+// first signed entry, the list and the root; without one the catalog serves
+// as v0.3 did (known limit L13), and the global --trust-root turns that into
+// a refusal at open.
+func signedDecisionsLine(v catalog.TrustView) string {
+	if !v.InForce() {
+		return fmt.Sprintf("signed decisions: not enabled; the catalog has no trust list (L13 open); run \"%s trust init\"", programName)
+	}
+	return fmt.Sprintf("signed decisions: enforced from entry %d (trust list v%d, %d signers, root %s at entry %d)", v.BootstrapSeq+1, v.Version, len(v.Signers), v.Root, v.BootstrapSeq)
 }

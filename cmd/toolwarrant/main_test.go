@@ -19,7 +19,9 @@ func TestHelpAndVersion(t *testing.T) {
 		"serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION] [--max-crawl-age DURATION]",
 		"emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME ...] [--secret-env VAR] [--gateway-binary PATH]",
 		"verify-gateway --server NAME --url URL [--bearer-env VAR] [--config FILE [--admin ADDR] [--expect-body-hash HEX]] [--no-probe | --expect-unhooked] [--every DURATION] [--keep-going]",
-		"budget reset SERVER TOOL [--by NAME]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval")
+		"budget reset SERVER TOOL [--by NAME] [--expect-head HEX]", "audit verify [--expect-head HASH]", "exit codes", "-allow-self-approval",
+		"trust init [--expect-head HEX]", "trust add NAME --key PUBKEY_FILE [--expect-head HEX]", "trust remove NAME [--expect-head HEX]", "trust show [--json | --allowed-signers]",
+		"-ssh-key", "-trust-root", "-sign-timeout", "never printed", "approve SERVER TOOL --hash HASH [--accept-suspicious] [--expect-head HEX]", "server pause NAME [--expect-head HEX]")
 	out = c.ok("version")
 	wantContains(t, "version", out, programName+" dev", gatewayVersion)
 	r := c.run("-h")
@@ -28,7 +30,9 @@ func TestHelpAndVersion(t *testing.T) {
 	}
 	wantContains(t, "-h", r.stdout, "global flags")
 	out = c.ok("approve", "-h")
-	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious")
+	wantContains(t, "approve -h", out, "usage: toolwarrant [global flags] approve", "-hash", "-accept-suspicious", "-expect-head")
+	wantContains(t, "help trust", c.ok("help", "trust"), "subcommands", "trust init", "trust add", "trust remove", "trust show")
+	wantContains(t, "help trust show", c.ok("help", "trust", "show"), "-allowed-signers", "-json")
 	wantContains(t, "help serve", c.ok("help", "serve"), "-target", "-secret-env", "-max-evidence-age", "-max-crawl-age", "crawl evidence too old", "-allow-non-loopback", "-insecure-no-secret", "anyone who reaches the port")
 	wantContains(t, "help verify-gateway", c.ok("help", "verify-gateway"), "-config", "-every", "-keep-going", "-admin", "-no-probe", "GET "+adminConfigPath, verdictLiveConfig,
 		probeToolPrefix, "HTTP 202", verdictUnhooked, "relays the upstream's answer, so the status the probe reports is the upstream's", "L17",
@@ -103,6 +107,11 @@ func TestUsageErrors(t *testing.T) {
 		{"verify without url", []string{"verify-gateway", "--server", "s1"}, "--url is required"},
 		{"unknown subcommand flag", []string{"list", "--nope"}, "nope"},
 		{"bad processor override", []string{"emit", "--out", "x", "--processor", "nonsense"}, "NAME=HOST:PORT"},
+		{"trust alone", []string{"trust"}, "needs a subcommand"},
+		{"trust unknown", []string{"trust", "frob"}, "unknown trust subcommand"},
+		{"trust init as the system actor", []string{"--as", "crawler", "--ssh-key", "/nonexistent.pub", "trust", "init"}, "system actor"},
+		{"malformed trust root", []string{"--trust-root", "junk", "list"}, "not a key fingerprint"},
+		{"sign timeout zero", []string{"--sign-timeout", "0", "approve", "s1", "echo", "--hash", "deadbeefdead"}, "--sign-timeout must be positive"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -282,6 +282,17 @@ type ToolView struct {
 	Unusable      bool   // the upstream lists a definition that cannot be used
 	Versions      int
 	MissingCrawls int
+	// ApprovedBy, ApprovedSeq and SignedSeq come from the verified approval
+	// entry that anchors Approved (the newest version.approved or
+	// version.rolled_back entry about the tool): the person who approved,
+	// the entry's seq, and the seq of the decision.signed entry its signed=
+	// token names, 0 for an approval made before the trust bootstrap or on a
+	// catalog without a trust list. They let show say who approved and
+	// whether the approval is signed (D22 (h)) without a second log read;
+	// all three are zero while nothing is approved.
+	ApprovedBy  string
+	ApprovedSeq int64
+	SignedSeq   int64
 }
 
 // VersionView is one immutable version of a tool.

@@ -182,6 +182,7 @@ func anchorQueries() []anchorQuery {
 		{"approvedQuery (Approved; decisionEntryOfServerTool)", approvedQuery, planCovering, ""},
 		{"newestServerEntryQuery (anchorServer)", newestServerEntryQuery, planSeek, ""},
 		{"versionEntriesQuery (versionsFromLog)", versionEntriesQuery, planSeek, ""},
+		{"trustEntriesQuery (TrustEntries)", trustEntriesQuery, planSeek, ""},
 	}
 }
 
