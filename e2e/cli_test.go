@@ -44,8 +44,24 @@ const (
 
 // scrubbedEnv are the variables a subprocess never inherits from the test's
 // own environment: the developer's agent, key and recorded root would make a
-// signed command depend on the machine it runs on.
+// signed command depend on the machine it runs on, and a processor started
+// under the developer's root would refuse the list-less catalog of scenario A.
 var scrubbedEnv = []string{authSockEnv, "TOOLWARRANT_SSH_KEY", "TOOLWARRANT_TRUST_ROOT"}
+
+// scrubbedEnviron is the test's own environment without the scrubbed
+// variables. Every subprocess the harness starts is built on it: the CLI
+// (stack.environ), the processors, the gateway and the upstreams
+// (harness.start).
+func scrubbedEnviron() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(scrubbedEnv, key) {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
 
 // cliResult is what one toolwarrant invocation produced.
 type cliResult struct {
@@ -111,13 +127,7 @@ func (s *stack) tw(t *testing.T, env []string, args ...string) cliResult {
 // the scrubbed variables, the lab agent's socket while one is served, then the
 // caller's extra variables, which win over both.
 func (s *stack) environ(extra []string) []string {
-	env := make([]string, 0, len(os.Environ())+len(extra)+1)
-	for _, kv := range os.Environ() {
-		key, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(scrubbedEnv, key) {
-			env = append(env, kv)
-		}
-	}
+	env := scrubbedEnviron()
 	if s.authSock != "" {
 		env = append(env, authSockEnv+"="+s.authSock)
 	}
