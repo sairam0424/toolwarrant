@@ -22,7 +22,7 @@ make release-guards                                   # go.mod has no replace or
 make release-check                                    # release-guards and release-schema-line (the release notes name the schema version the code writes), then goreleaser check; the notices script's platform list equals goreleaser's goos x goarch; the checksums are signed as a bundle
 make release-snapshot                                 # goreleaser snapshot into dist/ (gitignored): four archives, SBOMs, checksums; unsigned
 go build -o bin/ ./cmd/...                            # binaries; bin/ is gitignored
-go test -short -race -count=1 -timeout 900s ./...     # skips six tests, named below
+go test -short -race -count=1 -timeout 900s ./...     # skips seven tests, named below
 go test -race -count=1 -run 'TestCheckRequest_DeniesWhatIsNotApproved' ./internal/processor/
 go test -run '^$' -fuzz FuzzCheckResponse -fuzztime 20s ./internal/processor/
 go generate ./internal/extmcpv1                       # regenerate the ExtMCP stubs; refuses other protoc/plugin versions
@@ -33,11 +33,14 @@ scripts/requalify-gateway.sh vX.Y.Z SHA256 [--e2e]   # the L7 checklist against 
 seam/run.sh guarded; seam/day5.sh; seam/day34-paging-latency.sh; seam/day34-sessions.sh; seam/day34-reload.sh
 ```
 
-`-short` skips six tests: the three Unicode walks of `internal/textdiff`
+`-short` skips seven tests: the three Unicode walks of `internal/textdiff`
 (`TestEscape_everyRune`, `TestEscape_coversEveryRuneTheToolNameRuleForbids`,
-`TestNames_noSuspiciousRuneHasAnEmptyName`), two slow catalog tests
+`TestNames_noSuspiciousRuneHasAnEmptyName`), three slow catalog tests
 (`TestVerifyAudit_PagesThroughLargeLogs`,
-`TestRecordCrawl_LargeCrawlDoesNotBlockADecision`) and the processor's gRPC size
+`TestRecordCrawl_LargeCrawlDoesNotBlockADecision` and
+`TestWalk_ContinuityMemoryCrossesThePageBoundary`, which pads the log to the
+walk's page size so a signed disable ends the first page and the lying
+crawl-shaped entry starts the second, D22 (d)) and the processor's gRPC size
 test (`TestServe_AcceptsAPageOverGRPCsDefaultLimit`); the CI `test-full` job
 runs those three packages without `-short`.
 
