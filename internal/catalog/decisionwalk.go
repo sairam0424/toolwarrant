@@ -50,11 +50,16 @@ import (
 // then stand by chain anchoring alone, and the legacy residual is stated; the
 // memory of every tool's state is kept from the genesis all the same. Every
 // failure is ErrCorrupt with a fixed sentence naming the entry; the walk stops
-// at the first and records nothing of its page. Every value a sentence reads
-// from the entry (a state half, an event name) is printed through quote: the
-// bytes were chosen by whoever wrote the entry, and the sentence ends in a
-// terminal or a log (CLAUDE.md, strconv.Quote in logs). The anchor pass
-// applies the binding of rule 5 to every entry it anchors
+// at the first and records nothing of its page. Every value a sentence prints
+// that it read from the entry and did not first match against a known
+// constant (a state half; the event of the crawl guard's, the content
+// binding's and the kind sentence) goes through quote: the bytes were chosen
+// by whoever wrote the entry, and the sentence ends in a terminal or a log
+// (CLAUDE.md, strconv.Quote in logs). The event names of the sentences whose
+// match already proved them (the unsigned-decision, digest, paused-flag,
+// shape-rule and no-trust-list sentences) stay bare, as does the lifecycle
+// constant the first-entry sentence names. The anchor pass applies the
+// binding of rule 5 to every entry it anchors
 // (chainMemory.requireSigned, decisionbind.go) with two token parses (the
 // signed= token, then the state field or the paused flag) and one map lookup,
 // reads no bytes, and leaves the continuity and shape rules to the walk that
