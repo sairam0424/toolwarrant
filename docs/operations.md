@@ -1374,7 +1374,10 @@ event, for an approval, rollback or rejection, whose digest is the one the
 entry records, and whose content is what the kind does: a tool entry's
 `state=A->B` is a transition the kind can make (`lifecycle.DecisionMayMove`;
 a budget reset stays put) and a server entry's `paused` flag is the one the
-kind leaves. Each failure has its sentence. An entry that names no record:
+kind leaves; then the entry must start where the chain left the tool and fit
+the shape of its transaction (the continuity rule and the shape rule, below,
+which the walk applies to the token-bearing entries as well). Each failure
+has its sentence. An entry that names no record:
 `audit entry N is a version.approved after the trust bootstrap (entry B) and
 names no signed record; the entry was appended outside toolwarrant`. An
 approval appended later naming a decision that was made, with its time
@@ -1400,17 +1403,53 @@ paused=true; the entry was appended outside toolwarrant`
 `TestWalk_RefusesAPayloadCopiedFromAnotherCatalog`,
 `TestWalk_RefusesAPayloadWhoseKindOrDigestDisagreesWithTheEntry`,
 `TestReview_ForgedSignedApprovalWithoutAKeyIsRefusedEverywhere`). The
+continuity rule, which the adversarial review of this round asked for: the
+walk remembers, for every tool, what the newest entry about it left it
+(`state=A->B`, read from the genesis on, so the first entry after the
+bootstrap is checked against the state before it), and after the bootstrap
+every entry about a tool, token or none, must move it from that state, unless
+it repeats that entry's transition at that entry's time, which is what the
+entries of one operation do (the catalog writes one entry per lifecycle event
+of one operation, each with the operation's before and after). So a sealed
+`tool.enabled` saying `disabled->enabled`, a move an enable makes under the
+other policy, that borrows the token of the enable whose own entries left the
+tool in `pending_review`, and which would otherwise re-serve the digest that
+enable put under review, is `audit entry N says tool "S/T" moves from
+disabled but the newest entry about it (seq M) left it pending_review; the
+entry was appended outside toolwarrant`. The shape rule, the second belt on
+the token: every entry naming `signed=K` carries the `state=A->B` and the
+`after_hash` of the first entry that named it, and no event of one decision
+appears twice: `audit entry N names signed=K and says state=A->B but the
+first entry of that transaction (seq F) says state=C->D; the entries of one
+decision record one transition`, `audit entry N names signed=K and records
+after_hash D but the first entry of that transaction (seq F) records E; the
+entries of one decision record one approved digest`, `audit entry N is a
+second tool.disabled of digest none under signed=K (entry F wrote the
+first); a decision writes each of its events once`
+(`TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry`, the history probes;
+`TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`). The
 crawl-transition guard, in one sentence: an entry about a tool that no
 decision signed may move the tool's state only along a transition a crawl
 observation can make (disabled stays disabled, deprecated reappears to
 pending_review, enabled and changed_pending_reapproval move between
-themselves or deprecate), so a correctly sealed `tool.reverted` with
+themselves or deprecate) and only from the state the newest entry about the
+tool left it in, so a correctly sealed `tool.reverted` with
 `state=disabled->enabled`, which would otherwise re-enable a disabled tool
 under a clean chain, is `audit entry N moves tool "S/T" from disabled to
 enabled under event tool.reverted, which no crawl can do; the entry was
-appended outside toolwarrant` (`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`,
-`TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes`,
-`TestCrawlMayMove_EqualsTheInvariantsTable`). The serving path verifies no
+appended outside toolwarrant`, and the same entry lying about where the tool
+was (`state=changed_pending_reapproval->enabled`, `enabled->enabled` or
+`enabled->changed_pending_reapproval`, each a move a crawl may make) is
+`audit entry N says tool "S/T" moves from enabled but the newest entry about
+it (seq M) left it disabled; the entry was appended outside toolwarrant`
+(`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the crawler and a
+person, the confessing entry and the four lying ones;
+`TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes`, whose drawn
+histories never trip either rule and whose remembered state is the row's;
+`TestCrawlMayMove_EqualsTheInvariantsTable`). A `tool.budget_reset` is a
+state-bearing entry to the state anchor as it is to Integrity, so the two
+name the same entry when a column is edited after a budget reset
+(`TestSnapshot_ABudgetResetIsTheNewestStateEntryOnBothPaths`). The serving path verifies no
 signature: the anchor pass of every snapshot reads the `signed=` token of each
 human decision it anchors, looks the record up in the memory of the walk and
 compares the entry's state field or paused flag with the kind, two token
@@ -1418,7 +1457,9 @@ parses and one lookup per anchored entry and no bytes
 (`TestSnapshot_ServesOnlySignedApprovalsAfterTheBootstrapAndReadsNoBytes`,
 `TestSnapshot_ReloadAfterACrawlVerifiesNoSignature`,
 `TestSnapshot_SwappedSignedRecordRowIsCorrupt`,
-`TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`).
+`TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction`); the
+continuity rule and the shape rule run in the walk alone, which recorded the
+entry the anchor pass reads, so the anchor pass gained nothing.
 `audit verify`'s integrity report prints every refusal with the walk's
 sentence and lists, as information and not as a problem, the approvals in
 force that were made before the bootstrap: they stand by chain anchoring
