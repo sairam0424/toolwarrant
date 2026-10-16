@@ -206,6 +206,9 @@ func appendSealed(t *testing.T, path string, e audit.Entry) int64 {
 		}
 		prev = cur
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the audit log: %v", err)
+	}
 	_ = rows.Close()
 	e.Seq, e.TS = prev.Seq+1, time.Now().UTC().Format(catalogTimeLayout)
 	sealed, err := audit.Seal(prev, e)
