@@ -1571,7 +1571,8 @@ entry the anchor pass reads, so the anchor pass gained nothing.
 `audit verify`'s integrity report prints every refusal with the walk's
 sentence and lists, as information and not as a problem, the approvals in
 force that were made before the bootstrap: they stand by chain anchoring
-alone, as in v0.3, until re-approved with a signed decision (O-12;
+alone, as in v0.3, until approved again with a signed decision (disable,
+enable, approve, each signed; O-12;
 `TestIntegrity_ReportsEveryDecisionRecordProblemTheWalkRefuses`,
 `TestIntegrity_CountsLegacyApprovalsInService`,
 `TestWalk_LegacyApprovalsBeforeTheBootstrapNeedNoRecord`). Removal is not
