@@ -39,20 +39,28 @@ func TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne(t *testing.T) {
 	if err := os.WriteFile(plain, []byte("not a key, and not a public key line\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// agent puts alice's agent back for one row: a .pub the agent does not
+	// hold is refused with the key's fingerprint, the plan's pinned sentence.
 	cases := []struct {
 		name, path, want string
+		agent            bool
 	}{
-		{"world-readable", shared, "readable by other users"},
-		{"symbolic link", link, "symbolic link"},
-		{"directory", dir, "a directory"},
-		{"encrypted", encrypted, "load the key into ssh-agent"},
-		{"not a key", plain, "not a PEM private key"},
-		{"public key without an agent", l.alicePub, "SSH_AUTH_SOCK is not set"},
-		{"missing", filepath.Join(dir, "none.key"), "no such file"},
+		{"world-readable", shared, "readable by other users", false},
+		{"symbolic link", link, "symbolic link", false},
+		{"directory", dir, "a directory", false},
+		{"encrypted", encrypted, "load the key into ssh-agent", false},
+		{"not a key", plain, "not a PEM private key", false},
+		{"public key without an agent", l.alicePub, "SSH_AUTH_SOCK is not set", false},
+		{"public key the agent lacks", l.bobPub, "ssh-agent at SSH_AUTH_SOCK does not hold the key " + fpOf(l.bob), true},
+		{"missing", filepath.Join(dir, "none.key"), "no such file", false},
 	}
 	private, _ := keyMaterial(t, l.alice, l.aliceFile)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.agent {
+				l.env[envAuthSock] = l.sock
+				defer delete(l.env, envAuthSock)
+			}
 			r := l.sub(t).fail(exitFailure, "--ssh-key", tc.path, "approve", "s1", "echo", "--hash", echo)
 			wantContains(t, "stderr", r.stderr, tc.want)
 			wantNotContains(t, "output", r.stdout+r.stderr, private...)
