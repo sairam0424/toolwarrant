@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // TLS on the processor listener (D19, owner decision O-2). The three
@@ -119,7 +117,7 @@ func refuseSharedKey(path string) error {
 		return nil
 	}
 	if perm := fi.Mode().Perm(); perm&keySharedBits != 0 {
-		return fmt.Errorf("%s %s is readable by other users (mode %04o); whoever reads the key can stand in for the processor, so chmod 600 it", flagTLSKey, textdiff.Escape(path), perm)
+		return fmt.Errorf("%s %s is readable by other users (mode %04o); whoever reads the key can stand in for the processor, so chmod 600 it", flagTLSKey, path, perm)
 	}
 	return nil
 }
@@ -135,7 +133,7 @@ func readTLSFile(path, flagName string) ([]byte, error) {
 	case errors.Is(err, errNotRegular):
 		return nil, err
 	}
-	return nil, fmt.Errorf("%s %s: %w", flagName, textdiff.Escape(path), err)
+	return nil, fmt.Errorf("%s %s: %w", flagName, path, err)
 }
 
 // loadCertPool reads a PEM file of certificates into a pool and refuses one
@@ -148,7 +146,7 @@ func loadCertPool(path, flagName string) (*x509.CertPool, error) {
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(data) {
-		return nil, fmt.Errorf("%s %s holds no PEM certificate", flagName, textdiff.Escape(path))
+		return nil, fmt.Errorf("%s %s holds no PEM certificate", flagName, path)
 	}
 	return pool, nil
 }

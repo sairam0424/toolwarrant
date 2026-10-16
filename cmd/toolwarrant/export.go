@@ -85,14 +85,15 @@ func runExport(a *app, c *command, args []string) (err error) {
 // loadSignKey reads the signing key named with --sign-key, or returns nil when
 // the flag was not given. The export package applies the file rules (a regular
 // file, owner-only, one PKCS#8 Ed25519 key); the refusal is wrapped with the
-// flag and the escaped path, never with anything from the file.
+// flag and the path as given (describe escapes the sentence once when it
+// prints it), never with anything from the file.
 func loadSignKey(path string) (ed25519.PrivateKey, error) {
 	if path == "" {
 		return nil, nil
 	}
 	key, err := export.ReadSigningKey(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", flagSignKey, textdiff.Escape(path), err)
+		return nil, fmt.Errorf("%s %s: %w", flagSignKey, path, err)
 	}
 	return key, nil
 }

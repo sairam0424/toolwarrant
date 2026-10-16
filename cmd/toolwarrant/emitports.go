@@ -104,7 +104,7 @@ func recordProcessorAddrs(a *app, store *catalog.Store, plans []emitPlan, out st
 			resolved = true
 		}
 		if err := store.SetProcessorAddr(a.ctx, p.name, p.processor, actor); err != nil {
-			return fmt.Errorf("%s was written, but recording the processor address of server %s failed: %w", textdiff.Escape(out), cell(p.name), err)
+			return fmt.Errorf("%s was written, but recording the processor address of server %s failed: %w", out, cell(p.name), err)
 		}
 	}
 	return nil

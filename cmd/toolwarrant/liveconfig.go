@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // gatewayConfig is one gateway of the configuration: where it listens.
@@ -152,14 +150,14 @@ func (p *emittedParser) topLevel(line string) error {
 		return nil
 	}
 	if p.section != sectionRoutes {
-		return fmt.Errorf("the emitted file holds a list item outside the routes section: %s", textdiff.Escape(line))
+		return fmt.Errorf("the emitted file holds a list item outside the routes section: %s", line)
 	}
 	name, err := unquoteScalar(strings.TrimPrefix(line, routeItemPrefix))
 	if err != nil {
 		return err
 	}
 	if _, n := p.doc.route(name); n > 0 {
-		return fmt.Errorf("the emitted file lists route %s twice", cell(name))
+		return fmt.Errorf("the emitted file lists route %s twice", name)
 	}
 	p.doc.routes = append(p.doc.routes, routeConfig{name: name})
 	p.route = len(p.doc.routes) - 1
@@ -194,13 +192,13 @@ func (p *emittedParser) gatewayLine(indent int, line string) error {
 	case indentGatewayName:
 		name := strings.TrimSuffix(line, ":")
 		if _, dup := p.doc.gateways[name]; dup {
-			return fmt.Errorf("the emitted file lists gateway %s twice", cell(name))
+			return fmt.Errorf("the emitted file lists gateway %s twice", name)
 		}
 		p.gateway = name
 		p.doc.gateways[name] = gatewayConfig{}
 	case indentGatewayKey:
 		if p.gateway == "" {
-			return fmt.Errorf("the emitted file holds a gateway key outside a gateway: %s", textdiff.Escape(line))
+			return fmt.Errorf("the emitted file holds a gateway key outside a gateway: %s", line)
 		}
 		gw := p.doc.gateways[p.gateway]
 		key, value, _ := strings.Cut(line, keyValueSep)
@@ -358,7 +356,7 @@ func appendQuoted(list *[]string, quoted string) error {
 // a Go string literal uses, so strconv does the work.
 func unquoteScalar(s string) (string, error) {
 	if !strings.HasPrefix(s, `"`) {
-		return "", fmt.Errorf("the emitted file holds an unquoted scalar where emit writes a quoted one: %s", textdiff.Escape(s))
+		return "", fmt.Errorf("the emitted file holds an unquoted scalar where emit writes a quoted one: %s", s)
 	}
 	v, err := strconv.Unquote(s)
 	if err != nil {

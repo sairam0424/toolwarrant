@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // headReminder is printed after every successful verify. The chain proves
@@ -54,7 +53,7 @@ func runAuditVerify(a *app, c *command, args []string) (err error) {
 	case chainErr != nil:
 		headErr = chainErr
 	case *expect != "" && !strings.EqualFold(*expect, summary.Head):
-		headErr = fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", textdiff.Escape(*expect), summary.Head)
+		headErr = fmt.Errorf("audit head mismatch: expected %s, found %s; either the log grew since you recorded the head or it was rewritten", *expect, summary.Head)
 	}
 	if chainErr == nil {
 		a.stdout.printf("audit log ok: %d entries, head %s\n", summary.Entries, summary.Head)

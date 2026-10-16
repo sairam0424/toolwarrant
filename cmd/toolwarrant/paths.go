@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // Rules for the files the CLI opens by operator-given path. A path is hostile
@@ -19,6 +17,10 @@ import (
 // blocks until a writer appears and the command prints nothing, exits nothing
 // and ignores the signals it handles, fourth review cli-docs-2), a device, a
 // socket, or a symbolic link that redirects the read or the write elsewhere.
+// Every refusal below embeds the path as the operator gave it: the sentence is
+// escaped once where it is printed (describe for an error on stderr, readConfig
+// for the canary's verdict), so a control character in a path shows as one
+// \u{HEX} and never as a doubled backslash.
 const (
 	// maxEmittedFileBytes bounds the emitted configuration file the canary
 	// reads. The emitter's own output for the per-server caps stays far below
@@ -70,11 +72,11 @@ func refuseIrregularFile(path, flagName string) error {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case err != nil:
-		return fmt.Errorf("%s %s: %w", flagName, textdiff.Escape(path), err)
+		return fmt.Errorf("%s %s: %w", flagName, path, err)
 	case fi.Mode().IsRegular():
 		return nil
 	}
-	return fmt.Errorf("%s %s is %s, %w; name a regular file", flagName, textdiff.Escape(path), describeFileType(fi.Mode()), errNotRegular)
+	return fmt.Errorf("%s %s is %s, %w; name a regular file", flagName, path, describeFileType(fi.Mode()), errNotRegular)
 }
 
 // readRegularFile reads a file that must be a regular one, at most maxBytes
@@ -98,14 +100,14 @@ func readRegularFile(path, flagName, what string, maxBytes int64) ([]byte, error
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s %s is %s, %w; name a regular file", flagName, textdiff.Escape(path), describeFileType(fi.Mode()), errNotRegular)
+		return nil, fmt.Errorf("%s %s is %s, %w; name a regular file", flagName, path, describeFileType(fi.Mode()), errNotRegular)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("%s %s is larger than %d bytes, which no %s is", flagName, textdiff.Escape(path), maxBytes, what)
+		return nil, fmt.Errorf("%s %s is larger than %d bytes, which no %s is", flagName, path, maxBytes, what)
 	}
 	return data, nil
 }
@@ -137,7 +139,7 @@ func refuseLinkedDirectory(path string) error {
 		case errors.Is(err, fs.ErrNotExist):
 			return nil
 		case err != nil:
-			return fmt.Errorf("inspect database directory %s: %w", textdiff.Escape(prefix), err)
+			return fmt.Errorf("inspect database directory %s: %w", prefix, err)
 		case fi.Mode()&fs.ModeSymlink == 0 || ownedByRoot(fi):
 			continue
 		}
@@ -145,7 +147,7 @@ func refuseLinkedDirectory(path string) error {
 		if rerr != nil {
 			resolved = "(unresolvable)"
 		}
-		return fmt.Errorf("database directory %s goes through the symbolic link %s, which resolves to %s; a link planted in a shared directory would redirect where the owner-only file is created, so name the resolved directory", textdiff.Escape(dir), textdiff.Escape(prefix), textdiff.Escape(resolved))
+		return fmt.Errorf("database directory %s goes through the symbolic link %s, which resolves to %s; a link planted in a shared directory would redirect where the owner-only file is created, so name the resolved directory", dir, prefix, resolved)
 	}
 	return nil
 }

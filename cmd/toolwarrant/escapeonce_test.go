@@ -1,0 +1,166 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sairam0424/toolwarrant/internal/export"
+)
+
+// hostileFiles plants, under dir, the operator-given paths of the escape probe,
+// each with an ESC byte in its name built at run time: a directory, a
+// world-readable file that is not PEM, a file larger than any PEM key file,
+// and a symbolic link to target.
+func hostileFiles(t *testing.T, dir, target string) (hdir, file, big, link string) {
+	t.Helper()
+	hdir, file, big, link = filepath.Join(dir, esc+"[2Jdir"), filepath.Join(dir, esc+"[2Jfile.pem"), filepath.Join(dir, esc+"[2Jbig.pem"), filepath.Join(dir, esc+"[2Jlink.db")
+	if err := os.Mkdir(hdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("not pem at all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(big, []byte(strings.Repeat("x", export.MaxKeyFileBytes+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return hdir, file, big, link
+}
+
+// escapedTimes asserts that the hostile value a sentence embeds n times came
+// out as n \u{001B}: never the raw byte, and never the doubled backslash the
+// older sites printed while they escaped the value and describe escaped the
+// whole sentence again.
+func escapedTimes(t *testing.T, where, s string, n int) {
+	t.Helper()
+	got, doubled, raw := strings.Count(s, `\u{001B}`), strings.Contains(s, `\\u{001B}`), strings.Contains(s, esc)
+	if got != n || doubled || raw {
+		t.Errorf("%s: want %d \\u{001B} and neither a doubled backslash nor the raw byte; got %d, doubled %t, raw %t in %q", where, n, got, doubled, raw, s)
+	}
+}
+
+// escapedOnce is escapedTimes for the one value most refusals embed.
+func escapedOnce(t *testing.T, where, s string) {
+	t.Helper()
+	escapedTimes(t, where, s, 1)
+}
+
+// TestRefusalsEscapeHostileValuesOnce drives a path or a flag value holding an
+// ESC byte through one refusal of every kind that embeds the value in an error
+// describe prints: the key file of --pub-key, the directory and the signing
+// key of export, the TLS files of serve, the output file of emit, the database
+// path, --expect-head of audit verify, the --config path of verify-gateway, the
+// --gateway-binary of emit, and the lines and names of the emitted file verify
+// reads. Each sentence is escaped once, where it is printed, so the operator
+// reads the value as given. The usage errors, which exitCode prints as
+// written, are not in this table and keep escaping their values themselves.
+func TestRefusalsEscapeHostileValuesOnce(t *testing.T) {
+	t.Parallel()
+	c, u := fixture(t)
+	f := newTLSFiles(t)
+	keys := newExportKeys(t)
+	dir := t.TempDir()
+	hdir, file, big, link := hostileFiles(t, dir, c.db)
+	cases := []struct {
+		name, db, want string
+		args           []string
+	}{
+		{"pub-key directory", "", "is a directory, not a regular file", []string{"export", "verify", "--dir", dir, "--pub-key", hdir}},
+		{"pub-key too large", "", "is larger than", []string{"export", "verify", "--dir", dir, "--pub-key", big}},
+		{"pub-key not PEM", "", "not a PEM PUBLIC KEY block", []string{"export", "verify", "--dir", dir, "--pub-key", file}},
+		{"export directory", "", "does not verify", []string{"export", "verify", "--dir", hdir, "--pub-key", keys.pub}},
+		{"signing key", "", "readable by other users", []string{"export", "--dir", filepath.Join(dir, "approved"), "--sign-key", file}},
+		{"tls client authority", "", "holds no PEM certificate", f.serveArgs("--tls-client-ca", file)},
+		{"tls key", "", "readable by other users", []string{"serve", "--server", "s1", "--listen", "127.0.0.1:0", "--tls-cert", f.certPath, "--tls-key", file}},
+		{"emit output", "", "is a directory, not a regular file", []string{"emit", "--out", hdir}},
+		{"database missing", filepath.Join(dir, esc+"[2Jmissing.db"), "does not exist", []string{"list"}},
+		{"database symlink", link, "is a symbolic link", []string{"init"}},
+		{"audit flag", "", "audit head mismatch", []string{"audit", "verify", "--expect-head", esc + "[2Jdead"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := c.sub(t)
+			if tc.db != "" {
+				run = &cli{t: t, db: tc.db, env: c.env}
+			}
+			r := run.fail(exitFailure, tc.args...)
+			wantContains(t, "stderr", r.stderr, tc.want)
+			escapedOnce(t, tc.name, r.stderr)
+		})
+	}
+	t.Run("config path", func(t *testing.T) { configPathEscapedOnce(t, c.sub(t), u, dir) })
+	t.Run("gateway binary", func(t *testing.T) { gatewayBinaryEscapedOnce(t, c.sub(t), dir) })
+	emittedSentencesEscapedOnce(t)
+}
+
+// emittedSentencesEscapedOnce drives a line of the emitted file holding an ESC
+// byte through each parser sentence that embeds what it read: the gateway key
+// outside a gateway, which quotes the line, and the duplicate route, gateway
+// and backendTLS sentences, which embed the name they read (the route name
+// and the processor host through strconv.Unquote, the gateway name as the
+// line holds it). The sentences reach describe through verify's live
+// comparison and are escaped there, once; a file that lists a name twice is
+// reachable, because a rewrite that recomputes the header passes emit.Verify
+// (limit L19).
+func emittedSentencesEscapedOnce(t *testing.T) {
+	t.Helper()
+	cases := []struct{ name, file, want string }{
+		{"gateway key outside a gateway", "gateways:\n    port: 1" + esc + "\n", "holds a gateway key outside a gateway"},
+		{"duplicate route", "routes:\n- name: \"x\\u001b\"\n- name: \"x\\u001b\"\n", "lists route"},
+		{"duplicate gateway", "gateways:\n  tw" + esc + ":\n    port: 1\n  tw" + esc + ":\n    port: 2\n", "lists gateway"},
+		{"duplicate backendTLS", "routes:\n- name: \"r\"\n      - host: \"h\\u001b\"\n        policies:\n          backendTLS:\n          backendTLS:\n", "lists " + tlsBlockName + " twice for processor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := emittedConfig([]byte(tc.file))
+			if err == nil {
+				t.Fatal("the emitted file was accepted")
+			}
+			s := describe(err)
+			wantContains(t, "describe", s, tc.want)
+			escapedOnce(t, tc.name, s)
+		})
+	}
+}
+
+// configPathEscapedOnce drives a --config path holding an ESC byte through
+// verify-gateway. The refusal of readRegularFile is the CONFIG-EDITED reason,
+// which readConfig escapes once and printConfigEdited prints on stdout beside
+// the path itself, so the path appears twice, each time as one \u{001B}; the
+// advice on stderr names no path and carries neither the raw byte nor a
+// doubled backslash. The listing still runs, so the check exits 1 for the
+// edited file and the unapproved tools together.
+func configPathEscapedOnce(t *testing.T, c *cli, u *upstream, dir string) {
+	t.Helper()
+	missing := filepath.Join(dir, esc+"[2Jmissing.yaml")
+	r := c.fail(exitFailure, "verify-gateway", "--server", "s1", "--url", u.url(), "--config", missing, "--no-probe")
+	wantContains(t, "stdout", r.stdout, verdictConfigEdited+" ", ": the file could not be read (", "no such file")
+	escapedTimes(t, "config path stdout", r.stdout, 2)
+	wantNotContains(t, "stderr", r.stderr, esc, `\\u{001B}`)
+	wantContains(t, "stderr", r.stderr, "could not be read, so it is treated as edited")
+}
+
+// gatewayBinaryEscapedOnce drives a --gateway-binary path holding an ESC byte
+// through emit: a file without the execute bit makes fork/exec fail with a
+// PathError naming the path, which validateWithGateway wraps under "run
+// gateway binary <path>", so the path appears twice on stderr, each time as
+// one \u{001B}, nothing is written and the staged file is removed.
+func gatewayBinaryEscapedOnce(t *testing.T, c *cli, dir string) {
+	t.Helper()
+	binary := filepath.Join(dir, esc+"[2Jgw")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	r := c.fail(exitFailure, "emit", "--out", filepath.Join(outDir, "gateway.yaml"), "--gateway-binary", binary)
+	wantContains(t, "stderr", r.stderr, "run gateway binary ")
+	escapedTimes(t, "gateway binary", r.stderr, 2)
+	wantNotContains(t, "stdout", r.stdout, "wrote", "validated")
+	if entries, err := os.ReadDir(outDir); err != nil || len(entries) != 0 {
+		t.Errorf("a binary that cannot run left files behind: %v %v", entries, err)
+	}
+}
