@@ -75,10 +75,13 @@ func (p crawlProbe) sentence(seq, disabled int64) string {
 // it confesses from=disabled (the crawl table) or lies about the from half
 // with a move the table admits (the continuity rule: the newest entry about
 // the tool, the disable's own, left it disabled); Integrity counts each under
-// CrawlTransitionsForged. Before the bootstrap the confessing entry is
-// accepted and, with the column edited to match, the disabled tool is served
-// again: the legacy residual the v0.4 plan states (section 5, rule 6 applied
-// after the bootstrap only), recorded here as the code has it.
+// CrawlTransitionsForged. The state the rule compares with is tracked from the
+// genesis, so a tool disabled before the bootstrap is protected by its
+// pre-bootstrap entry against a lying entry appended after it. Before the
+// bootstrap the confessing entry is accepted and, with the column edited to
+// match, the disabled tool is served again: the legacy residual the v0.4 plan
+// states (section 5, rule 6 applied after the bootstrap only), recorded here as
+// the code has it.
 func TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled(t *testing.T) {
 	t.Parallel()
 	for _, p := range crawlProbes() {
@@ -98,6 +101,24 @@ func TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled(t *testing.T) {
 			})
 		}
 	}
+	t.Run("disabled before the bootstrap, lied about after it", func(t *testing.T) {
+		t.Parallel()
+		s, path := newStoreAt(t, lifecycle.DefaultPolicy())
+		d := approvedEcho(t, s)
+		if err := s.Disable(bg, "alpha", "echo", alice); err != nil {
+			t.Fatal(err)
+		}
+		disabled := int64(auditCount(t, s))
+		op := newOperator(t, "alice")
+		mustSetTrust(t, s, 1, op, op)
+		db := rawDB(t, path)
+		seq := appendEntry(t, db, crawlShaped(crawler, string(lifecycle.EvReverted), d, lifecycle.ChangedPendingReapproval, lifecycle.Enabled))
+		mustExec(t, db, `UPDATE tools SET state = 'enabled' WHERE name = 'echo'`)
+		rep := walkRefuses(t, s, path, seq, continuitySentence(seq, "alpha/echo", lifecycle.ChangedPendingReapproval, disabled, lifecycle.Disabled))
+		if rep.CrawlTransitionsForged != 1 || rep.UnsignedDecisionsAfterBootstrap != 0 {
+			t.Errorf("Integrity = %+v, want exactly one forged crawl transition", rep)
+		}
+	})
 	t.Run("before the bootstrap, the legacy residual", func(t *testing.T) {
 		t.Parallel()
 		s, path := newStoreAt(t, lifecycle.DefaultPolicy())
