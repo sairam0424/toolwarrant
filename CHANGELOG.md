@@ -16,6 +16,7 @@ whose changelog has no heading for that version.
 ### Changed
 
 - `toolwarrant version` prints a third line, `commit` and the first twelve characters of the revision the go command stamped into the binary, `+dirty` appended when the checkout had uncommitted changes, and `commit unknown` when the build carries no version-control stamp (a `go install` of the module from the proxy, `go run`, `go test`); a release archive's binary names the tagged commit, which `go version -m` showed in full and the command did not, and the release binaries up to v0.4.0 predate the line (`TestBuildCommit_NamesTheRevisionTheToolchainStamped`, `TestHelpAndVersion`, `TestVersionFallsBackToTheModuleVersion`).
+- `trust add` and `trust remove` run as the system actor (`--as crawler`, or `TOOLWARRANT_ACTOR` naming it) are refused with `the system actor cannot change the trust list; pass --as with your own name`, exit 2, in place of the decision sentence that named approve, reject and the other decisions, as `trust init` already was (`TestTrustUsageHelpAndRefusals`).
 
 ### Fixed
 

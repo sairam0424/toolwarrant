@@ -172,7 +172,9 @@ func (a *app) rotateTrust(c *command, expect string, edit func([]trust.Operator)
 }
 
 // rotateTrustAs writes the next version of the list in force: the signer is
-// resolved first (its fingerprint stored in fp for edit), then the catalog is
+// resolved first (its fingerprint stored in fp for edit), the label the
+// operator gave is held to be a person (the system actor is refused with the
+// sentence that names the trust list, not the decisions), then the catalog is
 // opened, and on each attempt the list in force is read with the head, the
 // acting person derived from the key, the new signers computed by edit and
 // the list signed and recorded. It returns the receipt, the list now in
@@ -184,7 +186,7 @@ func (a *app) rotateTrustAs(c *command, expect string, fp *string, edit func([]t
 	}
 	defer signer.close()
 	*fp = signer.fp
-	label, err := a.decidingActor(c)
+	label, err := a.humanActor(c, systemActorCannotEditTrust)
 	if err != nil {
 		return catalog.Receipt{}, catalog.TrustView{}, catalog.Actor{}, err
 	}
