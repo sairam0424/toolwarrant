@@ -1617,13 +1617,21 @@ key for SHA256:FP` on stderr before the agent waits
 (`TestApproveTouchHintIsPrintedForASecurityKey`). The socket must be a unix
 socket of your uid that other users cannot reach (0600, or inside a 0700
 directory as launchd's is); an agent that does not hold the key is `ssh-agent
-at SSH_AUTH_SOCK does not hold the key SHA256:FP`, exit 1. Any other file is
-read as an unencrypted OpenSSH private key under the rules of the export key:
+at SSH_AUTH_SOCK does not hold the key SHA256:FP`, exit 1, and one that
+accepts the connection and never lists its keys (a hung forwarded agent) is
+`ssh-agent at SSH_AUTH_SOCK did not answer the key list within 5s; nothing was
+written; run ssh-add -l to see whether it answers`, exit 1, after the 5 s the
+signing package allows the dial and the list, which `--sign-timeout` does not
+shorten; it is never `interrupted`, which is what ^C during a signature
+prints (`TestAnAgentThatNeverAnswersIsNamedAndWritesNothing`). Any other file
+is read as an unencrypted OpenSSH private key under the rules of the export
+key:
 a regular file (no symbolic link, directory, pipe or device), readable by you
 alone (`chmod 600`), at most 16 KiB, exactly one key; a file other users can
-read, a link, a directory and an oversized file are refused, exit 1, and so is
-a passphrase-protected key, with the advice `load the key into ssh-agent;
-toolwarrant does not read passphrases`
+read, a link, a directory, an oversized file and one that is neither a key nor
+a `.pub` line (`not a PEM private key`, with no PEM marker in the output) are
+refused, exit 1, and so is a passphrase-protected key, with the advice `load
+the key into ssh-agent; toolwarrant does not read passphrases`
 (`TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne`,
 `TestKeyFile_RefusesEveryUnsafeShape`). The key is resolved before the catalog
 is touched, so a refused key changes nothing; it is dropped when the command
@@ -1712,8 +1720,8 @@ list lists for alice` otherwise, exit 2, and may be left out
 rule holds against that name, so a person whose crawl proposed a version
 cannot approve it with their key either
 (`TestSelfApprovalAndSystemActorRefusals`). A key the list does not name is
-refused with its fingerprint, exit 1, and nothing is written
-(`TestDecisionsAfterTheBootstrapRefuseAnUnlistedKey`). The command reads the
+refused with its fingerprint and the `trust show` advice, once, exit 1, and
+nothing is written (`TestDecisionsAfterTheBootstrapRefuseAnUnlistedKey`). The command reads the
 catalog identity, the audit head and the list in one snapshot, reviews the
 decision as before (the drift line and the suspicious-text review of
 `approve`), signs the `toolwarrant/decision/v1` payload over that head
@@ -3002,7 +3010,8 @@ pinned; the documents keep describing v1.6.0 until one is.
   `TestInitRefusesADirectorySymlink`), any command on a catalog file that
   was replaced under a running store, and, in the signed flow (D22 (h)), a
   key file that fails the file rules or is passphrase-protected, an agent
-  that does not hold the key or cannot be reached, a signature that did not
+  that does not hold the key, cannot be reached or does not answer the key
+  list within 5 s, a signature that did not
   arrive within `--sign-timeout`, `audit head mismatch` under `--expect-head`
   or after the log moved twice while you signed, a key the trust list does not
   name, every refusal of the trust-list rules (a second `trust init`, the last
@@ -3039,5 +3048,6 @@ Every error is one sentence on stderr with advice where a sentinel is known
 (`your crawl proposed this version; another person must approve it, or pass
 --allow-self-approval`; `the proposal changed since you looked; run diff
 again`; `give more characters of the hash`; `only a named person decides; pass
---as with your own name`). Upstream-controlled text in an error is escaped
-before it is printed.
+--as with your own name`). Upstream-controlled text in an error, and a path
+or value the operator gave, is escaped once, when the sentence is printed, so
+a control character shows as `\u{001B}` and never doubled.
