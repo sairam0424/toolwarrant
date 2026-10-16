@@ -1715,8 +1715,9 @@ the tool is read (`TestDecisionsRequireAKeyOnceATrustListIsInForce`). The
 person deciding is the operator the trust list names for the key; `--as`
 (`TOOLWARRANT_ACTOR`, `budget reset --by`) is a label that must agree with
 it, `--as bob names another operator than the key SHA256:FP, which the trust
-list lists for alice` otherwise, exit 2, and may be left out
-(`TestApproveDerivesTheActorFromTheKeyAndRefusesAMismatch`); the proposer
+list lists for alice` otherwise, exit 2, the refusal naming the label as you
+gave it (`--as bob`, `--by bob` or `TOOLWARRANT_ACTOR=bob`), and may be left
+out (`TestApproveDerivesTheActorFromTheKeyAndRefusesAMismatch`); the proposer
 rule holds against that name, so a person whose crawl proposed a version
 cannot approve it with their key either
 (`TestSelfApprovalAndSystemActorRefusals`). A key the list does not name is
