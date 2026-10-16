@@ -48,6 +48,23 @@ toolwarrant --db /var/lib/toolwarrant/toolwarrant.db serve \
   --max-evidence-age 10m
 ```
 
+The processor prints `listening on ...` and then one line about the decisions
+it serves: `signed decisions: enforced from entry N (trust list vK, R signers,
+root SHA256:FP at entry B)` once a trust list is in force (every decision from
+entry N on must carry a verified signed record, which the open and every
+reload enforce), or `signed decisions: not enabled; the catalog has no trust
+list (L13 open); run "toolwarrant trust init"` before the cut-over, when the
+catalog serves as v0.3 did. Pass the trust root you recorded at `trust init`
+as the global `--trust-root SHA256:FP` (or `TOOLWARRANT_TRUST_ROOT`) on every
+processor: the open then refuses, exit 1, a catalog whose bootstrap another
+key signed and one that has no trust list at all (another file, or a history
+cut back below the bootstrap), and a correctly sealed approval appended after
+the bootstrap without a listed key makes the next reload fail and every hook
+deny `catalog unavailable` until the entry is removed
+(`TestServePrintsTheSignedDecisionsLineAndRefusesWithoutABootstrapUnderTrustRoot`,
+`TestServeTrustRootRefusesAnotherBootstrap`,
+`TestServeDeniesEveryHookAfterAnUnsignedApprovalIsAppended`).
+
 - `--listen` takes `host:port` or `unix:/path`. A TCP address must be loopback
   (a loopback literal, `localhost` or one of the loopback aliases common
   resolvers map without DNS, such as `localhost.localdomain` and
@@ -813,14 +830,23 @@ entry's hash and its own hash. Events are `server.added`, `server.paused`,
 `tool.drifted`, `tool.reverted`, `tool.returned`, `tool.missing`,
 `tool.deprecated`, `tool.reappeared`, `tool.unusable`, `tool.rejected`,
 `tool.disabled`, `tool.enabled`, `tool.budget_reset`, `version.proposed`,
-`version.superseded`, `version.approved`, `version.rejected` and
-`version.rolled_back`. Detail strings hold classes and quoted, capped fragments,
+`version.superseded`, `version.approved`, `version.rejected`,
+`version.rolled_back` and, since the v0.4 round, the three signed events
+`trust.bootstrap` and `trust.rotated` (the operator trust list, subject
+`@trust`) and `decision.signed` (a person's decision, written first in the
+transaction of every decision made after the bootstrap). Detail strings hold
+classes and quoted, capped fragments,
 never raw upstream text. Every entry about a tool starts with four `key=value`
 tokens, `digest=D state=A->B last_seen=L proposals=A->B` (schema v4 added the
 proposals field; D13), a `server.added` entry carries `allow_private=` and
 `url_sha256=` (a hash, never the URL), and `server.paused` and `server.resumed`
 carry `paused=`, so that the integrity check below can compare every mutable
-column of the tools and servers tables with the log.
+column of the tools and servers tables with the log. A signed entry ends with
+`signer=SHA256:... sigref=<hex>`, the fingerprint of the key that signed and
+the digest of the record stored in `signed_records` at its seq, which binds the
+row to the chain; every entry a signed decision produces ends with
+` signed=N`, the seq of its `decision.signed` entry (the section Signing
+decisions and managing the operator trust list below).
 
 `audit verify` checks every link from entry 1 to the head and prints
 `audit log ok: N entries, head HASH`, followed by a reminder to record the head
@@ -832,6 +858,33 @@ when the head differs, with the note that either the log grew since you recorded
 the head or it was rewritten; compare with `audit list --after N` from your
 recorded sequence number (scenario D runs all three forms).
 `audit list [--after N] [--limit N] [--json]` prints entries in sequence order.
+
+After a clean chain and a clean integrity report, `audit verify` says what the
+signed records prove. With a trust list in force: `signed records ok: N
+decisions and M trust lists verified; trust list vK in force (alice
+SHA256:..., bob SHA256:...); root SHA256:... at entry B; U entries before the
+bootstrap are unsigned history vouched for by alice`, and, when an approval in
+service was made before the bootstrap, `unsigned approvals in service: N
+(approved before the cut-over at entry B; re-approve them to sign them):
+server/tool, ...`; such an approval stands by chain anchoring alone, as in
+v0.3, and leaves the list once the tool is re-approved with a signed decision
+(disable, enable, approve, each signed, since an approval in force cannot be
+approved again). Without a list: `signed records: none; the catalog has no
+trust list (L13 open); run "toolwarrant trust init"`. A signed record the walk
+refuses is one `integrity problem:` line with the walk's sentence, as every
+other finding, and the summary is withheld
+(`TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`,
+`TestAuditVerifyNamesAForgedSignedRecord`). `audit list --json` gives every
+entry a `signed` field: `{"payload": <base64 of the exact signed bytes>,
+"signature": "-----BEGIN SSH SIGNATURE-----...", "signer": "SHA256:..."}` for
+the three signed events, `null` for every other entry, read through the same
+checked read as every view (each entry verified against the chain, each row
+against the entry's `sigref` token); on a file whose chain or records are
+broken the listing goes on with `null` in every `signed` field and one line
+on stderr, `signed records not shown: ...; run "toolwarrant audit verify"`,
+since the listing is the forensic view and `audit verify` is the judge
+(`TestAuditListJSONCarriesTheSignedRecord`). The section below gives the
+`ssh-keygen -Y verify` recipe over that output.
 
 ### What the catalog checks before it trusts the file
 
@@ -1539,7 +1592,188 @@ key for every operator from the first list on, under a second name
 (`alice@backup`), generated on another device and kept offline; the rotation
 rule lets either key add or remove the other.
 
-## Recovering from ErrCorrupt and ErrSchema
+## Signing decisions and managing the operator trust list
+
+The commands of this section are the operator's side of the trust list above
+(decision D22 (h); owner decisions O-13, O-17 and O-18 of the v0.4 plan).
+
+```sh
+toolwarrant --ssh-key ~/.ssh/id_ed25519.pub trust init
+toolwarrant --ssh-key ~/.ssh/id_ed25519.pub trust add bob --key bob.pub
+toolwarrant --ssh-key ~/.ssh/id_ed25519.pub approve github search --hash 3f9a...
+toolwarrant --ssh-key ~/.ssh/id_ed25519.pub trust remove bob
+toolwarrant trust show [--json | --allowed-signers]
+toolwarrant --trust-root SHA256:... audit verify --expect-head HEAD_YOU_RECORDED
+```
+
+Keys. `--ssh-key PATH` (or `TOOLWARRANT_SSH_KEY`) names the key that signs, by
+path only and never by value, the way `ssh-keygen -Y sign -f` reads it: a
+public key file (`.pub`, as ssh-keygen writes it) means "this key, through
+ssh-agent", and the agent at `SSH_AUTH_SOCK` is asked to sign with exactly
+that key and never with another; a local agent, a forwarded one and a FIDO2
+security key all work this way, and for a FIDO2 key (`sk-ssh-ed25519@openssh.com`,
+`sk-ecdsa-sha2-nistp256@openssh.com`) the command prints `touch your security
+key for SHA256:FP` on stderr before the agent waits
+(`TestApproveTouchHintIsPrintedForASecurityKey`). The socket must be a unix
+socket of your uid that other users cannot reach (0600, or inside a 0700
+directory as launchd's is); an agent that does not hold the key is `ssh-agent
+at SSH_AUTH_SOCK does not hold the key SHA256:FP`, exit 1. Any other file is
+read as an unencrypted OpenSSH private key under the rules of the export key:
+a regular file (no symbolic link, directory, pipe or device), readable by you
+alone (`chmod 600`), at most 16 KiB, exactly one key; a file other users can
+read, a link, a directory and an oversized file are refused, exit 1, and so is
+a passphrase-protected key, with the advice `load the key into ssh-agent;
+toolwarrant does not read passphrases`
+(`TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne`,
+`TestKeyFile_RefusesEveryUnsafeShape`). The key is resolved before the catalog
+is touched, so a refused key changes nothing; it is dropped when the command
+ends. Every signature is bounded by `--sign-timeout DURATION` (default 60 s):
+a touch that never comes is `signing timed out after 60s waiting for the
+agent; nothing was written`, exit 1, and nothing was, because every write
+follows its signature (`TestSigningTimeoutWritesNothing`). Fingerprints are
+the only key material any output of the program carries; the public key line
+appears only where it is the output, in `trust show --json` and `trust show
+--allowed-signers`, and in the payloads `audit list --json` carries
+(`TestNoOutputCarriesKeyMaterial`, `TestKeySource_NeverPrintsPrivateMaterialInAnError`).
+
+`trust init`. Run once per catalog, by the person who vouches for the history
+so far: it signs a version 1 list naming you (`--as`, `TOOLWARRANT_ACTOR` or
+your OS user name; never the system actor) with the key `--ssh-key` names and
+records it as the `trust.bootstrap` entry. It prints `trust list v1 recorded
+at entry N: alice SHA256:FP` and `decisions from entry N+1 on must be signed
+by a listed key; record the trust root SHA256:FP with the audit head HEAD
+outside the database and pass it as --trust-root (env TOOLWARRANT_TRUST_ROOT)
+to every command and to serve`. Do exactly that, where you record the audit
+head: the root is what lets every later open tell your catalog from a file
+someone re-bootstrapped with their own key or cut back below your bootstrap.
+A second init is refused (`the catalog already has a trust list`, exit 1);
+init without a key, or as the system actor, is exit 2
+(`TestTrustInitRecordsTheBootstrapAndPrintsTheRoot`,
+`TestTrustInitRefusesASecondBootstrapAndTheSystemActor`).
+
+`trust add NAME --key PUBKEY_FILE` and `trust remove NAME`. Each writes the
+next version of the list, signed by the key `--ssh-key` names, which must be
+one the list in force holds (the rotation rule wants the signer in both the
+old and the new list, so an arriving key cannot vouch for itself). `add` reads
+the operator's `.pub` file as ssh-keygen wrote it (one line, comment allowed,
+authorized_keys options refused) and prints `trust list v2 recorded at entry
+N: alice SHA256:..., bob SHA256:...; signed as alice`; a duplicate name or key
+is refused by the catalog. `remove` prints `trust list v3 recorded at entry N:
+bob SHA256:...; signed as bob; decisions signed before this entry stand`; the
+last signer cannot be removed (`the trust list must keep at least one
+signer`), a key cannot sign its own removal (`a key cannot sign its own
+removal; sign with a key that stays`), and a removed key signs nothing from
+that entry on while what it signed before stands, as the sentence says
+(`TestTrustAddAndRemoveRotateTheListAndRefuseTheLastSigner`). The name is
+normalised as every actor name is; `--as`, when given, must name the operator
+the signing key belongs to, or the command is a usage error.
+
+`trust show`. The list in force: a header `trust list vK (entry N), root
+SHA256:FP (entry B), signed records: D decisions, M lists` and one row per
+operator with the name, the fingerprint, the key type and the entry that
+first listed the key; `--json` the same with the key lines; `--allowed-signers`
+the file stock `ssh-keygen -Y verify -f` reads, one line per key with both
+namespaces (`alice namespaces="decision@toolwarrant.invalid,trust@toolwarrant.invalid"
+ssh-ed25519 AAAA...`). Without a list it prints `no trust list; decisions are
+attributed by name only (L13); run "toolwarrant trust init"` and exits 0
+(`TestTrustShowPrintsTheListTheAllowedSignersFileAndJSON`).
+
+Verifying a decision with stock OpenSSH. Take the record from `audit list
+--json` and the allowed_signers file from `trust show`:
+
+```sh
+toolwarrant trust show --allowed-signers > allowed_signers
+toolwarrant audit list --json | jq -r '.[] | select(.event == "decision.signed") | .signed.payload' | tail -1 | base64 -d > payload
+toolwarrant audit list --json | jq -r '.[] | select(.event == "decision.signed") | .signed.signature' | tail -1 > decision.sig
+ssh-keygen -Y verify -f allowed_signers -I alice -n decision@toolwarrant.invalid -s decision.sig < payload
+ssh-keygen -Y check-novalidate -n decision@toolwarrant.invalid -s decision.sig < payload
+```
+
+`-Y verify` prints `Good "decision@toolwarrant.invalid" signature for alice
+with ED25519 key SHA256:...` when the signature over exactly those bytes was
+made by a key the file lists for that principal under that namespace;
+`-Y check-novalidate` checks the signature against the key inside it without
+the file. A trust list is verified the same way with `-n
+trust@toolwarrant.invalid` (the sub-step of
+`TestTrustShowPrintsTheListTheAllowedSignersFileAndJSON` runs both forms and
+the `-n git` negative against the host's ssh-keygen).
+
+Signed decisions. From the bootstrap on, `approve`, `reject`, `rollback`,
+`disable`, `enable`, `server pause`, `server resume` and `budget reset` need
+`--ssh-key`: without it each is a usage error, exit 2, `signing is required
+since the trust bootstrap at entry N; pass --ssh-key PATH (or set
+TOOLWARRANT_SSH_KEY) naming a key the trust list holds`, before anything about
+the tool is read (`TestDecisionsRequireAKeyOnceATrustListIsInForce`). The
+person deciding is the operator the trust list names for the key; `--as`
+(`TOOLWARRANT_ACTOR`, `budget reset --by`) is a label that must agree with
+it, `--as bob names another operator than the key SHA256:FP, which the trust
+list lists for alice` otherwise, exit 2, and may be left out
+(`TestApproveDerivesTheActorFromTheKeyAndRefusesAMismatch`); the proposer
+rule holds against that name, so a person whose crawl proposed a version
+cannot approve it with their key either
+(`TestSelfApprovalAndSystemActorRefusals`). A key the list does not name is
+refused with its fingerprint, exit 1, and nothing is written
+(`TestDecisionsAfterTheBootstrapRefuseAnUnlistedKey`). The command reads the
+catalog identity, the audit head and the list in one snapshot, reviews the
+decision as before (the drift line and the suspicious-text review of
+`approve`), signs the `toolwarrant/decision/v1` payload over that head
+outside the catalog's write lock, and hands the record to the catalog, which
+compares the head inside its transaction. The line after the command's own
+reads `signed as alice with SHA256:FP over head PREV; audit head now HEAD`;
+record the new head as you record it after `audit verify`
+(`TestApproveSignsThroughTheAgentAndPrintsTheHead`,
+`TestRollbackRejectDisableEnablePauseResumeAndBudgetResetSignLikeApprove`).
+When the log grew while you signed (a scheduled crawl landed in the signing
+window) the command prints `the log grew while you signed; signing again` on
+stderr and signs once more over the new head; a second move is `the log moved
+twice while you signed; stop the scheduled crawl and try again`, exit 1, and
+the first signature was never written
+(`TestApproveRetriesOnceWhenTheHeadMovedWhileSigning`). A crawler whose whole
+cycle is shorter than your read-sign-write window starves the compare-and-set;
+the scheduled crawl of a deployment runs once a minute, and one retry covers
+a crawl landing in the window. `--expect-head HEX` on any decision and on the
+trust commands is your own compare-and-set: the head is compared with the one
+you recorded before anything is signed (`audit head mismatch: expected ...,
+found ...; the log grew since you recorded the head or it was rewritten, and
+nothing was signed`, exit 1) and, when the head moves under the signature,
+the catalog's refusal is final, no second signature
+(`TestApproveExpectHeadRefusesAMovedLogWithoutARetry`); without a trust list
+it is a usage error, since it compares the head inside a signed write. Before
+the bootstrap the commands write what v0.3 wrote and say so: `warning: this
+decision is not signed: the catalog has no trust list (L13); run "toolwarrant
+trust init"` on stderr, and a key given then is a usage error naming `trust
+init`, because a signed decision needs a list to be verified against
+(`TestApproveWithoutATrustListWarnsOnStderrAndRefusesAKey`). `show` names the
+approval in force under the versions table, `approved by alice, signed with
+SHA256:FP (audit entry N)`, `approved by alice, unsigned (before the cut-over
+at entry B)` or `approved by alice, unsigned (no trust list)`, and `show
+--json` carries `"signer": {"operator", "key", "entry"}` or `null`
+(`TestShowNamesTheSignerOrTheLegacyApproval`).
+
+The trust root. `--trust-root SHA256:FP` (`TOOLWARRANT_TRUST_ROOT`) is a
+global flag every command applies through its open, `serve`, `audit verify`
+and `audit list` included: a catalog whose bootstrap another key signed is
+refused with `the trust bootstrap at entry N was signed by SHA256:X, not the
+pinned trust root SHA256:Y; the catalog was re-bootstrapped or replaced`, a
+catalog with no trust list with `the catalog has no trust list and a trust
+root SHA256:Y was given`, exit 1 (`audit list`, the forensic view, lists the
+entries and withholds the records with the same sentence on stderr); a value
+that is not a fingerprint is exit 2. Keep the root beside the recorded head
+and the signed export: together they are what tells your catalog from a file
+rewritten by whoever can write it
+(`TestEveryCommandRefusesACatalogWhoseRootIsNotTheTrustRoot`).
+
+Lost key and break-glass. There is no in-file recovery from a list whose keys
+are all lost: no key can sign the next list, no decision can be signed, and
+the file cannot be un-bootstrapped. With a second listed key (a colleague's,
+or your own backup enrolled under `alice@backup` on day one) the path is
+`trust remove` of the lost key signed by the one that stays, then `trust add`
+of its replacement; what the lost key signed stands. Without one, restore the
+catalog from a backup taken before the loss and replay the decisions since
+from the signed export, or re-initialise (fresh `init`, `server add`, `crawl`,
+`trust init` with the new key, re-approve from the export), and record the new
+root with the new head. A compromised key is removed the same way, by a key
+that stays; its decisions before the removal stand and are undone by hand.
 
 `catalog: database integrity check failed` (`ErrCorrupt`) means the file
 contradicts itself: a stored definition no longer hashes to its digest, an
@@ -2765,8 +2999,16 @@ pinned; the documents keep describing v1.6.0 until one is.
   `crawl --strict` with a rejected or unusable tool, `audit verify` with a
   broken chain, another head or integrity problems, `init` on a path whose
   directory is reached through a symbolic link that root does not own (cmd
-  `TestInitRefusesADirectorySymlink`), and any command on a catalog file that
-  was replaced under a running store. A
+  `TestInitRefusesADirectorySymlink`), any command on a catalog file that
+  was replaced under a running store, and, in the signed flow (D22 (h)), a
+  key file that fails the file rules or is passphrase-protected, an agent
+  that does not hold the key or cannot be reached, a signature that did not
+  arrive within `--sign-timeout`, `audit head mismatch` under `--expect-head`
+  or after the log moved twice while you signed, a key the trust list does not
+  name, every refusal of the trust-list rules (a second `trust init`, the last
+  signer removed, a key signing its own removal, a duplicate name or key), a
+  catalog without a bootstrap or with another root under `--trust-root`, and
+  every `ErrCorrupt` the signed records raise. A
   command whose stdout or stderr returned a write error also exits 1 even when
   its work succeeded: the output is part of the work. A reader that closes a
   pipe early ends the process by SIGPIPE instead (shell status 141), which is
@@ -2783,10 +3025,15 @@ pinned; the documents keep describing v1.6.0 until one is.
   wildcard `--bind-address` without `--allow-all-interfaces`, `emit
   --processor-tls` with a value that is not
   `NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME` or that names a server the
-  catalog does not hold (D19), and `emit` with
+  catalog does not hold (D19), `emit` with
   an `--out` that is the catalog database, its `-wal` or `-shm` sibling, the
   `--gateway-binary` path or an existing regular file whose header lines are
-  not emit's (D17; name another path, or remove the foreign file yourself).
+  not emit's (D17; name another path, or remove the foreign file yourself),
+  and, in the signed flow (D22 (h)), a decision without `--ssh-key` once a
+  trust list is in force, `--ssh-key` or `--expect-head` on a catalog without
+  a trust list, `--as` (or `budget reset --by`) naming another operator than
+  the key's, a `trust init`, `trust add` or `trust remove` without a key, a
+  malformed `--trust-root` and a `--sign-timeout` that is not positive.
 
 Every error is one sentence on stderr with advice where a sentinel is known
 (`your crawl proposed this version; another person must approve it, or pass
