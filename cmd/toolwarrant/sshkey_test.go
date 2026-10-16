@@ -60,6 +60,19 @@ func TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne(t *testing.T) {
 	if after := l.verifiedHead(); after != before {
 		t.Fatalf("a refused key moved the head from %s to %s", before, after)
 	}
+	// A control character in the path is escaped once, by describe, so the
+	// operator sees the value given: one \u{001B}, not a doubled backslash,
+	// and never the raw byte.
+	hostile := filepath.Join(dir, "\x1b[2Jshared.key")
+	if err := os.WriteFile(hostile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := l.fail(exitFailure, "--ssh-key", hostile, "approve", "s1", "echo", "--hash", echo)
+	wantContains(t, "hostile path", r.stderr, "readable by other users")
+	wantNotContains(t, "hostile path", r.stdout+r.stderr, private...)
+	if n := strings.Count(r.stderr, `\u{001B}`); n != 1 || strings.Contains(r.stderr, `\\u{001B}`) || strings.Contains(r.stderr, "\x1b") {
+		t.Errorf("the key path is escaped %d times in %q", n, r.stderr)
+	}
 	out := l.ok("--ssh-key", l.aliceFile, "approve", "s1", "echo", "--hash", echo)
 	if actor, fp, _, _ := signedAs(t, out); actor != "alice" || fp != fpOf(l.alice) {
 		t.Errorf("signed as %s with %s", actor, fp)

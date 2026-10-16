@@ -87,7 +87,9 @@ func (a *app) keySource() (src signing.KeySource, ok bool) {
 // optionalSigner resolves the key the operator named, or returns nil when
 // none was named. Resolving means opening the key: the agent is dialled and
 // must hold the key, or the private key file is read under the file rules, so
-// a key that is refused is refused here, before the catalog is touched.
+// a key that is refused is refused here, before the catalog is touched. The
+// path in the refusal is raw: describe escapes every refusal once when it
+// prints it.
 func (a *app) optionalSigner(c *command) (*cliSigner, error) {
 	if a.globals.signTimeout <= 0 {
 		return nil, &usageError{msg: "--" + flagSignWait + " must be positive", cmd: c}
@@ -98,7 +100,7 @@ func (a *app) optionalSigner(c *command) (*cliSigner, error) {
 	}
 	key, err := src.Open(a.ctx)
 	if err != nil {
-		return nil, fmt.Errorf("--%s %s: %w", flagSSHKey, textdiff.Escape(src.Path), a.openRefusal(err))
+		return nil, fmt.Errorf("--%s %s: %w", flagSSHKey, src.Path, a.openRefusal(err))
 	}
 	return &cliSigner{key: key, fp: signing.Fingerprint(key.PublicKey()), timeout: a.globals.signTimeout, hint: a.stderr}, nil
 }

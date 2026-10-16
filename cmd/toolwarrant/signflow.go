@@ -8,7 +8,6 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/signing"
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // The signed decision flow (D22 (b) and (h); owner decisions O-13 and O-17).
@@ -162,12 +161,13 @@ func (a *app) signedWrite(expectHead string, attempt func() (catalog.Receipt, er
 
 // checkExpectedHead is the operator's compare-and-set before anything is
 // signed: with --expect-head the head read for signing must be the one they
-// recorded, case-insensitively as audit verify compares it.
+// recorded, case-insensitively as audit verify compares it. The value in the
+// refusal is raw; describe escapes it once.
 func checkExpectedHead(expect, head string) error {
 	if expect == "" || strings.EqualFold(expect, head) {
 		return nil
 	}
-	return fmt.Errorf("%w: expected %s, found %s; the log grew since you recorded the head or it was rewritten, and nothing was signed", catalog.ErrHeadMoved, textdiff.Escape(expect), head)
+	return fmt.Errorf("%w: expected %s, found %s; the log grew since you recorded the head or it was rewritten, and nothing was signed", catalog.ErrHeadMoved, expect, head)
 }
 
 // afterSigning runs the test hook, when one is set, between a signature and

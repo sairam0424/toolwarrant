@@ -228,6 +228,15 @@ func TestTrustUsageHelpAndRefusals(t *testing.T) {
 	l.bootstrap(t)
 	r := l.fail(exitFailure, "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", bad)
 	wantContains(t, "bad key file", r.stderr, "not an SSH public key")
+	hostile := filepath.Join(dir, "\x1b[2Jbad.pub")
+	if err := os.WriteFile(hostile, []byte("not a key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r = l.fail(exitFailure, "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", hostile)
+	wantContains(t, "hostile key path", r.stderr, "not an SSH public key")
+	if n := strings.Count(r.stderr, `\u{001B}`); n != 1 || strings.Contains(r.stderr, `\\u{001B}`) || strings.Contains(r.stderr, "\x1b") {
+		t.Errorf("--key is escaped %d times in %q", n, r.stderr)
+	}
 	r = l.fail(exitFailure, "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", withOptions)
 	wantContains(t, "options", r.stderr, "carries options")
 	r = l.fail(exitFailure, "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", dir)

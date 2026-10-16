@@ -11,7 +11,6 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/signing"
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 	"github.com/sairam0424/toolwarrant/internal/trust"
 )
 
@@ -269,7 +268,8 @@ func operatorName(c *command, raw string) (string, error) {
 // base64 [comment]`, one line) under the file rules of every operator-given
 // path and the signing package's size bound, refuses authorized_keys options
 // and a key outside the policy, and returns the key. Only the key's canonical
-// line (signing.MarshalKey) goes into the list; the comment is dropped.
+// line (signing.MarshalKey) goes into the list; the comment is dropped. The
+// path in a refusal is raw; describe escapes it once.
 func readPublicKeyFile(path string) (ssh.PublicKey, error) {
 	data, err := readRegularFile(path, "--"+flagKey, publicKeyNoun, signing.MaxKeyFileBytes)
 	if err != nil {
@@ -278,13 +278,13 @@ func readPublicKeyFile(path string) (ssh.PublicKey, error) {
 	line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
 	pub, _, options, _, err := ssh.ParseAuthorizedKey([]byte(line))
 	if err != nil {
-		return nil, fmt.Errorf("--%s %s: not an SSH public key as ssh-keygen writes one (type, base64, optional comment): %w", flagKey, textdiff.Escape(path), err)
+		return nil, fmt.Errorf("--%s %s: not an SSH public key as ssh-keygen writes one (type, base64, optional comment): %w", flagKey, path, err)
 	}
 	if len(options) != 0 {
-		return nil, fmt.Errorf("--%s %s: %w", flagKey, textdiff.Escape(path), signing.ErrKeyOptions)
+		return nil, fmt.Errorf("--%s %s: %w", flagKey, path, signing.ErrKeyOptions)
 	}
 	if err := signing.CheckKeyPolicy(pub); err != nil {
-		return nil, fmt.Errorf("--%s %s: %w", flagKey, textdiff.Escape(path), err)
+		return nil, fmt.Errorf("--%s %s: %w", flagKey, path, err)
 	}
 	return pub, nil
 }

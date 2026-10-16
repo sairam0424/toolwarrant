@@ -151,6 +151,12 @@ func TestApproveExpectHeadRefusesAMovedLogWithoutARetry(t *testing.T) {
 	r := l.fail(exitFailure, "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo, "--expect-head", strings.Repeat("0", 64))
 	wantContains(t, "stale", r.stderr, "audit head mismatch", "expected 0000", "found "+head, "nothing was signed")
 	wantNotContains(t, "stale", r.stderr, "signing again")
+	// The value is escaped once, when the refusal is printed.
+	r = l.fail(exitFailure, "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo, "--expect-head", "\x1b[2Jdead")
+	wantContains(t, "hostile head", r.stderr, "audit head mismatch")
+	if n := strings.Count(r.stderr, `\u{001B}`); n != 1 || strings.Contains(r.stderr, `\\u{001B}`) || strings.Contains(r.stderr, "\x1b") {
+		t.Errorf("--expect-head is escaped %d times in %q", n, r.stderr)
+	}
 	// The right head, moved under the signature: refused, no second signature.
 	calls := 0
 	move := func() { calls++; l.ok("crawl", "s1") }
