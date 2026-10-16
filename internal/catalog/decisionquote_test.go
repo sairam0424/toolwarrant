@@ -114,7 +114,9 @@ func TestWalk_RefusalSentencesQuoteHostileStateHalves(t *testing.T) {
 
 // refusedEscaped is walkRefuses plus the point of the test: the expected
 // sentence spells the control character escaped, and neither the walk's error
-// nor any line of Integrity's report carries it raw.
+// on any path (the long-lived Store's Snapshot, a read-only and a read-write
+// open, a forensic open's first view) nor any line of Integrity's report
+// carries it raw.
 func refusedEscaped(t *testing.T, s *Store, path string, seq int64, sentence, esc string) {
 	t.Helper()
 	if !strings.Contains(sentence, `\x1b`) || strings.Contains(sentence, esc) {
@@ -126,8 +128,21 @@ func refusedEscaped(t *testing.T, s *Store, path string, seq int64, sentence, es
 			t.Errorf("Integrity printed a control character raw: %q", p)
 		}
 	}
-	_, err := s.Snapshot(bg, "alpha")
-	if err == nil || strings.Contains(err.Error(), esc) {
-		t.Errorf("Snapshot = %v; want the refusal with the control character escaped, never raw", err)
+	for label, err := range readerErrors(t, s, path) {
+		if err == nil || !strings.Contains(err.Error(), sentence) || strings.Contains(err.Error(), esc) {
+			t.Errorf("%s = %v; want the refusal with the control character escaped, never raw", label, err)
+		}
 	}
+}
+
+// readerErrors reads the file once more on every path walkRefuses checks and
+// returns what each refused with, under its name: the long-lived Store's
+// Snapshot, a read-only and a read-write open, and a forensic open's first
+// view. walkRefuses judges those errors; this hands them back for the bytes.
+func readerErrors(t *testing.T, s *Store, path string) map[string]error {
+	t.Helper()
+	errs := openErrors(t, path)
+	_, errs["the long-lived Store's Snapshot"] = s.Snapshot(bg, "alpha")
+	_, errs["forensic Tools"] = forensicOpen(t, path, "").Tools(bg, "")
+	return errs
 }

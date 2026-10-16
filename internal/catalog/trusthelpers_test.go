@@ -194,17 +194,29 @@ func wantCorruptNaming(t *testing.T, label string, err error, sentence string) {
 	}
 }
 
-// opensRefuseNaming requires a read-only and a read-write open of path to
-// fail at open with ErrCorrupt naming sentence: a restarted processor and the
-// CLI alike refuse the file.
-func opensRefuseNaming(t *testing.T, path, sentence string) {
+// openErrors opens path read-only and read-write, as a restarted processor
+// and the CLI do, closes whatever opened, and returns each open's error under
+// its name, so that a test can read the error itself and not only its verdict.
+func openErrors(t *testing.T, path string) map[string]error {
 	t.Helper()
+	errs := make(map[string]error, 2)
 	for name, opts := range map[string]OpenOptions{"read-only": {ReadOnly: true}, "read-write": {Policy: lifecycle.DefaultPolicy()}} {
 		s, err := OpenWith(path, opts)
 		if s != nil {
 			_ = s.Close()
 		}
-		wantCorruptNaming(t, name+" open", err, sentence)
+		errs[name+" open"] = err
+	}
+	return errs
+}
+
+// opensRefuseNaming requires a read-only and a read-write open of path to
+// fail at open with ErrCorrupt naming sentence: a restarted processor and the
+// CLI alike refuse the file.
+func opensRefuseNaming(t *testing.T, path, sentence string) {
+	t.Helper()
+	for name, err := range openErrors(t, path) {
+		wantCorruptNaming(t, name, err, sentence)
 	}
 }
 
