@@ -405,7 +405,10 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   root). After every upgrade and every `audit verify`, read the `signed
   records ok` line and the `unsigned approvals in service` count it prints:
   the approvals made before the bootstrap stand by chain anchoring alone until
-  re-approved with a signed decision, which removes them from the list
+  signed, which is three signed decisions per tool, `disable`, `enable` and
+  `approve`, since an approval in force cannot be approved again (the line
+  names the steps; docs/operations.md, Reading the audit log and recording
+  its head), and removes the tool from the list
   (`TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals`). Record the head
   every signed decision prints after its own line and compare it with
   `--expect-head` on the next decision made after the processors were
@@ -614,9 +617,13 @@ Rebuilding a release to check it, with the verified archive in the directory
 you clone into: the build is reproducible (CGO disabled, `-trimpath`, no date
 in the link flags, archive timestamps taken from the commit), so a clean clone
 at the tag, built with the toolchain `go.mod` names, gives the archive's
-binary byte for byte. The checkout must be clean: the version control state
-is a build input, so a tree with local changes, or an archive without `.git`,
-gives another binary.
+binary byte for byte. The checkout must be a clean `git clone` checked out at
+the tag, not a `git archive` export or a source tarball: the binaries embed
+`vcs.revision`, `vcs.time`, `vcs.modified` and the module version, which the
+go command reads from `.git`, so a tree with local changes, or one without
+`.git`, gives another binary (`go version -m` on such a build shows `(devel)`
+and no `vcs.` lines; the post-publish verification of v0.4.0 rebuilt from a
+`git archive` tree and got a binary that differed from the release).
 
 ```sh
 git clone --branch v0.1.0 https://github.com/sairam0424/toolwarrant.git && cd toolwarrant

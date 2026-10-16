@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,24 +14,39 @@ func TestAuditVerifyReportsTheSignedRecordsAndLegacyApprovals(t *testing.T) {
 	l := newSignedLab(t)
 	wantContains(t, "no list", l.ok("audit", "verify"), "signed records: none; the catalog has no trust list (L13 open)", "trust init", headReminder)
 	echo := l.tool("s1", "echo").Pending
-	l.approve("alice", "s1", "echo", echo) // a legacy approval, before the bootstrap
+	add := l.tool("s1", "add").Pending
+	l.approve("alice", "s1", "echo", echo) // two legacy approvals, before the bootstrap
+	l.approve("alice", "s1", "add", add)
 	root, _ := l.bootstrap(t)
 	entries := l.auditEntries()
 	bootstrap := entries[len(entries)-1]
-	add := l.tool("s1", "add").Pending
-	l.ok("--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add)
+	wipe := l.tool("s1", "wipe_database").Pending
+	l.ok("--ssh-key", l.alicePub, "approve", "s1", "wipe_database", "--hash", wipe)
+	// The line names the three signed steps that sign one legacy approval,
+	// not a re-approve that reads as one step (a signed approve of an enabled
+	// tool is refused), and joins the tools with a comma and a space, as the
+	// guide shows them (orchestrator decision 45 (d) and (f)).
+	legacyPrefix := "unsigned approvals in service: %d (approved before the cut-over at entry " + itoa(bootstrap.Seq) + "; to sign one, disable, enable and approve it, each signed): "
 	out := l.ok("audit", "verify")
 	wantContains(t, "verify", out, "audit log ok", "integrity ok",
 		"signed records ok: 1 decisions and 1 trust lists verified; trust list v1 in force (alice "+root+"); root "+root+" at entry "+itoa(bootstrap.Seq)+"; "+itoa(bootstrap.Seq-1)+" entries before the bootstrap are unsigned history vouched for by alice",
-		"unsigned approvals in service: 1 (approved before the cut-over at entry "+itoa(bootstrap.Seq)+"; re-approve them to sign them): s1/echo", headReminder)
-	// Re-approving the legacy approval (disable, enable, approve, each
-	// signed) removes it from the list.
+		fmt.Sprintf(legacyPrefix, 2)+"s1/add, s1/echo\n", headReminder)
+	wantNotContains(t, "verify", out, "re-approve", "s1/add,s1/echo")
+	r := l.fail(exitFailure, "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
+	wantContains(t, "approve of an approval in force", r.stderr, "cannot approve in state enabled")
+	// Signing one legacy approval (disable, enable, approve, each signed)
+	// removes that tool alone from the list; signing the other empties it.
 	l.ok("--ssh-key", l.alicePub, "disable", "s1", "echo")
 	l.ok("--ssh-key", l.alicePub, "enable", "s1", "echo")
 	l.ok("--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
 	out = l.ok("audit", "verify")
-	wantContains(t, "re-approved", out, "signed records ok: 4 decisions and 1 trust lists verified")
-	wantNotContains(t, "re-approved", out, "unsigned approvals in service")
+	wantContains(t, "echo signed", out, "signed records ok: 4 decisions and 1 trust lists verified", fmt.Sprintf(legacyPrefix, 1)+"s1/add\n")
+	l.ok("--ssh-key", l.alicePub, "disable", "s1", "add")
+	l.ok("--ssh-key", l.alicePub, "enable", "s1", "add")
+	l.ok("--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add)
+	out = l.ok("audit", "verify")
+	wantContains(t, "both signed", out, "signed records ok: 7 decisions and 1 trust lists verified")
+	wantNotContains(t, "both signed", out, "unsigned approvals in service")
 }
 
 // A record rewritten under its entry is named by the integrity report with

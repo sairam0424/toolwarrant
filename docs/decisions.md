@@ -4847,8 +4847,12 @@ scenarios F, I, K, L, O and P; emit `TestGatewayParsesBindAddress`,
   when an approval in force predates the bootstrap, `unsigned approvals in
   service: N (approved before the cut-over at entry B; re-approve them to sign
   them): server/tool` from `IntegrityReport.LegacyApprovalsInService`
-  (re-approving is disable, enable, approve, each signed), or `signed
-  records: none; the catalog has no trust list (L13 open)`; a refused record
+  (re-approving is disable, enable, approve, each signed) (Note, 2026-10-16:
+  the post-publish follow-up reworded the line to `to sign one, disable,
+  enable and approve it, each signed): server/tool, ...`, joined with a comma
+  and a space, since a signed `approve` of an approval in force is refused
+  with `cannot approve in state enabled`.), or `signed records: none; the
+  catalog has no trust list (L13 open)`; a refused record
   is an `integrity problem:` line as every other finding. `audit list --json`
   gives every entry `"signed": {"payload": <base64>, "signature": "-----BEGIN
   SSH SIGNATURE-----...", "signer": "SHA256:..."}` or `null`, through
