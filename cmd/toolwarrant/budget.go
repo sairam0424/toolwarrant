@@ -7,6 +7,7 @@ import (
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/catalog"
+	"github.com/sairam0424/toolwarrant/internal/signing"
 )
 
 // eventBudgetReset is the audit event the catalog writes for a reset; the
@@ -21,7 +22,7 @@ const eventBudgetReset = "tool.budget_reset"
 // definition again.
 func budgetCommands() []*command {
 	return []*command{
-		{name: "reset", synopsis: "budget reset SERVER TOOL [--by NAME]", summary: "forget the proposals a tool gained since its last decision so the next crawl may store a new digest (a human decision, one audit entry)", run: runBudgetReset},
+		{name: "reset", synopsis: "budget reset SERVER TOOL [--by NAME] [--expect-head HEX]", summary: "forget the proposals a tool gained since its last decision so the next crawl may store a new digest (a human decision, one audit entry)", run: runBudgetReset},
 	}
 }
 
@@ -34,7 +35,8 @@ func budgetCommands() []*command {
 // the log records about their decision.
 func runBudgetReset(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
-	by := fs.String("by", "", "the person deciding (default: the global --as, "+envActor+" or the OS user); the system actor \""+systemActorName+"\" is refused")
+	by := fs.String("by", "", "the person deciding (default: the global --as, "+envActor+" or the OS user; with a trust list in force, the operator the key belongs to); the system actor \""+systemActorName+"\" is refused")
+	expect := fs.String(flagExpect, "", expectHelp)
 	pos, err := a.parseArgs(c, fs, args)
 	if err != nil {
 		return err
@@ -42,25 +44,27 @@ func runBudgetReset(a *app, c *command, args []string) (err error) {
 	if err := wantArgs(c, pos, "SERVER", "TOOL"); err != nil {
 		return err
 	}
-	actor, err := a.budgetActor(c, *by)
+	label, err := a.budgetActor(c, *by)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, *by != "" || a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
-	if err := store.ResetProposalBudget(a.ctx, pos[0], pos[1], actor); err != nil {
-		return err
-	}
-	entry, err := lastBudgetReset(a.ctx, store, pos[0]+"/"+pos[1])
+	defer f.close(&err)
+	r, err := f.decide(a, signing.KindBudgetReset, pos[0], pos[1], "")
 	if err != nil {
 		return err
 	}
-	a.stdout.printf("reset the proposal budget of %s/%s by %s; the next crawl may store a new digest\n", cell(pos[0]), cell(pos[1]), cell(actor.Name))
+	entry, err := lastBudgetReset(a.ctx, f.store, pos[0]+"/"+pos[1])
+	if err != nil {
+		return err
+	}
+	a.stdout.printf("reset the proposal budget of %s/%s by %s; the next crawl may store a new digest\n", cell(pos[0]), cell(pos[1]), cell(f.actor.Name))
 	a.stdout.printf("audit entry %d: %s %s by %s (%s) at %s, detail %s, hash %s\n",
 		entry.Seq, cell(entry.Event), cell(entry.Subject), cell(entry.Actor), cell(entry.ActorType), cell(entry.TS), cell(entry.Detail), cell(entry.Hash))
+	f.report(a, r)
 	return a.stdout.broken()
 }
 

@@ -26,6 +26,9 @@ const (
 	adviceSchema       = "the file was written by another schema version; the message says whether it came from an unreleased build (delete it and run init again) or from a release (migrate it in place with this build as the message says, or read it with a build of that schema; never delete it)"
 	adviceCorrupt      = "do not serve from this database, restore it from a backup"
 	adviceInterrupted  = "interrupted"
+	adviceSignature    = "pass --ssh-key PATH naming a key the trust list holds (run \"" + programName + " trust show\" to see them)"
+	adviceNotASigner   = "run \"" + programName + " trust show\" to see whose keys the trust list names; a key is added with \"" + programName + " trust add\""
+	adviceNoTrustList  = "run \"" + programName + " trust init\" first"
 )
 
 // describe turns an error into the one sentence the operator reads on stderr.
@@ -93,6 +96,12 @@ func describeCatalog(err error) (string, bool) {
 		return adviceSchema, true
 	case errors.Is(err, catalog.ErrCorrupt):
 		return adviceCorrupt, true
+	case errors.Is(err, catalog.ErrSignatureRequired):
+		return adviceSignature, true
+	case errors.Is(err, catalog.ErrNotASigner):
+		return adviceNotASigner, true
+	case errors.Is(err, catalog.ErrNoTrustList):
+		return adviceNoTrustList, true
 	}
 	return "", false
 }

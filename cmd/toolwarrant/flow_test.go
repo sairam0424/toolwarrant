@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sairam0424/toolwarrant/internal/gate"
+	"github.com/sairam0424/toolwarrant/internal/signing/sigtest"
 )
 
 const (
@@ -190,7 +191,18 @@ func TestSelfApprovalAndSystemActorRefusals(t *testing.T) {
 	r = c.fail(exitUsage, "--as", "crawler", "approve", "s1", "echo", "--hash", tv.Pending)
 	wantContains(t, "system actor", r.stderr, "system actor", "--as")
 	c.fail(exitUsage, "--as", "CRAWLER", "disable", "s1", "echo")
-	c.ok("--as", "bob", "--allow-self-approval", "approve", "s1", "echo", "--hash", tv.Pending)
+	// With a trust list in force the proposer rule holds against the
+	// operator the key names: bob's key signs as bob, whose crawl proposed.
+	sock, add := sigtest.NewAgent(t)
+	bob := sigtest.GenerateEd25519(t)
+	add(bob)
+	bobPub := sigtest.WritePublicKey(t, t.TempDir(), "bob.pub", bob)
+	c.env[envAuthSock] = sock
+	c.ok("--as", "bob", "--ssh-key", bobPub, "trust", "init")
+	r = c.fail(exitFailure, "--ssh-key", bobPub, "approve", "s1", "echo", "--hash", tv.Pending)
+	wantContains(t, "self approval through the key", r.stderr, adviceSelfApproval)
+	c.fail(exitUsage, "--as", "crawler", "--ssh-key", bobPub, "approve", "s1", "echo", "--hash", tv.Pending)
+	c.ok("--ssh-key", bobPub, "--allow-self-approval", "approve", "s1", "echo", "--hash", tv.Pending)
 	entries := c.auditEntries()
 	last := entries[len(entries)-1]
 	if last.Event != "version.approved" || last.Actor != "bob" || last.ActorType != "human" || last.Subject != "s1/echo" {

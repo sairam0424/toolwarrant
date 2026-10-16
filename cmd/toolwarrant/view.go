@@ -56,10 +56,13 @@ type versionJSON struct {
 	Change        *driftJSON      `json:"change"`
 }
 
-// showJSON is the output of show --json.
+// showJSON is the output of show --json. Signer names who approved and the
+// key that signed (showsigner.go); null for an unsigned approval and while
+// nothing is approved.
 type showJSON struct {
 	toolJSON
 	History []versionJSON `json:"history"`
+	Signer  *signerJSON   `json:"signer"`
 }
 
 // diffSide is one side of a diff: a stored version, or the empty document
@@ -194,8 +197,12 @@ func runShow(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	approval, signer, err := a.approvalLine(store, view)
+	if err != nil {
+		return err
+	}
 	if *asJSON {
-		return writeJSON(a.stdout, showJSON{toolJSON: toolJSONOf(view), History: versionsJSON(versions, vc.reports)})
+		return writeJSON(a.stdout, showJSON{toolJSON: toolJSONOf(view), History: versionsJSON(versions, vc.reports), Signer: signer})
 	}
 	a.stdout.printf("%s/%s\n  state:          %s\n  approved:       %s\n  pending:        %s\n  live:           %s\n  drifted:        %t\n  unusable:       %t\n  missing crawls: %d\n\n",
 		cell(view.Server), cell(view.Name), view.State, cell(view.Approved), cell(view.Pending), cell(view.LastSeen), view.Drifted, view.Unusable, view.MissingCrawls)
@@ -206,6 +213,9 @@ func runShow(a *app, c *command, args []string) (err error) {
 	}
 	if err := t.flush(); err != nil {
 		return err
+	}
+	if approval != "" {
+		a.stdout.printf("\n%s\n", approval)
 	}
 	if summary := changeSummary(versions, vc); summary != "" {
 		a.stdout.printf("\n%s\n", summary)

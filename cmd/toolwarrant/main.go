@@ -91,6 +91,10 @@ type app struct {
 	stderr  *stream
 	getenv  func(string) string
 	globals globals
+	// afterSign, when set, runs between a signature and the write that
+	// follows it. Tests set it to move the log in that window and prove the
+	// compare-and-set and its one retry; run never sets it.
+	afterSign func()
 }
 
 // command is one entry of the command table. A command with sub-entries
@@ -131,13 +135,14 @@ func commands() []*command {
 		{name: "list", synopsis: "list [SERVER] [--json]", summary: "show every tool with its state and digests; flags DRIFT, MISSING and UNUSABLE need a person", run: runList},
 		{name: "show", synopsis: "show SERVER TOOL [--json]", summary: "show one tool and all of its versions with their proposers and digest profile", run: runShow},
 		{name: "diff", synopsis: "diff SERVER TOOL [--from HASH] [--to HASH]", summary: "show what changed between two versions, escaped for the terminal", run: runDiff},
-		{name: "approve", synopsis: "approve SERVER TOOL --hash HASH [--accept-suspicious]", summary: "approve the exact digest you reviewed", run: runApprove},
-		{name: "reject", synopsis: "reject SERVER TOOL --hash HASH", summary: "reject a pending version", run: runReject},
-		{name: "disable", synopsis: "disable SERVER TOOL", summary: "switch a tool off", run: runDisable},
-		{name: "enable", synopsis: "enable SERVER TOOL", summary: "bring a disabled tool back for review", run: runEnable},
-		{name: "rollback", synopsis: "rollback SERVER TOOL --to HASH", summary: "re-approve a version that was approved before", run: runRollback},
+		{name: "approve", synopsis: "approve SERVER TOOL --hash HASH [--accept-suspicious] [--expect-head HEX]", summary: "approve the exact digest you reviewed; signed with --ssh-key once a trust list is in force", run: runApprove},
+		{name: "reject", synopsis: "reject SERVER TOOL --hash HASH [--expect-head HEX]", summary: "reject a pending version", run: runReject},
+		{name: "disable", synopsis: "disable SERVER TOOL [--expect-head HEX]", summary: "switch a tool off", run: runDisable},
+		{name: "enable", synopsis: "enable SERVER TOOL [--expect-head HEX]", summary: "bring a disabled tool back for review", run: runEnable},
+		{name: "rollback", synopsis: "rollback SERVER TOOL --to HASH [--expect-head HEX]", summary: "re-approve a version that was approved before", run: runRollback},
 		{name: "budget", synopsis: "budget reset ...", summary: "reset the proposal budget of a tool that no other decision can unblock", run: runSub, sub: budgetCommands()},
-		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION] [--max-crawl-age DURATION]", summary: "run the ExtMCP processor that enforces approvals at the gateway", run: runServe},
+		{name: "trust", synopsis: "trust init|add|remove|show ...", summary: "start, change and show the signed operator trust list that decisions must be signed under", run: runSub, sub: trustCommands()},
+		{name: "serve", synopsis: "serve --server NAME --listen ADDR [--target NAME] [--secret-env VAR] [--tls-cert PATH --tls-key PATH [--tls-client-ca PATH]] [--allow-non-loopback [--insecure-no-secret]] [--max-evidence-age DURATION] [--max-crawl-age DURATION]", summary: "run the ExtMCP processor that enforces approvals at the gateway; with the global --trust-root it refuses a catalog whose trust bootstrap another key signed or that has none", run: runServe},
 		{name: "emit", synopsis: "emit --out FILE [--listen-port N] [--bind-address ADDR [--allow-all-interfaces]] [--admin-addr ADDR | --disable-admin] [--stats-addr ADDR] [--readiness-addr ADDR] [--processor-base-port N] [--processor NAME=HOST:PORT ...] [--processor-tls NAME=cert=PATH,key=PATH,root=PATH,hostname=NAME ...] [--secret-env VAR] [--gateway-binary PATH]", summary: "write the agentgateway configuration for every server, validated with the gateway binary when one is named", run: runEmit},
 		{name: "export", synopsis: "export --dir DIR [--sign-key PATH] [--commit] [--git-name N --git-email E]", summary: "write the approved definitions to a directory for review in git, with the audit head in MANIFEST.json and, with a key, its signature", run: runExport, sub: exportCommands(), self: true},
 		{name: "audit", synopsis: "audit verify|list ...", summary: "verify and read the hash-chained audit log", run: runSub, sub: auditCommands()},

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
+	"github.com/sairam0424/toolwarrant/internal/signing"
 )
 
 // serverCommands is the table behind "server".
@@ -11,8 +12,8 @@ func serverCommands() []*command {
 	return []*command{
 		{name: "add", synopsis: "server add NAME URL [--owner GROUP] [--allow-private]", summary: "register an upstream MCP server (URLs with user info are refused)", run: runServerAdd},
 		{name: "list", synopsis: "server list [--json]", summary: "list the registered upstreams; PAUSED marks a server that is neither crawled nor served, PROCESSOR is the processor address emit recorded for it (- before the first emit)", run: runServerList},
-		{name: "pause", synopsis: "server pause NAME", summary: "stop crawling a server and serve nothing of it until resume (the remedy against a misbehaving upstream)", run: runServerPause},
-		{name: "resume", synopsis: "server resume NAME", summary: "let crawls and serving of a paused server continue", run: runServerResume},
+		{name: "pause", synopsis: "server pause NAME [--expect-head HEX]", summary: "stop crawling a server and serve nothing of it until resume (the remedy against a misbehaving upstream)", run: runServerPause},
+		{name: "resume", synopsis: "server resume NAME [--expect-head HEX]", summary: "let crawls and serving of a paused server continue", run: runServerResume},
 	}
 }
 
@@ -123,9 +124,11 @@ func runServerResume(a *app, c *command, args []string) error {
 	return runServerSwitch(a, c, args, false)
 }
 
-// runServerSwitch is the shared body of pause and resume.
+// runServerSwitch is the shared body of pause and resume: a decision, signed
+// once a trust list is in force (signflow.go).
 func runServerSwitch(a *app, c *command, args []string, pause bool) (err error) {
 	fs := newFlagSet(c.name)
+	expect := fs.String(flagExpect, "", expectHelp)
 	pos, err := a.parseArgs(c, fs, args)
 	if err != nil {
 		return err
@@ -133,25 +136,28 @@ func runServerSwitch(a *app, c *command, args []string, pause bool) (err error) 
 	if err := wantArgs(c, pos, "NAME"); err != nil {
 		return err
 	}
-	actor, err := a.decidingActor(c)
+	label, err := a.decidingActor(c)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
+	defer f.close(&err)
+	kind := signing.KindResume
 	if pause {
-		if err := store.PauseServer(a.ctx, pos[0], actor); err != nil {
-			return err
-		}
-		a.stdout.printf("paused server %s: crawls are refused and nothing of it is served until \"%s server resume %s\"\n", cell(pos[0]), programName, cell(pos[0]))
-		return nil
+		kind = signing.KindPause
 	}
-	if err := store.ResumeServer(a.ctx, pos[0], actor); err != nil {
+	r, err := f.decide(a, kind, pos[0], "", "")
+	if err != nil {
 		return err
 	}
-	a.stdout.printf("resumed server %s: crawls and serving continue\n", cell(pos[0]))
+	if pause {
+		a.stdout.printf("paused server %s: crawls are refused and nothing of it is served until \"%s server resume %s\"\n", cell(pos[0]), programName, cell(pos[0]))
+	} else {
+		a.stdout.printf("resumed server %s: crawls and serving continue\n", cell(pos[0]))
+	}
+	f.report(a, r)
 	return nil
 }

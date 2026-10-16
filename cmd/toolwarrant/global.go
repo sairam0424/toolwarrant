@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
 	"github.com/sairam0424/toolwarrant/internal/emit"
@@ -69,13 +70,19 @@ type globals struct {
 	db                string
 	actor             string
 	allowSelfApproval bool
+	sshKey            string
+	trustRoot         string
+	signTimeout       time.Duration
 }
 
 // bind registers the global flags on fs.
 func (g *globals) bind(fs *flag.FlagSet) {
 	fs.StringVar(&g.db, "db", "", "catalog database path (env "+envDB+"; default ./"+defaultDBName+")")
-	fs.StringVar(&g.actor, "as", "", "who is acting (env "+envActor+"; default the current OS user; \""+systemActorName+"\" is the system actor)")
+	fs.StringVar(&g.actor, "as", "", "who is acting (env "+envActor+"; default the current OS user; \""+systemActorName+"\" is the system actor); with a trust list in force it must name the operator the key belongs to")
 	fs.BoolVar(&g.allowSelfApproval, "allow-self-approval", false, "let a person whose crawl proposed a version approve it")
+	fs.StringVar(&g.sshKey, flagSSHKey, "", "SSH key that signs decisions and trust lists: a public key file (.pub) whose private half ssh-agent holds, or an unencrypted OpenSSH private key file readable by you alone (env "+envSSHKey+"); never printed")
+	fs.StringVar(&g.trustRoot, flagTrustRoot, "", "SHA256: fingerprint of the key that signed the trust bootstrap; every command refuses a catalog whose bootstrap another key signed or that has none (env "+envTrustRoot+")")
+	fs.DurationVar(&g.signTimeout, flagSignWait, defaultSignTimeout, "how long one signature may take, a FIDO2 touch or a forwarded agent included; a timeout writes nothing")
 }
 
 // newFlagSet returns a FlagSet that reports errors instead of exiting and
@@ -150,14 +157,22 @@ func (a *app) policy() lifecycle.Policy {
 
 // openStore opens the catalog in the given mode. Every mode but openCreate
 // requires the file to exist already; the catalog reports that as ErrNotFound,
-// which becomes the one sentence a new operator needs.
+// which becomes the one sentence a new operator needs. The trust root the
+// operator recorded (--trust-root, TOOLWARRANT_TRUST_ROOT) pins every open,
+// so a catalog whose bootstrap another key signed or that has none is refused
+// by every command alike.
 func (a *app) openStore(mode openMode) (*catalog.Store, error) {
 	path := a.dbPath()
+	root, err := a.trustRoot()
+	if err != nil {
+		return nil, err
+	}
 	opts := catalog.OpenOptions{
 		Policy:    a.policy(),
 		MustExist: mode != openCreate,
 		ReadOnly:  mode == openReadOnly,
 		Forensic:  mode == openForensic,
+		TrustRoot: root,
 	}
 	store, err := catalog.OpenWith(path, opts)
 	if err != nil {

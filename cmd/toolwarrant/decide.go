@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/sairam0424/toolwarrant/internal/catalog"
+	"github.com/sairam0424/toolwarrant/internal/signing"
 	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
@@ -40,8 +41,11 @@ func (a *app) decidingActor(c *command) (catalog.Actor, error) {
 }
 
 // beginDecision parses SERVER TOOL plus the command's flags and resolves the
-// human actor. The caller opens the store once its own checks have passed, so
-// a usage error never touches the database.
+// human actor the unsigned path would use (--as, TOOLWARRANT_ACTOR, the OS
+// user; never the system actor). The caller opens the store once its own
+// checks have passed, so a usage error never touches the database; with a
+// trust list in force beginSigned then derives the person from the key and
+// holds this label to it (O-13).
 func (a *app) beginDecision(c *command, fs *flag.FlagSet, args []string) (server, tool string, actor catalog.Actor, err error) {
 	pos, err := a.parseArgs(c, fs, args)
 	if err != nil {
@@ -64,28 +68,32 @@ func (a *app) beginDecision(c *command, fs *flag.FlagSet, args []string) (server
 // see or a terminal would obey, words that mix scripts, and values or keys
 // that read the same as the approved version's but are spelt with other code
 // points; a hidden instruction and a swapped parameter name are exactly what
-// the review exists to catch.
+// the review exists to catch. Once a trust list is in force the approval is
+// signed (signflow.go): the key is resolved before the review, so a refused
+// key touches nothing, and the signature is made after it, so a refused
+// approval asks for no touch.
 func runApprove(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	hash := fs.String(hashFlagName, "", hashFlagHelp)
 	accept := fs.Bool("accept-suspicious", false, "approve even though the definition holds invisible or terminal-controlling characters, mixed-script words or look-alike changes against the approved version")
-	server, tool, actor, err := a.beginDecision(c, fs, args)
+	expect := fs.String(flagExpect, "", expectHelp)
+	server, tool, label, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
 	if err := requireFlag(c, *hash, hashFlagName, "name the digest you reviewed"); err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
-	digest, err := store.ResolveDigest(a.ctx, server, tool, *hash)
+	defer f.close(&err)
+	digest, err := f.store.ResolveDigest(a.ctx, server, tool, *hash)
 	if err != nil {
 		return err
 	}
-	view, versions, err := loadTool(a.ctx, store, server, tool)
+	view, versions, err := loadTool(a.ctx, f.store, server, tool)
 	if err != nil {
 		return err
 	}
@@ -103,10 +111,12 @@ func runApprove(a *app, c *command, args []string) (err error) {
 	if err := reviewSuspicious(a.stderr, approved, v, *accept); err != nil {
 		return err
 	}
-	if err := store.Approve(a.ctx, server, tool, digest, actor); err != nil {
+	r, err := f.decide(a, signing.KindApprove, server, tool, digest)
+	if err != nil {
 		return err
 	}
 	a.stdout.printf("approved %s/%s at %s\n", cell(server), cell(tool), digest)
+	f.report(a, r)
 	return nil
 }
 
@@ -167,45 +177,51 @@ func locate(path, s string) []located {
 func runReject(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	hash := fs.String(hashFlagName, "", hashFlagHelp)
-	server, tool, actor, err := a.beginDecision(c, fs, args)
+	expect := fs.String(flagExpect, "", expectHelp)
+	server, tool, label, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
 	if err := requireFlag(c, *hash, hashFlagName, "name the digest you are rejecting"); err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
-	digest, err := store.ResolveDigest(a.ctx, server, tool, *hash)
+	defer f.close(&err)
+	digest, err := f.store.ResolveDigest(a.ctx, server, tool, *hash)
 	if err != nil {
 		return err
 	}
-	if err := store.Reject(a.ctx, server, tool, digest, actor); err != nil {
+	r, err := f.decide(a, signing.KindReject, server, tool, digest)
+	if err != nil {
 		return err
 	}
 	a.stdout.printf("rejected %s/%s at %s\n", cell(server), cell(tool), digest)
+	f.report(a, r)
 	return nil
 }
 
 // runDisable switches a tool off; it is never served until enabled again.
 func runDisable(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
-	server, tool, actor, err := a.beginDecision(c, fs, args)
+	expect := fs.String(flagExpect, "", expectHelp)
+	server, tool, label, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
-	if err := store.Disable(a.ctx, server, tool, actor); err != nil {
+	defer f.close(&err)
+	r, err := f.decide(a, signing.KindDisable, server, tool, "")
+	if err != nil {
 		return err
 	}
 	a.stdout.printf("disabled %s/%s\n", cell(server), cell(tool))
+	f.report(a, r)
 	return nil
 }
 
@@ -214,23 +230,26 @@ func runDisable(a *app, c *command, args []string) (err error) {
 // proposes nothing and so may approve what the crawl proposed (D4).
 func runEnable(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
-	server, tool, actor, err := a.beginDecision(c, fs, args)
+	expect := fs.String(flagExpect, "", expectHelp)
+	server, tool, label, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
-	if err := store.Enable(a.ctx, server, tool, actor); err != nil {
+	defer f.close(&err)
+	r, err := f.decide(a, signing.KindEnable, server, tool, "")
+	if err != nil {
 		return err
 	}
-	view, err := store.Tool(a.ctx, server, tool)
+	view, err := f.store.Tool(a.ctx, server, tool)
 	if err != nil {
 		return err
 	}
 	a.stdout.printf("enabled %s/%s; state is now %s\n", cell(server), cell(tool), view.State)
+	f.report(a, r)
 	return nil
 }
 
@@ -238,25 +257,28 @@ func runEnable(a *app, c *command, args []string) (err error) {
 func runRollback(a *app, c *command, args []string) (err error) {
 	fs := newFlagSet(c.name)
 	to := fs.String(toFlagName, "", "digest or prefix of a version that was approved before (required)")
-	server, tool, actor, err := a.beginDecision(c, fs, args)
+	expect := fs.String(flagExpect, "", expectHelp)
+	server, tool, label, err := a.beginDecision(c, fs, args)
 	if err != nil {
 		return err
 	}
 	if err := requireFlag(c, *to, toFlagName, "name the version to return to"); err != nil {
 		return err
 	}
-	store, err := a.openStore(openWrite)
+	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
 	if err != nil {
 		return err
 	}
-	defer closeStore(store, &err)
-	digest, err := store.ResolveDigest(a.ctx, server, tool, *to)
+	defer f.close(&err)
+	digest, err := f.store.ResolveDigest(a.ctx, server, tool, *to)
 	if err != nil {
 		return err
 	}
-	if err := store.Rollback(a.ctx, server, tool, digest, actor); err != nil {
+	r, err := f.decide(a, signing.KindRollback, server, tool, digest)
+	if err != nil {
 		return err
 	}
 	a.stdout.printf("rolled back %s/%s to %s\n", cell(server), cell(tool), digest)
+	f.report(a, r)
 	return nil
 }
