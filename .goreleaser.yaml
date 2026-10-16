@@ -105,10 +105,14 @@ release:
     To migrate: stop the processors, back the file up and record its audit head
     with the build that wrote it, then run init with this build, which adds
     one table and its guards and rewrites nothing, so the head is unchanged;
-    then start the processors. Every command but serve, audit verify and
-    audit list opens the file read-write and migrates it the same way, list
-    and show included, so take the backup before running any of them with this
-    build; serve, audit verify and audit list never migrate. A v0.3.x build
+    compare the audit heads right after init and before emit, since emit is
+    a write too: it records a server.processor_set audit entry for every
+    processor address that is new or changed, so a head compared after it
+    differs for that reason alone; then start the processors. Every command
+    but serve, audit verify and audit list opens the file read-write and
+    migrates it the same way, list and show included, so take the backup
+    before running any of them with this build; serve, audit verify and audit
+    list never migrate. A v0.3.x build
     refuses the migrated file as written by a newer build, and a v0.3.x
     processor left running on it keeps serving until the first write with
     this build moves the generation, then denies every hook with "unexpected

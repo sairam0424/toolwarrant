@@ -203,6 +203,8 @@ func TestTrustUsageHelpAndRefusals(t *testing.T) {
 		{"add without name", []string{"--ssh-key", l.alicePub, "trust", "add"}, "expected 1 argument(s)"},
 		{"add without key", []string{"--ssh-key", l.alicePub, "trust", "add", "bob"}, "--key is required"},
 		{"add the system actor", []string{"--ssh-key", l.alicePub, "trust", "add", "crawler", "--key", l.bobPub}, "system actor"},
+		{"add as the system actor", []string{"--as", "crawler", "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub}, "the system actor cannot change the trust list; pass --as with your own name"},
+		{"remove as the system actor", []string{"--as", "crawler", "--ssh-key", l.alicePub, "trust", "remove", "bob"}, "the system actor cannot change the trust list; pass --as with your own name"},
 		{"add without a signer", []string{"trust", "add", "bob", "--key", l.bobPub}, "trust add needs --ssh-key PATH"},
 		{"remove without a signer", []string{"trust", "remove", "bob"}, "trust remove needs --ssh-key PATH"},
 		{"show both forms", []string{"trust", "show", "--json", "--allowed-signers"}, "exclusive"},
@@ -214,6 +216,9 @@ func TestTrustUsageHelpAndRefusals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := l.sub(t).fail(exitUsage, tc.args...)
 			wantContains(t, "stderr", r.stderr, tc.want)
+			// No trust refusal borrows the decision sentence, which names
+			// approve, reject and the other decisions and not the trust list.
+			wantNotContains(t, "stderr", r.stderr, systemActorCannotDecide)
 		})
 	}
 	// A public key file that is not one, and one with authorized_keys options.

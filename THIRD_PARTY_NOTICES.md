@@ -29,11 +29,15 @@ non-test package of this module (`go list -deps ./...`), so its code is
 compiled into whichever binaries under cmd/ link that package (mockupstream,
 seamclient, seamgate and seamprocessor are the spike's seam tools; toolwarrant
 is the control plane and processor). The fifth column names those binaries,
-and reads `none yet` for a module that only a package no binary imports yet
-reaches. A redistribution of a binary must carry the texts, marked in the
-fourth column, of the modules linked into it; every text is reproduced
-verbatim in Appendix A. The digests are the first twelve characters of the
-SHA-256 given in full in Appendix B.
+qualified with the platforms when a binary holds the module on some of the
+release platforms only (`toolwarrant (darwin only)` for a module that
+`modernc.org/libc` imports on darwin alone, which the linux binaries and
+their SBOMs do not carry), and reads `none yet` for a module that only a
+package no binary imports yet reaches. A redistribution of a binary must
+carry the texts, marked in the fourth column, of the modules linked into it
+on that platform; every text is reproduced verbatim in Appendix A. The
+digests are the first twelve characters of the SHA-256 given in full in
+Appendix B.
 
 | Module | Version | Licence | Files (SHA-256 prefix; text) | Linked into |
 | --- | --- | --- | --- | --- |
@@ -42,9 +46,9 @@ SHA-256 given in full in Appendix B.
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause | LICENSE (0a8d61ed3cbf; A3) | toolwarrant |
 | `github.com/gowebpki/jcs` | v1.0.2 | Apache-2.0 | LICENSE (cfc7749b96f6; A4) | seamgate, toolwarrant |
 | `github.com/hiddeco/sshsig` | v0.2.0 | Apache-2.0 | LICENSE (c71d239df917; A5) | toolwarrant |
-| `github.com/mattn/go-isatty` | v0.0.24 | MIT | LICENSE (08eab1118c80; A6) | toolwarrant |
+| `github.com/mattn/go-isatty` | v0.0.24 | MIT | LICENSE (08eab1118c80; A6) | toolwarrant (darwin only) |
 | `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | Apache-2.0 and MIT, per contribution (transition notice; MIT attribution applies) | LICENSE (af679003d933; A7) | mockupstream, seamclient |
-| `github.com/ncruces/go-strftime` | v1.0.0 | MIT | LICENSE (38ae43959daf; A8) | toolwarrant |
+| `github.com/ncruces/go-strftime` | v1.0.0 | MIT | LICENSE (38ae43959daf; A8) | toolwarrant (darwin only) |
 | `github.com/remyoudompheng/bigfft` | v0.0.0-20230129092748-24d4a6f8daec | BSD-3-Clause | LICENSE (dd26a7abddd0; A9) | toolwarrant |
 | `github.com/segmentio/asm` | v1.1.3 | MIT | LICENSE (e2a78de21d6d; A10) | mockupstream, seamclient |
 | `github.com/segmentio/encoding` | v0.5.4 | MIT | LICENSE (d6d71a1f7dc6; A11) | mockupstream, seamclient |

@@ -318,8 +318,14 @@ curl -s -X POST --data 'Echoes the message back.' 'http://127.0.0.1:3001/admin/d
 ```
 
 `toolwarrant help` prints every command; `toolwarrant help COMMAND` prints the
-flags of one command. `toolwarrant version` prints the build version and the
-pinned gateway version.
+flags of one command. `toolwarrant version` prints the build version, the
+pinned gateway version and, on a third line, the commit the binary was built
+from: `commit` and the first twelve characters of the revision the go command
+stamped, `+dirty` appended when the checkout had uncommitted changes, and
+`commit unknown` for a build with no version-control stamp, such as a
+`go install` of the module from the proxy or a `go run`
+(`TestBuildCommit_NamesTheRevisionTheToolchainStamped`; the release binaries
+up to v0.4.0 predate the line and print two lines).
 
 ## The operator loop
 
@@ -514,7 +520,10 @@ version the go command embedded and prints the tag with its `v`
 (`toolwarrant vX.Y.Z`; `TestVersionFallsBackToTheModuleVersion`), while a
 release archive's binary prints `X.Y.Z`; the binaries installed from v0.1.0
 and v0.1.1 predate the fallback and print `dev`, and `go version -m` names
-the tag for all of them. The unit and
+the tag for all of them. Its commit line reads `commit unknown`, since the
+module zip the proxy serves carries no version-control stamp and the tag
+names the commit, while a release archive's binary, built in the checkout,
+names the tagged commit. The unit and
 property tests of every package pass under `-race` (`make test`, which prints
 per-package coverage), and the end-to-end test passes against the real gateway
 (`make e2e`; `demo/run.sh` runs it unattended and writes `demo/last-run.log`).

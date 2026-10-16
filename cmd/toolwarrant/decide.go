@@ -29,10 +29,13 @@ type located struct {
 // one. Each names what the command does, since the operator who ran it as the
 // crawler reads the sentence as the fix: the decision sentence on trust init
 // named approve, reject and the other decisions and not the command that was
-// refused (post-v0.4.0 verification, orchestrator decision 45 (e)).
+// refused (post-v0.4.0 verification, orchestrator decision 45 (e)); trust add
+// and trust remove printed the same decision sentence until the follow-up of
+// decision 49 gave them theirs.
 const (
 	systemActorCannotDecide    = "the system actor cannot approve, reject, disable, enable, roll back, pause or resume; pass --as with your own name"
 	systemActorCannotInitTrust = "the system actor cannot start the trust list; pass --as with your own name"
+	systemActorCannotEditTrust = "the system actor cannot change the trust list; pass --as with your own name"
 )
 
 // decidingActor is actor(false) plus the rule that only a person decides: the

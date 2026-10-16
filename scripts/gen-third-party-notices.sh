@@ -151,17 +151,26 @@ main_module=$(go list -m)
 awk '/^require[[:space:]]*\(/ { f = 1; next } /^\)/ { f = 0 } f && NF { print $1 } /^require[[:space:]]+[^(]/ { print $2 }' go.mod | sort -u >"$tmp/gomod"
 go list -m -f '{{.Path}}{{"\t"}}{{.Version}}{{"\t"}}{{.Dir}}' all | awk -F'\t' '$2 != ""' >"$tmp/all"
 
-# module_pkgs lists the modules whose packages the given build needs, on any of
-# the platforms a release ships (.goreleaser.yaml): the sets differ by platform
-# (the darwin graph carries go-isatty and go-strftime, the linux graph does
-# not), so the union is taken and the file is the same whatever host generates
-# or checks it; the first ci run on a linux runner had refused a file written
-# on darwin.
+# release_platforms are the goos/goarch pairs a release ships (.goreleaser.yaml;
+# make release-check holds this line to its goos x goarch). The module sets
+# differ by platform: modernc.org/libc imports go-isatty and go-strftime on
+# darwin alone, so the linux binaries and their SBOMs do not carry them.
+# platform_module_pkgs lists the modules whose packages the given build needs
+# on one platform; module_pkgs takes the union over every release platform, so
+# that which modules the file lists is the same whatever host generates or
+# checks it (the first ci run on a linux runner had refused a file written on
+# darwin), while the Linked into column of section 1 is computed per platform
+# from cmdlinked, so that it agrees with each platform's SBOM.
 release_platforms="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64"
+platform_module_pkgs() { # goos/goarch go list args...
+	local platform=$1
+	shift
+	GOOS=${platform%/*} GOARCH=${platform#*/} go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$@" | awk -v main="$main_module" 'NF && $0 != main'
+}
 module_pkgs() { # go list args...
 	for platform in $release_platforms; do
-		GOOS=${platform%/*} GOARCH=${platform#*/} go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$@"
-	done | awk -v main="$main_module" 'NF && $0 != main' | sort -u
+		platform_module_pkgs "$platform" "$@"
+	done | sort -u
 }
 module_pkgs ./... >"$tmp/linked"
 module_pkgs -test ./... >"$tmp/tested"
@@ -170,9 +179,13 @@ for d in cmd/*/; do
 	d=${d%/}
 	cmds="$cmds ${d#cmd/}"
 done
+# cmdlinked holds one "<command>\t<goos/goarch>\t<module>" row per module a
+# command's dependency graph holds on a platform.
 : >"$tmp/cmdlinked"
 for c in $cmds; do
-	module_pkgs "./cmd/$c" | awk -v c="$c" '{ print c "\t" $0 }' >>"$tmp/cmdlinked"
+	for platform in $release_platforms; do
+		platform_module_pkgs "$platform" "./cmd/$c" | awk -v c="$c" -v p="$platform" '{ print c "\t" p "\t" $0 }' >>"$tmp/cmdlinked"
+	done
 done
 
 in_list() { grep -qxF "$1" "$2"; }
@@ -212,12 +225,43 @@ text_cell() { # module@version files register
 	printf '%s\n' "${cell#, }"
 }
 
+# platform_qualifier prints the qualifier of a binary that holds a module on
+# some release platforms only: nothing when it holds it on all of them,
+# " (darwin only)" when the platforms are exactly those of some operating
+# systems (joined with "and" for more than one), else the platforms themselves,
+# " (darwin/arm64 only)". The argument is the space-separated list of the
+# platforms that hold the module, in release_platforms order.
+platform_qualifier() { # platforms
+	local have=$1 p oses="" whole=""
+	[ "$have" = "$release_platforms" ] && return 0
+	for p in $have; do
+		case " $oses " in *" ${p%/*} "*) ;; *) oses="$oses ${p%/*}" ;; esac
+	done
+	oses=${oses# }
+	for p in $release_platforms; do
+		case " $oses " in *" ${p%/*} "*) whole="$whole $p" ;; esac
+	done
+	if [ "${whole# }" = "$have" ]; then
+		printf ' (%s only)\n' "$(printf '%s' "$oses" | sed 's/ / and /g')"
+	else
+		printf ' (%s only)\n' "$(printf '%s' "$have" | sed 's/ /, /g')"
+	fi
+}
+
 # linked_into names the binaries under cmd/ whose dependency graph holds the
-# module, or `none yet` when a package of the module imports it but no binary
-# does (a package wired into a command by a later change).
+# module, each with platform_qualifier's qualifier when it holds the module on
+# some release platforms only, or `none yet` when a package of the module
+# imports it but no binary does (a package wired into a command by a later
+# change).
 linked_into() { # module path
-	local c acc=""
-	for c in $cmds; do in_list "$c$tab$1" "$tmp/cmdlinked" && acc="$acc, $c"; done
+	local c p have acc=""
+	for c in $cmds; do
+		have=""
+		for p in $release_platforms; do
+			in_list "$c$tab$p$tab$1" "$tmp/cmdlinked" && have="$have $p"
+		done
+		[ -n "$have" ] && acc="$acc, $c$(platform_qualifier "${have# }")"
+	done
 	if [ -z "$acc" ]; then
 		echo "none yet"
 	else
@@ -264,11 +308,15 @@ non-test package of this module (`go list -deps ./...`), so its code is
 compiled into whichever binaries under cmd/ link that package (mockupstream,
 seamclient, seamgate and seamprocessor are the spike's seam tools; toolwarrant
 is the control plane and processor). The fifth column names those binaries,
-and reads `none yet` for a module that only a package no binary imports yet
-reaches. A redistribution of a binary must carry the texts, marked in the
-fourth column, of the modules linked into it; every text is reproduced
-verbatim in Appendix A. The digests are the first twelve characters of the
-SHA-256 given in full in Appendix B.
+qualified with the platforms when a binary holds the module on some of the
+release platforms only (`toolwarrant (darwin only)` for a module that
+`modernc.org/libc` imports on darwin alone, which the linux binaries and
+their SBOMs do not carry), and reads `none yet` for a module that only a
+package no binary imports yet reaches. A redistribution of a binary must
+carry the texts, marked in the fourth column, of the modules linked into it
+on that platform; every text is reproduced verbatim in Appendix A. The
+digests are the first twelve characters of the SHA-256 given in full in
+Appendix B.
 
 | Module | Version | Licence | Files (SHA-256 prefix; text) | Linked into |
 | --- | --- | --- | --- | --- |
