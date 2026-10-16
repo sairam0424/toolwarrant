@@ -1388,9 +1388,9 @@ only, and the entry was appended outside toolwarrant`. A sealed
 `state=disabled->enabled`, or a `server.paused` saying `paused=false`, that
 borrows the token of the disable, budget reset or pause whose transaction is
 open at the head, and which the state anchor would otherwise take as the
-tool's or the server's state: `audit entry N moves tool "S/T" from disabled
-to enabled under event tool.disabled but names signed=K, a decision of kind
-disable, which makes no such move; the entry was appended outside
+tool's or the server's state: `audit entry N moves tool "S/T" from "disabled"
+to "enabled" under event "tool.disabled" but names signed=K, a decision of
+kind disable, which makes no such move; the entry was appended outside
 toolwarrant` and `audit entry N is a server.paused saying paused=false but
 names signed=K, a decision of kind pause, which leaves the server
 paused=true; the entry was appended outside toolwarrant`
@@ -1415,8 +1415,8 @@ of one operation, each with the operation's before and after). So a sealed
 other policy, that borrows the token of the enable whose own entries left the
 tool in `pending_review`, and which would otherwise re-serve the digest that
 enable put under review, is `audit entry N says tool "S/T" moves from
-disabled but the newest entry about it (seq M) left it pending_review; the
-entry was appended outside toolwarrant`. A tool entry that records no
+"disabled" but the newest entry about it (seq M) left it "pending_review";
+the entry was appended outside toolwarrant`. A tool entry that records no
 transition is refused as such: every entry the catalog writes about a tool
 carries `state=A->B`, so an entry whose detail starts with `digest=` and has
 no state field was appended by hand, and accepted it would have become the
@@ -1426,10 +1426,10 @@ with digest=) but carries no state field; every entry the catalog writes
 about a tool records its transition, so the entry was appended outside
 toolwarrant`); an entry about a tool whose newest entry, planted before the
 bootstrap, recorded no transition is refused too (`audit entry N says tool
-"S/T" moves from A but the newest entry about it (seq M) records no
+"S/T" moves from "A" but the newest entry about it (seq M) records no
 transition; the entry was appended outside toolwarrant`), and an entry about
 a tool the chain holds no entry for must start from `discovered`, where every
-tool is created (`audit entry N says tool "S/T" moves from A but no earlier
+tool is created (`audit entry N says tool "S/T" moves from "A" but no earlier
 entry is about the tool, and the first entry about a tool starts from
 discovered; the entry was appended outside toolwarrant`); the third review of
 this round sealed a stateless tool entry after a signed disable and re-enabled
@@ -1466,18 +1466,24 @@ pending_review, enabled and changed_pending_reapproval move between
 themselves or deprecate) and only from the state the newest entry about the
 tool left it in, so a correctly sealed `tool.reverted` with
 `state=disabled->enabled`, which would otherwise re-enable a disabled tool
-under a clean chain, is `audit entry N moves tool "S/T" from disabled to
-enabled under event tool.reverted, which no crawl can do; the entry was
+under a clean chain, is `audit entry N moves tool "S/T" from "disabled" to
+"enabled" under event "tool.reverted", which no crawl can do; the entry was
 appended outside toolwarrant`, and the same entry lying about where the tool
 was (`state=changed_pending_reapproval->enabled`, `enabled->enabled` or
 `enabled->changed_pending_reapproval`, each a move a crawl may make) is
-`audit entry N says tool "S/T" moves from enabled but the newest entry about
-it (seq M) left it disabled; the entry was appended outside toolwarrant`
-(`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the crawler and a
-person, the confessing entry and the four lying ones;
+`audit entry N says tool "S/T" moves from "enabled" but the newest entry
+about it (seq M) left it "disabled"; the entry was appended outside
+toolwarrant` (`TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled`, the
+crawler and a person, the confessing entry and the four lying ones;
 `TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes`, whose drawn
 histories never trip either rule and whose remembered state is the row's;
-`TestCrawlMayMove_EqualsTheInvariantsTable`). A `tool.budget_reset` is a
+`TestCrawlMayMove_EqualsTheInvariantsTable`). Every state half and event name
+the sentences of these rules read from the entry (the binding's, the
+continuity rule's and the crawl guard's) is printed with Go's `strconv.Quote`,
+as the shape rule's state sentence and the state anchor's sentence print
+theirs, so a control character planted in a state field or an event name
+reaches the terminal escaped (`\x1b`), never raw
+(`TestWalk_RefusalSentencesQuoteHostileStateHalves`). A `tool.budget_reset` is a
 state-bearing entry to the state anchor as it is to Integrity, so the two
 name the same entry when a column is edited after a budget reset
 (`TestSnapshot_ABudgetResetIsTheNewestStateEntryOnBothPaths`). The serving path verifies no
