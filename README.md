@@ -114,11 +114,24 @@ processors while stopped) only the head you recorded catches it, together with a
 signed export that names that head (`export --sign-key`, checked with `export
 verify --expect-head`, D21 (e)). A crawl never approves anything: it records
 proposals, drift, reverts, absences and unusable definitions, and the person who
-ran the crawl that proposed a version cannot approve that version. Operator
-names are asserted, not authenticated: `--as NAME` and `TOOLWARRANT_ACTOR` are
-taken as given beyond the OS account that runs the command (residual risk L13 in
-the threat model), so the per-person rule and the proposer rule hold against the
-name given. Whoever can reach the processor without the shared secret, or the
+ran the crawl that proposed a version cannot approve that version. Since v0.4 a
+person is authenticated by an SSH key once `trust init` has recorded the
+operator trust list (D22): the list is a signed record in the audit chain whose
+`prev_head` is compared and set inside the write transaction, so every trust
+record is a signed head; after the bootstrap every human decision (approve,
+reject, rollback, disable, enable, pause, resume, budget reset) is signed by a
+listed key over the head it extends, the signature is made before the write and
+compared and set inside it, and the processor's reload verifies no signature:
+the walk verifies each record once, remembers where it left every tool, and the
+anchor pass checks one token per entry, so nothing appended without such a key,
+whatever state it claims a tool was in, can approve, enable, resume or re-enable
+a tool. `--as NAME` and `TOOLWARRANT_ACTOR` are then labels that must agree
+with the operator the key is listed for, and the per-person rule and the
+proposer rule hold against that name. A catalog that was never bootstrapped
+serves as v0.3 did, with the name taken as given and a warning on every
+decision, and `--trust-root` refuses it (known limit L13, closed with the
+residual stated in the threat model; L20: crawls, `server add` and `emit`'s
+processor address stay unsigned). Whoever can reach the processor without the shared secret, or the
 gateway's admin listener, decides what is served; both are inside the trusted
 computing base ([docs/threat-model.md](docs/threat-model.md)).
 
@@ -130,7 +143,7 @@ agentgateway v1.6.0. Everything binds to loopback. The individual steps are
 covered by the unit tests named in [docs/threat-model.md](docs/threat-model.md);
 the whole chain through the real gateway with `toolwarrant serve` as the
 processor is proven by the end-to-end test in `e2e/` (`make e2e`, scenarios A to
-Q; `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The spike
+S; `demo/run.sh` runs it unattended and writes `demo/last-run.log`). The spike
 in [seam/RESULTS.md](seam/RESULTS.md) ran the same shape with a prototype
 processor, not with this CLI.
 
@@ -184,6 +197,14 @@ GOFLAGS=-mod=readonly go build -o bin/ ./cmd/toolwarrant ./cmd/mockupstream
 #    (lower-case letters, digits and hyphens).
 export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 ./bin/toolwarrant init
+#    Record the operator trust list once, signed with your SSH key: a .pub
+#    names the key ssh-agent holds (a FIDO2 key asks for a touch), any other
+#    file is an unencrypted OpenSSH private key readable by you alone. From
+#    then on every decision must be signed by a listed key. Record the trust
+#    root and the audit head the command prints outside the database, and
+#    pass the root as --trust-root (or TOOLWARRANT_TRUST_ROOT) to every
+#    processor and every command from here on (D22).
+./bin/toolwarrant --as alice --ssh-key ~/.ssh/id_ed25519.pub trust init
 ./bin/toolwarrant server add mock http://127.0.0.1:3001/mcp --allow-private
 
 # 3. Crawl. Without --as (and without TOOLWARRANT_ACTOR) the crawl runs as the
@@ -199,8 +220,12 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    that mix scripts, or look-alike changes against the approved version
 #    unless you pass --accept-suspicious after reading the list it prints.
 ./bin/toolwarrant diff mock echo
-./bin/toolwarrant --as alice approve mock echo --hash DIGEST_OF_ECHO
-./bin/toolwarrant --as alice approve mock add --hash DIGEST_OF_ADD
+./bin/toolwarrant --as alice --ssh-key ~/.ssh/id_ed25519.pub approve mock echo --hash DIGEST_OF_ECHO
+./bin/toolwarrant --as alice --ssh-key ~/.ssh/id_ed25519.pub approve mock add --hash DIGEST_OF_ADD
+#    approve signs the decision over the head it read and prints "signed as
+#    alice with SHA256:FP over head PREV; audit head now HEAD"; record the new
+#    head as you record it after audit verify. --as may be left out: the
+#    person deciding is the operator the trust list names for the key.
 # wipe_database stays pending_review and is never served.
 
 # 5. Write the gateway configuration and start the processor it names.
@@ -222,7 +247,10 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    loopback lab; a deployment passes the same --secret-env VAR to both
 #    (`toolwarrant help serve`; docs/operations.md, Rotating the shared secret).
 ./bin/toolwarrant emit --out gateway.yaml --gateway-binary "$GATEWAY"
-./bin/toolwarrant serve --server mock --listen 127.0.0.1:9001 &
+#    Pass the trust root trust init printed as the global --trust-root, so the
+#    processor refuses a catalog whose bootstrap another key signed or that
+#    has none; it then prints "signed decisions: enforced from entry N".
+./bin/toolwarrant --trust-root SHA256:ROOT_FROM_TRUST_INIT serve --server mock --listen 127.0.0.1:9001 &
 
 # 6. Point agentgateway v1.6.0 at the file. The emitted file binds the serving
 #    port to 127.0.0.1 (gateways.bindAddress) and pins the admin, stats and
@@ -368,7 +396,19 @@ inserted or reordered breaks `audit verify` from that row on. Guard triggers
 refuse ordinary SQL updates and deletes on the history tables, and the catalog
 compares every guard, table and index with its schema before it trusts a file.
 `audit verify` and `audit list` open a file in forensic mode so that a broken
-entry can be named; nothing is served or written from such an open. The one rule
+entry can be named; nothing is served or written from such an open. Since v0.4
+the chain also carries the operator trust list (`trust.bootstrap`,
+`trust.rotated`) and one `decision.signed` entry before every decision made
+after the bootstrap, each bound to its signed record by the `sigref` token in
+the entry's detail and verified by every walk (D22). The catalog schema is v7; a
+catalog written by v0.1.0 to v0.3.x (schema v6) is migrated in place by the
+first read-write open of the new binary (`init` or any writing command, `list`
+and `show` included), which adds one table and its guards and rewrites nothing,
+so the audit head and every approval stay; `serve`, `audit verify` and `audit
+list` never migrate and name the command to run
+([docs/operations.md](docs/operations.md), Recovering from ErrCorrupt and
+ErrSchema; `TestMigrate_V6FileIsMigratedInPlaceAndKeepsEveryRowAndTheHead`).
+The one rule
 the chain cannot replace: record the head `audit verify` prints outside the
 database after every verify, and compare it with `audit verify --expect-head
 HASH` before every decision you make after the processors were stopped. An
@@ -439,13 +479,14 @@ it are in the residual-risk table of [docs/threat-model.md](docs/threat-model.md
 - L10. The serving port binds to 127.0.0.1 by default; any other bind exposes every route to that network.
 - L11. The processor link is `host:port` gRPC, plaintext unless `serve --tls-cert --tls-key --tls-client-ca` and `emit --processor-tls` put TLS 1.3 with the gateway's client certificate on it (D19); end-to-end scenario Q drives the handshake against the real gateway (the route serves under TLS with the client certificate; a plaintext side, a client certificate from another authority or a garbage root fails closed, D19); a plaintext processor stays on loopback with the shared secret.
 - L12. Added latency is measured on a 3-tool page only: +0.95 ms list p50 and +0.87 ms call p50 in scenario M.
-- L13. Operators are not authenticated: `--as` and `TOOLWARRANT_ACTOR` are taken as given.
+- L13. Closed (D22) for every decision made after `trust init`: it is signed by a key the catalog's own signed trust list names for that person, over the head it extends, and nothing appended without such a key can approve, enable, resume or re-enable a tool; before `trust init` a catalog serves as v0.3 did and every decision warns `this decision is not signed`, and `serve --trust-root` refuses such a catalog. The residual: a rollback of the file to an earlier signed state while no catalog is open drops later decisions and cannot add one (the recorded head, `--expect-head`, `--trust-root`, the signed export and backups are the controls); at threshold 1 one compromised key can evict the other signer; an unlocked agent or a readable key file signs; a removed key's earlier decisions stand.
 - L14. Look-alikes outside the UTS #39 table and a behaviour change behind an unchanged definition are invisible; a look-alike the table lists, against the approved version, and a word that mixes scripts are reported by code point and refused by `approve` unless `--accept-suspicious` (D21 (c)).
 - L15. Closed (D21 (a)): only agreeing evidence ages; a contradiction denies until a clean page.
 - L16. Closed (D21 (d)): the snapshot the processor serves from and `list` hand out digests anchored to the verified audit chain and read no definition bytes; the bytes behind a digest are hashed against it on every path that reads them (`export`, `emit`, `show`, `diff`, every decision), so a rewrite of stored bytes that leaves the digest column intact is invisible to the snapshot and `list`, cannot change what the gateway serves, and is refused or named at once by those paths and by `audit verify`.
 - L17. agentgateway v1.6.0 forwards an id-less `tools/call` to the upstream without the hook and relays the upstream's answer; the canary's probe sends one on every check and reports that answer: 202 from an upstream that accepts the call as a notification is UNHOOKED-CALLS (KNOWN-LIMIT with `--expect-unhooked`), a bare 400 from one that refuses a request without an id (the go-sdk, so `cmd/mockupstream`) is named in the OK line without attribution; deploy so that only id-sending clients reach the gateway.
 - L18. The gateway's admin API is unauthenticated on loopback; every local user of the host is inside the boundary.
 - L19. The configuration file's header hash is unkeyed; only the body hash you recorded catches a re-sealed edit.
+- L20. Crawls, `server add` and `emit`'s `server.processor_set` are unsigned: `--as` stays a label there, so a crawl run as `--as alice` by someone else makes alice a proposer and blocks her approval of that digest; none of them can put an unapproved digest on the wire (D22; tracked for v0.5 with the head log).
 
 ## Status
 
@@ -472,8 +513,8 @@ property tests of every package pass under `-race` (`make test`, which prints
 per-package coverage), and the end-to-end test passes against the real gateway
 (`make e2e`; `demo/run.sh` runs it unattended and writes `demo/last-run.log`).
 The GitHub Actions workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml)
-runs lint, vet and build, the short test suite under `-race`, the six tests
-that `-short` skips (the three Unicode walks of `internal/textdiff`, the two
+runs lint, vet and build, the short test suite under `-race`, the seven tests
+that `-short` skips (the three Unicode walks of `internal/textdiff`, the three
 slow catalog tests and the processor's gRPC size test, run with their packages
 in full), govulncheck, gitleaks, the third-party notices check, the release
 configuration check and the documentation checks (every cited test name and
@@ -485,7 +526,7 @@ dispatch that names a candidate release, checking the seventeen items of
 it. The security policy, including
 how to report a problem and the owner's pending report to the agentgateway
 project, is in [SECURITY.md](SECURITY.md). Operational procedures are in
-[docs/operations.md](docs/operations.md); the design decisions D1 to D21 are in
+[docs/operations.md](docs/operations.md); the design decisions D1 to D22 are in
 [docs/decisions.md](docs/decisions.md). Contributions follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the code of conduct is
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
