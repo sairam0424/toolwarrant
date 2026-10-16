@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,35 @@ func TestSigningTimeoutWritesNothing(t *testing.T) {
 	r = l.fail(exitFailure, "--sign-timeout", "200ms", "--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub)
 	wantContains(t, "trust add", r.stderr, "signing timed out after 200ms")
 	wantContains(t, "trust show", l.ok("trust", "show"), "trust list v1 (entry ")
+}
+
+// The bound in the timeout refusal is spelled as the plan, CHANGELOG.md and
+// the operations guide quote it: the default --sign-timeout is "60s", never
+// time.Duration's "1m0s"; a value that is not a whole number of seconds keeps
+// time.Duration's spelling, which TestSigningTimeoutWritesNothing pins through
+// the binary at 200ms.
+func TestSigningTimeoutRefusalRendersWholeSeconds(t *testing.T) {
+	t.Parallel()
+	err := signTimeoutRefusal(defaultSignTimeout)
+	if got := err.Error(); got != "signing timed out after 60s waiting for the agent; nothing was written" {
+		t.Errorf("the default bound is refused as %q", got)
+	}
+	if !errors.Is(err, errSignTimeout) {
+		t.Errorf("the refusal does not wrap errSignTimeout: %v", err)
+	}
+	for d, want := range map[time.Duration]string{
+		defaultSignTimeout:        "60s",
+		time.Second:               "1s",
+		90 * time.Second:          "90s",
+		time.Minute + time.Second: "61s",
+		time.Hour:                 "3600s",
+		200 * time.Millisecond:    "200ms",
+		1500 * time.Millisecond:   "1.5s",
+	} {
+		if got := wholeSeconds(d); got != want {
+			t.Errorf("wholeSeconds(%v) = %q, want %q", d, got, want)
+		}
+	}
 }
 
 // An agent that accepts the connection and never lists its keys (a hung

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,11 +148,28 @@ func (s *cliSigner) sign(parent context.Context, payload []byte, ns signing.Name
 	rec, err := signing.Sign(ctx, payload, s.key, ns)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
-			return signing.Record{}, fmt.Errorf("%w after %v waiting for the agent; nothing was written", errSignTimeout, s.timeout)
+			return signing.Record{}, signTimeoutRefusal(s.timeout)
 		}
 		return signing.Record{}, err
 	}
 	return rec, nil
+}
+
+// signTimeoutRefusal is the refusal of a signature that did not arrive within
+// bound, with the bound spelled as the plan and the operations guide quote
+// it (wholeSeconds); nothing was written.
+func signTimeoutRefusal(bound time.Duration) error {
+	return fmt.Errorf("%w after %s waiting for the agent; nothing was written", errSignTimeout, wholeSeconds(bound))
+}
+
+// wholeSeconds renders a duration for an operator: a whole number of seconds
+// as the integer and "s" ("60s", where time.Duration prints "1m0s"), any
+// other value as time.Duration prints it ("200ms", "1.5s").
+func wholeSeconds(d time.Duration) string {
+	if d%time.Second == 0 {
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	}
+	return d.String()
 }
 
 // close drops the key: the agent connection is closed, a file key's bytes
