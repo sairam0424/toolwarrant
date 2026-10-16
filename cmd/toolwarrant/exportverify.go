@@ -50,7 +50,7 @@ func runExportVerify(a *app, c *command, args []string) error {
 	}
 	rep, err := export.Verify(*dir, pub, *expect)
 	if err != nil {
-		return fmt.Errorf("export in %s does not verify: %w", textdiff.Escape(*dir), err)
+		return fmt.Errorf("export in %s does not verify: %w", *dir, err)
 	}
 	a.stdout.printf("export ok: %d files in %s match %s, which the key in %s signed\n", rep.Files, textdiff.Escape(*dir), manifestFile, textdiff.Escape(*pubKey))
 	a.printVerifiedHead(rep, *expect)
@@ -68,7 +68,7 @@ func loadPublicKey(path string) (ed25519.PublicKey, error) {
 	}
 	pub, err := export.ParsePublicKey(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", flagPubKey, textdiff.Escape(path), err)
+		return nil, fmt.Errorf("%s %s: %w", flagPubKey, path, err)
 	}
 	return pub, nil
 }

@@ -177,7 +177,7 @@ func (a *app) openStore(mode openMode) (*catalog.Store, error) {
 	store, err := catalog.OpenWith(path, opts)
 	if err != nil {
 		if mode != openCreate && errors.Is(err, catalog.ErrNotFound) {
-			return nil, fmt.Errorf("database %s does not exist; run \"%s init\" first", textdiff.Escape(path), programName)
+			return nil, fmt.Errorf("database %s does not exist; run \"%s init\" first", path, programName)
 		}
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -323,7 +323,7 @@ func runInit(a *app, c *command, args []string) error {
 func refuseSymlink(path string) error {
 	fi, err := os.Lstat(path)
 	if err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("database path %s is a symbolic link; name the file itself", textdiff.Escape(path))
+		return fmt.Errorf("database path %s is a symbolic link; name the file itself", path)
 	}
 	return nil
 }

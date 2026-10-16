@@ -79,7 +79,7 @@ func (o *emitOptions) checkOut(c *command, dbPath string) error {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case err != nil:
-		return fmt.Errorf("--out %s: %w", textdiff.Escape(o.out), err)
+		return fmt.Errorf("--out %s: %w", o.out, err)
 	}
 	for _, p := range protected {
 		pfi, err := os.Stat(p.path)
@@ -127,7 +127,7 @@ func canonicalPath(p string) (string, bool) {
 func refuseForeignOut(c *command, out string) error {
 	head, err := readFileHead(out, emitHeaderProbeBytes)
 	if err != nil {
-		return fmt.Errorf("--out %s: %w", textdiff.Escape(out), err)
+		return fmt.Errorf("--out %s: %w", out, err)
 	}
 	if hash, _ := emit.Verify(head); hash == "" {
 		return &usageError{msg: fmt.Sprintf("--out %s exists and its first lines are not the header emit writes, so it is not a file emit wrote; emit replaces only its own files (a file the gateway rewrote keeps the header and is replaced), so move it away or name another file", textdiff.Escape(out)), cmd: c}

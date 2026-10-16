@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 // gatewayConfig is one gateway of the configuration: where it listens.
@@ -152,7 +150,7 @@ func (p *emittedParser) topLevel(line string) error {
 		return nil
 	}
 	if p.section != sectionRoutes {
-		return fmt.Errorf("the emitted file holds a list item outside the routes section: %s", textdiff.Escape(line))
+		return fmt.Errorf("the emitted file holds a list item outside the routes section: %s", line)
 	}
 	name, err := unquoteScalar(strings.TrimPrefix(line, routeItemPrefix))
 	if err != nil {
@@ -200,7 +198,7 @@ func (p *emittedParser) gatewayLine(indent int, line string) error {
 		p.doc.gateways[name] = gatewayConfig{}
 	case indentGatewayKey:
 		if p.gateway == "" {
-			return fmt.Errorf("the emitted file holds a gateway key outside a gateway: %s", textdiff.Escape(line))
+			return fmt.Errorf("the emitted file holds a gateway key outside a gateway: %s", line)
 		}
 		gw := p.doc.gateways[p.gateway]
 		key, value, _ := strings.Cut(line, keyValueSep)
@@ -358,7 +356,7 @@ func appendQuoted(list *[]string, quoted string) error {
 // a Go string literal uses, so strconv does the work.
 func unquoteScalar(s string) (string, error) {
 	if !strings.HasPrefix(s, `"`) {
-		return "", fmt.Errorf("the emitted file holds an unquoted scalar where emit writes a quoted one: %s", textdiff.Escape(s))
+		return "", fmt.Errorf("the emitted file holds an unquoted scalar where emit writes a quoted one: %s", s)
 	}
 	v, err := strconv.Unquote(s)
 	if err != nil {

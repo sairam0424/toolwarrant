@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/sairam0424/toolwarrant/internal/textdiff"
 )
 
 const (
@@ -111,11 +109,11 @@ func validateWithGateway(ctx context.Context, binary, file string) error {
 		return nil
 	}
 	if vctx.Err() != nil {
-		return fmt.Errorf("the gateway binary %s did not finish %s within %s", textdiff.Escape(binary), validateOnlyFlag, validateTimeout)
+		return fmt.Errorf("the gateway binary %s did not finish %s within %s", binary, validateOnlyFlag, validateTimeout)
 	}
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
-		return fmt.Errorf("run gateway binary %s: %w", textdiff.Escape(binary), err)
+		return fmt.Errorf("run gateway binary %s: %w", binary, err)
 	}
 	return &gatewayRefusal{binary: binary, output: oneLine(out)}
 }
