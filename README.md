@@ -202,9 +202,13 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    file is an unencrypted OpenSSH private key readable by you alone. From
 #    then on every decision must be signed by a listed key. Record the trust
 #    root and the audit head the command prints outside the database, and
-#    pass the root as --trust-root (or TOOLWARRANT_TRUST_ROOT) to every
-#    processor and every command from here on (D22).
+#    pass the root as --trust-root (or TOOLWARRANT_TRUST_ROOT, exported just
+#    below) to every processor and every command from here on (D22).
 ./bin/toolwarrant --as alice --ssh-key ~/.ssh/id_ed25519.pub trust init
+#    The value is the root trust init printed. Exported, it reaches every
+#    command and processor the rest of this quickstart starts; the serve line
+#    of step 5 passes it as the global --trust-root as well, to show the flag.
+export TOOLWARRANT_TRUST_ROOT=SHA256:ROOT_FROM_TRUST_INIT
 ./bin/toolwarrant server add mock http://127.0.0.1:3001/mcp --allow-private
 
 # 3. Crawl. Without --as (and without TOOLWARRANT_ACTOR) the crawl runs as the
@@ -247,9 +251,11 @@ export TOOLWARRANT_DB="$PWD/toolwarrant.db"
 #    loopback lab; a deployment passes the same --secret-env VAR to both
 #    (`toolwarrant help serve`; docs/operations.md, Rotating the shared secret).
 ./bin/toolwarrant emit --out gateway.yaml --gateway-binary "$GATEWAY"
-#    Pass the trust root trust init printed as the global --trust-root, so the
-#    processor refuses a catalog whose bootstrap another key signed or that
-#    has none; it then prints "signed decisions: enforced from entry N".
+#    The processor pins the trust root too: TOOLWARRANT_TRUST_ROOT exported in
+#    step 2 covers it, and the global --trust-root here says the same thing
+#    explicitly (the flag wins when both are set). Under the root it refuses a
+#    catalog whose bootstrap another key signed or that has none, and prints
+#    "signed decisions: enforced from entry N".
 ./bin/toolwarrant --trust-root SHA256:ROOT_FROM_TRUST_INIT serve --server mock --listen 127.0.0.1:9001 &
 
 # 6. Point agentgateway v1.6.0 at the file. The emitted file binds the serving
