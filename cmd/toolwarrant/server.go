@@ -140,7 +140,7 @@ func runServerSwitch(a *app, c *command, args []string, pause bool) (err error) 
 	if err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
+	f, err := a.beginSigned(c, *expect, label, a.givenLabel())
 	if err != nil {
 		return err
 	}

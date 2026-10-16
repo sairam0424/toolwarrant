@@ -84,7 +84,7 @@ func runApprove(a *app, c *command, args []string) (err error) {
 	if err := requireFlag(c, *hash, hashFlagName, "name the digest you reviewed"); err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
+	f, err := a.beginSigned(c, *expect, label, a.givenLabel())
 	if err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func runReject(a *app, c *command, args []string) (err error) {
 	if err := requireFlag(c, *hash, hashFlagName, "name the digest you are rejecting"); err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
+	f, err := a.beginSigned(c, *expect, label, a.givenLabel())
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func runDisable(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
+	f, err := a.beginSigned(c, *expect, label, a.givenLabel())
 	if err != nil {
 		return err
 	}
@@ -235,7 +235,7 @@ func runEnable(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
+	f, err := a.beginSigned(c, *expect, label, a.givenLabel())
 	if err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ func runRollback(a *app, c *command, args []string) (err error) {
 	if err := requireFlag(c, *to, toFlagName, "name the version to return to"); err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, a.labelGiven())
+	f, err := a.beginSigned(c, *expect, label, a.givenLabel())
 	if err != nil {
 		return err
 	}

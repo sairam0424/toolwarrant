@@ -48,7 +48,11 @@ func runBudgetReset(a *app, c *command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	f, err := a.beginSigned(c, *expect, label, *by != "" || a.labelGiven())
+	source := a.givenLabel()
+	if *by != "" {
+		source = labelBy
+	}
+	f, err := a.beginSigned(c, *expect, label, source)
 	if err != nil {
 		return err
 	}

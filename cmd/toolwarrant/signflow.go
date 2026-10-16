@@ -36,13 +36,13 @@ type decisionFlow struct {
 
 // beginSigned opens the catalog for a decision and settles who decides and
 // whether the decision is signed. label is the actor the unsigned path would
-// use (--as, --by, TOOLWARRANT_ACTOR or the OS user) and explicit whether the
-// operator named one. With a trust list in force a key is required (exit 2
-// with the fix) and the person is the key's operator; without one a key is a
-// usage error naming trust init, since a signed decision needs a list to be
-// verified against. The signer is resolved before the catalog is opened, so a
-// refused key touches nothing.
-func (a *app) beginSigned(c *command, expectHead string, label catalog.Actor, explicit bool) (f *decisionFlow, err error) {
+// use (--as, --by, TOOLWARRANT_ACTOR or the OS user) and source where the
+// operator named one, labelNone when they did not. With a trust list in force
+// a key is required (exit 2 with the fix) and the person is the key's
+// operator; without one a key is a usage error naming trust init, since a
+// signed decision needs a list to be verified against. The signer is resolved
+// before the catalog is opened, so a refused key touches nothing.
+func (a *app) beginSigned(c *command, expectHead string, label catalog.Actor, source labelSource) (f *decisionFlow, err error) {
 	signer, err := a.optionalSigner(c)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (a *app) beginSigned(c *command, expectHead string, label catalog.Actor, ex
 		return nil, err
 	}
 	f = &decisionFlow{store: store, signer: signer, actor: label, expectHead: expectHead}
-	if err := f.settle(a, c, explicit); err != nil {
+	if err := f.settle(a, c, source); err != nil {
 		closeStore(store, &err)
 		return nil, err
 	}
@@ -65,8 +65,9 @@ func (a *app) beginSigned(c *command, expectHead string, label catalog.Actor, ex
 }
 
 // settle applies the rules of the trust list to the key the operator gave or
-// did not give, and derives the actor from the key when one signs.
-func (f *decisionFlow) settle(a *app, c *command, explicit bool) error {
+// did not give, and derives the actor from the key when one signs, holding
+// the label (from source) to it.
+func (f *decisionFlow) settle(a *app, c *command, source labelSource) error {
 	st, err := f.store.SigningState(a.ctx)
 	if err != nil {
 		return err
@@ -81,7 +82,7 @@ func (f *decisionFlow) settle(a *app, c *command, explicit bool) error {
 	case f.signer == nil:
 		return nil
 	}
-	actor, err := a.signedActor(c, st.Trust, f.signer.fp, f.actor, explicit)
+	actor, err := a.signedActor(c, st.Trust, f.signer.fp, f.actor, source)
 	if err != nil {
 		return err
 	}

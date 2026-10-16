@@ -201,7 +201,7 @@ func (a *app) rotateTrustAs(c *command, expect string, fp *string, edit func([]t
 		if !st.Trust.InForce() {
 			return catalog.Receipt{}, fmt.Errorf("%w; run \"%s trust init\" first", catalog.ErrNoTrustList, programName)
 		}
-		if actor, err = a.signedActor(c, st.Trust, signer.fp, label, a.labelGiven()); err != nil {
+		if actor, err = a.signedActor(c, st.Trust, signer.fp, label, a.givenLabel()); err != nil {
 			return catalog.Receipt{}, err
 		}
 		signers, err := edit(st.Trust.Signers)

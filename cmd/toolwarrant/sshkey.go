@@ -219,28 +219,49 @@ func operatorOf(view catalog.TrustView, fp string) (trust.Operator, bool) {
 	return trust.Operator{}, false
 }
 
+// labelSource is where the operator's label came from, so the usage error for
+// a label that names another person than the key shows the label as the
+// operator gave it: the global --as, budget reset's --by or TOOLWARRANT_ACTOR,
+// each rendered before the name; labelNone when no label was given and the
+// key alone names the person.
+type labelSource string
+
+const (
+	labelNone labelSource = ""
+	labelAs   labelSource = "--as "
+	labelBy   labelSource = "--by "
+	labelEnv  labelSource = envActor + "="
+)
+
 // signedActor is the person a signed command acts as (O-13): the operator the
 // trust list in force names for the key. A key the list does not name signs
 // nothing (exit 1, the fingerprint named; the trust show and trust add advice
-// is describe's, added once); a label given with --as,
-// TOOLWARRANT_ACTOR or --by that names another person is a usage error, so
-// the audit log never carries a name the key does not back; without a label
-// the operator's name is the actor.
-func (a *app) signedActor(c *command, view catalog.TrustView, fp string, label catalog.Actor, explicit bool) (catalog.Actor, error) {
+// is describe's, added once); a label given with --as, TOOLWARRANT_ACTOR or
+// --by (source says which) that names another person is a usage error naming
+// the label as it was given, so the audit log never carries a name the key
+// does not back; without a label the operator's name is the actor.
+func (a *app) signedActor(c *command, view catalog.TrustView, fp string, label catalog.Actor, source labelSource) (catalog.Actor, error) {
 	op, ok := operatorOf(view, fp)
 	if !ok {
 		return catalog.Actor{}, fmt.Errorf("%w: the key %s is not in trust list v%d in force since entry %d", catalog.ErrNotASigner, fp, view.Version, view.ListSeq)
 	}
-	if explicit && label.Name != op.Name {
-		return catalog.Actor{}, &usageError{msg: fmt.Sprintf("--as %s names another operator than the key %s, which the trust list lists for %s", cell(label.Name), fp, cell(op.Name)), cmd: c}
+	if source != labelNone && label.Name != op.Name {
+		return catalog.Actor{}, &usageError{msg: fmt.Sprintf("%s%s names another operator than the key %s, which the trust list lists for %s", source, cell(label.Name), fp, cell(op.Name)), cmd: c}
 	}
 	return catalog.Actor{Name: op.Name, Type: catalog.ActorHuman}, nil
 }
 
-// labelGiven reports whether the operator named themselves with --as or
-// TOOLWARRANT_ACTOR; with a key the name is otherwise derived from the key.
-func (a *app) labelGiven() bool {
-	return a.globals.actor != "" || a.getenv(envActor) != ""
+// givenLabel reports where the operator named themselves, --as first and then
+// TOOLWARRANT_ACTOR as actor reads them, or labelNone when neither was given
+// and the key alone names the person.
+func (a *app) givenLabel() labelSource {
+	switch {
+	case a.globals.actor != "":
+		return labelAs
+	case a.getenv(envActor) != "":
+		return labelEnv
+	}
+	return labelNone
 }
 
 // signerList renders the operators of a trust list as `name SHA256:...`, in

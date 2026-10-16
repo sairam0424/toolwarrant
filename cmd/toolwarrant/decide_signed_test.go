@@ -75,12 +75,22 @@ func TestApproveDerivesTheActorFromTheKeyAndRefusesAMismatch(t *testing.T) {
 	l := newSignedLab(t)
 	l.bootstrap(t)
 	echo := l.tool("s1", "echo").Pending
+	// The refusal names the label as the operator gave it: --as, the
+	// environment variable, or budget reset's --by.
+	mismatch := " names another operator than the key " + fpOf(l.alice) + ", which the trust list lists for alice"
 	r := l.fail(exitUsage, "--as", "bob", "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
-	wantContains(t, "mismatch", r.stderr, "--as bob names another operator than the key "+fpOf(l.alice)+", which the trust list lists for alice")
+	wantContains(t, "mismatch", r.stderr, "--as bob"+mismatch)
 	l.env[envActor] = "bob"
 	r = l.fail(exitUsage, "--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
-	wantContains(t, "env mismatch", r.stderr, "--as bob names another operator")
+	wantContains(t, "env mismatch", r.stderr, envActor+"=bob"+mismatch)
+	wantNotContains(t, "env mismatch", r.stderr, "--as bob")
 	delete(l.env, envActor)
+	r = l.fail(exitUsage, "--ssh-key", l.alicePub, "budget", "reset", "s1", "echo", "--by", "bob")
+	wantContains(t, "--by mismatch", r.stderr, "--by bob"+mismatch)
+	wantNotContains(t, "--by mismatch", r.stderr, "--as bob")
+	// --by is the label when both are given.
+	r = l.fail(exitUsage, "--as", "alice", "--ssh-key", l.alicePub, "budget", "reset", "s1", "echo", "--by", "bob")
+	wantContains(t, "--by over --as", r.stderr, "--by bob"+mismatch)
 	if tv := l.tool("s1", "echo"); tv.Approved != "" {
 		t.Fatalf("a refused label approved: %+v", tv.toolJSON)
 	}
