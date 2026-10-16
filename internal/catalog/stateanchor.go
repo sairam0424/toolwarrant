@@ -25,13 +25,19 @@ import (
 // about names no tool row describes and carry no state, so they are not
 // consulted.
 
-// toolStateEvents lists the events whose detail carries the tool's state.
+// toolStateEvents lists the events whose detail carries the tool's state:
+// every lifecycle event auditTool writes and the budget reset, whose entry is
+// a tool detail too (resetBudgetTx), so that the anchor and Integrity's tools
+// pass (parseToolTrace) take the same entry as the newest one about a tool
+// (the adversarial review of PR 7.5, finding 3: the two readers disagreed, and
+// an accepted tool.budget_reset moved Integrity's expectation while the anchor
+// kept reading the entry before it).
 const toolStateEvents = `'` + string(lifecycle.EvDiscovered) + `', '` + string(lifecycle.EvProposed) + `', '` +
 	string(lifecycle.EvSuperseded) + `', '` + string(lifecycle.EvApproved) + `', '` + string(lifecycle.EvRejected) + `', '` +
 	string(lifecycle.EvRolledBack) + `', '` + string(lifecycle.EvDrifted) + `', '` + string(lifecycle.EvReverted) + `', '` +
 	string(lifecycle.EvDisabled) + `', '` + string(lifecycle.EvEnabled) + `', '` + string(lifecycle.EvMissing) + `', '` +
 	string(lifecycle.EvDeprecated) + `', '` + string(lifecycle.EvReappeared) + `', '` + string(lifecycle.EvReturned) + `', '` +
-	string(lifecycle.EvUnusable) + `'`
+	string(lifecycle.EvUnusable) + `', '` + evBudgetReset + `'`
 
 // The SQL that selects the seq of the newest state-bearing entry about a
 // subject, NULL when there is none, in the two forms the queries name the

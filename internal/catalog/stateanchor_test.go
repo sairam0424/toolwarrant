@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -153,4 +154,44 @@ func TestSnapshot_ToolDeprecatedByAColumnFlipIsCorrupt(t *testing.T) {
 	defer func() { _ = fresh.Close() }()
 	_, err = fresh.Snapshot(bg, "alpha")
 	requireCorruptMentioning(t, "fresh Snapshot", err, want)
+}
+
+// A tool.budget_reset carries the tool's state like every entry the Store
+// writes about a tool (toolDetail), and Integrity's tools pass takes it as the
+// newest entry about the tool; the state anchor takes it too (toolStateEvents),
+// so the two paths name the same entry. A budget reset on a disabled tool
+// anchors the disabled state to the reset's own entry on every path, and once
+// the column is flipped the serving path and Integrity both name that entry.
+func TestSnapshot_ABudgetResetIsTheNewestStateEntryOnBothPaths(t *testing.T) {
+	t.Parallel()
+	s, path, alice, _ := trustedCatalog(t)
+	reset := resetEchoBudget(t, s, alice).Seq + 1
+	db := rawDB(t, path)
+	if e := rawEntryAt(t, db, reset); e.Event != evBudgetReset {
+		t.Fatalf("entry %d is a %s, want the tool.budget_reset the decision wrote", reset, e.Event)
+	}
+	mustSnapshot(t, s, "alpha")
+	if v := mustTool(t, s, "alpha", "echo"); v.State != lifecycle.Disabled {
+		t.Fatalf("echo is %s after the budget reset, want disabled", v.State)
+	}
+	mustBeClean(t, s, "after the budget reset")
+
+	mustExec(t, db, enableEcho)
+	want := []string{`"alpha/echo"`, fmt.Sprintf("(seq %d, %s)", reset, evBudgetReset), `left it "disabled"`, "state column was edited"}
+	_, err := s.Snapshot(bg, "alpha")
+	requireCorruptMentioning(t, "Snapshot", err, want)
+	_, err = s.Tool(bg, "alpha", "echo")
+	requireCorruptMentioning(t, "Tool", err, want)
+	fresh, err := OpenWith(path, OpenOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("fresh open: %v", err)
+	}
+	defer func() { _ = fresh.Close() }()
+	_, err = fresh.Snapshot(bg, "alpha")
+	requireCorruptMentioning(t, "fresh Snapshot", err, want)
+	rep := mustIntegrity(t, s)
+	if rep.StateMismatches != 1 {
+		t.Errorf("Integrity = %+v, want exactly one state mismatch", rep)
+	}
+	problemMentioning(t, rep, fmt.Sprintf("latest audit entry (seq %d)", reset), `left it as "disabled"`)
 }
