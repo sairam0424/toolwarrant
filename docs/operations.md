@@ -1764,7 +1764,11 @@ and `audit list` included: a catalog whose bootstrap another key signed is
 refused with `the trust bootstrap at entry N was signed by SHA256:X, not the
 pinned trust root SHA256:Y; the catalog was re-bootstrapped or replaced`, a
 catalog with no trust list with `the catalog has no trust list and a trust
-root SHA256:Y was given`, exit 1 (`audit list`, the forensic view, lists the
+root SHA256:Y was given` and the advice `this catalog has no trust list: run
+"toolwarrant trust init" without --trust-root (or TOOLWARRANT_TRUST_ROOT), or
+name the root of the catalog you meant` (never the corrupt advice: a catalog
+that was never bootstrapped, a brand-new `init` under the pin included, has
+no backup to restore), exit 1 (`audit list`, the forensic view, lists the
 entries and withholds the records with the same sentence on stderr); a value
 that is not a fingerprint is exit 2. Keep the root beside the recorded head
 and the signed export: together they are what tells your catalog from a file
@@ -1829,7 +1833,10 @@ was deleted, replaced or re-initialised while it ran (the catalog identity or
 the file's device and inode no longer match the ones it opened; D14): the
 remedy for that case is to restart the processor, after checking why the file
 changed. The CLI adds "do not serve from this database, restore it from a
-backup". Someone edited the file outside toolwarrant, or a bug wrote it.
+backup" (except for a catalog that was never bootstrapped and was opened
+under a trust root, whose advice is to drop the pin or name the right root:
+there is nothing to restore). Someone edited the file outside toolwarrant, or
+a bug wrote it.
 Procedure:
 
 1. Stop the processors for every server in that database. A processor whose
