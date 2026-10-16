@@ -201,14 +201,15 @@ func operatorOf(view catalog.TrustView, fp string) (trust.Operator, bool) {
 
 // signedActor is the person a signed command acts as (O-13): the operator the
 // trust list in force names for the key. A key the list does not name signs
-// nothing (exit 1, the fingerprint named); a label given with --as,
+// nothing (exit 1, the fingerprint named; the trust show and trust add advice
+// is describe's, added once); a label given with --as,
 // TOOLWARRANT_ACTOR or --by that names another person is a usage error, so
 // the audit log never carries a name the key does not back; without a label
 // the operator's name is the actor.
 func (a *app) signedActor(c *command, view catalog.TrustView, fp string, label catalog.Actor, explicit bool) (catalog.Actor, error) {
 	op, ok := operatorOf(view, fp)
 	if !ok {
-		return catalog.Actor{}, fmt.Errorf("%w: the key %s is not in trust list v%d in force since entry %d; run \"%s trust show\" to see whose keys are listed", catalog.ErrNotASigner, fp, view.Version, view.ListSeq, programName)
+		return catalog.Actor{}, fmt.Errorf("%w: the key %s is not in trust list v%d in force since entry %d", catalog.ErrNotASigner, fp, view.Version, view.ListSeq)
 	}
 	if explicit && label.Name != op.Name {
 		return catalog.Actor{}, &usageError{msg: fmt.Sprintf("--as %s names another operator than the key %s, which the trust list lists for %s", cell(label.Name), fp, cell(op.Name)), cmd: c}

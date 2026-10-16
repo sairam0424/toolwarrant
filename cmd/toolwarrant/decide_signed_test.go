@@ -258,6 +258,9 @@ func TestDecisionsAfterTheBootstrapRefuseAnUnlistedKey(t *testing.T) {
 	echo := l.tool("s1", "echo").Pending
 	r := l.fail(exitFailure, "--ssh-key", l.bobFile, "approve", "s1", "echo", "--hash", echo)
 	wantContains(t, "unlisted", r.stderr, "the key "+fpOf(l.bob)+" is not in trust list v1", adviceNotASigner)
+	if n := strings.Count(r.stderr, "trust show"); n != 1 {
+		t.Errorf("the trust show advice appears %d times, want once:\n%s", n, r.stderr)
+	}
 	wantNotContains(t, "unlisted", r.stdout+r.stderr, "approved s1/echo", "PRIVATE KEY")
 	if after := l.verifiedHead(); after != before {
 		t.Errorf("the refused key moved the head from %s to %s", before, after)
