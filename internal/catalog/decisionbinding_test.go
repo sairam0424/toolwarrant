@@ -52,6 +52,16 @@ func resetEchoBudget(t *testing.T, s *Store, alice operator) Receipt {
 	return mustDecide(t, s, alice, signing.KindBudgetReset, "alpha", "echo", "")
 }
 
+// reviewEnableEcho disables echo and enables it again under the default
+// policy (ReEnableRequiresReview): the enable retires the approval and
+// re-proposes echo v1, its three entries (version.superseded, version.proposed,
+// tool.enabled) all saying disabled->pending_review, and its transaction is
+// the one open at the head.
+func reviewEnableEcho(t *testing.T, s *Store, alice operator) Receipt {
+	disableEcho(t, s, alice)
+	return mustDecide(t, s, alice, signing.KindEnable, "alpha", "echo", "")
+}
+
 // echoLeavesDisabled is a sealed entry about alpha/echo under event, by alice
 // at ts, with state=disabled->enabled and the borrowed token: what the state
 // anchor would take as echo's state after the column is edited to match.
@@ -198,18 +208,78 @@ func contentProbes(t *testing.T) []bindingProbe {
 	}
 }
 
-// Rule 5's binding, probed token by token and then content by content after a
-// real signed decision whose transaction is open at the head: every probe is
-// refused by the long-lived Store, every fresh open and the forensic view with
-// its fixed sentence, the chain verifies, and Integrity counts exactly one
-// unsigned decision. The content probes are the borrowed token: without
-// bindContent a sealed tool.disabled with state=disabled->enabled naming the
-// disable's own token, plus one UPDATE of the column, re-enabled the tool
-// under a clean chain, and a server.paused saying paused=false un-paused the
-// server the same way.
+// reapproveEcho is the column edit of the review's finding 2: the state and
+// the approved pointer set back to what they were before the enable retired
+// the approval, which the forged tool.enabled claims.
+func reapproveEcho(digest string) string {
+	return fmt.Sprintf(`UPDATE tools SET state = 'enabled', approved_version_id = (SELECT v.id FROM tool_versions v WHERE v.tool_id = tools.id AND v.digest = '%s') WHERE name = 'echo'`, digest)
+}
+
+// historyProbes are the probes of what the chain said before the entry (the
+// adversarial review of PR 7.5, finding 2, and the shape rule it asked for):
+// the enable's token on a tool.enabled saying disabled->enabled, a move the
+// kind makes under the other policy but which this enable's own entries did
+// not make (they left echo in pending_review), with the state and the pointer
+// edited to match, which the state anchor would otherwise serve; the budget
+// reset's token on a tool.budget_reset saying enabled->enabled on a disabled
+// tool; and the shape of the transaction: a sibling version.superseded of the
+// disable recording another after_hash than the disable's own entry, and a
+// second tool.disabled repeating it.
+func historyProbes(t *testing.T) []bindingProbe {
+	t.Helper()
+	ech, ech2 := digestOf(t, "echo", "v1"), digestOf(t, "echo", "v2")
+	return []bindingProbe{
+		{"an enable token on a tool.enabled saying disabled->enabled after a review-policy enable", reviewEnableEcho, false,
+			func(n int64, ts string) audit.Entry {
+				return echoLeavesDisabled(string(lifecycle.EvEnabled), "", ech, ech, n, ts)
+			}, reapproveEcho(ech),
+			func(seq, n int64, ts string) string {
+				return continuitySentence(seq, "alpha/echo", lifecycle.Disabled, n+3, lifecycle.PendingReview)
+			}},
+		{"a budget_reset token on a tool.budget_reset saying enabled->enabled on a disabled tool", resetEchoBudget, false,
+			func(n int64, ts string) audit.Entry {
+				return toolEntry{by: alice, event: evBudgetReset, subject: "alpha/echo", before: ech, after: ech,
+					from: lifecycle.Enabled, to: lifecycle.Enabled, lastSeen: ech2, note: signedNote(n), ts: ts}.entry()
+			}, enableEcho,
+			func(seq, n int64, ts string) string {
+				return continuitySentence(seq, "alpha/echo", lifecycle.Enabled, n+1, lifecycle.Disabled)
+			}},
+		{"a disable token on a sibling version.superseded recording another after_hash", disableEcho, false,
+			func(n int64, ts string) audit.Entry {
+				return toolEntry{by: alice, event: string(lifecycle.EvSuperseded), subject: "alpha/echo", digest: ech, before: ech, after: "",
+					from: lifecycle.Enabled, to: lifecycle.Disabled, lastSeen: ech, note: signedNote(n), ts: ts}.entry()
+			}, "",
+			func(seq, n int64, ts string) string {
+				return fmt.Sprintf("audit entry %d names signed=%d and records after_hash none but the first entry of that transaction (seq %d) records %s; the entries of one decision record one approved digest", seq, n, n+1, ech)
+			}},
+		{"a disable token on a second tool.disabled repeating the first", disableEcho, false,
+			func(n int64, ts string) audit.Entry {
+				return toolEntry{by: alice, event: string(lifecycle.EvDisabled), subject: "alpha/echo", before: ech, after: ech,
+					from: lifecycle.Enabled, to: lifecycle.Disabled, lastSeen: ech, note: signedNote(n), ts: ts}.entry()
+			}, "",
+			func(seq, n int64, ts string) string {
+				return fmt.Sprintf("audit entry %d is a second tool.disabled of digest none under signed=%d (entry %d wrote the first); a decision writes each of its events once", seq, n, n+1)
+			}},
+	}
+}
+
+// Rule 5's binding, probed token by token, then content by content, then
+// against the history after a real signed decision whose transaction is open
+// at the head: every probe is refused by the long-lived Store, every fresh open
+// and the forensic view with its fixed sentence, the chain verifies, and
+// Integrity counts exactly one unsigned decision. The content probes are the
+// borrowed token: without bindContent a sealed tool.disabled with
+// state=disabled->enabled naming the disable's own token, plus one UPDATE of
+// the column, re-enabled the tool under a clean chain, and a server.paused
+// saying paused=false un-paused the server the same way. The history probes
+// are the borrowed token that says what the kind could have done: without
+// checkContinuity a sealed tool.enabled saying disabled->enabled naming the
+// open review-policy enable's token, plus the state and the pointer edited,
+// re-served the digest the enable had put under review.
 func TestWalk_RefusesASignedTokenThatDoesNotBindTheEntry(t *testing.T) {
 	t.Parallel()
-	for _, p := range append(tokenProbes(t), contentProbes(t)...) {
+	probes := append(tokenProbes(t), contentProbes(t)...)
+	for _, p := range append(probes, historyProbes(t)...) {
 		t.Run(p.name, func(t *testing.T) {
 			t.Parallel()
 			s, path, alice, _ := trustedCatalog(t)

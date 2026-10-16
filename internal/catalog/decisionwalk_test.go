@@ -111,61 +111,6 @@ func TestWalk_RefusesAnUnsignedEnableOrResumeAppendedAfterTheBootstrap(t *testin
 	})
 }
 
-// crawlSentence is rule 6's sentence.
-func crawlSentence(seq int64, subject string, from, to lifecycle.State, event string) string {
-	return fmt.Sprintf("audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", seq, quote(subject), from, to, event)
-}
-
-// Rule 6: a correctly sealed tool.reverted with state=disabled->enabled, which
-// the state anchor would take as the tool's state, is refused after the
-// bootstrap whether its actor is the crawler or a person, and Integrity counts
-// it under CrawlTransitionsForged. Before the bootstrap the same entry is
-// accepted and, with the column edited to match, the disabled tool is served
-// again: the legacy residual the v0.4 plan states (section 5, rule 6 applied
-// after the bootstrap only), recorded here as the code has it.
-func TestWalk_RefusesACrawlShapedEntryThatLeavesDisabled(t *testing.T) {
-	t.Parallel()
-	reverted := func(by Actor, d string) audit.Entry {
-		return toolEntry{by: by, event: string(lifecycle.EvReverted), subject: "alpha/echo", digest: d, before: d, after: d,
-			from: lifecycle.Disabled, to: lifecycle.Enabled, lastSeen: d}.entry()
-	}
-	for name, by := range map[string]Actor{"the system actor": crawler, "a human actor": alice} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			s, path, alice, _ := trustedCatalog(t)
-			d := digestOf(t, "echo", "v1")
-			mustDecide(t, s, alice, signing.KindDisable, "alpha", "echo", "")
-			db := rawDB(t, path)
-			seq := appendEntry(t, db, reverted(by, d))
-			mustExec(t, db, `UPDATE tools SET state = 'enabled' WHERE name = 'echo'`)
-			rep := walkRefuses(t, s, path, seq, crawlSentence(seq, "alpha/echo", lifecycle.Disabled, lifecycle.Enabled, string(lifecycle.EvReverted)))
-			if rep.CrawlTransitionsForged != 1 || rep.UnsignedDecisionsAfterBootstrap != 0 {
-				t.Errorf("Integrity = %+v, want exactly one forged crawl transition", rep)
-			}
-		})
-	}
-	t.Run("before the bootstrap, the legacy residual", func(t *testing.T) {
-		t.Parallel()
-		s, path := newStoreAt(t, lifecycle.DefaultPolicy())
-		d := approvedEcho(t, s)
-		if err := s.Disable(bg, "alpha", "echo", alice); err != nil {
-			t.Fatal(err)
-		}
-		db := rawDB(t, path)
-		appendEntry(t, db, reverted(crawler, d))
-		mustExec(t, db, `UPDATE tools SET state = 'enabled' WHERE name = 'echo'`)
-		snap, err := s.Snapshot(bg, "alpha")
-		if err != nil || !snap.Serves("echo", d) {
-			t.Errorf("before any bootstrap the forged revert is served = %v, %v; this is the stated legacy residual, and this assertion records it", snap.Serves("echo", d), err)
-		}
-		fresh, err := OpenWith(path, OpenOptions{ReadOnly: true})
-		if err != nil {
-			t.Fatalf("a fresh open before any bootstrap = %v; rule 6 applies after the bootstrap only", err)
-		}
-		_ = fresh.Close()
-	})
-}
-
 // Rule 4 on a complete forgery: an unlisted key signs an approval and the
 // forger appends the decision.signed entry with its row and the
 // version.approved naming it. The record is refused where the walk meets it;

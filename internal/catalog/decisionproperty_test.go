@@ -20,8 +20,11 @@ var crawlRuns atomic.Int64
 // A history the Store itself wrote after a bootstrap, drawn from crawls of
 // every shape (sightings of several digests, unusable definitions, misses to
 // deprecation under a drawn policy) and from signed decisions of every kind,
-// never trips rule 6 or rule 5: no write is ErrCorrupt, a fresh Store opens
-// it, and Integrity finds nothing. The property runs in parallel shards that
+// never trips rule 6, rule 5, the continuity rule or the shape rule: no write
+// is ErrCorrupt, a fresh Store opens it, the state its walk remembers for each
+// tool is the state the row holds (every crawl that proposes and every
+// decision that supersedes writes sibling entries, which the continuity rule
+// admits as one operation), and Integrity finds nothing. The property runs in parallel shards that
 // together perform rapid's check count, as the model and trust properties do
 // and for the same reason (model_shards_test.go).
 func TestWalk_AcceptsEveryCrawlTransitionTheLifecycleMakes(t *testing.T) {
@@ -90,6 +93,15 @@ func checkCrawlHistoryOnce(t *testing.T, rt *rapid.T, dir string, alice, bob ope
 	defer func() { _ = fresh.Close() }()
 	if _, err := fresh.Snapshot(bg, "alpha"); err != nil {
 		rt.Fatalf("fresh Snapshot: %v", err)
+	}
+	for _, name := range []string{"echo", "sum"} {
+		v, err := fresh.Tool(bg, "alpha", name)
+		if err != nil {
+			rt.Fatalf("fresh Tool(%s): %v", name, err)
+		}
+		if last, ok := fresh.chain.lookupState("alpha/" + name); !ok || last.to != v.State {
+			rt.Fatalf("the walk's memory of %s = %+v (%v) but the row says %s; the continuity rule tracks a state the Store did not leave", name, last, ok, v.State)
+		}
 	}
 	rep, err := fresh.Integrity(bg)
 	if err != nil {

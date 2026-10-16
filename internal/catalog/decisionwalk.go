@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/sairam0424/toolwarrant/internal/audit"
 	"github.com/sairam0424/toolwarrant/internal/lifecycle"
@@ -25,29 +24,34 @@ import (
 // transaction's entries contiguous), about the same subject, by the same
 // actor, at the same time, whose kind writes that event, for an approval,
 // rollback or rejection, whose digest is the one the entry records, and whose
-// content is what the kind does (bindContent): a tool entry's state=A->B is a
-// transition the kind can make (lifecycle.DecisionMayMove; a budget reset
-// stays) and a server entry's paused flag is the one the kind leaves. The
-// contiguity rule is what refuses a replay: a correctly sealed version.approved
-// appended later, naming a decision.signed that alice did make, with her time
-// and her digest, would otherwise undo a disable she made since. The content
-// rule is what refuses a borrowed token: a sealed tool.disabled or
-// version.superseded with state=disabled->enabled, or a server.paused with
-// paused=false, naming the decision.signed of the disable or pause whose
-// transaction is still open at the head, with the actor and the time copied,
-// would otherwise pass every other comparison and the state anchor would
-// serve the tool or the server again. Rule 6,
+// content is what the kind does (bindContent, decisionbind.go): a tool entry's
+// state=A->B is a transition the kind can make (lifecycle.DecisionMayMove; a
+// budget reset stays) and a server entry's paused flag is the one the kind
+// leaves; then the entry moves its tool from the state the newest entry about
+// the tool left it in (checkContinuity, decisioncontinuity.go) and fits the
+// shape of its transaction, one transition, one after_hash, each event once
+// (checkTransactionShape). The contiguity rule is what refuses a replay: a
+// correctly sealed version.approved appended later, naming a decision.signed
+// that alice did make, with her time and her digest, would otherwise undo a
+// disable she made since. The content rule is what refuses a borrowed token
+// that says the opposite of its decision; the continuity rule is what refuses
+// a borrowed token that says what the decision could have done under another
+// policy but did not, such as a tool.enabled saying disabled->enabled while
+// the enable's own entries left the tool in pending_review. Rule 6,
 // checkCrawlTransition: after the bootstrap, an entry about a tool that
 // carries no token moves the tool's state only along a transition a crawl can
-// make (lifecycle.CrawlMayMove), so a sealed tool.reverted with
-// state=disabled->enabled appended without a key re-enables nothing. Before
-// the bootstrap nothing changes (O-12): approvals made then stand by chain
-// anchoring alone, and the legacy residual is stated. Every failure is
-// ErrCorrupt with a fixed sentence naming the entry; the walk stops at the
-// first and records nothing of its page. The anchor pass applies rule 5 to
-// every entry it anchors (chainMemory.requireSigned) with two token parses
-// (the signed= token, then the state field or the paused flag) and one map
-// lookup, and reads no bytes.
+// make (lifecycle.CrawlMayMove), and from the state the chain left it in, so
+// neither a sealed tool.reverted with state=disabled->enabled nor one with
+// state=changed_pending_reapproval->enabled appended without a key re-enables
+// anything. Before the bootstrap nothing is refused (O-12): approvals made
+// then stand by chain anchoring alone, and the legacy residual is stated; the
+// memory of every tool's state is kept from the genesis all the same. Every
+// failure is ErrCorrupt with a fixed sentence naming the entry; the walk stops
+// at the first and records nothing of its page. The anchor pass applies the
+// binding of rule 5 to every entry it anchors (chainMemory.requireSigned,
+// decisionbind.go) with two token parses (the signed= token, then the state
+// field or the paused flag) and one map lookup, reads no bytes, and leaves
+// the continuity and shape rules to the walk that recorded the entry.
 
 // isHumanOnlyEvent reports whether only a human command writes this event:
 // the eight events of the eight decisions (O-16). Every other lifecycle event
@@ -150,34 +154,56 @@ func checkDecisionTokens(e audit.Entry, d signing.Decision) error {
 
 // decisionWalk is what rules 5 and 6 carry from one entry to the next: the
 // seq of the bootstrap in force (0 when none, so the rules do not apply), the
-// decision.signed entry whose transaction is open at this point of the chain
-// (0 when the last entry belonged to none) and how to find the outcome the
-// walk recorded for a verified decision.signed entry.
+// decision transaction open at this point of the chain (openTxn; seq 0 when
+// the last entry belonged to none), how to find the outcome the walk recorded
+// for a verified decision.signed entry, and what the newest entry about a tool
+// left it (decisioncontinuity.go).
 type decisionWalk struct {
 	bootstrap int64
-	open      int64
+	open      openTxn
 	lookup    func(seq int64) (signedOutcome, bool)
+	lastState func(subject string) (toolLast, bool)
+}
+
+// lifecycleStep is what checkLifecycleEntry hands back for one accepted entry:
+// the decision transaction open after it (the one the entry named when it
+// carries a token, none otherwise) and, when the entry is about a tool, what
+// it left the tool, which the caller records.
+type lifecycleStep struct {
+	open openTxn
+	left toolLast
+	tool bool
 }
 
 // checkLifecycleEntry applies rule 5 and rule 6 to one entry that carries no
-// signed record itself and returns the decision.signed entry whose
-// transaction is open after it: the one the entry named when it carries a
-// token, none otherwise. Before the bootstrap it accepts everything (O-12).
-func checkLifecycleEntry(e audit.Entry, w decisionWalk) (int64, error) {
+// signed record itself. Before the bootstrap it accepts everything and only
+// records what the entry left its tool (O-12).
+func checkLifecycleEntry(e audit.Entry, w decisionWalk) (lifecycleStep, error) {
+	f := readStateField(e.Detail)
+	step := lifecycleStep{}
+	step.left, step.tool = leftState(e, f)
 	if w.bootstrap == 0 || e.Seq <= w.bootstrap {
-		return 0, nil
+		return step, nil
 	}
 	token, signed := detailField(e.Detail, fieldSigned)
 	switch {
 	case signed:
-		if err := checkSignedBinding(e, token, w); err != nil {
-			return 0, err
+		open, err := checkSignedBinding(e, token, f, w)
+		if err != nil {
+			return lifecycleStep{}, err
 		}
-		return w.open, nil
+		step.open = open
+		return step, nil
 	case isHumanOnlyEvent(e.Event):
-		return 0, errUnsignedDecision(e, w.bootstrap)
+		return lifecycleStep{}, errUnsignedDecision(e, w.bootstrap)
 	}
-	return 0, checkCrawlTransition(e)
+	if err := checkCrawlTransition(e, f); err != nil {
+		return lifecycleStep{}, err
+	}
+	if err := checkContinuity(e, f, w, ruleCrawl); err != nil {
+		return lifecycleStep{}, err
+	}
+	return step, nil
 }
 
 // errUnsignedDecision is rule 5's refusal of a human-only event after the
@@ -188,37 +214,48 @@ func errUnsignedDecision(e audit.Entry, bootstrap int64) error {
 
 // checkSignedBinding is rule 5 for one entry that carries signed=token: the
 // token names a verified decision.signed entry below it whose transaction is
-// still open, and the outcome binds the entry (bindOutcome).
-func checkSignedBinding(e audit.Entry, token string, w decisionWalk) error {
+// still open, the outcome binds the entry (bindOutcome), the entry moves its
+// tool from the state the chain left it in (checkContinuity) and it fits the
+// shape of its transaction (checkTransactionShape). It returns the transaction
+// with the entry recorded.
+func checkSignedBinding(e audit.Entry, token string, f stateField, w decisionWalk) (openTxn, error) {
 	n, err := strconv.ParseInt(token, 10, 64)
 	if err != nil || n < 1 || n >= e.Seq {
-		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%s, which is not the seq of a decision.signed entry below it", e.Seq, fieldSigned, quote(token))
+		return openTxn{}, problemf(ruleSignedBinding, nil, "audit entry %d names %s=%s, which is not the seq of a decision.signed entry below it", e.Seq, fieldSigned, quote(token))
 	}
 	o, ok := w.lookup(n)
 	if !ok {
-		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, which is not a verified decision.signed entry", e.Seq, fieldSigned, n)
+		return openTxn{}, problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, which is not a verified decision.signed entry", e.Seq, fieldSigned, n)
 	}
-	if n != w.open {
-		return problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, whose transaction ended before it; a signed record attests the entries of its own transaction only, and the entry was appended outside toolwarrant", e.Seq, fieldSigned, n)
+	if n != w.open.seq {
+		return openTxn{}, problemf(ruleSignedBinding, nil, "audit entry %d names %s=%d, whose transaction ended before it; a signed record attests the entries of its own transaction only, and the entry was appended outside toolwarrant", e.Seq, fieldSigned, n)
 	}
-	return bindOutcome(e, n, o)
+	if err := bindOutcome(e, n, o); err != nil {
+		return openTxn{}, err
+	}
+	if err := checkContinuity(e, f, w, ruleSignedBinding); err != nil {
+		return openTxn{}, err
+	}
+	if err := checkTransactionShape(e, w.open); err != nil {
+		return openTxn{}, err
+	}
+	return w.open.extend(e), nil
 }
 
 // checkCrawlTransition is rule 6 for one entry after the bootstrap that
 // carries no token: an entry about a tool (its detail has a state field) moves
-// the state only along a transition a crawl can make. An entry with no state
-// field is about a server, a crawl or a rejected name and moves no tool.
-func checkCrawlTransition(e audit.Entry) error {
-	state, ok := detailField(e.Detail, fieldState)
-	if !ok {
+// the state only along a transition a crawl can make; checkContinuity then
+// requires the from half to be where the chain left the tool. An entry with no
+// state field is about a server, a crawl or a rejected name and moves no tool.
+func checkCrawlTransition(e audit.Entry, f stateField) error {
+	if !f.present {
 		return nil
 	}
-	from, to, ok := strings.Cut(state, transitionArrow)
-	if !ok {
-		return problemf(ruleCrawl, nil, "audit entry %d about %s carries a %s field %s that is not a transition", e.Seq, quote(e.Subject), fieldState, quote(state))
+	if !f.transition {
+		return f.notATransition(e, ruleCrawl)
 	}
-	if !lifecycle.CrawlMayMove(lifecycle.State(from), lifecycle.State(to)) {
-		return problemf(ruleCrawl, nil, "audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), from, to, e.Event)
+	if !lifecycle.CrawlMayMove(f.from, f.to) {
+		return problemf(ruleCrawl, nil, "audit entry %d moves tool %s from %s to %s under event %s, which no crawl can do; the entry was appended outside toolwarrant", e.Seq, quote(e.Subject), f.from, f.to, e.Event)
 	}
 	return nil
 }

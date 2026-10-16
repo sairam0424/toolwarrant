@@ -20,15 +20,22 @@ import (
 // checkDecisionEntries applies rules 5 and 6 to every entry of the log that
 // carries no signed record, in seq order, and then notes the legacy approvals.
 // Without a bootstrap in force nothing applies (the file is a v0.3 catalog in
-// every respect) and the legacy list stays nil.
+// every respect) and the legacy list stays nil. The states every tool was left
+// in are tracked from the genesis, as the walk tracks them, and a refused
+// entry's state is recorded too, so that the entries after it, which the file
+// built on it, are not each reported again.
 func (c *integrityCheck) checkDecisionEntries() error {
 	bootstrap := c.trustFold.state.BootstrapSeq
 	if bootstrap == 0 {
 		return nil
 	}
+	states := map[string]toolLast{}
 	w := decisionWalk{bootstrap: bootstrap, lookup: func(seq int64) (signedOutcome, bool) {
 		o, ok := c.outcomes[seq]
 		return o, ok
+	}, lastState: func(subject string) (toolLast, bool) {
+		l, ok := states[subject]
+		return l, ok
 	}}
 	for next := int64(firstPossibleSeq); ; {
 		page, err := queryAudit(c.ctx, c.q, next, auditPage)
@@ -36,8 +43,12 @@ func (c *integrityCheck) checkDecisionEntries() error {
 			return err
 		}
 		for _, e := range page {
-			if e.Seq >= 1 {
-				w.open = c.checkDecisionEntry(e, w)
+			if e.Seq < 1 {
+				continue
+			}
+			w.open = c.checkDecisionEntry(e, w)
+			if l, ok := leftState(e, readStateField(e.Detail)); ok {
+				states[e.Subject] = l
 			}
 		}
 		if len(page) < auditPage {
@@ -53,19 +64,19 @@ func (c *integrityCheck) checkDecisionEntries() error {
 // transaction open after it: a verified decision.signed entry opens its own,
 // a trust entry or a refused entry closes any, and every other entry is
 // checkLifecycleEntry's.
-func (c *integrityCheck) checkDecisionEntry(e audit.Entry, w decisionWalk) int64 {
+func (c *integrityCheck) checkDecisionEntry(e audit.Entry, w decisionWalk) openTxn {
 	if isSignedEvent(e.Event) {
 		if _, ok := c.outcomes[e.Seq]; ok {
-			return e.Seq
+			return openTxn{seq: e.Seq}
 		}
-		return 0
+		return openTxn{}
 	}
-	open, err := checkLifecycleEntry(e, w)
+	step, err := checkLifecycleEntry(e, w)
 	if err != nil {
 		c.noteSignedProblem(err)
-		return 0
+		return openTxn{}
 	}
-	return open
+	return step.open
 }
 
 // noteLegacyApprovals lists every tool whose approval in force predates the

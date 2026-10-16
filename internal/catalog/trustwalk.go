@@ -116,24 +116,27 @@ type trustMemory struct {
 
 // pageInput is what verifySignedPage starts one page from: the trust memory
 // and the open decision transaction after the pages before, the catalog
-// identity and the pinned root, and how to find the outcome of a
-// decision.signed entry of an earlier page.
+// identity and the pinned root, how to find the outcome of a decision.signed
+// entry of an earlier page and what an earlier page left each tool.
 type pageInput struct {
 	trust      trustMemory
-	open       int64
+	open       openTxn
 	identity   string
 	pinnedRoot string
 	lookup     func(seq int64) (signedOutcome, bool)
+	lastState  func(subject string) (toolLast, bool)
 }
 
 // pageOutcome is what verifySignedPage hands back for one page: the trust
 // memory after the page, the decision outcomes of the page, the decision
-// transaction open at its end (decisionwalk.go) and how many signatures it
+// transaction open at its end (decisionwalk.go), what the page's entries left
+// each tool they are about (decisioncontinuity.go) and how many signatures it
 // verified.
 type pageOutcome struct {
 	trust    trustMemory
 	signed   map[int64]signedOutcome
-	open     int64
+	open     openTxn
+	states   map[string]toolLast
 	verified int
 }
 
@@ -160,7 +163,7 @@ func verifySignedPage(ctx context.Context, q queryer, page []audit.Entry, in pag
 // signature, then rule 3 or rules 2 and 4 for each signed entry, and rules 5
 // and 6 for each entry that carries no record.
 func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in pageInput) (pageOutcome, error) {
-	out := pageOutcome{trust: in.trust, open: in.open, signed: make(map[int64]signedOutcome)}
+	out := pageOutcome{trust: in.trust, open: in.open, signed: make(map[int64]signedOutcome), states: make(map[string]toolLast)}
 	rows, err := readSignedRecords(ctx, q, signedSeqs(page))
 	if err != nil {
 		return pageOutcome{}, err
@@ -170,15 +173,23 @@ func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in 
 			return o, true
 		}
 		return in.lookup(seq)
+	}, lastState: func(subject string) (toolLast, bool) {
+		if l, ok := out.states[subject]; ok {
+			return l, true
+		}
+		return in.lastState(subject)
 	}}
 	for _, e := range page {
 		if !isSignedEvent(e.Event) {
 			w.bootstrap, w.open = out.trust.state.BootstrapSeq, out.open
-			open, err := checkLifecycleEntry(e, w)
+			step, err := checkLifecycleEntry(e, w)
 			if err != nil {
 				return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
 			}
-			out.open = open
+			out.open = step.open
+			if step.tool {
+				out.states[e.Subject] = step.left
+			}
 			continue
 		}
 		rec, ok := rows[e.Seq]
@@ -191,10 +202,10 @@ func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in 
 		}
 		out.verified++
 		out.trust = res.trust
-		out.open = 0
+		out.open = openTxn{}
 		if res.decision != nil {
 			out.signed[e.Seq] = *res.decision
-			out.open = e.Seq
+			out.open = openTxn{seq: e.Seq}
 		}
 	}
 	return out, nil

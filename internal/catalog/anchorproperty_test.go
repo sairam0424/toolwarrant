@@ -194,6 +194,94 @@ func drawEntry(rt *rapid.T, o signedOutcome, n int64, other string) (audit.Entry
 	return e, content, token
 }
 
+// stateField renders the state field the content's detail carries, "" when
+// it carries none, for the shape oracle.
+func (d drawnContent) stateField() string {
+	if d.tool && d.hasField {
+		return fmt.Sprintf("%s->%s", d.from, d.to)
+	}
+	return ""
+}
+
+// drawnHistory is what the property draws about the chain before the entry:
+// what the newest entry about the subject left it, when there is one, and the
+// open transaction, with the first entry of it the walk saw when it saw one.
+type drawnHistory struct {
+	hasLast bool
+	last    toolLast
+	open    openTxn
+}
+
+// drawHistory draws the history around a drawn entry: faithful (the newest
+// entry about the subject left the tool where the entry says it starts, and
+// the transaction has no entry yet) unless a mutation forgets the newest
+// entry, blanks its transition, makes it a sibling of the entry, moves the
+// state it left, or gives the transaction a first entry (drawFirst).
+func drawHistory(rt *rapid.T, e audit.Entry, kind signing.Kind, d drawnContent, n int64, other string) drawnHistory {
+	h := drawnHistory{hasLast: true, open: openTxn{seq: n},
+		last: toolLast{seq: n - 2, ts: "2026-10-16T09:00:00.000000000Z", from: lifecycle.Discovered, to: d.from}}
+	switch {
+	case mutate(rt, "no last"):
+		h.hasLast = false
+	case mutate(rt, "unknown last"):
+		h.last.to = ""
+	case mutate(rt, "sibling"):
+		h.last = toolLast{seq: n + 1, ts: e.TS, from: d.from, to: d.to}
+	case mutate(rt, "last to"):
+		h.last.to = rapid.SampledFrom(probeStates()).Draw(rt, "last to")
+	}
+	if mutate(rt, "first") {
+		h.open = drawFirst(rt, e, kind, d, n, other)
+	}
+	return h
+}
+
+// drawFirst draws the first entry of the open transaction: faithful to the
+// drawn entry (the same state field and after_hash, another event written)
+// unless a mutation draws its transition from the kind's own table, which the
+// decision may not have taken, another after_hash, or the entry's own event
+// and digest among the events already written.
+func drawFirst(rt *rapid.T, e audit.Entry, kind signing.Kind, d drawnContent, n int64, other string) openTxn {
+	o := openTxn{seq: n, first: n + 1, state: d.stateField(), after: e.AfterHash,
+		events: []txnEvent{{seq: n + 1, event: string(lifecycle.EvDiscovered), digest: orNoDigest(d.digest)}}}
+	if moves := admittedMoves(kind); len(moves) > 0 && mutate(rt, "first move") {
+		m := rapid.SampledFrom(moves).Draw(rt, "first move")
+		o.state = fmt.Sprintf("%s->%s", m[0], m[1])
+	}
+	if mutate(rt, "first after") {
+		o.after = other
+	}
+	if mutate(rt, "repeat") {
+		digest, _ := detailField(e.Detail, fieldDigest)
+		o.events = append(o.events, txnEvent{seq: n + 2, event: e.Event, digest: digest})
+	}
+	return o
+}
+
+// continuityHolds is the oracle of checkContinuity: an entry about no tool, or
+// one whose subject has no newest entry or none with a transition, is not
+// checked; otherwise it starts where that entry left the tool, or repeats
+// that entry's transition at its time.
+func continuityHolds(e audit.Entry, d drawnContent, h drawnHistory) bool {
+	if !d.tool || !d.hasField || !h.hasLast || h.last.to == "" {
+		return true
+	}
+	return d.from == h.last.to || (h.last.ts == e.TS && h.last.from == d.from && h.last.to == d.to)
+}
+
+// shapeHolds is the oracle of checkTransactionShape: no event and digest the
+// transaction wrote already, and the first entry's state field and after_hash
+// when there is one.
+func shapeHolds(e audit.Entry, d drawnContent, o openTxn) bool {
+	digest, _ := detailField(e.Detail, fieldDigest)
+	for _, ev := range o.events {
+		if ev.event == e.Event && ev.digest == digest {
+			return false
+		}
+	}
+	return o.first == 0 || (o.state == d.stateField() && o.after == e.AfterHash)
+}
+
 // The anchor rule accepts an entry only when it names the decision.signed
 // entry of its own transaction and says what that decision does: for an
 // outcome of every kind and an entry faithful to it in every field unless
@@ -202,9 +290,13 @@ func drawEntry(rt *rapid.T, o signedOutcome, n int64, other string) (audit.Entry
 // requireSigned accepts exactly the entries whose every field is the recorded
 // outcome's, whose event the kind writes, whose digest the kind decided and
 // whose content the kind produces, and the walk's checkSignedBinding accepts
-// those only while that transaction is open. A human-only event without a
-// token is refused after the bootstrap and accepted before it; a token-less
-// tool entry is held to the crawl table.
+// those only while that transaction is open, only when the entry starts where
+// the newest entry about the tool left it or repeats that entry's transition
+// at its time (the continuity rule), and only when it carries the transition
+// and the after_hash of the transaction's first entry and repeats no event of
+// it (the shape rule). A human-only event without a token is refused after the
+// bootstrap and accepted before it; a token-less tool entry is held to the
+// crawl table and to the continuity rule.
 func TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction(t *testing.T) {
 	t.Parallel()
 	const (
@@ -222,9 +314,9 @@ func TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction(t *tes
 		c.trust.state = trust.State{BootstrapSeq: bootstrap, ListSeq: bootstrap}
 		c.signed[n] = o
 		e, content, token := drawEntry(rt, o, n, other)
-		open := int64(n)
+		h := drawHistory(rt, e, kind, content, n, other)
 		if mutate(rt, "open") {
-			open = 0
+			h.open = openTxn{}
 		}
 		recorded, decides := digestRecorded(e, content)
 		binds := token == n && e.Seq > n && e.Subject == o.subject && e.Actor == o.actor && e.ActorType == string(ActorHuman) && e.TS == o.ts &&
@@ -235,11 +327,14 @@ func TestProperty_anchorRuleAcceptsOnlyTheSignedEntryOfTheSameTransaction(t *tes
 			rt.Fatalf("requireSigned(%+v) accepted = %v, want %v (binds %v, content %+v)", e, got, wantAnchor, binds, content)
 		}
 		crawlOK := !content.tool || !content.hasField || lifecycle.CrawlMayMove(content.from, content.to)
-		w := decisionWalk{bootstrap: bootstrap, open: open, lookup: c.lookupSigned}
+		continuous := continuityHolds(e, content, h)
+		w := decisionWalk{bootstrap: bootstrap, open: h.open, lookup: c.lookupSigned,
+			lastState: func(string) (toolLast, bool) { return h.last, h.hasLast }}
 		_, err := checkLifecycleEntry(e, w)
-		wantWalk := !after || (token != 0 && binds && open == n) || (token == 0 && !isHumanOnlyEvent(e.Event) && crawlOK)
+		wantWalk := !after || (token != 0 && binds && h.open.seq == n && continuous && shapeHolds(e, content, h.open)) ||
+			(token == 0 && !isHumanOnlyEvent(e.Event) && crawlOK && continuous)
 		if got := err == nil; got != wantWalk {
-			rt.Fatalf("checkLifecycleEntry(%+v, open %d) accepted = %v, want %v (content %+v): %v", e, open, got, wantWalk, content, err)
+			rt.Fatalf("checkLifecycleEntry(%+v, history %+v) accepted = %v, want %v (content %+v): %v", e, h, got, wantWalk, content, err)
 		}
 	})
 }

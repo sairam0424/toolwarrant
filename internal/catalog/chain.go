@@ -90,13 +90,16 @@ type chainMemory struct {
 	// alone.
 	hashed atomic.Int64
 	// trust is what the walk knows about the operator trust list, signed
-	// what it recorded about every verified decision.signed entry and
-	// openSigned the decision.signed entry whose transaction the head entry
-	// belongs to, 0 when none (trustwalk.go, decisionwalk.go); all three
-	// advance with the walk, under mu.
-	trust      trustMemory
-	signed     map[int64]signedOutcome
-	openSigned int64
+	// what it recorded about every verified decision.signed entry, open the
+	// decision transaction the head entry belongs to (seq 0 when none) and
+	// states what the newest entry about each tool left it (trustwalk.go,
+	// decisionwalk.go, decisioncontinuity.go); all four advance with the
+	// walk, under mu. states holds one value per tool subject, never one per
+	// entry, so a long-lived processor keeps it beside hashes.
+	trust  trustMemory
+	signed map[int64]signedOutcome
+	open   openTxn
+	states map[string]toolLast
 	// verified counts the signatures the walks have verified since the Store
 	// opened: every signed entry once at open, the new ones on each reload,
 	// none on a crawl-only reload (O-15;
@@ -105,7 +108,7 @@ type chainMemory struct {
 }
 
 func newChainMemory() *chainMemory {
-	return &chainMemory{hashes: map[int64]entryHash{}, signed: map[int64]signedOutcome{}}
+	return &chainMemory{hashes: map[int64]entryHash{}, signed: map[int64]signedOutcome{}, states: map[string]toolLast{}}
 }
 
 // pin returns the head of the verified chain.
@@ -121,16 +124,17 @@ func (c *chainMemory) pin() chainPin {
 // computed value is what is kept, for every decision entry and for the head.
 // The page is walked first (verifySignedPage): the signed entries against the
 // trust list in force as the memory holds it after the pages before, the
-// others against the bootstrap and the decision outcomes known at their
-// point (rules 5 and 6), and nothing of the page is recorded when one entry
-// is refused: the walk stops there, the pin stays below the refused entry,
+// others against the bootstrap, the decision outcomes and the tool states
+// known at their point (rules 5 and 6), and nothing of the page is recorded
+// when one entry is refused: the walk stops there, the pin stays below the
+// refused entry,
 // and the refusal is the ErrCorrupt the caller returns.
 func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.Entry, identity, pinnedRoot string) error {
 	if len(page) == 0 {
 		return nil
 	}
 	c.mu.RLock()
-	in := pageInput{trust: c.trust, open: c.openSigned, identity: identity, pinnedRoot: pinnedRoot, lookup: c.lookupSigned}
+	in := pageInput{trust: c.trust, open: c.open, identity: identity, pinnedRoot: pinnedRoot, lookup: c.lookupSigned, lastState: c.lookupState}
 	c.mu.RUnlock()
 	out, err := verifySignedPage(ctx, q, page, in)
 	if err != nil {
@@ -148,9 +152,12 @@ func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.En
 		}
 	}
 	c.trust = out.trust
-	c.openSigned = out.open
+	c.open = out.open
 	for seq, o := range out.signed {
 		c.signed[seq] = o
+	}
+	for subject, l := range out.states {
+		c.states[subject] = l
 	}
 	last := page[len(page)-1]
 	c.head = chainPin{seq: last.Seq, hash: last.Hash}
@@ -172,7 +179,8 @@ func (c *chainMemory) drop() {
 	c.hashes = map[int64]entryHash{}
 	c.trust = trustMemory{}
 	c.signed = map[int64]signedOutcome{}
-	c.openSigned = 0
+	c.open = openTxn{}
+	c.states = map[string]toolLast{}
 }
 
 // hashCount is the number of entries verify has hashed so far.
