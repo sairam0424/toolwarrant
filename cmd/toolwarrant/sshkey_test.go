@@ -202,7 +202,14 @@ func TestAnAgentThatNeverAnswersIsNamedAndWritesNothing(t *testing.T) {
 // fingerprints and nothing else of a key: no PEM marker, no base64 of the
 // seed, the private key or the key file's body; the public key's base64 only
 // where it is the output (trust show --json and --allowed-signers, and audit
-// list --json, whose payloads carry the key lines a trust list stores).
+// list --json, whose payloads carry the key lines a trust list stores). The
+// matrix holds the refusals that name what the operator gave: the --expect-head
+// mismatch, the wrong --trust-root (list, and audit list --json, which
+// withholds the payloads and so prints no key line), the retry after a crawl
+// landed in the signing window, and a private key file handed to trust add
+// --key by mistake, the one slip most likely to put key material on a
+// terminal; want is the line that proves the row took the path it names.
+// serve, which prints the root line, is started and stopped after the matrix.
 func TestNoOutputCarriesKeyMaterial(t *testing.T) {
 	t.Parallel()
 	l := newSignedLab(t)
@@ -227,43 +234,57 @@ func TestNoOutputCarriesKeyMaterial(t *testing.T) {
 	blocking := sigtest.NewBlockingAgent(t, l.bob)
 	echo := l.tool("s1", "echo").Pending
 	add := l.tool("s1", "add").Pending
+	crawls := 0
+	crawlOnce := func() {
+		if crawls++; crawls == 1 {
+			l.ok("crawl", "s1")
+		}
+	}
+	wrongRoot := fpOf(l.bob)
 	runs := []struct {
 		name string
 		env  map[string]string
+		hook func()
+		want string
 		args []string
 	}{
-		{"approve before the bootstrap with a key", nil, []string{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo}},
-		{"trust init", nil, []string{"--as", "alice", "--ssh-key", l.alicePub, "trust", "init"}},
-		{"trust init again", nil, []string{"--as", "alice", "--ssh-key", l.alicePub, "trust", "init"}},
-		{"approve", nil, []string{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo}},
-		{"approve without a key", nil, []string{"approve", "s1", "add", "--hash", add}},
-		{"approve with an unlisted key file", nil, []string{"--ssh-key", l.bobFile, "approve", "s1", "add", "--hash", add}},
-		{"approve with a shared key file", nil, []string{"--ssh-key", shared, "approve", "s1", "add", "--hash", add}},
-		{"approve with an encrypted key file", nil, []string{"--ssh-key", encrypted, "approve", "s1", "add", "--hash", add}},
-		{"approve with a plain-text key file", nil, []string{"--ssh-key", plain, "approve", "s1", "add", "--hash", add}},
-		{"approve with a key the agent lacks", nil, []string{"--ssh-key", l.bobPub, "approve", "s1", "add", "--hash", add}},
-		{"approve with a mismatched label", nil, []string{"--as", "bob", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
-		{"approve that times out", map[string]string{envAuthSock: blocking}, []string{"--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
-		{"trust add", nil, []string{"--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub}},
-		{"disable by bob's key file", nil, []string{"--ssh-key", l.bobFile, "disable", "s1", "echo"}},
-		{"enable", nil, []string{"--ssh-key", l.alicePub, "enable", "s1", "echo"}},
-		{"reject", nil, []string{"--ssh-key", l.alicePub, "reject", "s1", "echo", "--hash", echo}},
-		{"rollback refused", nil, []string{"--ssh-key", l.alicePub, "rollback", "s1", "echo", "--to", add}},
-		{"server pause", nil, []string{"--ssh-key", l.alicePub, "server", "pause", "s1"}},
-		{"server resume", nil, []string{"--ssh-key", l.alicePub, "server", "resume", "s1"}},
-		{"budget reset", nil, []string{"--ssh-key", l.alicePub, "budget", "reset", "s1", "echo"}},
-		{"trust remove own key", nil, []string{"--ssh-key", l.alicePub, "trust", "remove", "alice"}},
-		{"trust remove", nil, []string{"--ssh-key", l.bobFile, "trust", "remove", "alice"}},
-		{"trust show", nil, []string{"trust", "show"}},
-		{"trust show --json", nil, []string{"trust", "show", "--json"}},
-		{"trust show --allowed-signers", nil, []string{"trust", "show", "--allowed-signers"}},
-		{"show", nil, []string{"show", "s1", "echo"}},
-		{"show --json", nil, []string{"show", "s1", "echo", "--json"}},
-		{"list", nil, []string{"list"}},
-		{"audit verify", nil, []string{"audit", "verify"}},
-		{"audit list", nil, []string{"audit", "list"}},
-		{"audit list --json", nil, []string{"audit", "list", "--json"}},
-		{"help", nil, []string{"help"}},
+		{"approve before the bootstrap with a key", nil, nil, "", []string{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo}},
+		{"trust init", nil, nil, "", []string{"--as", "alice", "--ssh-key", l.alicePub, "trust", "init"}},
+		{"trust init again", nil, nil, "", []string{"--as", "alice", "--ssh-key", l.alicePub, "trust", "init"}},
+		{"approve", nil, nil, "", []string{"--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo}},
+		{"approve without a key", nil, nil, "", []string{"approve", "s1", "add", "--hash", add}},
+		{"approve with an unlisted key file", nil, nil, "", []string{"--ssh-key", l.bobFile, "approve", "s1", "add", "--hash", add}},
+		{"approve with a shared key file", nil, nil, "", []string{"--ssh-key", shared, "approve", "s1", "add", "--hash", add}},
+		{"approve with an encrypted key file", nil, nil, "", []string{"--ssh-key", encrypted, "approve", "s1", "add", "--hash", add}},
+		{"approve with a plain-text key file", nil, nil, "", []string{"--ssh-key", plain, "approve", "s1", "add", "--hash", add}},
+		{"approve with a key the agent lacks", nil, nil, "", []string{"--ssh-key", l.bobPub, "approve", "s1", "add", "--hash", add}},
+		{"approve with a mismatched label", nil, nil, "", []string{"--as", "bob", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
+		{"approve with a stale --expect-head", nil, nil, "audit head mismatch", []string{"--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add, "--expect-head", strings.Repeat("0", 64)}},
+		{"approve that times out", map[string]string{envAuthSock: blocking}, nil, "", []string{"--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
+		{"approve signed again after a crawl landed in the signing window", nil, crawlOnce, "the log grew while you signed", []string{"--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
+		{"trust add with a private key file as --key", nil, nil, "not an SSH public key", []string{"--ssh-key", l.alicePub, "trust", "add", "carol", "--key", l.bobFile}},
+		{"trust add", nil, nil, "", []string{"--ssh-key", l.alicePub, "trust", "add", "bob", "--key", l.bobPub}},
+		{"disable by bob's key file", nil, nil, "", []string{"--ssh-key", l.bobFile, "disable", "s1", "echo"}},
+		{"enable", nil, nil, "", []string{"--ssh-key", l.alicePub, "enable", "s1", "echo"}},
+		{"reject", nil, nil, "", []string{"--ssh-key", l.alicePub, "reject", "s1", "echo", "--hash", echo}},
+		{"rollback refused", nil, nil, "", []string{"--ssh-key", l.alicePub, "rollback", "s1", "echo", "--to", add}},
+		{"server pause", nil, nil, "", []string{"--ssh-key", l.alicePub, "server", "pause", "s1"}},
+		{"server resume", nil, nil, "", []string{"--ssh-key", l.alicePub, "server", "resume", "s1"}},
+		{"budget reset", nil, nil, "", []string{"--ssh-key", l.alicePub, "budget", "reset", "s1", "echo"}},
+		{"trust remove own key", nil, nil, "", []string{"--ssh-key", l.alicePub, "trust", "remove", "alice"}},
+		{"trust remove", nil, nil, "", []string{"--ssh-key", l.bobFile, "trust", "remove", "alice"}},
+		{"trust show", nil, nil, "", []string{"trust", "show"}},
+		{"trust show --json", nil, nil, "", []string{"trust", "show", "--json"}},
+		{"trust show --allowed-signers", nil, nil, "", []string{"trust", "show", "--allowed-signers"}},
+		{"show", nil, nil, "", []string{"show", "s1", "echo"}},
+		{"show --json", nil, nil, "", []string{"show", "s1", "echo", "--json"}},
+		{"list", nil, nil, "", []string{"list"}},
+		{"list under the wrong trust root", nil, nil, "pinned trust root", []string{"--trust-root", wrongRoot, "list"}},
+		{"audit verify", nil, nil, "", []string{"audit", "verify"}},
+		{"audit list", nil, nil, "", []string{"audit", "list"}},
+		{"audit list --json", nil, nil, "", []string{"audit", "list", "--json"}},
+		{"audit list --json under the wrong trust root", nil, nil, "signed records not shown", []string{"--trust-root", wrongRoot, "audit", "list", "--json"}},
+		{"help", nil, nil, "", []string{"help"}},
 	}
 	for _, run := range runs {
 		saved := map[string]string{}
@@ -271,16 +292,33 @@ func TestNoOutputCarriesKeyMaterial(t *testing.T) {
 			saved[k] = l.env[k]
 			l.env[k] = v
 		}
-		r := l.run(run.args...)
+		var r result
+		if run.hook != nil {
+			r = l.runHooked(run.hook, run.args...)
+		} else {
+			r = l.run(run.args...)
+		}
 		for k, v := range saved {
 			l.env[k] = v
 		}
 		out := r.stdout + r.stderr
+		if run.want != "" {
+			wantContains(t, run.name, out, run.want)
+		}
 		wantNotContains(t, run.name, out, forbidden...)
 		if !publicOK[run.name] {
 			wantNotContains(t, run.name+" (public key)", out, alicePublic, bobPublic)
 		}
 	}
+	stdout, stderr, stop := l.start("serve", "--server", "s1", "--listen", "127.0.0.1:0")
+	waitListening(t, stdout)
+	if code := stop(); code != exitOK {
+		t.Fatalf("serve exit %d:\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	served := stdout.String() + stderr.String()
+	wantContains(t, "serve", served, "signed decisions: enforced from entry ")
+	wantNotContains(t, "serve", served, forbidden...)
+	wantNotContains(t, "serve (public key)", served, alicePublic, bobPublic)
 }
 
 // The shape --trust-root must have is the one the signing package prints and
