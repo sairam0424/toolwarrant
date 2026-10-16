@@ -119,6 +119,9 @@ func TestKeyFile_RefusesEveryUnsafeShape(t *testing.T) {
 		if strings.Contains(err.Error(), base64.StdEncoding.EncodeToString(ed.Private.(interface{ Seed() []byte }).Seed())) {
 			t.Errorf("%s: the error carries the seed", label)
 		}
+		if strings.Contains(err.Error(), "PRIVATE KEY") {
+			t.Errorf("%s: the error carries the PEM marker, which no output may: %v", label, err)
+		}
 	}
 }
 

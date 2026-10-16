@@ -123,11 +123,13 @@ func ReadPrivateKeyFile(path string) (SigningKey, error) {
 }
 
 // parsePrivateKey turns the bytes of a key file into a SigningKey: exactly one
-// PEM block, no passphrase, a key type the policy accepts.
+// PEM block, no passphrase, a key type the policy accepts. The hint for a
+// file that is not PEM names no PEM marker: the marker's words are what a log
+// scanner greps for, and no output of the program may carry them.
 func parsePrivateKey(data []byte) (SigningKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("%w: not a PEM private key (an OpenSSH private key file begins with -----BEGIN "+"OPENSSH PRIVATE"+" KEY-----)", ErrKeyFile)
+		return nil, fmt.Errorf("%w: not a PEM private key; name the private key file ssh-keygen wrote (the PEM block), or its .pub to sign through ssh-agent", ErrKeyFile)
 	}
 	defer clear(block.Bytes)
 	if len(bytes.TrimSpace(rest)) != 0 {

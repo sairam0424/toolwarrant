@@ -33,6 +33,10 @@ func TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	encrypted := sigtest.WriteEncryptedKeyFile(t, dir, "locked.key", l.alice, "passphrase")
+	plain := filepath.Join(dir, "plain.key")
+	if err := os.WriteFile(plain, []byte("not a key, and not a public key line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name, path, want string
 	}{
@@ -40,6 +44,7 @@ func TestApproveSignsWithAKeyFileAndRefusesAnUnsafeOne(t *testing.T) {
 		{"symbolic link", link, "symbolic link"},
 		{"directory", dir, "a directory"},
 		{"encrypted", encrypted, "load the key into ssh-agent"},
+		{"not a key", plain, "not a PEM private key"},
 		{"public key without an agent", l.alicePub, "SSH_AUTH_SOCK is not set"},
 		{"missing", filepath.Join(dir, "none.key"), "no such file"},
 	}
@@ -133,6 +138,10 @@ func TestNoOutputCarriesKeyMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 	encrypted := sigtest.WriteEncryptedKeyFile(t, dir, "locked.key", l.bob, "passphrase")
+	plain := filepath.Join(dir, "plain.key")
+	if err := os.WriteFile(plain, []byte("not a key, and not a public key line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	blocking := sigtest.NewBlockingAgent(t, l.bob)
 	echo := l.tool("s1", "echo").Pending
 	add := l.tool("s1", "add").Pending
@@ -149,6 +158,7 @@ func TestNoOutputCarriesKeyMaterial(t *testing.T) {
 		{"approve with an unlisted key file", nil, []string{"--ssh-key", l.bobFile, "approve", "s1", "add", "--hash", add}},
 		{"approve with a shared key file", nil, []string{"--ssh-key", shared, "approve", "s1", "add", "--hash", add}},
 		{"approve with an encrypted key file", nil, []string{"--ssh-key", encrypted, "approve", "s1", "add", "--hash", add}},
+		{"approve with a plain-text key file", nil, []string{"--ssh-key", plain, "approve", "s1", "add", "--hash", add}},
 		{"approve with a key the agent lacks", nil, []string{"--ssh-key", l.bobPub, "approve", "s1", "add", "--hash", add}},
 		{"approve with a mismatched label", nil, []string{"--as", "bob", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
 		{"approve that times out", map[string]string{envAuthSock: blocking}, []string{"--sign-timeout", "200ms", "--ssh-key", l.alicePub, "approve", "s1", "add", "--hash", add}},
