@@ -44,7 +44,7 @@ func (p *emittedParser) policyLine(line string) error {
 		return nil
 	}
 	if p.proc.tls != nil {
-		return fmt.Errorf("the emitted file lists %s twice for processor %s", tlsBlockName, cell(p.proc.host))
+		return fmt.Errorf("the emitted file lists %s twice for processor %s", tlsBlockName, p.proc.host)
 	}
 	p.procSection, p.proc.tls = procSectionTLS, map[string]string{}
 	return nil

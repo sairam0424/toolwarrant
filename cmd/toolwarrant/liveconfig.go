@@ -157,7 +157,7 @@ func (p *emittedParser) topLevel(line string) error {
 		return err
 	}
 	if _, n := p.doc.route(name); n > 0 {
-		return fmt.Errorf("the emitted file lists route %s twice", cell(name))
+		return fmt.Errorf("the emitted file lists route %s twice", name)
 	}
 	p.doc.routes = append(p.doc.routes, routeConfig{name: name})
 	p.route = len(p.doc.routes) - 1
@@ -192,7 +192,7 @@ func (p *emittedParser) gatewayLine(indent int, line string) error {
 	case indentGatewayName:
 		name := strings.TrimSuffix(line, ":")
 		if _, dup := p.doc.gateways[name]; dup {
-			return fmt.Errorf("the emitted file lists gateway %s twice", cell(name))
+			return fmt.Errorf("the emitted file lists gateway %s twice", name)
 		}
 		p.gateway = name
 		p.doc.gateways[name] = gatewayConfig{}

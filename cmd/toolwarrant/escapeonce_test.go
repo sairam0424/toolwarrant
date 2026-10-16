@@ -47,8 +47,8 @@ func escapedOnce(t *testing.T, where, s string) {
 // ESC byte through one refusal of every kind that embeds the value in an error
 // describe prints: the key file of --pub-key, the directory and the signing
 // key of export, the TLS files of serve, the output file of emit, the database
-// path, --expect-head of audit verify, and a line of the emitted file verify
-// reads. Each sentence is escaped once, where it is printed, so the operator
+// path, --expect-head of audit verify, and the lines and names of the emitted
+// file verify reads. Each sentence is escaped once, where it is printed, so the operator
 // reads the value as given. The usage errors, which exitCode prints as
 // written, are not in this table and keep escaping their values themselves.
 func TestRefusalsEscapeHostileValuesOnce(t *testing.T) {
@@ -85,11 +85,35 @@ func TestRefusalsEscapeHostileValuesOnce(t *testing.T) {
 			escapedOnce(t, tc.name, r.stderr)
 		})
 	}
-	// The emitted-file parser's sentences reach describe through verify's
-	// live comparison; the line they quote is escaped there, once.
-	_, err := emittedConfig([]byte("gateways:\n    port: 1" + esc + "\n"))
-	if err == nil {
-		t.Fatal("a gateway key outside a gateway was accepted")
+	emittedSentencesEscapedOnce(t)
+}
+
+// emittedSentencesEscapedOnce drives a line of the emitted file holding an ESC
+// byte through each parser sentence that embeds what it read: the gateway key
+// outside a gateway, which quotes the line, and the duplicate route, gateway
+// and backendTLS sentences, which embed the name they read (the route name
+// and the processor host through strconv.Unquote, the gateway name as the
+// line holds it). The sentences reach describe through verify's live
+// comparison and are escaped there, once; a file that lists a name twice is
+// reachable, because a rewrite that recomputes the header passes emit.Verify
+// (limit L19).
+func emittedSentencesEscapedOnce(t *testing.T) {
+	t.Helper()
+	cases := []struct{ name, file, want string }{
+		{"gateway key outside a gateway", "gateways:\n    port: 1" + esc + "\n", "holds a gateway key outside a gateway"},
+		{"duplicate route", "routes:\n- name: \"x\\u001b\"\n- name: \"x\\u001b\"\n", "lists route"},
+		{"duplicate gateway", "gateways:\n  tw" + esc + ":\n    port: 1\n  tw" + esc + ":\n    port: 2\n", "lists gateway"},
+		{"duplicate backendTLS", "routes:\n- name: \"r\"\n      - host: \"h\\u001b\"\n        policies:\n          backendTLS:\n          backendTLS:\n", "lists " + tlsBlockName + " twice for processor"},
 	}
-	escapedOnce(t, "emitted file line", describe(err))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := emittedConfig([]byte(tc.file))
+			if err == nil {
+				t.Fatal("the emitted file was accepted")
+			}
+			s := describe(err)
+			wantContains(t, "describe", s, tc.want)
+			escapedOnce(t, tc.name, s)
+		})
+	}
 }
