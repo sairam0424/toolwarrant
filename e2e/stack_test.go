@@ -93,6 +93,21 @@ type stack struct {
 	// before each step, so that a note written by a helper two scenarios
 	// share (the live-comparison steps of P and Q) names the one it ran in.
 	scenario string
+	// sshKey is the key approve signs with once scenario S has bootstrapped
+	// the trust list: the path of reviewer's .pub, passed as --ssh-key, so J,
+	// K, L, M and the first part of N sign as the harness's reviewer; empty
+	// before S and again after N re-initialises the catalog, when approve
+	// runs unsigned as v0.3 did (D22 (h)).
+	sshKey string
+	// authSock is the lab agent's socket scenario S serves (sshlab_test.go),
+	// handed to every CLI subprocess as SSH_AUTH_SOCK while it is set; the
+	// developer's own agent is never reached.
+	authSock string
+	// trustRoot is the fingerprint trust init printed, passed as the global
+	// --trust-root to every CLI command and every processor start from the
+	// moment scenario S recorded it until N re-initialises the catalog, the
+	// way the hardening checklist says an operator runs (D22 (h)).
+	trustRoot string
 }
 
 // reloadMark is the gateway's reload counters at one moment.
@@ -218,12 +233,22 @@ func (s *stack) processorAddr(name string) string {
 // --secret-env, and waits for it to listen.
 func (s *stack) startProcessor(t *testing.T, name string, env []string, extra ...string) *proc {
 	t.Helper()
-	addr := s.processorAddr(name)
-	args := append([]string{"--db", s.db, "serve", "--server", name, "--target", name, "--listen", addr}, extra...)
-	p := s.spawn(t, "processor-"+name, env, s.h.toolwarrant, args...)
-	waitPort(t, p, addr)
+	p := s.spawn(t, "processor-"+name, env, s.h.toolwarrant, s.serveArgs(name, s.trustRoot, extra...)...)
+	waitPort(t, p, s.processorAddr(name))
 	s.servers[name].processor = p
 	return p
+}
+
+// serveArgs is the command line of one server's processor: the catalog, the
+// global --trust-root when one is given (a global flag, so before serve), then
+// serve with the --target the emitted serve command uses and the extra flags.
+func (s *stack) serveArgs(name, root string, extra ...string) []string {
+	args := []string{"--db", s.db}
+	if root != "" {
+		args = append(args, "--trust-root", root)
+	}
+	args = append(args, "serve", "--server", name, "--target", name, "--listen", s.processorAddr(name))
+	return append(args, extra...)
 }
 
 // stopProcessor ends one processor and returns its stdout, which carries the

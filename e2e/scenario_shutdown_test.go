@@ -161,7 +161,11 @@ func (s *stack) servedDescriptions(t *testing.T, server string, names ...string)
 // read before the fifth round, and requires mock's and mockb's routes to deny
 // everything on the next hook with a source error. The processors keep their
 // handle on the deleted file; only the identity check of decision D14 (e)
-// tells them that the path now names another catalog.
+// tells them that the path now names another catalog. The new catalog has no
+// trust list, so the key scenario S set and the root it recorded are dropped
+// first: init under the recorded root would be refused (the pin says this
+// catalog was bootstrapped, and a brand-new file was not, D22 (h)), and the
+// re-approval of scenarioNRecover runs unsigned, as v0.3 did.
 func scenarioNReinit(t *testing.T, s *stack) {
 	mock, mockb := s.servers["mock"].processor, s.servers["mockb"].processor
 	before := countIn(mock.stderr, unavailableMarker)
@@ -171,6 +175,7 @@ func scenarioNReinit(t *testing.T, s *stack) {
 			t.Fatalf("remove %s: %v", s.db+suffix, err)
 		}
 	}
+	s.sshKey, s.trustRoot = "", ""
 	t0 := time.Now()
 	s.twOK(t, "init")
 	for _, name := range []string{"mock", "mockb"} {
@@ -223,13 +228,20 @@ func scenarioNShutdown(t *testing.T, s *stack) {
 // is registered again, crawled and echo re-approved, and a processor started
 // afresh serves exactly that, then stops cleanly. The allow rule in the file
 // still names add and echo; the processor narrows it to the re-approved echo.
+// The new catalog was never bootstrapped, so the re-approval is unsigned and
+// says so on stderr, and the processor reports that signed decisions are not
+// enabled (D22 (h); the catalog serves as v0.3 did, limit L13's residual for
+// a never-bootstrapped catalog).
 func scenarioNRecover(t *testing.T, s *stack) {
 	u := s.servers["mock"]
 	mustContain(t, "server add", s.twOK(t, "--as", operator, "server", "add", "mock", u.url, "--allow-private"), "added server mock")
 	mustContain(t, "crawl of the new catalog", s.twOK(t, "crawl", "mock"), "new=3")
-	s.approve(t, "mock", "echo", s.tool(t, "mock", "echo").Pending)
+	r := s.approve(t, "mock", "echo", s.tool(t, "mock", "echo").Pending)
+	mustContain(t, "the unsigned re-approval's stderr", r.stderr, unsignedWarning, "trust init")
 	t0 := time.Now()
-	s.startProcessor(t, "mock", nil)
+	p := s.startProcessor(t, "mock", nil)
+	waitForOutput(t, p, signedDecisionsPrefix, 0)
+	mustContain(t, "the processor on the never-bootstrapped catalog", p.output(p.stdout), "signed decisions: not enabled; the catalog has no trust list (L13 open)")
 	cs := s.eventuallyServes(t, "mock", "echo")
 	s.expectAllowed(t, cs, "echo", "hello")
 	o := s.expectDenied(t, cs, "add")
