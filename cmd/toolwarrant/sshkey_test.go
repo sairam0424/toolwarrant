@@ -325,11 +325,21 @@ func TestEveryCommandRefusesACatalogWhoseRootIsNotTheTrustRoot(t *testing.T) {
 	l.ok("--ssh-key", l.alicePub, "approve", "s1", "echo", "--hash", echo)
 	wantContains(t, "audit verify under the right root", l.ok("audit", "verify"), "signed records ok")
 	delete(l.env, envTrustRoot)
-	// A catalog never bootstrapped is refused under any root.
+	// A catalog never bootstrapped is refused under any root, with the advice
+	// for that case: drop the pin to bootstrap it, or name the right root;
+	// never the corrupt advice, since there is no backup to restore.
 	fresh, _ := fixture(t)
 	r = fresh.fail(exitFailure, "--trust-root", root, "list")
-	wantContains(t, "no bootstrap", r.stderr, "no trust list", "trust root")
+	wantContains(t, "no bootstrap", r.stderr, "no trust list", "trust root", adviceNoTrustListPinned)
+	wantNotContains(t, "no bootstrap", r.stderr, adviceCorrupt)
 	if tv := fresh.tool("s1", "echo"); tv.Approved != "" {
 		t.Errorf("fresh catalog: %+v", tv.toolJSON)
 	}
+	// init of a brand-new path with the root pinned by the environment: the
+	// file did not exist a moment ago, so "restore it from a backup" would be
+	// nonsense; the operator reads which pin to drop.
+	brandNew := &cli{t: t, db: filepath.Join(t.TempDir(), "new.db"), env: map[string]string{envTrustRoot: root}}
+	r = brandNew.fail(exitFailure, "init")
+	wantContains(t, "init under the env pin", r.stderr, "no trust list", adviceNoTrustListPinned, envTrustRoot)
+	wantNotContains(t, "init under the env pin", r.stderr, adviceCorrupt)
 }

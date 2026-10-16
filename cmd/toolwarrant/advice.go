@@ -29,6 +29,10 @@ const (
 	adviceSignature    = "pass --ssh-key PATH naming a key the trust list holds (run \"" + programName + " trust show\" to see them)"
 	adviceNotASigner   = "run \"" + programName + " trust show\" to see whose keys the trust list names; a key is added with \"" + programName + " trust add\""
 	adviceNoTrustList  = "run \"" + programName + " trust init\" first"
+	// adviceNoTrustListPinned is for a catalog that was never bootstrapped
+	// and was opened under a trust root: there is no backup to restore, the
+	// pin names a catalog this is not (or not yet).
+	adviceNoTrustListPinned = "this catalog has no trust list: run \"" + programName + " trust init\" without --" + flagTrustRoot + " (or " + envTrustRoot + "), or name the root of the catalog you meant"
 )
 
 // describe turns an error into the one sentence the operator reads on stderr.
@@ -81,9 +85,15 @@ func joinedCorrupt(err error) (string, bool) {
 }
 
 // describeCatalog adds advice for the catalog's own refusals. The order
-// matters only where one error can wrap another, which these do not.
+// matters only where one error wraps another: the walk's refusal of a catalog
+// without a trust list under a pinned root wraps ErrNoTrustList in ErrCorrupt,
+// and its advice (drop the pin or name the right root) comes before the
+// corrupt advice (restore a backup), which a never-bootstrapped catalog has no
+// use for.
 func describeCatalog(err error) (string, bool) {
 	switch {
+	case errors.Is(err, catalog.ErrCorrupt) && errors.Is(err, catalog.ErrNoTrustList):
+		return adviceNoTrustListPinned, true
 	case errors.Is(err, catalog.ErrAmbiguous):
 		return adviceAmbiguous, true
 	case errors.Is(err, catalog.ErrReadOnly):

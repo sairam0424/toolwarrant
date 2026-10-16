@@ -17,7 +17,8 @@ func TestServePrintsTheSignedDecisionsLineAndRefusesWithoutABootstrapUnderTrustR
 
 	root := fpOf(l.alice)
 	r := l.fail(exitFailure, "--trust-root", root, "serve", "--server", "s1", "--listen", "127.0.0.1:0")
-	wantContains(t, "pinned without a bootstrap", r.stderr, "no trust list", "trust root "+root, adviceCorrupt)
+	wantContains(t, "pinned without a bootstrap", r.stderr, "no trust list", "trust root "+root, adviceNoTrustListPinned)
+	wantNotContains(t, "pinned without a bootstrap", r.stderr, adviceCorrupt)
 	wantNotContains(t, "pinned without a bootstrap", r.stdout, "listening on")
 
 	_, _ = l.bootstrap(t)
