@@ -88,8 +88,10 @@ func isTrustEntry(e audit.Entry) bool {
 	return e.Event == evTrustBootstrap || e.Event == evTrustRotated
 }
 
-// foldSignedEntries applies checkSignedEntry to every signed entry in order,
-// reading the rows by primary key once, and notes each refusal.
+// foldSignedEntries runs the walk's two halves over every signed entry: the
+// rows read by primary key once, the pure half of every check in parallel
+// (preverifyPage, the whole list as one page), then the rules in seq order
+// from the slots, noting each refusal where the walk would stop at it.
 func (c *integrityCheck) foldSignedEntries() error {
 	if len(c.signedEntries) == 0 {
 		return nil
@@ -106,14 +108,13 @@ func (c *integrityCheck) foldSignedEntries() error {
 	if err != nil {
 		return err
 	}
+	slots, err := preverifyPage(c.ctx, c.signedEntries, rows, identity, verifyWorkers(len(c.signedEntries)))
+	if err != nil {
+		return err
+	}
 	var tm trustMemory
-	for _, e := range c.signedEntries {
-		rec, ok := rows[e.Seq]
-		if !ok {
-			c.noteSignedProblem(errNoSignedRecord(e))
-			continue
-		}
-		res, err := checkSignedEntry(e, rec, tm, identity, c.trustRoot)
+	for i, e := range c.signedEntries {
+		res, err := checkSignedEntryRules(e, rows[e.Seq], slots[i], tm, c.trustRoot)
 		if err != nil {
 			c.noteSignedProblem(err)
 			continue

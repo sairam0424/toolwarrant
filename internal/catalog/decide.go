@@ -159,8 +159,9 @@ func (s *Store) prepareDecisionRecord(rec signing.Record, d Decision, actor Acto
 // the chain was verified to its head: an unsigned decision while a list is in
 // force is ErrSignatureRequired; a payload over another head than the pin is
 // ErrHeadMoved; the decision.signed entry is sealed from the pin, checked
-// with the walk's own rules (checkDecisionRecord) and stored with its record.
-// It returns the entry's seq, 0 for an unsigned decision.
+// with the walk's own two halves (checkSignedEntryCrypto, then
+// checkSignedEntryRules, so the writer and the reader cannot drift) and stored
+// with its record. It returns the entry's seq, 0 for an unsigned decision.
 func (s *Store) recordSigned(ctx context.Context, t *txn, req decisionRequest) (int64, error) {
 	pin := s.chain.pin()
 	tm, _ := s.chain.signedState()
@@ -178,7 +179,8 @@ func (s *Store) recordSigned(ctx context.Context, t *txn, req decisionRequest) (
 	if err != nil {
 		return 0, err
 	}
-	if _, err := checkDecisionRecord(e, rec, tm.state, s.identity); err != nil {
+	pv := checkSignedEntryCrypto(e, rec, s.identity)
+	if _, err := checkSignedEntryRules(e, rec, pv, tm, s.trustRoot); err != nil {
 		return 0, decisionWriteError(err, rec, tm.state, req.actor)
 	}
 	if err := t.storeSigned(ctx, e, rec); err != nil {

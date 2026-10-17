@@ -117,20 +117,14 @@ func decisionSubject(kind signing.Kind, server, tool string) string {
 	return server + "/" + tool
 }
 
-// checkDecisionRecord is rule 1, rule 2 and rule 4 for one decision.signed
-// entry whose signature verified: the payload is a canonical decision bound
-// to the entry and its actor, the kind and digest tokens and the subject say
-// what the payload says, a list is in force and it names the signing key for
-// the entry's actor. It returns the outcome the signed= binding of the
-// lifecycle entries compares (rule 5).
-func checkDecisionRecord(e audit.Entry, rec signing.Record, state trust.State, identity string) (*signedOutcome, error) {
-	d, err := signing.ParseDecision(rec.Payload)
-	if err != nil {
-		return nil, problemf(ruleBinding, err, "signed record of entry %d is not a canonical decision: %v", e.Seq, err)
-	}
-	if err := checkPayloadBinding(e, rec.Signer, d.Signer, d.Catalog, d.PrevHead, identity); err != nil {
-		return nil, err
-	}
+// checkDecisionRecord is rule 2 and rule 4 for one decision.signed entry whose
+// signature verified and whose payload checkSignedEntryCrypto parsed as d and
+// bound to the entry (rule 1, trustwalk.go): the payload names the entry's
+// actor, the kind and digest tokens and the subject say what the payload says,
+// a list is in force and it names the signing key for the entry's actor. It
+// returns the outcome the signed= binding of the lifecycle entries compares
+// (rule 5).
+func checkDecisionRecord(e audit.Entry, rec signing.Record, d signing.Decision, state trust.State) (*signedOutcome, error) {
 	if d.Actor != e.Actor {
 		return nil, problemf(ruleBinding, nil, "signed record of entry %d names actor %s but the entry's actor is %s", e.Seq, quote(d.Actor), quote(e.Actor))
 	}

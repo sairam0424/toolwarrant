@@ -117,7 +117,9 @@ type trustMemory struct {
 // pageInput is what verifySignedPage starts one page from: the trust memory
 // and the open decision transaction after the pages before, the catalog
 // identity and the pinned root, how to find the outcome of a decision.signed
-// entry of an earlier page and what an earlier page left each tool.
+// entry of an earlier page, what an earlier page left each tool, and how many
+// goroutines verify the page's signatures (preverify.go; the rules run in seq
+// order whatever the count).
 type pageInput struct {
 	trust      trustMemory
 	open       openTxn
@@ -125,6 +127,7 @@ type pageInput struct {
 	pinnedRoot string
 	lookup     func(seq int64) (signedOutcome, bool)
 	lastState  func(subject string) (toolLast, bool)
+	workers    int
 }
 
 // pageOutcome is what verifySignedPage hands back for one page: the trust
@@ -159,12 +162,18 @@ func verifySignedPage(ctx context.Context, q queryer, page []audit.Entry, in pag
 	return out, nil
 }
 
-// verifySignedEntries is the per-entry half of verifySignedPage: rule 1, the
-// signature, then rule 3 or rules 2 and 4 for each signed entry, and rules 5
-// and 6 for each entry that carries no record.
+// verifySignedEntries is the per-entry half of verifySignedPage: the rows
+// read once, the pure half of every signed entry's check in parallel
+// (preverifyPage), then one loop in seq order that applies rule 3 or rules 2
+// and 4 to each signed entry from its slot, and rules 5 and 6 to each entry
+// that carries no record. The loop alone touches out and the memory.
 func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in pageInput) (pageOutcome, error) {
 	out := pageOutcome{trust: in.trust, open: in.open, signed: make(map[int64]signedOutcome), states: make(map[string]toolLast)}
 	rows, err := readSignedRecords(ctx, q, signedSeqs(page))
+	if err != nil {
+		return pageOutcome{}, err
+	}
+	slots, err := preverifyPage(ctx, page, rows, in.identity, in.workers)
 	if err != nil {
 		return pageOutcome{}, err
 	}
@@ -179,24 +188,17 @@ func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in 
 		}
 		return in.lastState(subject)
 	}}
+	next := 0
 	for _, e := range page {
 		if !isSignedEvent(e.Event) {
-			w.bootstrap, w.open = out.trust.state.BootstrapSeq, out.open
-			step, err := checkLifecycleEntry(e, w)
-			if err != nil {
+			if err := stepLifecycle(e, &w, &out); err != nil {
 				return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
-			}
-			out.open = step.open
-			if step.tool {
-				out.states[e.Subject] = step.left
 			}
 			continue
 		}
-		rec, ok := rows[e.Seq]
-		if !ok {
-			return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, errNoSignedRecord(e))
-		}
-		res, err := checkSignedEntry(e, rec, out.trust, in.identity, in.pinnedRoot)
+		pv := slots[next]
+		next++
+		res, err := checkSignedEntryRules(e, rows[e.Seq], pv, out.trust, in.pinnedRoot)
 		if err != nil {
 			return pageOutcome{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
 		}
@@ -211,38 +213,20 @@ func verifySignedEntries(ctx context.Context, q queryer, page []audit.Entry, in 
 	return out, nil
 }
 
-// signedResult is what checkSignedEntry returns for one accepted entry: the
-// trust memory after it (changed by a trust record, carried by a decision)
-// and the outcome of a decision record.
-type signedResult struct {
-	trust    trustMemory
-	decision *signedOutcome
-}
-
-// checkSignedEntry applies rule 1 to one signed entry and its row, verifies
-// the signature under the kind's namespace, then rule 3 or rule 4 by kind.
-// On refusal the returned memory is tm unchanged, so Integrity keeps the list
-// in force past a refused record. Until signing.Verify has pinned rec.Signer
-// to the fingerprint of the key that signed, the signer is whatever the row
-// holds, so the sentences before that point (checkRecordBinding's and the
-// signature's) print it through quote; the sentences after it print a
-// fingerprint the signature proved.
-func checkSignedEntry(e audit.Entry, rec signing.Record, tm trustMemory, identity, pinnedRoot string) (signedResult, error) {
-	if err := checkRecordBinding(e, rec); err != nil {
-		return signedResult{trust: tm}, err
+// stepLifecycle is the serial loop's work for one entry that carries no
+// record: rules 5 and 6 against the bootstrap, the transaction and the tool
+// states known at that point, then what the entry left recorded in out.
+func stepLifecycle(e audit.Entry, w *decisionWalk, out *pageOutcome) error {
+	w.bootstrap, w.open = out.trust.state.BootstrapSeq, out.open
+	step, err := checkLifecycleEntry(e, *w)
+	if err != nil {
+		return err
 	}
-	if _, err := signing.Verify(rec.Payload, rec.Signature, namespaceOf(e.Event), rec.Signer); err != nil {
-		return signedResult{trust: tm}, problemf(ruleBinding, err, "signed record of entry %d: the signature by %s does not verify over the stored payload; the record was rewritten: %v", e.Seq, quote(rec.Signer), err)
+	out.open = step.open
+	if step.tool {
+		out.states[e.Subject] = step.left
 	}
-	switch e.Event {
-	case evTrustBootstrap, evTrustRotated:
-		next, err := checkTrustRecord(e, rec, tm, identity, pinnedRoot)
-		return signedResult{trust: next}, err
-	case evDecisionSigned:
-		outcome, err := checkDecisionRecord(e, rec, tm.state, identity)
-		return signedResult{trust: tm, decision: outcome}, err
-	}
-	return signedResult{trust: tm}, problemf(ruleBinding, nil, "audit entry %d is a %s, which carries no signed record", e.Seq, e.Event)
+	return nil
 }
 
 // checkRecordBinding is the part of rule 1 that needs no cryptography: the
@@ -282,20 +266,13 @@ func checkPayloadBinding(e audit.Entry, recSigner, payloadSigner, catalog, prevH
 	return nil
 }
 
-// checkTrustRecord is rule 3 for one trust entry whose signature verified:
-// the payload is a canonical trust list bound to the entry, the entry's
-// tokens say what the payload says, the list is valid, the rotation rule
-// accepts it after the list in force, and the entry's actor is the name the
-// new list gives the signing key. It returns the memory after the record, or
-// tm unchanged with the refusal.
-func checkTrustRecord(e audit.Entry, rec signing.Record, tm trustMemory, identity, pinnedRoot string) (trustMemory, error) {
-	list, err := signing.ParseTrustList(rec.Payload)
-	if err != nil {
-		return tm, problemf(ruleBinding, err, "signed record of entry %d is not a canonical trust list: %v", e.Seq, err)
-	}
-	if err := checkPayloadBinding(e, rec.Signer, list.Signer, list.Catalog, list.PrevHead, identity); err != nil {
-		return tm, err
-	}
+// checkTrustRecord is rule 3 for one trust entry whose signature verified and
+// whose payload checkSignedEntryCrypto parsed as list and bound to the entry:
+// the entry's tokens say what the payload says, the list is valid, the
+// rotation rule accepts it after the list in force, and the entry's actor is
+// the name the new list gives the signing key. It returns the memory after the
+// record, or tm unchanged with the refusal.
+func checkTrustRecord(e audit.Entry, rec signing.Record, list signing.TrustList, tm trustMemory, pinnedRoot string) (trustMemory, error) {
 	if err := checkTrustTokens(e, list); err != nil {
 		return tm, err
 	}
