@@ -274,8 +274,9 @@ func (p probeReport) summary() string {
 // latest crawl saw the approved digest is a leak too, labelled MISMATCH so the
 // owner knows the catalog has no record of drift (decision D12). An approved
 // tool that the latest crawl saw at the approved digest but the gateway does
-// not list is missing, which does not fail; a tool carrying a marker is never
-// missing, because the processor is right to hide it.
+// not list is missing, which does not fail without --strict (D23 (g)); a tool
+// carrying a marker is never missing, because the processor is right to hide
+// it.
 func compare(snap catalog.Snapshot, live []liveTool, res *verdicts) {
 	seen := map[string]bool{}
 	for _, t := range live {
