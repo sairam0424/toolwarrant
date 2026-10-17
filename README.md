@@ -528,10 +528,10 @@ property tests of every package pass under `-race` (`make test`, which prints
 per-package coverage), and the end-to-end test passes against the real gateway
 (`make e2e`; `demo/run.sh` runs it unattended and writes `demo/last-run.log`).
 The GitHub Actions workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml)
-runs lint, vet and build, the short test suite under `-race`, the seven tests
-that `-short` skips (the three Unicode walks of `internal/textdiff`, the three
-slow catalog tests and the processor's gRPC size test, run with their packages
-in full), govulncheck, gitleaks, the third-party notices check, the release
+runs lint, vet and build, the short test suite under `-race`, the three tests
+that `-short` skips (the three Unicode walks of `internal/textdiff`, run with
+their package in full beside `internal/catalog` and `internal/processor`),
+govulncheck, gitleaks, the third-party notices check, the release
 configuration check and the documentation checks (every cited test name and
 every relative link must exist) on every pull request and every push to main;
 the end-to-end job runs on manual dispatch against the linux release binary of
