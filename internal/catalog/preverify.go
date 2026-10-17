@@ -24,8 +24,10 @@ import (
 // the walk stops there, the pin stays below it and nothing of the page is
 // recorded (chainMemory.recordPage). The workers touch neither the page's
 // outcome nor the memory: the closures over them stay in the serial loop. The
-// context is checked between entries; a cancelled one stops the pool and the
-// walk returns the context's error, never a refusal.
+// context is read before every index is handed out and once more when the pool
+// has ended, so a cancelled one stops the pool, no slot is written under a
+// context cancelled before the pool started, and the walk returns the
+// context's error, never a refusal.
 
 // preverified is what the pure half produced for one signed entry: the parsed
 // trust list or decision the rules consume, or the refusal, which the serial
@@ -46,9 +48,9 @@ func verifyWorkers(n int) int {
 // workers goroutines and returns one slot per signed entry, in page order. An
 // entry without a row at its seq gets errNoSignedRecord in its slot. The
 // goroutines read page, rows and identity and each write their own slots only,
-// so the result does not depend on the order the entries were served in. The
-// pool stops between entries once ctx ends, and the context's error is
-// returned with no slots.
+// so the result does not depend on the order the entries were served in. Once
+// ctx ends the pool stops between entries and the context's error is returned
+// with no slots (fillSlots).
 func preverifyPage(ctx context.Context, page []audit.Entry, rows map[int64]signing.Record, identity string, workers int) ([]preverified, error) {
 	var signed []audit.Entry
 	for _, e := range page {
@@ -60,6 +62,21 @@ func preverifyPage(ctx context.Context, page []audit.Entry, rows map[int64]signi
 	if len(signed) == 0 {
 		return slots, nil
 	}
+	if err := fillSlots(ctx, slots, signed, rows, identity, workers); err != nil {
+		return nil, err
+	}
+	return slots, nil
+}
+
+// fillSlots is the pool: workers goroutines, at most one per entry and at
+// least one, take the indexes of signed from an unbuffered channel and each
+// write their own slots, slots[i] for signed[i]. The feeder reads the context
+// before every index (feedIndexes) and fillSlots reads it once more when every
+// goroutine has ended, so under a context cancelled before the pool started no
+// slot is written, and a cancellation that lands during the last send is still
+// reported: the context's error comes back whenever ctx ended before the pool
+// did, and the caller drops the slots.
+func fillSlots(ctx context.Context, slots []preverified, signed []audit.Entry, rows map[int64]signing.Record, identity string, workers int) error {
 	indexes := make(chan int)
 	var wg sync.WaitGroup
 	for range max(1, min(workers, len(signed))) {
@@ -71,18 +88,24 @@ func preverifyPage(ctx context.Context, page []audit.Entry, rows map[int64]signi
 	}
 	err := feedIndexes(ctx, indexes, len(signed))
 	wg.Wait()
-	if err != nil {
-		return nil, err
+	if err == nil {
+		err = ctx.Err()
 	}
-	return slots, nil
+	return err
 }
 
-// feedIndexes hands the indexes 0 to n-1 to the pool, stopping at the first
-// one the context refuses to wait for, and closes the channel so that every
-// worker ends. It returns the context's error when it stopped early.
+// feedIndexes hands the indexes 0 to n-1 to the pool and closes the channel so
+// that every worker ends. It reads the context before every send and stops at
+// the first index it finds the context ended for, returning the context's
+// error. The read comes first because a select alone between the send and
+// ctx.Done() picks at random among the ready cases, so a worker parked on the
+// channel could still be handed an index under a context that had ended.
 func feedIndexes(ctx context.Context, indexes chan<- int, n int) error {
 	defer close(indexes)
 	for i := range n {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		select {
 		case indexes <- i:
 		case <-ctx.Done():

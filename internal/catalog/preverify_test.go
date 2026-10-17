@@ -230,22 +230,53 @@ func (q cancelAfterQuery) QueryContext(ctx context.Context, query string, args .
 	return rows, err
 }
 
+// poolWritesNoSlotOnceCancelled runs the pool (fillSlots) over the signed
+// entries of page under ctx, already cancelled, a hundred times per worker
+// count, and requires the context's error and every slot untouched each time:
+// the feeder reads the context before every index, so no goroutine is handed
+// one. A select alone between the send and ctx.Done() would hand one out in a
+// few percent of the runs on a page of this size, Go picking at random among
+// the ready cases, and the walk would then run the rules on a cancelled
+// context and could come back with a refusal, or with nothing wrong.
+func poolWritesNoSlotOnceCancelled(t *testing.T, ctx context.Context, page []audit.Entry, rows map[int64]signing.Record, identity string) {
+	t.Helper()
+	signed := slices.DeleteFunc(slices.Clone(page), func(e audit.Entry) bool { return !isSignedEvent(e.Event) })
+	for _, workers := range workerCounts() {
+		for run := range 100 {
+			slots := make([]preverified, len(signed))
+			if err := fillSlots(ctx, slots, signed, rows, identity, workers); !errors.Is(err, context.Canceled) {
+				t.Fatalf("%d workers, run %d: fillSlots under a cancelled context = %v; want context.Canceled", workers, run, err)
+			}
+			for i, pv := range slots {
+				if pv != (preverified{}) {
+					t.Fatalf("%d workers, run %d: slot %d was written (%s) under a context cancelled before the pool started", workers, run, i, describePreverified(pv))
+				}
+			}
+		}
+	}
+}
+
 // A cancelled context stops the pool between entries and the walk returns the
 // context's error, bare, not a refusal: first the pool alone under a context
-// cancelled before it starts (no slots), then the whole page walk under a
-// context the row read cancels once the rows are in hand, on a page that
-// holds a record the rules would refuse, which under a live context is the
-// refusal the same page gets.
+// cancelled before it starts (no slots, and over many runs no slot written,
+// poolWritesNoSlotOnceCancelled), then the whole page walk under a context the
+// row read cancels once the rows are in hand, on a page that holds a record
+// the rules would refuse, which under a live context is the refusal the same
+// page gets. The page carries eleven signed records so that the pool has
+// goroutines parked on its channel when the feeder looks at the context.
 func TestWalk_PreverifyHonoursTheContext(t *testing.T) {
 	t.Parallel()
-	s, path, _, _ := trustedCatalog(t)
+	s, path, alice, _ := trustedCatalog(t)
 	db, id := rawDB(t, path), s.identity
 	dave := newOperator(t, "dave")
 	seq, _ := forgeDecision(t, db, id, dave, dave.actor(), signing.KindApprove, "alpha", "sum", pendingSum(t))
+	for range 8 {
+		forgeDecision(t, db, id, alice, alice.actor(), signing.KindDisable, "alpha", "echo", "")
+	}
 	page := rawEntries(t, db)
 	rows, err := readSignedRecords(bg, db, signedSeqs(page))
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(rows) != 11 {
+		t.Fatalf("test setup: %d signed records, %v; want 11", len(rows), err)
 	}
 
 	cancelled, cancel := context.WithCancel(bg)
@@ -254,6 +285,7 @@ func TestWalk_PreverifyHonoursTheContext(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || slots != nil {
 		t.Errorf("preverifyPage under a cancelled context = %d slots, %v; want no slots and context.Canceled", len(slots), err)
 	}
+	poolWritesNoSlotOnceCancelled(t, cancelled, page, rows, id)
 
 	for _, workers := range workerCounts() {
 		ctx, cancel := context.WithCancel(bg)
