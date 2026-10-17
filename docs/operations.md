@@ -480,13 +480,15 @@ Verdicts, one line per tool or per check:
   allow-list predates an approval; run emit again and reload the gateway`
   beside any other failure sentence, a `--every` run stops at the first such
   check without `--keep-going` and its outcome sentence names MISSING under
-  `--strict` with it, and the MISSING line, the OK line's count and the
-  probe's line read as without the flag. Pass it where every approval is
-  followed by a re-emit and a reload and no route carries a tool the gateway
-  re-serialises (limit L2), since that tool is MISSING by design and would
-  fail every check; under `--every` it is the alarm for an allow-list that
-  predates an approval. Without the flag MISSING stays a report and the check
-  exits 0, as D12 reserved and scenario L pins (D23 (g); cmd
+  `--strict` with it, and the MISSING line, the summary clause `, N approved
+  but not listed (MISSING)` that a `--every --keep-going` run's tick line
+  carries, and the probe's line read as without the flag. Pass it where every
+  approval is followed by a re-emit and a reload and no route carries a tool
+  the gateway re-serialises (limit L2), since that tool is MISSING by design
+  and would fail every check; under `--every` it is the alarm for an
+  allow-list that predates an approval. Without the flag MISSING stays a
+  report and the check exits 0, as D12 reserved and scenario L pins (D23 (g);
+  cmd
   `TestVerifyGatewayStrictFailsOnMissing`,
   `TestVerifyGatewayStrictLeavesOKAndKnownLimitAlone`,
   `TestVerifyGatewayEveryStrictStopsAtAMissingUnlessKeepGoing`,
