@@ -55,7 +55,11 @@ been proven and where.
    the processor in with `failureMode: failClosed`, an explicit allow rule on
    every route and a loopback bind (`internal/emit`), and
    `toolwarrant verify-gateway` is the canary that lists through the gateway in
-   a fresh session and compares what it got with the catalog.
+   a fresh session and compares what it got with the catalog; with `--strict`
+   an approved tool the gateway does not list (MISSING) fails the check, the
+   alarm for an allow-list that predates an approval, and without the flag
+   MISSING is a report with exit 0 (D12; docs/operations.md, Running the
+   canary).
 5. Audit. Every decision and every change a crawl observed is one entry in a
    hash-chained, append-only log (`internal/audit`), written by the catalog in
    the same transaction as the state change (`internal/catalog`).
@@ -287,7 +291,7 @@ export TOOLWARRANT_TRUST_ROOT=SHA256:ROOT_FROM_TRUST_INIT
 #    not, and against this mock it prints PROBE-CHANGED with exit 1 by
 #    design (D18; docs/operations.md, Running the canary). Exit code 1 means
 #    LEAK, CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS,
-#    PROBE-INCONCLUSIVE or PROBE-CHANGED.
+#    PROBE-INCONCLUSIVE or PROBE-CHANGED, and MISSING only under --strict.
 ./bin/toolwarrant verify-gateway --server mock --url http://127.0.0.1:3000/mock/mcp \
   --config gateway.yaml --expect-body-hash BODY_SHA256_PRINTED_BY_EMIT \
   --admin 127.0.0.1:15000

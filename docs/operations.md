@@ -359,7 +359,9 @@ compares each served definition with the catalog's serving policy. With
 compares the live document with that file; and unless `--no-probe` is given it
 sends one `tools/call` without a JSON-RPC id to see whether the gateway forwards
 unhooked calls (decisions D12, D13 and D14), which with `--expect-unhooked` is
-the declared answer (D18). The file named by `--config` must
+the declared answer (D18); with `--strict` an approved tool the gateway does
+not list (MISSING) fails the check (D23 (g); the MISSING verdict below says
+when to pass it). The file named by `--config` must
 be a regular file: a symbolic link, directory, device, socket or named pipe at
 that path is refused before it is opened, because a read of a named pipe
 blocks until a writer appears and a canary that blocks prints no verdict and
@@ -472,7 +474,24 @@ Verdicts, one line per tool or per check:
   `logs/gateway_tool_keys.observed.json` in its work directory, the file to
   copy over the golden when the gateway pin moves (L7). A tool whose latest
   crawl left the unusable marker is not MISSING when the gateway does not list
-  it: a working processor hides it.
+  it: a working processor hides it. With `--strict` a MISSING line is a
+  failing verdict: the check exits 1 and stderr carries `N approved tool(s)
+  are not listed by the gateway (MISSING) under --strict: the emitted
+  allow-list predates an approval; run emit again and reload the gateway`
+  beside any other failure sentence, a `--every` run stops at the first such
+  check without `--keep-going` and its outcome sentence names MISSING under
+  `--strict` with it, and the MISSING line, the OK line's count and the
+  probe's line read as without the flag. Pass it where every approval is
+  followed by a re-emit and a reload and no route carries a tool the gateway
+  re-serialises (limit L2), since that tool is MISSING by design and would
+  fail every check; under `--every` it is the alarm for an allow-list that
+  predates an approval. Without the flag MISSING stays a report and the check
+  exits 0, as D12 reserved and scenario L pins (D23 (g); cmd
+  `TestVerifyGatewayStrictFailsOnMissing`,
+  `TestVerifyGatewayStrictLeavesOKAndKnownLimitAlone`,
+  `TestVerifyGatewayEveryStrictStopsAtAMissingUnlessKeepGoing`,
+  `TestVerifyGatewayWithoutStrictKeepsExitZeroOnMissing`,
+  `TestVerdicts_failedUnderStrictCountsMissing`).
 - `CONFIG-EDITED`: the file named by `--config` fails `emit.Verify` (its body
   no longer matches the hash in its header, or the header is missing), cannot
   be read at all or is not a regular file, because a canary that cannot read
@@ -731,7 +750,8 @@ Verdicts, one line per tool or per check:
   as `, 1 approved but not listed (MISSING)` when there are any, the second
   reads `live configuration not compared (no --admin)` without `--admin`, and
   the third reads `unhooked-call probe skipped (--no-probe)` with `--no-probe`.
-  Exit code 0 is OK, MISSING or KNOWN-LIMIT only.
+  Exit code 0 is OK, MISSING or KNOWN-LIMIT only without `--strict`; with it a
+  MISSING exits 1.
 
 Why a canary and not a one-off check: the gateway binds the processor chain per
 MCP session. A reload that drops the processor leaves existing sessions guarded
@@ -3048,14 +3068,16 @@ pinned; the documents keep describing v1.6.0 until one is.
 
 ## Exit codes
 
-- `0`: success. For `verify-gateway`, OK, MISSING or KNOWN-LIMIT only. For
+- `0`: success. For `verify-gateway`, OK, MISSING or KNOWN-LIMIT only, and
+  OK or KNOWN-LIMIT only under `--strict`. For
   `crawl --every`, a run that was stopped after at least one complete crawl
   and in which the catalog refused none.
 - `1`: the operation failed: a lifecycle refusal (self-approval, stale digest,
   invalid transition), a crawl failure, a corrupt or wrong-schema database, a
   processor that stopped with an error, `verify-gateway` with a LEAK,
   CONFIG-EDITED (a body hash other than `--expect-body-hash` included),
-  LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE or PROBE-CHANGED, a
+  LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE or PROBE-CHANGED,
+  `verify-gateway --strict` with a MISSING, a
   `verify-gateway --every` run that was stopped after any check failed, any
   failing verdict line was printed or no check completed, or that ended at a
   check with a failing verdict without `--keep-going`, a `crawl --every`
