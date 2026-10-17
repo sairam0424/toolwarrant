@@ -186,9 +186,6 @@ func TestServe_RefusedPageWithAnUnreadableCatalogIsASourceError(t *testing.T) {
 // first and the big page gets the linear extrapolation times sizeTestSlack,
 // never less than serveStopTimeout.
 func TestServe_AcceptsAPageOverGRPCsDefaultLimit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("moves a 6 MiB page through gRPC; skipped in short mode")
-	}
 	d1 := mustDigest(t, echoV1)
 	s, _ := newTestServer(newFakeSource(map[string]catalog.ToolPolicy{"echo": servedPolicy(d1)}))
 	client, _ := startServer(t, s)

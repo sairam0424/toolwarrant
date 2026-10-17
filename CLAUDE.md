@@ -22,7 +22,7 @@ make release-guards                                   # go.mod has no replace or
 make release-check                                    # release-guards and release-schema-line (the release notes name the schema version the code writes), then goreleaser check; the notices script's platform list equals goreleaser's goos x goarch; the checksums are signed as a bundle
 make release-snapshot                                 # goreleaser snapshot into dist/ (gitignored): four archives, SBOMs, checksums; unsigned
 go build -o bin/ ./cmd/...                            # binaries; bin/ is gitignored
-go test -short -race -count=1 -timeout 900s ./...     # skips seven tests, named below
+go test -short -race -count=1 -timeout 900s ./...     # skips three tests, named below
 go test -race -count=1 -run 'TestCheckRequest_DeniesWhatIsNotApproved' ./internal/processor/
 go test -run '^$' -fuzz FuzzCheckResponse -fuzztime 20s ./internal/processor/
 go generate ./internal/extmcpv1                       # regenerate the ExtMCP stubs; refuses other protoc/plugin versions
@@ -33,16 +33,15 @@ scripts/requalify-gateway.sh vX.Y.Z SHA256 [--e2e]   # the L7 checklist against 
 seam/run.sh guarded; seam/day5.sh; seam/day34-paging-latency.sh; seam/day34-sessions.sh; seam/day34-reload.sh
 ```
 
-`-short` skips seven tests: the three Unicode walks of `internal/textdiff`
+`-short` skips three tests, the three Unicode walks of `internal/textdiff`
 (`TestEscape_everyRune`, `TestEscape_coversEveryRuneTheToolNameRuleForbids`,
-`TestNames_noSuspiciousRuneHasAnEmptyName`), three slow catalog tests
-(`TestVerifyAudit_PagesThroughLargeLogs`,
-`TestRecordCrawl_LargeCrawlDoesNotBlockADecision` and
-`TestWalk_ContinuityMemoryCrossesThePageBoundary`, which pads the log to the
-walk's page size so a signed disable ends the first page and the lying
-crawl-shaped entry starts the second, D22 (d)) and the processor's gRPC size
-test (`TestServe_AcceptsAPageOverGRPCsDefaultLimit`); the CI `test-full` job
-runs those three packages without `-short`.
+`TestNames_noSuspiciousRuneHasAnEmptyName`); the CI `test-full` job runs that
+package without `-short` and keeps `internal/catalog` and `internal/processor`
+on its command line although nothing in them skips any more: their four skips
+were dropped on 2026-10-17, when the `test-full` table of ci run 38934753480
+(ubuntu-latest, `-race`) put the four tests under thirty seconds (27.15, 17.83,
+9.77 and 2.76 s), and the job's display name, a required status check of the
+`main` ruleset, still names those packages.
 
 The `-short` policy: a test may consult `testing.Short()` only when its full run
 exceeds thirty seconds on the runner per the timing table; every such test is
@@ -61,7 +60,7 @@ would otherwise hide the skip).
 
 The seam scripts and the end-to-end test need the v1.6.0 release binary at `.cache/agentgateway-darwin-arm64` (gitignored; `TOOLWARRANT_GATEWAY_BIN` overrides the path) and the seam scripts need the four seam binaries in `bin/`. Outside the seam scripts and `make e2e` (which starts the gateway on loopback ports it picks itself and stops it) the gateway binary may only be run with `--validate-only`. The e2e scenarios share one stack and depend on each other's end state, so run the whole `TestEndToEnd`, not one subtest. Anything over two minutes runs in the background with output to a file.
 
-The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint (gofmt, go vet, golangci-lint, `scripts/gen-confusables.sh --check` against the committed UTS #39 table, and actionlint on the five workflow files; `TestConfusablesCI_lintJobRunsTheCheck`), vet and build, the short test suite under `-race`, the three packages whose tests `-short` skips (`internal/textdiff`, `internal/catalog`, `internal/processor`) in full (both test jobs run `go test` through gotestsum v1.13.0, one line per package and the failed tests' output at the end, and write the tests slower than one second to the step summary), govulncheck, gitleaks, the notices check, the release configuration check (`make release-check`), and the documentation checks (every test name cited in README.md, SECURITY.md, CONTRIBUTING.md, CLAUDE.md, CHANGELOG.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only, against the linux release binary checked against the recorded checksum; it passed on 2026-10-12. The `requalify` job runs on a dispatch whose inputs `gateway_version` and `gateway_sha256` name a candidate release and runs `scripts/requalify-gateway.sh --e2e` against it (`TestRequalifyCI_dispatchJobRunsTheScript`). The nightly workflow `.github/workflows/nightly.yml` is the flake radar: once a day (03:17 UTC) and on dispatch, its one job `flake radar: go test -race -count=10 -short` runs the short race suite ten times through gotestsum with no reruns, writes the tests slower than one second and every failure with its count of failing runs to the step summary and uploads the gotestsum json as an artifact; it is not a required check and no ruleset references it. The two code-scanning workflows are `.github/workflows/scorecard.yml` (on every push to main, weekly on Monday 04:23 UTC and on dispatch, its job `OpenSSF Scorecard` runs ossf/scorecard-action, publishes the results for this public repository and uploads the SARIF to code scanning) and `.github/workflows/codeql.yml` (on every pull request to main, every push to main and weekly on Monday 05:41 UTC, its job `CodeQL: go` analyses the Go code in build mode autobuild and uploads the analysis under the category `/language:go`); neither is a required check and no ruleset references them. Run the documentation checks by hand with:
+The CI workflow is `.github/workflows/ci.yml`, triggered by every pull request and every push to main: lint (gofmt, go vet, golangci-lint, `scripts/gen-confusables.sh --check` against the committed UTS #39 table, and actionlint on the five workflow files; `TestConfusablesCI_lintJobRunsTheCheck`), vet and build, the short test suite under `-race`, the `test-full` job's three packages in full (`internal/textdiff`, whose three Unicode walks `-short` skips, `internal/catalog` and `internal/processor`; both test jobs run `go test` through gotestsum v1.13.0, one line per package and the failed tests' output at the end, and write the tests slower than one second to the step summary), govulncheck, gitleaks, the notices check, the release configuration check (`make release-check`), and the documentation checks (every test name cited in README.md, SECURITY.md, CONTRIBUTING.md, CLAUDE.md, CHANGELOG.md, docs/ and seam/RESULTS.md must exist as a test function, every relative link must resolve). The e2e job runs on `workflow_dispatch` only, against the linux release binary checked against the recorded checksum; it passed on 2026-10-12. The `requalify` job runs on a dispatch whose inputs `gateway_version` and `gateway_sha256` name a candidate release and runs `scripts/requalify-gateway.sh --e2e` against it (`TestRequalifyCI_dispatchJobRunsTheScript`). The nightly workflow `.github/workflows/nightly.yml` is the flake radar: once a day (03:17 UTC) and on dispatch, its one job `flake radar: go test -race -count=10 -short` runs the short race suite ten times through gotestsum with no reruns, writes the tests slower than one second and every failure with its count of failing runs to the step summary and uploads the gotestsum json as an artifact; it is not a required check and no ruleset references it. The two code-scanning workflows are `.github/workflows/scorecard.yml` (on every push to main, weekly on Monday 04:23 UTC and on dispatch, its job `OpenSSF Scorecard` runs ossf/scorecard-action, publishes the results for this public repository and uploads the SARIF to code scanning) and `.github/workflows/codeql.yml` (on every pull request to main, every push to main and weekly on Monday 05:41 UTC, its job `CodeQL: go` analyses the Go code in build mode autobuild and uploads the analysis under the category `/language:go`); neither is a required check and no ruleset references them. Run the documentation checks by hand with:
 
 ```sh
 for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CONTRIBUTING.md CLAUDE.md CHANGELOG.md docs/*.md seam/RESULTS.md | sort -u); do grep -rqE "^func $n\(" --include='*_test.go' --exclude-dir=.cache --exclude-dir=.git . || echo "missing test: $n"; done

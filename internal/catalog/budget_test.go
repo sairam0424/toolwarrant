@@ -126,9 +126,6 @@ func bigTools(n int, variant string) []CrawledTool {
 // in another handle waits for a large crawl and succeeds, because the write
 // lock is held only for the inserts and the busy timeout is long enough.
 func TestRecordCrawl_LargeCrawlDoesNotBlockADecision(t *testing.T) {
-	if testing.Short() {
-		t.Skip("writes about 10 MiB")
-	}
 	path := dbPath(t)
 	writer := openStore(t, path, lifecycle.DefaultPolicy())
 	other := openStore(t, path, lifecycle.DefaultPolicy())

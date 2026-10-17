@@ -58,7 +58,7 @@ func TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull(t *testing.T) {
 		t.Error(p)
 	}
 	if len(report.callers) == 0 {
-		t.Fatal("no test consults testing.Short(); CLAUDE.md names six, so the walk is wrong")
+		t.Fatal("no test consults testing.Short(); CLAUDE.md names three, so the walk is wrong")
 	}
 	for _, c := range report.callers {
 		if !strings.Contains(claude, "`"+c.name+"`") {

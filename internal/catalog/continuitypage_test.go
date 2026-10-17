@@ -28,13 +28,11 @@ const pageBoundaryPadRounds = 4
 // at auditPage+1, the first entry of the second page, and is refused by the
 // long-lived Store, by every fresh open and by Integrity with the continuity
 // sentence naming the disable's entry at auditPage. It writes about 5000
-// audit entries, so -short skips it (named in CLAUDE.md; the test-full job
-// runs it).
+// audit entries; the test-full table of ci run 38934753480 timed it at 27.15 s
+// under -race on the ubuntu runner, under the thirty-second line of CLAUDE.md's
+// -short policy, so it runs in the short suite as well.
 func TestWalk_ContinuityMemoryCrossesThePageBoundary(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("writes about 5000 audit entries")
-	}
 	s, path := newStoreAt(t, lifecycle.DefaultPolicy())
 	d := approvedEcho(t, s)
 	alice := newOperator(t, "alice")
