@@ -913,6 +913,23 @@ since the listing is the forensic view and `audit verify` is the judge
 (`TestAuditListJSONCarriesTheSignedRecord`). The section below gives the
 `ssh-keygen -Y verify` recipe over that output.
 
+What a signed record costs at open. The walk a `Store` makes when it opens
+verifies every signed record once (and the suffix walk of a reload only the
+records appended since); since D23 (a) it verifies the signatures of each
+walked page in parallel goroutines, one per signed record up to `GOMAXPROCS`,
+and applies the rules in seq order from what the goroutines parsed, so the
+first refusal in seq order is the one it reports whatever the worker count and
+`audit verify` prints the refusals in that order
+(`TestWalk_ParallelVerificationGivesTheSerialResult`,
+`TestWalk_FirstRefusalInSeqOrderWinsUnderParallelVerification`,
+`TestIntegrity_FoldsThePreverifiedRecordsInOrder`). On a catalog of 10001
+signed records (`BenchmarkOpen10000SignedApprovals`, Apple M4, 10 cores,
+2026-10-17; preliminary: both numbers were taken while other builds and test
+runs loaded the host, and are re-measured on a quiet host before the release)
+one open took 1.058 s against 1.602 s before the change; a real catalog holds
+tens to hundreds of signed decisions, so the open-time saving there is
+milliseconds, and the serving path, which verifies no signature, is untouched.
+
 ### What the catalog checks before it trusts the file
 
 Every state change is one or more entries in `audit_log`, written in the same
