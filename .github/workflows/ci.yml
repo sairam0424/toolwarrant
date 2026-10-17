@@ -131,13 +131,12 @@ jobs:
       # h1:+Lh454O9mu9AMG1APV4o0y7oDYKyik/3kBOiCqiEpRo= (go mod download -json
       # on 2026-10-14), which go install checks against sum.golang.org.
       - run: go install gotest.tools/gotestsum@v1.13.0
-      # -short skips six tests: the three Unicode walks of internal/textdiff
+      # -short skips three tests, the three Unicode walks of internal/textdiff
       # (TestEscape_everyRune, TestEscape_coversEveryRuneTheToolNameRuleForbids,
-      # TestNames_noSuspiciousRuneHasAnEmptyName), two slow catalog tests
-      # (TestVerifyAudit_PagesThroughLargeLogs,
-      # TestRecordCrawl_LargeCrawlDoesNotBlockADecision) and the processor's
-      # gRPC size test (TestServe_AcceptsAPageOverGRPCsDefaultLimit); the
-      # test-full job runs those three packages without -short.
+      # TestNames_noSuspiciousRuneHasAnEmptyName); the test-full job runs that
+      # package without -short. The four catalog and processor skips were
+      # dropped on 2026-10-17, once the test-full table of run 38934753480 put
+      # those tests under CLAUDE.md's thirty-second line, so they run here too.
       - run: gotestsum --format pkgname --jsonfile "$RUNNER_TEMP/gotestsum.json" -- -race -short -count=1 -timeout 900s -cover ./...
       # The timing table: every test over one second, slowest first, in the
       # step summary and the log, also when a test failed, so that a red run
@@ -163,11 +162,19 @@ jobs:
           cache: true
       # gotestsum as in the test job: the same pin, the same reasons.
       - run: go install gotest.tools/gotestsum@v1.13.0
-      # The three packages with a testing.Short() skip, run in full. CLAUDE.md
-      # names the six tests this covers, and internal/shortpolicy's
+      # internal/textdiff, the one package with a testing.Short() skip, run in
+      # full. CLAUDE.md names the three tests this covers, and internal/shortpolicy's
       # TestShortPolicy_everyShortSkipIsNamedInCLAUDEAndRunsInFull fails when a
       # test consults testing.Short() without being named there or without its
-      # package on this line.
+      # package on this line. internal/catalog and internal/processor stay on the
+      # line although their four skips were dropped on 2026-10-17 (this job's
+      # table in run 38934753480: TestWalk_ContinuityMemoryCrossesThePageBoundary
+      # 27.15 s, TestVerifyAudit_PagesThroughLargeLogs 17.83 s,
+      # TestRecordCrawl_LargeCrawlDoesNotBlockADecision 9.77 s,
+      # TestServe_AcceptsAPageOverGRPCsDefaultLimit 2.76 s): the job's display
+      # name is a required status check of the main ruleset and names them, and
+      # a renamed job blocks every merge until the ruleset is edited
+      # (docs/operations.md, Releasing).
       - run: gotestsum --format pkgname --jsonfile "$RUNNER_TEMP/gotestsum.json" -- -race -count=1 -timeout 1500s -cover ./internal/textdiff/ ./internal/catalog/ ./internal/processor/
       # The timing table, as in the test job.
       - name: tests slower than 1s

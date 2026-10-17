@@ -81,9 +81,6 @@ func TestAuditEntries_PagingAndLimits(t *testing.T) {
 
 func TestVerifyAudit_PagesThroughLargeLogs(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("writes about 5000 audit entries")
-	}
 	s := newStore(t)
 	mustAddServer(t, s, "alpha")
 	mustCrawl(t, s, "alpha", bigCrawl(2600, "v1")...)
