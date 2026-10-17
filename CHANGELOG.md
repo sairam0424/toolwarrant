@@ -13,6 +13,10 @@ whose changelog has no heading for that version.
 
 ## [Unreleased]
 
+### Added
+
+- `verify-gateway --strict` makes an approved tool the gateway does not list a failing verdict: a check that printed a MISSING line exits 1 with `N approved tool(s) are not listed by the gateway (MISSING) under --strict: the emitted allow-list predates an approval; run emit again and reload the gateway` on stderr, a `--every --strict` run stops at the first such check without `--keep-going` and its outcome sentence names MISSING under `--strict`, while OK, the probe's not-accepted line and the KNOWN-LIMIT line of `--expect-unhooked` pass as before; without the flag MISSING stays a report and the check exits 0, as D12 reserved, since a tool the gateway re-serialises (limit L2) is MISSING by design (`TestVerifyGatewayStrictFailsOnMissing`, `TestVerifyGatewayStrictLeavesOKAndKnownLimitAlone`, `TestVerifyGatewayEveryStrictStopsAtAMissingUnlessKeepGoing`, `TestVerifyGatewayWithoutStrictKeepsExitZeroOnMissing`, `TestVerdicts_failedUnderStrictCountsMissing`).
+
 ### Changed
 
 - `toolwarrant version` prints a third line, `commit` and the first twelve characters of the revision the go command stamped into the binary, `+dirty` appended when the checkout had uncommitted changes, and `commit unknown` when the build carries no version-control stamp (a `go install` of the module from the proxy, `go run`, `go test`); a release archive's binary names the tagged commit, which `go version -m` showed in full and the command did not, and the release binaries up to v0.4.0 predate the line (`TestBuildCommit_NamesTheRevisionTheToolchainStamped`, `TestHelpAndVersion`, `TestVersionFallsBackToTheModuleVersion`).

@@ -14,8 +14,10 @@ import (
 // the catalog would not serve, which is what a route without its processor
 // looks like (the guard is config-presence-based and fails open; decision
 // D12). CONFIG-EDITED, LIVE-CONFIG-MISMATCH, UNHOOKED-CALLS, PROBE-INCONCLUSIVE
-// and PROBE-CHANGED are the other ways a deployment fails the check. MISSING
-// and KNOWN-LIMIT are reports and never fail.
+// and PROBE-CHANGED are the other ways a deployment fails the check.
+// KNOWN-LIMIT is a report and never fails; MISSING is a report that fails only
+// under --strict, where the operator says the emitted allow-list is current
+// and no route carries a tool the gateway re-serialises (D12, L2, D23 (g)).
 const (
 	verdictLeak = "LEAK"
 	// verdictMismatch is a sub-label on a LEAK line, never a verdict of its
@@ -179,9 +181,11 @@ type verdicts struct {
 }
 
 // failed reports whether the check must fail the command. Exit 0 is OK,
-// MISSING or KNOWN-LIMIT only.
-func (v verdicts) failed() bool {
-	return len(v.leaks) > 0 || v.configEdited || len(v.live.diffs) > 0 || v.probe.verdict() != ""
+// MISSING or KNOWN-LIMIT only (D12); under strict a MISSING fails too, because
+// the operator declared that an approved tool the gateway does not list means
+// the emitted allow-list predates the approval (D23 (g)).
+func (v verdicts) failed(strict bool) bool {
+	return len(v.leaks) > 0 || v.configEdited || len(v.live.diffs) > 0 || v.probe.verdict() != "" || strict && len(v.missing) > 0
 }
 
 // subLabelCounts counts the leaks that carry each sub-label.
@@ -198,7 +202,9 @@ func (v verdicts) subLabelCounts() (mismatched, unverified int) {
 }
 
 // summary is the one-line account of a check. docs/operations.md quotes its
-// first clause and the MISSING count, so the two must change together.
+// first clause and the MISSING count, so the two must change together. The
+// MISSING clause reads the same under --strict: the flag changes the exit and
+// the failure sentence, not this line, so a log reads alike with and without it.
 func (v verdicts) summary() string {
 	s := fmt.Sprintf("the gateway serves %d tool(s), %d approved and current", v.served+len(v.leaks), v.served)
 	if n := len(v.leaks); n > 0 {
@@ -268,8 +274,9 @@ func (p probeReport) summary() string {
 // latest crawl saw the approved digest is a leak too, labelled MISMATCH so the
 // owner knows the catalog has no record of drift (decision D12). An approved
 // tool that the latest crawl saw at the approved digest but the gateway does
-// not list is missing, which does not fail; a tool carrying a marker is never
-// missing, because the processor is right to hide it.
+// not list is missing, which does not fail without --strict (D23 (g)); a tool
+// carrying a marker is never missing, because the processor is right to hide
+// it.
 func compare(snap catalog.Snapshot, live []liveTool, res *verdicts) {
 	seen := map[string]bool{}
 	for _, t := range live {
@@ -311,7 +318,8 @@ func isMismatch(pol catalog.ToolPolicy, live string) bool {
 // run is stopped. Digests are shown short, both sides for a MISMATCH so the
 // owner can approve the served definition if it is legitimate. Every name
 // comes from the gateway or the catalog and is escaped. The failing lines are
-// counted so that a scheduled run fails at the end if it ever printed one.
+// counted so that a scheduled run fails at the end if it ever printed one; a
+// MISSING line counts only under --strict, where it is a failing verdict.
 func (v *verifier) printListing(res verdicts) {
 	out := v.a.stdout
 	if res.configEdited {
@@ -324,6 +332,9 @@ func (v *verifier) printListing(res verdicts) {
 	}
 	for _, name := range res.missing {
 		out.printf("%s %s %s\n", verdictMissing, cell(name), shortDigest(res.approvedOf(name)))
+		if v.strict {
+			v.failingLines++
+		}
 	}
 }
 

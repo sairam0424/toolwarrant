@@ -53,20 +53,29 @@ type verifier struct {
 	// a scheduled run fails at the end if it ever printed one (D13 f), even
 	// when the check that printed it was cut short by the stop signal.
 	failingLines int
+	// strict makes a MISSING line a failing verdict (D23 (g)): an approved
+	// tool the gateway does not list means the emitted allow-list predates
+	// the approval. Off by default, because a tool the gateway re-serialises
+	// is MISSING by design (limit L2) and D12 reserved exit 0 for MISSING.
+	strict bool
 }
 
 // verifyOptions are the flags of verify-gateway.
 type verifyOptions struct {
 	server, url, bearerEnv, config, admin, expectBodyHash string
-	noProbe, expectUnhooked, keepGoing                    bool
+	noProbe, expectUnhooked, keepGoing, strict            bool
 	every                                                 time.Duration
 }
 
 // verifyFailure is a check that found the gateway serving what the catalog
-// would not, running a configuration that is not the emitted one, or
-// answering the probe in a way that does not prove the hook.
+// would not, not listing what it approved (under --strict only), running a
+// configuration that is not the emitted one, or answering the probe in a way
+// that does not prove the hook.
 type verifyFailure struct {
-	leaks          int
+	leaks int
+	// missing counts the MISSING lines of a --strict check; 0 without the
+	// flag, so the sentence that names the flag is never printed without it.
+	missing        int
 	configEdited   bool
 	configReason   string
 	configExpected string
@@ -79,6 +88,9 @@ func (e *verifyFailure) Error() string {
 	var parts []string
 	if e.leaks > 0 {
 		parts = append(parts, fmt.Sprintf("%d tool(s) leak: the gateway at %s serves definitions the catalog would not; check that the route for %s has the toolwarrant processor", e.leaks, safeURL(e.url), e.server))
+	}
+	if e.missing > 0 {
+		parts = append(parts, fmt.Sprintf("%d approved tool(s) are not listed by the gateway (%s) under --strict: the emitted allow-list predates an approval; run emit again and reload the gateway", e.missing, verdictMissing))
 	}
 	switch {
 	case e.configReason != "":
@@ -108,6 +120,8 @@ func (e *verifyFailure) Error() string {
 // --expect-unhooked is the way to keep it on against the pinned gateway in
 // front of an upstream that answers 202, which would otherwise fail every
 // check (D18); the status the probe reports is the upstream's answer.
+// --strict turns MISSING into a failing verdict and says why it is not the
+// default (D12, L2, D23 (g)).
 func bindVerifyFlags(fs *flag.FlagSet) *verifyOptions {
 	o := &verifyOptions{}
 	fs.StringVar(&o.server, "server", "", "catalog server the gateway route is for (required)")
@@ -118,6 +132,7 @@ func bindVerifyFlags(fs *flag.FlagSet) *verifyOptions {
 	fs.StringVar(&o.admin, "admin", "", "HOST:PORT or http(s) URL of the gateway's admin API (emit --admin-addr, default "+emit.DefaultAdminAddr+"); the configuration the gateway is running (GET "+adminConfigPath+") is compared with --config as a whole document: no non-empty top-level section other than config, gateways and routes may be present, the config block must declare the same adminAddr, statsAddr and readinessAddr and no other field, every emitted gateway must be present exactly once with the same bind address and port and no other field, every emitted route exactly once with the same gateway, match path, allow rules, backend targets (name and host) and processors (host, kind, failureMode, methods, the requestHeaders allowed and disallowed lists, the backendTLS cert, key, root and hostname under the processor's policies when either side carries the block, and the metadata compared by a hash of its canonical form and never shown), nothing the file does not carry may exist (no other route, gateway or section; inside a route no field other than name, gateways, matches, policies and backends, no policy other than mcpAuthorization and mcpGuardrails, no match that is not a single exact path, no backend other than the one mcp backend with the emitted target, no processor policy other than backendTLS, no backendTLS field other than those four, and no field of a processor, rule or target that emit does not write), no path may be matched by two routes, the path of --url must be the emitted route's match, and the ports of --url and --admin must be the emitted gateway's serving port and the emitted adminAddr's port (their hosts loopback addresses too when the emitted ones are), so the listing and this comparison are known to have gone to the gateway the file describes; any difference is "+verdictLiveConfig+"; needs --config")
 	fs.BoolVar(&o.noProbe, "no-probe", false, "skip the unhooked-call probe; by default every check sends one tools/call WITHOUT a JSON-RPC id for the tool name \""+probeToolPrefix+"<random>\": a gateway that accepts it (HTTP 202) forwards it to the upstream without the processor or the allow rule and is reported as "+verdictUnhooked+" (exit 1), which is the one thing the probe proves; HTTP 400 without JSON passes as \"not accepted as a notification (HTTP 400, by the gateway or by the upstream)\", which proves nothing about the hook, because a forwarding gateway relays an upstream's refusal unchanged; a 400 whose body is JSON (a JSON-RPC answer, single or batched, in the body or across the data lines of one event, after a byte-order mark) or was cut at the "+probeMaxBodyText()+" read cap, and any other 2xx answer with a body, is "+verdictInconclusive+" (exit 1) because the gateway or the upstream may have written it; agentgateway v1.6.0 forwards the id-less call to the upstream without the hook on every check (known limit L17) and relays the upstream's answer, so the status the probe reports is the upstream's: 202 behind an upstream that accepts the call as a notification, a bare 400 behind one that refuses a request without an id (a go-sdk server such as cmd/mockupstream); behind a 202 upstream prefer --expect-unhooked, which keeps the probe on and turns that 202 into a "+verdictKnownLimit+" line; the two are exclusive")
 	fs.BoolVar(&o.expectUnhooked, "expect-unhooked", false, "declare that the gateway forwards the id-less probe without the hook and that the upstream accepts it as a notification, so the probe comes back HTTP 202 (agentgateway v1.6.0 in front of such an upstream, known limit L17): that answer is then printed as "+verdictKnownLimit+" and the check exits 0, so the probe stays on and keeps proving the shape on every check instead of being switched off with --no-probe, while the deployment keeps id-less clients away from the serving port (SECURITY.md, Deployment requirements); any other answer to the probe, a bare HTTP 400 and the "+verdictInconclusive+" shapes alike, is "+verdictProbeChanged+" (exit 1): the pin moved or the gateway changed under it, so re-qualify it (L7) and drop the flag once the probe's answer is understood; exclusive with --no-probe")
+	fs.BoolVar(&o.strict, "strict", false, "fail (exit 1) when an approved tool the latest crawl saw at its approved digest is not listed by the gateway ("+verdictMissing+"): the emitted allow-list predates an approval, so run emit again and reload the gateway; without it "+verdictMissing+" is a report and the check exits 0 (D12), since a tool the gateway re-serialises is "+verdictMissing+" by design (L2)")
 	fs.DurationVar(&o.every, "every", 0, "repeat at this interval (at least 1s) with a fresh MCP session each time, until SIGINT or SIGTERM")
 	fs.BoolVar(&o.keepGoing, "keep-going", false, "with --every, keep checking after a failed check instead of exiting at the first one; without it a check that printed a failing verdict exits 1 at once, even when a later step of that check (the live comparison, the probe) could not run, while a listing failure alone is printed, counted and does not stop the run; the run still exits 1 at the end if any check failed or printed a verdict line, or none completed, and a file --config cannot read, an unknown --server or a catalog error stops it at once")
 	return o
@@ -220,7 +235,7 @@ func runVerifyGateway(a *app, c *command, args []string) (err error) {
 	}
 	defer closeStore(store, &err)
 	v := &verifier{a: a, store: store, client: client, server: o.server, url: o.url, urlPath: routePathOf(o.url), headers: headers,
-		config: o.config, admin: adminURL, expectBodyHash: o.expectBodyHash, probe: !o.noProbe, expectUnhooked: o.expectUnhooked}
+		config: o.config, admin: adminURL, expectBodyHash: o.expectBodyHash, probe: !o.noProbe, expectUnhooked: o.expectUnhooked, strict: o.strict}
 	if o.every == 0 {
 		res, err := v.check(a.ctx)
 		if err != nil {
@@ -356,14 +371,25 @@ func (v *verifier) compareLive(ctx context.Context, emitted []byte, res *verdict
 }
 
 // conclude turns one check into the command's outcome. Exit 0 is OK or
-// MISSING only (decision D12), and KNOWN-LIMIT under --expect-unhooked (D18).
+// MISSING only (decision D12), and KNOWN-LIMIT under --expect-unhooked (D18);
+// under --strict a MISSING fails too (D23 (g)).
 func (v *verifier) conclude(res verdicts) error {
-	if res.failed() {
-		return &verifyFailure{leaks: len(res.leaks), configEdited: res.configEdited, configReason: res.configReason, configExpected: res.configExpected,
+	if res.failed(v.strict) {
+		return &verifyFailure{leaks: len(res.leaks), missing: v.strictMissing(res), configEdited: res.configEdited, configReason: res.configReason, configExpected: res.configExpected,
 			liveDiffs: len(res.live.diffs), probe: res.probe, server: v.server, url: v.url}
 	}
 	v.a.stdout.printf("%s: %s\n", verdictOK, res.summary())
 	return v.a.stdout.broken()
+}
+
+// strictMissing is the MISSING count the failure sentence carries: the
+// check's count under --strict, 0 without the flag, where MISSING is a report
+// and the sentence that names the flag must not appear beside a LEAK.
+func (v *verifier) strictMissing(res verdicts) int {
+	if !v.strict {
+		return 0
+	}
+	return len(res.missing)
 }
 
 // listThroughGateway lists the route in a fresh MCP session. A listing error
