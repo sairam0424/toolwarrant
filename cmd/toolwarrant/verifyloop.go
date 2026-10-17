@@ -20,6 +20,9 @@ type loopTally struct {
 	// third review found a LEAK on stdout and exit 0 when the stop signal
 	// arrived while the admin API fetch of the same check was in flight.
 	verdictLines int
+	// strict is the run's --strict: a MISSING is then a failing verdict, both
+	// when a check is recorded and in the sentence the outcome prints.
+	strict bool
 }
 
 // record counts one check. A check that found a failing verdict is a failed
@@ -27,7 +30,7 @@ type loopTally struct {
 // short by the stop signal proved nothing either way and is not counted.
 func (t *loopTally) record(res verdicts, err error, interrupted bool) {
 	switch {
-	case res.failed():
+	case res.failed(t.strict):
 		t.completed++
 		t.failedVerdicts++
 	case err != nil && interrupted:
@@ -39,17 +42,28 @@ func (t *loopTally) record(res verdicts, err error, interrupted bool) {
 }
 
 // outcome is the exit of a run that was stopped by a signal. The sentence
-// names every verdict that counts as a failure, so a supervisor's log line
-// says why the canary exited 1 without the lines above it.
+// names every verdict that counts as a failure, MISSING among them under
+// --strict, so a supervisor's log line says why the canary exited 1 without
+// the lines above it.
 func (t loopTally) outcome() error {
 	switch {
 	case t.completed == 0:
 		return fmt.Errorf("no check of this run completed (%d could not run); nothing was proven about the gateway", t.errored)
 	case t.failedVerdicts+t.errored > 0 || t.verdictLines > 0:
-		return fmt.Errorf("%d of %d check(s) in this run failed: at least one check of this run found a %s or %s, a %s, %s, %s or %s, or could not run; the lines above say which",
-			t.failedVerdicts+t.errored, t.completed+t.errored, verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive, verdictProbeChanged)
+		return fmt.Errorf("%d of %d check(s) in this run failed: at least one check of this run found %s, or could not run; the lines above say which",
+			t.failedVerdicts+t.errored, t.completed+t.errored, t.failingVerdicts())
 	}
 	return nil
+}
+
+// failingVerdicts names the verdicts a check of this run fails on, in the
+// order the check prints them.
+func (t loopTally) failingVerdicts() string {
+	s := fmt.Sprintf("a %s or %s, a %s, %s, %s or %s", verdictLeak, verdictConfigEdited, verdictLiveConfig, verdictUnhooked, verdictInconclusive, verdictProbeChanged)
+	if t.strict {
+		s += fmt.Sprintf(", or a %s under --strict", verdictMissing)
+	}
+	return s
 }
 
 // isFatalCheckError recognises the errors that no later check can recover
@@ -74,7 +88,7 @@ func isFatalCheckError(err error) bool {
 func (v *verifier) loop(ctx context.Context, every time.Duration, keepGoing bool) error {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
-	var tally loopTally
+	tally := loopTally{strict: v.strict}
 	for {
 		res, err := v.check(ctx)
 		tally.record(res, err, ctx.Err() != nil)
@@ -90,7 +104,7 @@ func (v *verifier) loop(ctx context.Context, every time.Duration, keepGoing bool
 			}
 		}
 		switch {
-		case res.failed() && (!keepGoing || res.configReason != ""):
+		case res.failed(v.strict) && (!keepGoing || res.configReason != ""):
 			return v.conclude(res)
 		case err == nil:
 			v.a.stdout.printf("%s %s: %s\n", stamp, cell(v.server), res.summary())
