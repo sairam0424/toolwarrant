@@ -4,7 +4,7 @@ toolwarrant is a control plane in front of the agentgateway v1.6.0 MCP gateway: 
 
 ## Stack
 
-Go 1.27 (`go.mod`: `go 1.27`, `toolchain go1.27.2`), one module `github.com/sairam0424/toolwarrant`, pure Go (modernc.org/sqlite, no cgo). Dependencies: gowebpki/jcs (RFC 8785), modernc.org/sqlite, google.golang.org/grpc v1.86.0-dev, google.golang.org/protobuf v1.36.12, golang.org/x/text, hiddeco/sshsig v0.2.0 (the OpenSSH `sshsig` envelope of the signed records) and golang.org/x/crypto v0.58.0 (`ssh`, `ssh/agent`), modelcontextprotocol/go-sdk v1.8.0 (seam tools and tests only), pgregory.net/rapid (tests only, MPL-2.0). Lint: golangci-lint v2.14.0 with the repository `.golangci.yml`. Licence Apache-2.0; `THIRD_PARTY_NOTICES.md` is generated.
+Go 1.27 (`go.mod`: `go 1.27`, `toolchain go1.27.2`), one module `github.com/sairam0424/toolwarrant`, pure Go (modernc.org/sqlite, no cgo). Dependencies: gowebpki/jcs (RFC 8785), modernc.org/sqlite, google.golang.org/grpc v1.84.0, google.golang.org/protobuf v1.36.12, golang.org/x/text, hiddeco/sshsig v0.2.0 (the OpenSSH `sshsig` envelope of the signed records) and golang.org/x/crypto v0.58.0 (`ssh`, `ssh/agent`), modelcontextprotocol/go-sdk v1.8.0 (seam tools and tests only), pgregory.net/rapid (tests only, MPL-2.0). Lint: golangci-lint v2.14.0 with the repository `.golangci.yml`. Licence Apache-2.0; `THIRD_PARTY_NOTICES.md` is generated.
 
 ## Commands
 
@@ -114,4 +114,4 @@ for n in $(grep -ohE '\b(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' README.md SECURITY.md CO
 
 ## Pinned external versions
 
-agentgateway v1.6.0 (ExtMCP proto and config schema); modelcontextprotocol/go-sdk v1.8.0; MCP revision 2026-07-28; google.golang.org/grpc v1.86.0-dev (GO-2026-6443 fix; move to v1.85.0 when tagged); protoc v7.36.2 (libprotoc 36.2), protoc-gen-go v1.36.12, protoc-gen-go-grpc v1.6.2; golangci-lint v2.14.0; Unicode confusables.txt 18.0.0 (third_party/unicode).
+agentgateway v1.6.0 (ExtMCP proto and config schema); modelcontextprotocol/go-sdk v1.8.0; MCP revision 2026-07-28; google.golang.org/grpc v1.84.0 (carries the GO-2026-6443 fix; v1.86.0-dev from 2026-10-07 to v0.4.0); protoc v7.36.2 (libprotoc 36.2), protoc-gen-go v1.36.12, protoc-gen-go-grpc v1.6.2; golangci-lint v2.14.0; Unicode confusables.txt 18.0.0 (third_party/unicode).
