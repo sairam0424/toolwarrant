@@ -105,7 +105,8 @@ func (s *Store) SetTrust(ctx context.Context, rec signing.Record, by Actor) (Rec
 			return err
 		}
 		tm, _ := s.chain.signedState()
-		if _, err := checkTrustRecord(e, rec, tm, s.identity, s.trustRoot); err != nil {
+		pv := checkSignedEntryCrypto(e, rec, s.identity)
+		if _, err := checkSignedEntryRules(e, rec, pv, tm, s.trustRoot); err != nil {
 			return trustWriteError(err)
 		}
 		if err := t.storeSigned(ctx, e, rec); err != nil {

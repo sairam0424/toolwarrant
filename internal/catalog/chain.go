@@ -24,7 +24,9 @@ import (
 // Every later read verifies only the suffix appended after the head and
 // extends the memory. Since D22 (c) the walk also verifies every signed entry
 // of the pages it walks (trustwalk.go: the trust records once at open and the
-// new ones on each reload, none on a crawl-only reload, O-15) and carries the
+// new ones on each reload, none on a crawl-only reload, O-15; since D23 (a)
+// the signatures of a page are verified in parallel and the rules applied in
+// seq order, preverify.go) and carries the
 // trust list in force and the outcome of every verified decision record in
 // the same memory; since D22 (b) and (d) it holds every entry after the
 // bootstrap to the signed= binding and the crawl-transition guard
@@ -134,7 +136,8 @@ func (c *chainMemory) recordPage(ctx context.Context, q queryer, page []audit.En
 		return nil
 	}
 	c.mu.RLock()
-	in := pageInput{trust: c.trust, open: c.open, identity: identity, pinnedRoot: pinnedRoot, lookup: c.lookupSigned, lastState: c.lookupState}
+	in := pageInput{trust: c.trust, open: c.open, identity: identity, pinnedRoot: pinnedRoot, lookup: c.lookupSigned, lastState: c.lookupState,
+		workers: verifyWorkers(len(signedSeqs(page)))}
 	c.mu.RUnlock()
 	out, err := verifySignedPage(ctx, q, page, in)
 	if err != nil {
