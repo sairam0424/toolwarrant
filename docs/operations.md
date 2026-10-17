@@ -922,6 +922,7 @@ first refusal in seq order is the one it reports whatever the worker count and
 `audit verify` prints the refusals in that order
 (`TestWalk_ParallelVerificationGivesTheSerialResult`,
 `TestWalk_FirstRefusalInSeqOrderWinsUnderParallelVerification`,
+`TestWalk_ARulesRefusalBeforeAPureRefusalIsTheOneReported`,
 `TestIntegrity_FoldsThePreverifiedRecordsInOrder`). On a catalog of 10001
 signed records (`BenchmarkOpen10000SignedApprovals`, Apple M4, 10 cores,
 2026-10-17; preliminary: both numbers were taken while other builds and test

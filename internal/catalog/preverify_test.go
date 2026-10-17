@@ -136,6 +136,30 @@ func TestWalk_FirstRefusalInSeqOrderWinsUnderParallelVerification(t *testing.T) 
 	opensRefuseNaming(t, path, first)
 }
 
+// A refusal of the rules half at a lower seq (an unlisted key, rule 4) and
+// one of the pure half at a higher seq (a payload naming another catalog,
+// rule 1) on one page: the lower seq is named under every worker count, so
+// a slot's refusal waits for the loop to reach its entry.
+func TestWalk_ARulesRefusalBeforeAPureRefusalIsTheOneReported(t *testing.T) {
+	t.Parallel()
+	s, path, alice, _ := trustedCatalog(t)
+	mustDecide(t, s, alice, signing.KindApprove, "alpha", "sum", pendingSum(t))
+	db, id := rawDB(t, path), s.identity
+	dave := newOperator(t, "dave")
+	other := strings.Repeat("00", identityBytes)
+	unlisted, _ := forgeDecision(t, db, id, dave, dave.actor(), signing.KindApprove, "alpha", "echo", digestOf(t, "echo", "v1"))
+	foreign, _ := forgeDecision(t, db, other, alice, alice.actor(), signing.KindDisable, "alpha", "echo", "")
+	page := rawEntries(t, db)
+	first := unlistedSentence(unlisted, dave, 2)
+	second := fmt.Sprintf("signed record of entry %d names catalog %s, not this one", foreign, other)
+	for _, workers := range workerCounts() {
+		_, err := verifySignedPage(bg, db, page, genesisInput(id, workers))
+		if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), first) || strings.Contains(err.Error(), second) {
+			t.Fatalf("%d workers: %v; want ErrCorrupt naming entry %d, not entry %d", workers, err, unlisted, foreign)
+		}
+	}
+}
+
 // suffixAfter is the file's entries past seq, read through a raw handle: the
 // page a long-lived Store pinned at seq walks next.
 func suffixAfter(t *testing.T, db *sql.DB, seq int64) []audit.Entry {
