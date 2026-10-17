@@ -459,12 +459,18 @@ test and, where the gateway is involved, by a scenario of the end-to-end test
   and every push to main, and before every
   release. The last recorded run by hand (2026-10-11) found no vulnerabilities
   after the move to go1.27.2 and golang.org/x/net v0.60.0.
-- grpc is pinned to v1.86.0-dev because of GO-2026-6443, a server panic in grpc
-  v1.84.0 on requests without authority or Host headers. The processor runs a
-  gRPC server with `failureMode: failClosed`, so a crash there denies every
-  tool; v1.86.0-dev is the first tag that contains the fix (tagged 2026-09-24;
-  no v1.85.0 release existed at the time). The plan is to move to v1.85.0 as
-  soon as it is tagged and to record the move in the commit message.
+- grpc is pinned to v1.84.0, the newest tagged release, which carries the fix
+  for GO-2026-6443, a server panic on a request without `:authority` and `Host`
+  headers in servers configured with xDS routing (the 1.84 branch was fixed on
+  2026-08-25, before v1.84.0 was tagged on 2026-09-17). The processor does not
+  use xDS, but it runs a gRPC server with `failureMode: failClosed`, so a crash
+  there would deny every tool. From 2026-10-07 to v0.4.0 the pin was the
+  v1.86.0-dev development snapshot, taken while the advisory's record still
+  placed v1.84.0 inside the affected range (its 1.84 branch fix, d5a41119e0e3,
+  was added to the record at 2026-10-06T21:18:54Z, about an hour after the
+  pin); the move back to a tagged release is recorded in the commit message
+  and in CHANGELOG.md, and `govulncheck ./...` on the tree reports no
+  vulnerabilities.
 - `THIRD_PARTY_NOTICES.md` is generated from the module cache by
   `scripts/gen-third-party-notices.sh` and must be regenerated in the same
   commit as any `go.mod` change; `scripts/gen-third-party-notices.sh --check`

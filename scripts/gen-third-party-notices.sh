@@ -68,7 +68,7 @@ licence_row() { # module@version
 	golang.org/x/text@v0.43.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	golang.org/x/time@v0.15.0) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	google.golang.org/genproto/googleapis/rpc@v0.0.0-20260817212433-ac3dfec99bb1) echo 'Apache-2.0|LICENSE=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' ;;
-	google.golang.org/grpc@v1.86.0-dev) echo 'Apache-2.0, with a NOTICE file|LICENSE=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30,NOTICE.txt=693ff28ec216d5112ac1bbfe64ef539005867d1c7bd427b57d579683293b947f' ;;
+	google.golang.org/grpc@v1.84.0) echo 'Apache-2.0, with a NOTICE file|LICENSE=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30,NOTICE.txt=693ff28ec216d5112ac1bbfe64ef539005867d1c7bd427b57d579683293b947f' ;;
 	google.golang.org/protobuf@v1.36.12) echo 'BSD-3-Clause, with the Go patent grant|LICENSE=4835612df0098ca95f8e7d9e3bffcb02358d435dbb38057c844c99d7f725eb20,PATENTS=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc' ;;
 	modernc.org/libc@v1.77.1) echo 'BSD-3-Clause; carries notices for Go (BSD-3-Clause), musl libc (MIT), go-netdb (MIT) and NixOS/nixpkgs (MIT)|LICENSE=95ff867eb55a56935fa7492406cfa953fb7c13ca73f4c0a86ae05756b4605600,LICENSE-3RD-PARTY.md=f597097efe3d97021f89170746bd3a0fb9a8b6fb26b82043ed68a4e0283bee6c' ;;
 	modernc.org/mathutil@v1.7.1) echo 'BSD-3-Clause|LICENSE=bfa9bf72a72ca009fd62a8f84fca3dca67e51d93af96352723646599898b6cf5' ;;

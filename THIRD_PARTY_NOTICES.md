@@ -61,7 +61,7 @@ Appendix B.
 | `golang.org/x/text` | v0.43.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A13), PATENTS (96f408bfae65; A14) | seamgate, seamprocessor, toolwarrant |
 | `golang.org/x/time` | v0.15.0 | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293; A13), PATENTS (96f408bfae65; A14) | mockupstream, seamclient |
 | `google.golang.org/genproto/googleapis/rpc` | v0.0.0-20260817212433-ac3dfec99bb1 | Apache-2.0 | LICENSE (cfc7749b96f6; A4) | seamgate, seamprocessor, toolwarrant |
-| `google.golang.org/grpc` | v1.86.0-dev | Apache-2.0, with a NOTICE file | LICENSE (cfc7749b96f6; A4), NOTICE.txt (693ff28ec216; A15) | seamgate, seamprocessor, toolwarrant |
+| `google.golang.org/grpc` | v1.84.0 | Apache-2.0, with a NOTICE file | LICENSE (cfc7749b96f6; A4), NOTICE.txt (693ff28ec216; A15) | seamgate, seamprocessor, toolwarrant |
 | `google.golang.org/protobuf` | v1.36.12 | BSD-3-Clause, with the Go patent grant | LICENSE (4835612df009; A16), PATENTS (96f408bfae65; A14) | seamgate, seamprocessor, toolwarrant |
 | `modernc.org/libc` | v1.77.1 | BSD-3-Clause; carries notices for Go (BSD-3-Clause), musl libc (MIT), go-netdb (MIT) and NixOS/nixpkgs (MIT) | LICENSE (95ff867eb55a; A17), LICENSE-3RD-PARTY.md (f597097efe3d; A18) | toolwarrant |
 | `modernc.org/mathutil` | v1.7.1 | BSD-3-Clause | LICENSE (bfa9bf72a72c; A19) | toolwarrant |
@@ -103,20 +103,20 @@ is stated, because nothing was read.
 
 | Module | Version | In module cache | Licence as read | Files (SHA-256 prefix) |
 | --- | --- | --- | --- | --- |
-| `cel.dev/expr` | v0.25.3 | no | not inspected | |
-| `cloud.google.com/go/auth` | v0.23.1 | no | not inspected | |
+| `cel.dev/expr` | v0.25.2 | no | not inspected | |
+| `cloud.google.com/go/auth` | v0.20.0 | no | not inspected | |
 | `cloud.google.com/go/compute/metadata` | v0.9.0 | no | not inspected | |
-| `github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp` | v1.35.0 | no | not inspected | |
+| `github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp` | v1.34.0 | no | not inspected | |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | no | not inspected | |
 | `github.com/cncf/xds/go` | v0.0.0-20260202195803-dba9d589def2 | no | not inspected | |
 | `github.com/davecgh/go-spew` | v1.1.1 | no | not inspected | |
 | `github.com/envoyproxy/go-control-plane` | v0.14.0 | no | not inspected | |
-| `github.com/envoyproxy/go-control-plane/envoy` | v1.39.1-0.20260819172001-e6e3fd93e4be | no | not inspected | |
+| `github.com/envoyproxy/go-control-plane/envoy` | v1.37.0 | no | not inspected | |
 | `github.com/envoyproxy/go-control-plane/ratelimit` | v0.1.0 | no | not inspected | |
 | `github.com/envoyproxy/protoc-gen-validate` | v1.3.3 | no | not inspected | |
 | `github.com/felixge/httpsnoop` | v1.1.0 | no | not inspected | |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | no | not inspected | |
-| `github.com/go-logr/logr` | v1.4.4 | no | not inspected | |
+| `github.com/go-logr/logr` | v1.4.3 | no | not inspected | |
 | `github.com/go-logr/stdr` | v1.2.2 | no | not inspected | |
 | `github.com/golang-jwt/jwt/v5` | v5.3.1 | yes | MIT | LICENSE (fe26ca41577b) |
 | `github.com/golang/glog` | v1.2.5 | no | not inspected | |
@@ -124,28 +124,28 @@ is stated, because nothing was read.
 | `github.com/google/go-cmp` | v0.7.0 | yes | BSD-3-Clause | LICENSE (17b5d209ba8f) |
 | `github.com/google/pprof` | v0.0.0-20260802141513-ef3492d7dac3 | yes | Apache-2.0 | LICENSE (cfc7749b96f6) |
 | `github.com/google/s2a-go` | v0.1.9 | no | not inspected | |
-| `github.com/googleapis/enterprise-certificate-proxy` | v0.3.21 | no | not inspected | |
-| `github.com/googleapis/gax-go/v2` | v2.23.0 | no | not inspected | |
+| `github.com/googleapis/enterprise-certificate-proxy` | v0.3.15 | no | not inspected | |
+| `github.com/googleapis/gax-go/v2` | v2.22.0 | no | not inspected | |
 | `github.com/hashicorp/golang-lru/v2` | v2.0.7 | yes | MPL-2.0 | LICENSE (6c7088eb877b) |
 | `github.com/planetscale/vtprotobuf` | v0.6.1-0.20240319094008-0393e58bdf10 | no | not inspected | |
 | `github.com/pmezard/go-difflib` | v1.0.0 | no | not inspected | |
 | `github.com/spiffe/go-spiffe/v2` | v2.8.1 | no | not inspected | |
 | `github.com/stretchr/testify` | v1.12.1 | yes | MIT | LICENSE (f8e536c1c7b6) |
 | `go.opentelemetry.io/auto/sdk` | v1.2.1 | no | not inspected | |
-| `go.opentelemetry.io/contrib/detectors/gcp` | v1.45.0 | no | not inspected | |
-| `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | v0.70.0 | no | not inspected | |
-| `go.opentelemetry.io/otel` | v1.45.0 | no | not inspected | |
-| `go.opentelemetry.io/otel/metric` | v1.45.0 | no | not inspected | |
-| `go.opentelemetry.io/otel/sdk` | v1.45.0 | no | not inspected | |
-| `go.opentelemetry.io/otel/sdk/metric` | v1.45.0 | no | not inspected | |
-| `go.opentelemetry.io/otel/trace` | v1.45.0 | no | not inspected | |
+| `go.opentelemetry.io/contrib/detectors/gcp` | v1.44.0 | no | not inspected | |
+| `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | v0.69.0 | no | not inspected | |
+| `go.opentelemetry.io/otel` | v1.44.0 | no | not inspected | |
+| `go.opentelemetry.io/otel/metric` | v1.44.0 | no | not inspected | |
+| `go.opentelemetry.io/otel/sdk` | v1.44.0 | no | not inspected | |
+| `go.opentelemetry.io/otel/sdk/metric` | v1.44.0 | no | not inspected | |
+| `go.opentelemetry.io/otel/trace` | v1.44.0 | no | not inspected | |
 | `go.yaml.in/yaml/v3` | v3.0.5 | yes | MIT and Apache-2.0, by file, with a NOTICE file | LICENSE (d18f6323b71b), NOTICE (f6c2dd3a67b5) |
 | `golang.org/x/mod` | v0.41.0 | yes | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293), PATENTS (96f408bfae65) |
 | `golang.org/x/term` | v0.47.0 | yes | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293), PATENTS (96f408bfae65) |
 | `golang.org/x/tools` | v0.51.0 | yes | BSD-3-Clause, with the Go patent grant | LICENSE (911f8f578293), PATENTS (96f408bfae65) |
 | `gonum.org/v1/gonum` | v0.17.0 | yes | BSD-3-Clause | LICENSE (b44d9e394ba3) |
-| `google.golang.org/api` | v0.293.0 | no | not inspected | |
-| `google.golang.org/genproto/googleapis/api` | v0.0.0-20260817212433-ac3dfec99bb1 | no | not inspected | |
+| `google.golang.org/api` | v0.278.0 | no | not inspected | |
+| `google.golang.org/genproto/googleapis/api` | v0.0.0-20260706201446-f0a921348800 | no | not inspected | |
 | `gopkg.in/yaml.v3` | v3.0.1 | no | not inspected | |
 | `modernc.org/cc/v4` | v4.29.7 | yes | BSD-3-Clause | LICENSE (1c77905db36f) |
 | `modernc.org/ccgo/v4` | v4.36.1 | yes | BSD-3-Clause | LICENSE (343748b20da2) |
@@ -271,7 +271,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-### A4. github.com/gowebpki/jcs@v1.0.2/LICENSE, google.golang.org/genproto/googleapis/rpc@v0.0.0-20260817212433-ac3dfec99bb1/LICENSE, google.golang.org/grpc@v1.86.0-dev/LICENSE
+### A4. github.com/gowebpki/jcs@v1.0.2/LICENSE, google.golang.org/genproto/googleapis/rpc@v0.0.0-20260817212433-ac3dfec99bb1/LICENSE, google.golang.org/grpc@v1.84.0/LICENSE
 
 SHA-256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
 
@@ -1140,7 +1140,7 @@ rights granted to you under this License for this implementation of Go
 shall terminate as of the date such litigation is filed.
 ````
 
-### A15. google.golang.org/grpc@v1.86.0-dev/NOTICE.txt
+### A15. google.golang.org/grpc@v1.84.0/NOTICE.txt
 
 SHA-256 693ff28ec216d5112ac1bbfe64ef539005867d1c7bd427b57d579683293b947f
 
@@ -1812,8 +1812,8 @@ Paths are relative to the module cache: `module@version/file`.
     96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  golang.org/x/tools@v0.51.0/PATENTS
     b44d9e394ba3efc15de4e5a8ebd843bd8d6325f6ffbb0a4ff6db7181aa15dda3  gonum.org/v1/gonum@v0.17.0/LICENSE
     cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  google.golang.org/genproto/googleapis/rpc@v0.0.0-20260817212433-ac3dfec99bb1/LICENSE
-    cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  google.golang.org/grpc@v1.86.0-dev/LICENSE
-    693ff28ec216d5112ac1bbfe64ef539005867d1c7bd427b57d579683293b947f  google.golang.org/grpc@v1.86.0-dev/NOTICE.txt
+    cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  google.golang.org/grpc@v1.84.0/LICENSE
+    693ff28ec216d5112ac1bbfe64ef539005867d1c7bd427b57d579683293b947f  google.golang.org/grpc@v1.84.0/NOTICE.txt
     4835612df0098ca95f8e7d9e3bffcb02358d435dbb38057c844c99d7f725eb20  google.golang.org/protobuf@v1.36.12/LICENSE
     96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  google.golang.org/protobuf@v1.36.12/PATENTS
     1c77905db36f407e0fdb513f97f1f2a3f2282049ca273637841face982d5d003  modernc.org/cc/v4@v4.29.7/LICENSE
